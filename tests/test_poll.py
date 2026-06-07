@@ -16,7 +16,7 @@ from applytrack.poll import (
     run_poll,
 )
 from applytrack.store import AppFields, filename_for
-from applytrack.worker import run_all_tenants
+from applytrack.worker import drain_requests, run_all_tenants
 
 
 class FakeRepo:
@@ -258,3 +258,25 @@ def test_run_all_tenants_isolates_per_tenant_failure() -> None:
     assert results[1] == []
     assert len(results[2]) == 1
     assert [f.company for f in good.added] == ["Acme"]
+
+
+def test_drain_requests_empty_queue_is_noop() -> None:
+    # An empty poll queue must short-circuit before any gather/network is attempted.
+    class _Cursor:
+        def __enter__(self) -> _Cursor:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def execute(self, *args: object) -> None:
+            pass
+
+        def fetchall(self) -> list[tuple[int]]:
+            return []
+
+    class _Conn:
+        def cursor(self) -> _Cursor:
+            return _Cursor()
+
+    assert drain_requests(_Conn()) == {}  # type: ignore[arg-type]

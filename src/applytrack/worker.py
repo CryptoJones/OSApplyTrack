@@ -160,3 +160,33 @@ def run_all_tenants(
         except Exception:  # noqa: BLE001 - one tenant's failure must not abort the rest
             results[tid] = []
     return results
+
+
+def drain_requests(
+    conn: psycopg.Connection,
+    *,
+    limit_per_source: int = 40,
+    repo_for: Callable[[int], TenantRepo] | None = None,
+) -> dict[int, list[str]]:
+    """Service the on-demand poll queue: claim every request and poll those tenants.
+
+    ``POST /api/poll`` (the SPA's button) enqueues a ``poll_requests`` row; a fast
+    cron runs this — typically every minute — so the button doesn't wait for the
+    hourly pass. Rows are claimed with ``DELETE ... RETURNING``: atomic, so a crash
+    or a second drainer can't double-process, and each distinct tenant is polled
+    once. The connection must be in **autocommit** mode so the claim commits before
+    the (slower) poll runs. This global claim is privileged like
+    :func:`_active_tenant_ids`; everything it fans out to is re-scoped per tenant
+    through :func:`run_all_tenants`.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM poll_requests RETURNING tenant_id")
+        tenant_ids = sorted({int(row[0]) for row in cur.fetchall()})
+    if not tenant_ids:
+        return {}
+    return run_all_tenants(
+        conn,
+        limit_per_source=limit_per_source,
+        tenant_ids=tenant_ids,
+        repo_for=repo_for,
+    )

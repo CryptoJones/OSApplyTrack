@@ -25,6 +25,7 @@ public class EndpointContractTests : IAsyncLifetime
     private readonly PostgresFixture _pg;
     private WebApplicationFactory<Program> _factory = null!;
     private HttpClient _client = null!;
+    private long _tenantId;
 
     public EndpointContractTests(PostgresFixture pg) => _pg = pg;
 
@@ -36,7 +37,8 @@ public class EndpointContractTests : IAsyncLifetime
         // The contract tests exercise the app routes, not the login flow, so seed an
         // authenticated session straight into the DB and ride it via the cookie. A
         // unique email => a brand-new tenant => an empty slate every test.
-        var (_, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        var (tenantId, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        _tenantId = tenantId;
         _client = _factory.CreateClient();
         _client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
     }
@@ -175,8 +177,23 @@ public class EndpointContractTests : IAsyncLifetime
         Assert.Equal("dotnet", put.GetProperty("default_lane").GetString());
     }
 
+    [Fact]
+    public async Task Poll_enqueues_a_request_and_answers_count_zero()
+    {
+        var res = await _client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        // The SPA reads r.count; the decoupled worker stages leads out of band, so
+        // the immediate answer is always zero (its live refresh surfaces them later).
+        Assert.Equal(0, (await ReadJson(res)).GetProperty("count").GetInt32());
+
+        // The button's effect is a queued row the Python worker will drain.
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        var queued = await conn.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM poll_requests WHERE tenant_id = @t", new { t = _tenantId });
+        Assert.Equal(1, queued);
+    }
+
     [Theory]
-    [InlineData("POST", "/api/poll")]
     [InlineData("GET", "/api/apps/whatever.md/check-link")]
     [InlineData("POST", "/api/apps/whatever.md/draft")]
     public async Task Out_of_v1_endpoints_return_501(string method, string url)

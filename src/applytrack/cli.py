@@ -18,27 +18,35 @@ def _default_dir() -> Path:
     return Path(os.environ.get("APPLYTRACK_DIR") or (Path.cwd() / "applications"))
 
 
+def _print_multi(results: dict[int, list[str]], scope: str) -> None:
+    total = sum(len(names) for names in results.values())
+    print(
+        f"applytrack poll: {total} new lead(s) added across {len(results)} {scope}."
+    )
+    for tid, names in sorted(results.items()):
+        for name in names:
+            print(f"  + [{tid}] {name}")
+
+
 def _poll(args: argparse.Namespace) -> int:
     from applytrack.db import PollRepo
     from applytrack.importer import connect
     from applytrack.poll import run_poll
-    from applytrack.worker import run_all_tenants
+    from applytrack.worker import drain_requests, run_all_tenants
 
     with connect(args.database_url) as conn:
         # Each lead/seen-key stands alone: a slug collision must skip one listing,
-        # not abort the run, so commit per-statement rather than one big txn.
+        # not abort the run, so commit per-statement rather than one big txn. The
+        # on-demand drain also relies on autocommit to claim its queue rows.
         conn.autocommit = True
+        if args.drain:
+            # Fast cron: service the on-demand /api/poll queue, polling only the
+            # tenants whose button was pressed since the last drain.
+            _print_multi(drain_requests(conn, limit_per_source=args.limit), "queued tenant(s)")
+            return 0
         if args.tenant is None:
             # Cron mode: fan out across every active tenant, fetching sources once.
-            results = run_all_tenants(conn, limit_per_source=args.limit)
-            total = sum(len(names) for names in results.values())
-            print(
-                f"applytrack poll: {total} new lead(s) added "
-                f"across {len(results)} active tenant(s)."
-            )
-            for tid, names in sorted(results.items()):
-                for name in names:
-                    print(f"  + [{tid}] {name}")
+            _print_multi(run_all_tenants(conn, limit_per_source=args.limit), "active tenant(s)")
             return 0
         repo = PollRepo(conn, args.tenant)
         profile = repo.load_profile()
@@ -71,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     p_poll.add_argument(
         "--tenant", type=int, default=None,
         help="tenant_id to poll for (default: every active tenant — cron mode)")
+    p_poll.add_argument(
+        "--drain", action="store_true",
+        help="service the on-demand poll queue (poll_requests) — run on a fast cron")
     p_poll.add_argument("--limit", type=int, default=40, help="max results per source to scan")
     p_poll.add_argument(
         "--database-url", default=None,

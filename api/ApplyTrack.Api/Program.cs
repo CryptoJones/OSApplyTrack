@@ -39,6 +39,8 @@ builder.Services.AddScoped(sp => new CriteriaRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new BlacklistRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new PollRequestRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddSingleton<IEmailSender, ConsoleEmailSender>();
 
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON

@@ -74,10 +74,19 @@ public static class AppsEndpoints
             return Results.NoContent();
         });
 
+        // On-demand poll. The discovery poller is the decoupled Python worker, so
+        // .NET can't run it inline; enqueue a request the worker drains out of band
+        // (`applytrack poll --drain`) and answer {count:0} now. The SPA's live
+        // refresh surfaces the new leads once the worker stages them.
+        app.MapPost("/api/poll", async (PollRequestRepo polls) =>
+        {
+            await polls.EnqueueAsync();
+            return Results.Ok(new { count = 0 });
+        });
+
         // -- Not in v1 -----------------------------------------------------------
-        // The poller (Step 4), link probe, and LLM cover-letter engine are out of
-        // scope here; answer 501 with a {detail} body the SPA can surface as a toast.
-        app.MapPost("/api/poll", () => NotImplemented("discovery polling is not available yet"));
+        // The link probe and LLM cover-letter engine are out of scope here; answer
+        // 501 with a {detail} body the SPA can surface as a toast.
         app.MapGet("/api/apps/{name}/check-link",
             (string name) => NotImplemented("link checking is not available yet"));
         app.MapPost("/api/apps/{name}/draft",
