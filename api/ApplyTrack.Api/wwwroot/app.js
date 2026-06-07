@@ -152,6 +152,8 @@ function renderPipeline() {
     return `<span class="pipe-stat${active}" data-status="${s}">
       <span class="n">${counts[s]}</span>${escapeHtml(STATUS_LABEL[s] || s)}</span>`;
   });
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (total) parts.push(`<span class="pipe-total"><span class="n">${total}</span>total</span>`);
   pipelineEl.innerHTML = parts.join("") || `<span class="pipe-stat">no applications yet</span>`;
   pipelineEl.querySelectorAll(".pipe-stat[data-status]").forEach((el) => {
     el.addEventListener("click", () => {

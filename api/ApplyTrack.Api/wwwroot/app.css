@@ -807,6 +807,23 @@ body,
 .pipe-stat:hover { border-color: var(--border-strong); color: var(--text-soft); }
 .pipe-stat.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .pipe-stat .n { font-size: 12px; font-weight: 700; color: var(--text); }
+/* Grand total, pushed to the right of the per-status pills. */
+.pipe-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-left: auto;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+}
+.pipe-total .n { font-size: 12px; font-weight: 700; color: var(--accent); }
 
 /* "Apply" call-to-action on a staged (ready) application. */
 .btn-apply {

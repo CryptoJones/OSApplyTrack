@@ -81,10 +81,14 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
 - **Docs** (`9d9ccf4`, `3f91e2c`, `7f7f596`): an extensive README (tagline, badge
   row, full API reference, data model, security section) + a dashboard screenshot.
 
+## Post-v1 polish
+
+- ✅ **Pipeline grand-total pill** — the dashboard pipeline strip now renders an
+  accent `N total` pill flush-right of the per-status counts (`renderPipeline()`
+  in `app.js`, `.pipe-total` in `app.css`). Distinct from the footer `N apps`
+  counter, which still tracks the *filtered* view (`shown/total`).
+
 ## Backlog / ideas
 
-- ✅ **Total-apps counter** — already present in the SPA (`app.js` updates an
-  `#app-count` element to `N apps` / `shown/total`); visible in the dashboard
-  screenshot.
 - ⬜ **`tailscale serve` front-end** — rainy-day: serve over Tailscale instead of a
   self-signed TLS + reverse proxy (see the `plan.md` appendix).
