@@ -87,6 +87,13 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   accent `N total` pill flush-right of the per-status counts (`renderPipeline()`
   in `app.js`, `.pipe-total` in `app.css`). Distinct from the footer `N apps`
   counter, which still tracks the *filtered* view (`shown/total`).
+- ✅ **Build is warning-clean** — swapped the obsolete `ForwardedHeadersOptions.
+  KnownNetworks` for `KnownIPNetworks` (.NET 10 `ASPDEPR005`).
+- ✅ **GitHub CI** (`.github/workflows/ci.yml`) — the Forgejo runner has no Docker,
+  so its workflow only audits deps; GitHub's ubuntu runners do, so CI there runs
+  *both* suites (Testcontainers .NET + pytest/ruff/mypy) plus the NuGet/pip audit.
+  Live CI badge in the README. Its first run caught a stale runner `pip`
+  (PYSEC-2026-196); both workflows now upgrade pip before auditing.
 
 ## Backlog / ideas
 
