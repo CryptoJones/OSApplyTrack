@@ -3,6 +3,8 @@
 > ### Your job hunt, self-hosted and on autopilot.
 
 [![CI](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/CryptoJones/OSApplyTrack?logo=github&sort=semver)](https://github.com/CryptoJones/OSApplyTrack/releases/latest)
+[![GHCR](https://img.shields.io/badge/ghcr.io-images-2496ED.svg?logo=docker&logoColor=white)](https://github.com/CryptoJones?tab=packages&repo_name=OSApplyTrack)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4.svg?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![C#](https://img.shields.io/badge/C%23-239120.svg)](https://learn.microsoft.com/dotnet/csharp/)
@@ -109,6 +111,14 @@ docker compose up --build   # brings up db + api + poller
 ```
 
 Open **http://localhost:8080**.
+
+Prefer prebuilt images? Each release publishes both runtimes to the GitHub
+Container Registry, so you can skip the local build:
+
+```sh
+docker pull ghcr.io/cryptojones/osapplytrack-api:latest
+docker pull ghcr.io/cryptojones/osapplytrack-poller:latest
+```
 
 To sign in, enter your email. In the default configuration the magic link is
 **printed to the API logs** instead of being mailed (zero email setup needed):

@@ -94,6 +94,10 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   *both* suites (Testcontainers .NET + pytest/ruff/mypy) plus the NuGet/pip audit.
   Live CI badge in the README. Its first run caught a stale runner `pip`
   (PYSEC-2026-196); both workflows now upgrade pip before auditing.
+- ✅ **v1.0.0 release** (`.github/workflows/release.yml`) — a `v*` tag builds the
+  api + poller images and pushes them to GHCR
+  (`ghcr.io/cryptojones/osapplytrack-{api,poller}`, semver + `latest`, public) and
+  publishes a GitHub Release. Versions bumped to 1.0.0; release + GHCR badges added.
 
 ## Backlog / ideas
 
