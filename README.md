@@ -24,6 +24,10 @@ Run it on your laptop with one `docker compose up`, or self-host it for your who
 job search. Your data is yours: one-click export to plain Markdown, one-call
 account deletion, no lock-in, no telemetry, no SaaS.
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="OSApplyTrack — the multi-lane pipeline dashboard with auto-discovered leads" width="900">
+</p>
+
 ---
 
 ## Table of contents
