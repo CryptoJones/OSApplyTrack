@@ -10,7 +10,8 @@ namespace ApplyTrack.Api.Tests;
 /// the embedded migrations, and the run is journaled. Step 1 builds real schema
 /// and CRUD tests on this same fixture.
 /// </summary>
-public class MigrationScaffoldTests(PostgresFixture pg) : IClassFixture<PostgresFixture>
+[Collection(PostgresCollection.Name)]
+public class MigrationScaffoldTests(PostgresFixture pg)
 {
     [Fact]
     public async Task Citext_extension_is_created()

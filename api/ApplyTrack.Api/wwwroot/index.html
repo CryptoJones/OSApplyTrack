@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Aaron K. Clark -->
+<html lang="en" dir="ltr" class="h-full" data-theme="midnight">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>applytrack</title>
+
+  <!-- Apply saved theme before paint to avoid a flash of defaults. -->
+  <script>
+    (function () {
+      try {
+        var th = localStorage.getItem("applytrack-theme");
+        if (th) document.documentElement.setAttribute("data-theme", th);
+      } catch (e) {}
+    })();
+  </script>
+
+  <!-- Vendored locally so the UI renders fully offline (no CDN, no Google Fonts). -->
+  <link rel="stylesheet" href="vendor/fonts.css" />
+  <link rel="stylesheet" href="vendor/tailwind.css" />
+  <link rel="stylesheet" href="app.css" />
+  <script src="vendor/marked.min.js"></script>
+</head>
+
+<body class="h-full bg-paper font-body text-ink">
+  <div class="app-glow"></div>
+
+  <div class="relative flex h-full flex-col">
+    <header class="masthead flex items-center justify-between gap-4 px-6 py-3">
+      <div class="flex items-baseline gap-3">
+        <h1 class="font-display text-2xl font-extrabold leading-none tracking-tight">
+          <span class="text-stamp">apply</span><span>track</span>
+        </h1>
+        <p class="hidden font-mono text-[10px] uppercase tracking-[0.24em] text-ink-faint sm:block">
+          pipeline
+        </p>
+      </div>
+
+      <div class="flex items-center gap-5">
+        <div id="theme-picker" class="flex items-center gap-1.5" title="Theme">
+          <button class="swatch" data-theme="midnight" aria-label="Midnight theme"></button>
+          <button class="swatch" data-theme="carbon" aria-label="Carbon theme"></button>
+          <button class="swatch" data-theme="dusk" aria-label="Dusk theme"></button>
+          <button class="swatch" data-theme="paper" aria-label="Paper theme"></button>
+          <button class="swatch" data-theme="mint" aria-label="Mint theme"></button>
+        </div>
+        <button id="criteria-btn" class="btn btn-ghost" type="button" title="Edit discovery criteria">⚙ Criteria</button>
+        <button id="poll-btn" class="btn btn-ghost" type="button" title="Fetch new job leads now">↻ Poll</button>
+        <button id="new-btn" class="btn btn-primary" type="button">+ New</button>
+      </div>
+    </header>
+
+    <div id="pipeline" class="pipeline"></div>
+
+    <div class="flex min-h-0 flex-1">
+      <aside class="sidebar flex w-80 flex-col">
+        <div class="border-b border-rule px-4 py-3">
+          <div class="catalog-search">
+            <span class="search-icon font-mono">⌕</span>
+            <input id="search" type="search" autocomplete="off" placeholder="search…"
+              class="w-full bg-transparent font-mono text-xs tracking-tight text-ink placeholder-ink-faint focus:outline-none" />
+          </div>
+          <div class="filter-row mt-3">
+            <select id="filter-lane" class="filter-select" aria-label="Filter by lane">
+              <option value="">all lanes</option>
+              <option value="dotnet">.NET / backend</option>
+              <option value="devrel">devrel</option>
+              <option value="ai">AI / agentic</option>
+            </select>
+            <select id="filter-status" class="filter-select" aria-label="Filter by status">
+              <option value="">all stages</option>
+              <option value="lead">lead</option>
+              <option value="ready">ready</option>
+              <option value="applied">applied</option>
+              <option value="screen">screen</option>
+              <option value="onsite">onsite</option>
+              <option value="offer">offer</option>
+              <option value="rejected">rejected</option>
+              <option value="passed">passed</option>
+            </select>
+          </div>
+        </div>
+        <ul id="app-list" class="flex-1 space-y-1.5 overflow-y-auto px-3 py-3"></ul>
+        <div class="flex items-center justify-between border-t border-rule px-4 py-2 font-mono text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+          <span id="app-count">—</span>
+          <span class="opacity-70">applytrack</span>
+        </div>
+      </aside>
+
+      <main id="content" class="min-w-0 flex-1 overflow-y-auto px-8 py-8"></main>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
