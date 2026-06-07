@@ -9,10 +9,10 @@ Status legend: ✅ done · 🚧 in progress · ⬜ not started
 | ------ | ----- | ------ |
 | **Step 0** | Test scaffolding + repo split + license setup | ✅ done |
 | **Step 1** | .NET API skeleton + Postgres storage; serve the SPA verbatim (single-user, bootstrap `tenant_id=1`) | ✅ done |
-| **Step 2** | Auth + tenancy spine (magic-link, server-side sessions, tenant choke-point) | ⬜ not started |
-| **Step 3** | Per-user search profiles (Python poller reads them) | ⬜ not started |
-| **Step 4** | Per-tenant cron + `seen` table (Python worker, fetch-once-per-run) | ⬜ not started |
-| **Step 5** | Self-host packaging + data export/delete (replaces billing) | ⬜ not started |
+| **Step 2** | Auth + tenancy spine (magic-link, server-side sessions, tenant choke-point) | ✅ done |
+| **Step 3** | Per-user search profiles (Python poller reads them) | ✅ done |
+| **Step 4** | Per-tenant cron + `seen` table (Python worker, fetch-once-per-run) | ✅ done |
+| **Step 5** | Self-host packaging + data export/delete (replaces billing) | ✅ done |
 
 ## Step 0 — done
 
@@ -53,14 +53,38 @@ Shipped:
   endpoint; 36 real legacy apps imported and served by the API. (No in-browser
   visual test — headless environment.)
 
-## Up next — Step 2
+## Steps 2–5 — done
 
-Auth + tenancy spine: magic-link login, server-side sessions, and the single
-tenant choke-point that hands endpoints a pre-scoped `ApplicationRepo`. See
-`plan.md` § "Step 2".
+All four shipped; **v1 is feature-complete** (every `plan.md` build step is done).
+
+- **Step 2 — Auth + tenancy spine** (`245bc54`): magic-link request/verify,
+  single-use SHA-256 tokens (15-min TTL), opaque server-side sessions (30-day,
+  instant revocation on logout), and the tenant choke-point middleware that hands
+  every endpoint a pre-scoped repo. No account enumeration (`/api/auth/request`
+  is always 200).
+- **Step 3 — Per-user search profiles** (`4ea1e62`): the Python poller reads each
+  tenant's `search_profiles` row and scores listings against it; `/api/criteria`
+  round-trips the same snake_case shape the SPA and poller share.
+- **Step 4 — Per-tenant cron + seen ledger** (`4119d91`, `ca15974`): the worker
+  fetches sources once per pass and fans out across active tenants, deduping
+  against the `seen` table; the on-demand `/api/poll` enqueues to `poll_requests`,
+  drained on the fast lane.
+- **Step 5 — Self-host packaging + export/delete** (`4cc48a1`): three-service
+  `docker compose up` (db + api + poller); `GET /api/account/export` (a zip of
+  Markdown + `settings.json`) and `DELETE /api/account` (`ON DELETE CASCADE`).
+
+## Post-v1 hardening & polish
+
+- **Security** (`805664e`): fixes for a cross-edition OWASP Top 10 audit — an
+  SSRF-hardened link probe, DOMPurify on rendered notes, a strict CSP + security-
+  header middleware, per-IP rate limits, generic 500s, and a dependency-audit CI.
+- **Docs** (`9d9ccf4`, `3f91e2c`, `7f7f596`): an extensive README (tagline, badge
+  row, full API reference, data model, security section) + a dashboard screenshot.
 
 ## Backlog / ideas
 
-- ⬜ **Total-apps counter** — surface a running count of applications in the SPA
-  (e.g. next to the stats). `/api/stats` already aggregates by status/lane; the
-  total is the sum, so this is mostly a frontend add.
+- ✅ **Total-apps counter** — already present in the SPA (`app.js` updates an
+  `#app-count` element to `N apps` / `shown/total`); visible in the dashboard
+  screenshot.
+- ⬜ **`tailscale serve` front-end** — rainy-day: serve over Tailscale instead of a
+  self-signed TLS + reverse proxy (see the `plan.md` appendix).
