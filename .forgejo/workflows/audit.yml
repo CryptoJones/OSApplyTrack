@@ -36,5 +36,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Scan Python packages
         run: |
+          python -m pip install --upgrade pip   # keep the toolchain current so pip-audit isn't tripped by a stale runner pip
           pip install --no-cache-dir pip-audit .
           pip-audit

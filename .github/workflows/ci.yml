@@ -43,7 +43,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install --no-cache-dir -e ".[dev]" pip-audit
+        run: |
+          python -m pip install --upgrade pip   # keep the toolchain current so pip-audit isn't tripped by a stale runner pip
+          pip install --no-cache-dir -e ".[dev]" pip-audit
       - name: Lint (ruff + mypy)
         run: |
           ruff check src tests
