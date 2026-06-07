@@ -19,11 +19,18 @@ def _default_dir() -> Path:
 
 
 def _poll(args: argparse.Namespace) -> int:
+    from applytrack.db import PollRepo
+    from applytrack.importer import connect
     from applytrack.poll import run_poll
 
-    data_dir = Path(args.dir).expanduser().resolve()
-    added = run_poll(data_dir, limit_per_source=args.limit)
-    print(f"applytrack poll: {len(added)} new lead(s) added.")
+    with connect(args.database_url) as conn:
+        # Each lead stands alone: a slug collision must skip one listing, not abort
+        # the run, so commit per-statement rather than in one all-or-nothing txn.
+        conn.autocommit = True
+        repo = PollRepo(conn, args.tenant)
+        profile = repo.load_profile()
+        added = run_poll(repo, profile, limit_per_source=args.limit)
+    print(f"applytrack poll: {len(added)} new lead(s) added for tenant {args.tenant}.")
     for name in added:
         print(f"  + {name}")
     return 0
@@ -48,8 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_poll = sub.add_parser("poll", help="fetch new matching leads from job boards")
-    p_poll.add_argument("--dir", default=str(_default_dir()), help="applications data folder")
+    p_poll.add_argument("--tenant", type=int, default=1, help="tenant_id to poll for")
     p_poll.add_argument("--limit", type=int, default=40, help="max results per source to scan")
+    p_poll.add_argument(
+        "--database-url", default=None,
+        help="libpq connection URL; falls back to DATABASE_URL / POSTGRES_* env")
     p_poll.set_defaults(func=_poll)
 
     p_import = sub.add_parser(

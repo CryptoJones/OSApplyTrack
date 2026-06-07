@@ -6,15 +6,19 @@ Pulls remote roles from public job-board APIs/feeds, scores each against the
 user's keyword list, and adds *new* matches as ``lead`` ``.md`` files. It never
 drafts a cover letter and never submits anything: drafting is on demand.
 
-What counts as a match is no longer hardcoded — it comes from
-:class:`applytrack.criteria.Criteria` (``applications/.criteria.json``), editable
-from the web UI: the flat keyword list, the minimum fit score, a remote-only
-toggle + location blocklist, which sources are enabled, and which company ATS
-boards to scan.
+What counts as a match is no longer hardcoded — it comes from a tenant's
+:class:`applytrack.criteria.Criteria`, which the .NET API persists as a
+``search_profiles`` row and the poller loads through
+:class:`applytrack.db.PollRepo`: the flat keyword list, the minimum fit score, a
+remote-only toggle + location blocklist, which sources are enabled, and which
+company ATS boards to scan.
 
-Deduplication is load-bearing — a company must never be pinged twice. Every
-listing is checked against a persistent ledger (``applications/.seen.json``)
-*and* the applications already on disk, using two independent keys: the
+This runtime no longer touches the disk store; it shares one Postgres with the
+API and is driven against a tenant-scoped repo (see :class:`LeadRepo`).
+
+Deduplication is load-bearing — a company must never be pinged twice. For each
+run an in-memory ledger is seeded from the tenant's existing ``applications``
+rows, and every listing is checked against it using two independent keys: the
 normalized listing URL and the normalized ``company + role`` slug. If *either*
 key has been seen, the listing is skipped. New keys are recorded even when
 staging fails, so a transient error never causes a re-ping.
@@ -28,13 +32,14 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import httpx
 
-from applytrack.criteria import CRITERIA_FILENAME, AtsBoard, Criteria
+from applytrack.criteria import AtsBoard, Criteria
 from applytrack.linkcheck import BROWSER_HEADERS, is_reachable
-from applytrack.store import AppFields, AppStore, parse_app
+from applytrack.store import AppFields
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -236,19 +241,34 @@ class Blacklist:
         return False
 
 
-def _seed_from_disk(store: AppStore, seen: Seen) -> None:
-    """Fold every application already on disk into the ledger.
+class LeadRepo(Protocol):
+    """The tenant-scoped data access ``run_poll`` needs (see :class:`applytrack.db.PollRepo`).
 
-    Guarantees we never re-add a role you already have a file for — even one you
-    created by hand or previously deleted (its keys persist in the ledger)."""
-    for path in store.data_dir.glob("*.md"):
-        if path.name.startswith("."):
-            continue
-        try:
-            f = parse_app(path.read_text(encoding="utf-8"))
-        except OSError:
-            continue
-        seen.add(f.link, _norm_slug(f.company, f.role))
+    Kept narrow so the offline tests can drive ``run_poll`` with an in-memory
+    fake — no Postgres, no network.
+    """
+
+    def iter_existing(self) -> Iterable[tuple[str, str, str]]:
+        """Yield ``(link, company, role)`` for every application already stored."""
+        ...
+
+    def blacklist_companies(self) -> Iterable[str]:
+        """Return the tenant's blacklisted company keys."""
+        ...
+
+    def add_lead(self, fields: AppFields) -> str:
+        """Stage one new lead and return its slug ``name``."""
+        ...
+
+
+def _seed_from_existing(repo: LeadRepo, seen: Seen) -> None:
+    """Fold every application already stored for the tenant into the ledger.
+
+    Guarantees we never re-add a role you already have a row for — even one you
+    created by hand in the SPA — using the same URL + ``company + role`` keys the
+    live listings are checked against."""
+    for link, company, role in repo.iter_existing():
+        seen.add(link, _norm_slug(company, role))
 
 
 # -- fetchers: remote job boards --------------------------------------------
@@ -655,41 +675,36 @@ def _gather(fetchers: Iterable[Fetcher], limit: int) -> list[Listing]:
 
 
 def run_poll(
-    data_dir: Path | str,
-    limit_per_source: int = 40,
+    repo: LeadRepo,
+    profile: Criteria,
     *,
-    criteria: Criteria | None = None,
+    limit_per_source: int = 40,
     fetchers: Iterable[Fetcher] | None = None,
     listings: Iterable[Listing] | None = None,
     verify_links: bool | None = None,
 ) -> list[str]:
-    """Fetch, dedupe, filter, score, and stage new leads. Returns added filenames.
+    """Fetch, dedupe, filter, score, and stage new leads. Returns added slug names.
 
-    Criteria come from ``applications/.criteria.json`` unless ``criteria`` is
-    supplied. Network is only touched when ``listings`` is not supplied; pass a
-    fixed ``listings`` iterable to run fully offline (tests, replay).
+    ``profile`` is the tenant's :class:`~applytrack.criteria.Criteria` (the caller
+    loads it via :meth:`applytrack.db.PollRepo.load_profile`); ``repo`` is the
+    tenant-scoped data access (see :class:`LeadRepo`). Network is only touched
+    when ``listings`` is not supplied; pass a fixed ``listings`` iterable to run
+    fully offline (tests, replay).
 
     When ``verify_links`` is on, each candidate's posting URL is probed as a
     browser before it becomes an entry, and unreachable/dead links are dropped.
     It defaults to on for live runs and off when ``listings`` is supplied.
     """
-    store = AppStore(data_dir)
-    store.data_dir.mkdir(parents=True, exist_ok=True)
-    ledger_path = store.data_dir / ".seen.json"
-
-    if criteria is None:
-        criteria = Criteria.load(store.data_dir / CRITERIA_FILENAME)
-
-    seen = Seen.load(ledger_path)
-    _seed_from_disk(store, seen)
-    blacklist = Blacklist.load(store.data_dir / ".blacklist.json")
+    seen = Seen(set(), set())
+    _seed_from_existing(repo, seen)
+    blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
     if verify_links is None:
         verify_links = listings is None
 
     if listings is None:
         if fetchers is None:
-            fetchers = build_fetchers(criteria)
+            fetchers = build_fetchers(profile)
         listings = _gather(fetchers, limit_per_source)
 
     verify_client = (
@@ -711,11 +726,11 @@ def run_poll(
             # Record keys up front so a later failure still can't cause a re-ping.
             seen.add(item.link, slug)
 
-            if not _passes_location(item, criteria):
+            if not _passes_location(item, profile):
                 continue
 
-            score, hits = classify(item.role, item.description, criteria.keywords)
-            if not hits or score < criteria.min_fit_score:
+            score, hits = classify(item.role, item.description, profile.keywords)
+            if not hits or score < profile.min_fit_score:
                 continue
 
             # Block dead postings: don't create an entry we can't actually open.
@@ -726,18 +741,17 @@ def run_poll(
             ):
                 continue
 
-            fields = _to_fields(item, criteria.default_lane, score, hits)
+            fields = _to_fields(item, profile.default_lane, score, hits)
             try:
-                filename = store.create_app(fields)
+                name = repo.add_lead(fields)
             except Exception:  # noqa: BLE001 - one bad listing must not abort the run
                 continue
             # Leads stage as-is; the cover letter is drafted on demand later.
-            added.append(filename)
+            added.append(name)
     finally:
         if verify_client is not None:
             verify_client.close()
 
-    seen.save(ledger_path)
     return added
 
 

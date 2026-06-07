@@ -123,6 +123,20 @@ def today() -> str:
     return date.today().isoformat()
 
 
+def filename_for(fields: AppFields) -> str:
+    """Build the slug filename from company + role (disk-free).
+
+    Shared with the poller's DB writer so a lead staged by the Python runtime gets
+    the exact same ``name`` the .NET API's ``Slug.FilenameFor`` would mint.
+    """
+    stem = f"{fields.company} {fields.role}".strip() or fields.company
+    cleaned = _ILLEGAL_FILENAME_CHARS.sub(" ", stem).strip()
+    cleaned = re.sub(r"\s+", "-", cleaned).lower()
+    if not cleaned:
+        raise AppError("company/role produces an empty filename")
+    return f"{cleaned}.md"
+
+
 def parse_app(md: str) -> AppFields:
     """Parse a file's YAML frontmatter + Markdown body into fields."""
     match = _FRONTMATTER_RE.match(md.lstrip("﻿"))
@@ -194,12 +208,7 @@ class AppStore:
         return target
 
     def filename_for(self, fields: AppFields) -> str:
-        stem = f"{fields.company} {fields.role}".strip() or fields.company
-        cleaned = _ILLEGAL_FILENAME_CHARS.sub(" ", stem).strip()
-        cleaned = re.sub(r"\s+", "-", cleaned).lower()
-        if not cleaned:
-            raise AppError("company/role produces an empty filename")
-        return f"{cleaned}.md"
+        return filename_for(fields)
 
     # -- reads --------------------------------------------------------------
 

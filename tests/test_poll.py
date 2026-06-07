@@ -4,9 +4,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.poll import (
     Listing,
@@ -18,7 +15,38 @@ from applytrack.poll import (
     fetch_remotive,
     run_poll,
 )
-from applytrack.store import AppStore
+from applytrack.store import AppFields, filename_for
+
+
+class FakeRepo:
+    """In-memory :class:`applytrack.poll.LeadRepo` for offline ``run_poll`` tests.
+
+    Stands in for :class:`applytrack.db.PollRepo` with no Postgres: it records
+    staged leads and mimics the unique-slug constraint the real table enforces.
+    """
+
+    def __init__(
+        self,
+        *,
+        existing: list[tuple[str, str, str]] | None = None,
+        blacklist: list[str] | None = None,
+    ) -> None:
+        self._existing = list(existing or [])
+        self._blacklist = list(blacklist or [])
+        self.added: list[AppFields] = []
+
+    def iter_existing(self) -> list[tuple[str, str, str]]:
+        return list(self._existing)
+
+    def blacklist_companies(self) -> list[str]:
+        return list(self._blacklist)
+
+    def add_lead(self, fields: AppFields) -> str:
+        name = filename_for(fields)
+        if any(filename_for(f) == name for f in self.added):
+            raise ValueError(f"an application named {name!r} already exists")
+        self.added.append(fields)
+        return name
 
 
 def test_classify_weighs_title_over_body() -> None:
@@ -61,25 +89,27 @@ def _lead(company: str, role: str, **kw: str) -> Listing:
     return Listing(company=company, role=role, **kw)
 
 
-def test_run_poll_stages_matches_with_default_lane(tmp_path: Path) -> None:
+def test_run_poll_stages_matches_with_default_lane() -> None:
+    repo = FakeRepo()
     c = Criteria(keywords=["engineer"], default_lane="devrel", min_fit_score=55)
     added = run_poll(
-        tmp_path,
-        criteria=c,
+        repo,
+        c,
         listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
     )
     assert len(added) == 1
-    fields = AppStore(tmp_path).read_fields(added[0])
+    fields = repo.added[0]
     assert fields.lane == "devrel"
     assert fields.status == "lead"
     assert fields.company == "Acme"
 
 
-def test_run_poll_dedupes_same_role(tmp_path: Path) -> None:
+def test_run_poll_dedupes_same_role() -> None:
+    repo = FakeRepo()
     c = Criteria(keywords=["engineer"])
     added = run_poll(
-        tmp_path,
-        criteria=c,
+        repo,
+        c,
         listings=[
             _lead("Acme", "Backend Engineer", link="https://acme.co/1"),
             _lead("Acme", "Backend Engineer (Remote)", link="https://acme.co/2"),
@@ -88,33 +118,45 @@ def test_run_poll_dedupes_same_role(tmp_path: Path) -> None:
     assert len(added) == 1
 
 
-def test_run_poll_skips_blacklisted_company(tmp_path: Path) -> None:
-    (tmp_path / ".blacklist.json").write_text(
-        json.dumps({"companies": ["BadCo"]}), encoding="utf-8"
-    )
+def test_run_poll_skips_roles_already_in_db() -> None:
+    repo = FakeRepo(existing=[("https://acme.co/1", "Acme", "Backend Engineer")])
     c = Criteria(keywords=["engineer"])
     added = run_poll(
-        tmp_path,
-        criteria=c,
+        repo,
+        c,
+        listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
+    )
+    assert added == []
+    assert repo.added == []
+
+
+def test_run_poll_skips_blacklisted_company() -> None:
+    repo = FakeRepo(blacklist=["badco"])
+    c = Criteria(keywords=["engineer"])
+    added = run_poll(
+        repo,
+        c,
         listings=[_lead("BadCo", "Backend Engineer", link="https://bad.co/1")],
     )
     assert added == []
 
 
-def test_run_poll_enforces_min_score(tmp_path: Path) -> None:
+def test_run_poll_enforces_min_score() -> None:
+    repo = FakeRepo()
     c = Criteria(keywords=["engineer"], min_fit_score=90)
     added = run_poll(
-        tmp_path,
-        criteria=c,
+        repo,
+        c,
         listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
     )
     assert added == []
 
 
-def test_run_poll_applies_location_filter(tmp_path: Path) -> None:
+def test_run_poll_applies_location_filter() -> None:
+    repo = FakeRepo()
     c = Criteria(keywords=["engineer"], remote_only=True)
     onsite = _lead("Acme", "Backend Engineer", link="https://acme.co/1", location="Onsite NYC")
-    added = run_poll(tmp_path, criteria=c, listings=[onsite])
+    added = run_poll(repo, c, listings=[onsite])
     assert added == []
 
 
