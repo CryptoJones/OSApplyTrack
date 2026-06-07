@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+#
+# CI for the GitHub mirror. Codeberg/Forgejo runs the audit-only workflow in
+# .forgejo/workflows/ (its container runner has no Docker, so it can't host the
+# Testcontainers .NET suite). GitHub's hosted ubuntu runners ship Docker, so here
+# we run *both* test suites end to end plus the same dependency audit.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly Mon 06:00 UTC — catch CVEs disclosed after merge
+
+jobs:
+  dotnet:
+    name: .NET — test + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Test (xUnit + Testcontainers-Postgres)
+        working-directory: api
+        run: dotnet test --logger "console;verbosity=normal"
+      - name: Audit NuGet packages
+        working-directory: api
+        run: |
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee /tmp/audit.txt
+          if grep -q "has the following vulnerable packages" /tmp/audit.txt; then
+            echo "::error::Vulnerable NuGet packages found"; exit 1
+          fi
+
+  python:
+    name: Python — lint + test + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install --no-cache-dir -e ".[dev]" pip-audit
+      - name: Lint (ruff + mypy)
+        run: |
+          ruff check src tests
+          mypy src
+      - name: Test (pytest)
+        run: pytest -q
+      - name: Audit Python packages
+        run: pip-audit
