@@ -91,6 +91,38 @@ class PollRepo:
             )
             return [row[0] for row in cur.fetchall()]
 
+    def load_seen(self) -> tuple[set[str], set[str]]:
+        """Return the persisted ``(url_keys, slug_keys)`` dedup ledger for this tenant.
+
+        Rows survive their originating application's deletion, so a lead the user
+        removed is never re-discovered. ``kind`` partitions the two key spaces.
+        """
+        urls: set[str] = set()
+        slugs: set[str] = set()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, key FROM seen WHERE tenant_id = %s", (self._t,)
+            )
+            for kind, key in cur.fetchall():
+                (urls if kind == "url" else slugs).add(key)
+        return urls, slugs
+
+    def mark_seen(self, url_key: str, slug_key: str) -> None:
+        """Persist newly seen keys; either may be empty. Idempotent per (kind, key)."""
+        rows = []
+        if url_key:
+            rows.append((self._t, "url", url_key))
+        if slug_key:
+            rows.append((self._t, "slug", slug_key))
+        if not rows:
+            return
+        with self._conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO seen (tenant_id, kind, key) VALUES (%s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                rows,
+            )
+
     def add_lead(self, fields: AppFields) -> str:
         """Stage one new lead, returning its slug ``name``.
 

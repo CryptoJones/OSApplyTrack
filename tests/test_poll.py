@@ -16,13 +16,17 @@ from applytrack.poll import (
     run_poll,
 )
 from applytrack.store import AppFields, filename_for
+from applytrack.worker import run_all_tenants
 
 
 class FakeRepo:
     """In-memory :class:`applytrack.poll.LeadRepo` for offline ``run_poll`` tests.
 
     Stands in for :class:`applytrack.db.PollRepo` with no Postgres: it records
-    staged leads and mimics the unique-slug constraint the real table enforces.
+    staged leads, persists a ``seen`` ledger across runs the way the real table
+    does, and mimics the unique-slug constraint the real table enforces. It also
+    carries a :class:`~applytrack.criteria.Criteria` so the multi-tenant worker
+    can drive it.
     """
 
     def __init__(
@@ -30,16 +34,35 @@ class FakeRepo:
         *,
         existing: list[tuple[str, str, str]] | None = None,
         blacklist: list[str] | None = None,
+        seen: list[tuple[str, str]] | None = None,
+        profile: Criteria | None = None,
     ) -> None:
         self._existing = list(existing or [])
         self._blacklist = list(blacklist or [])
+        self._seen_urls: set[str] = set()
+        self._seen_slugs: set[str] = set()
+        for kind, key in seen or []:
+            (self._seen_urls if kind == "url" else self._seen_slugs).add(key)
+        self._profile = profile if profile is not None else Criteria()
         self.added: list[AppFields] = []
+
+    def load_profile(self) -> Criteria:
+        return self._profile
 
     def iter_existing(self) -> list[tuple[str, str, str]]:
         return list(self._existing)
 
     def blacklist_companies(self) -> list[str]:
         return list(self._blacklist)
+
+    def load_seen(self) -> tuple[set[str], set[str]]:
+        return set(self._seen_urls), set(self._seen_slugs)
+
+    def mark_seen(self, url_key: str, slug_key: str) -> None:
+        if url_key:
+            self._seen_urls.add(url_key)
+        if slug_key:
+            self._seen_slugs.add(slug_key)
 
     def add_lead(self, fields: AppFields) -> str:
         name = filename_for(fields)
@@ -166,3 +189,72 @@ def test_build_fetchers_includes_sources_and_boards() -> None:
     assert fetchers[0] is fetch_remotive
     assert fetchers[1] is fetch_remoteok
     assert len(fetchers) == 3  # two default sources + one ATS board
+
+
+def test_run_poll_dedupes_across_runs_via_seen_ledger() -> None:
+    # The seen-key the first run persists blocks a re-ping on the next run, even
+    # though FakeRepo's iter_existing still reports no stored application — this is
+    # the seen table outliving its lead, not the existing-rows dedup.
+    repo = FakeRepo()
+    c = Criteria(keywords=["engineer"])
+    listing = _lead("Acme", "Backend Engineer", link="https://acme.co/1")
+    assert len(run_poll(repo, c, listings=[listing])) == 1
+    assert run_poll(repo, c, listings=[listing]) == []
+    assert len(repo.added) == 1
+
+
+def test_run_poll_honors_preloaded_seen_keys() -> None:
+    # A slug already in the seen table (e.g. from a since-deleted lead) is skipped.
+    repo = FakeRepo(seen=[("slug", "acme-backend-engineer")])
+    c = Criteria(keywords=["engineer"])
+    added = run_poll(
+        repo, c, listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")]
+    )
+    assert added == []
+    assert repo.added == []
+
+
+def test_run_all_tenants_routes_sources_per_profile() -> None:
+    # Two tenants enable different sources; each must only ever see roles from the
+    # sources it turned on, from one shared per-source gather.
+    repo_a = FakeRepo(
+        profile=Criteria(keywords=["engineer"], sources={"remotive": True, "remoteok": False})
+    )
+    repo_b = FakeRepo(
+        profile=Criteria(keywords=["engineer"], sources={"remotive": False, "remoteok": True})
+    )
+    repos = {1: repo_a, 2: repo_b}
+    gathered = {
+        "remotive": [_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
+        "remoteok": [_lead("Globex", "Platform Engineer", link="https://globex.co/2")],
+    }
+    results = run_all_tenants(
+        tenant_ids=[1, 2],
+        repo_for=lambda tid: repos[tid],
+        gathered=gathered,
+        verify_links=False,
+    )
+    assert [f.company for f in repo_a.added] == ["Acme"]
+    assert [f.company for f in repo_b.added] == ["Globex"]
+    assert {tid: len(names) for tid, names in results.items()} == {1: 1, 2: 1}
+
+
+def test_run_all_tenants_isolates_per_tenant_failure() -> None:
+    # A tenant whose repo raises is recorded empty; the others are still polled.
+    class BoomRepo(FakeRepo):
+        def load_seen(self) -> tuple[set[str], set[str]]:
+            raise RuntimeError("db down for this tenant")
+
+    bad = BoomRepo(profile=Criteria(keywords=["engineer"], sources={"remotive": True}))
+    good = FakeRepo(profile=Criteria(keywords=["engineer"], sources={"remotive": True}))
+    repos: dict[int, FakeRepo] = {1: bad, 2: good}
+    gathered = {"remotive": [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]}
+    results = run_all_tenants(
+        tenant_ids=[1, 2],
+        repo_for=lambda tid: repos[tid],
+        gathered=gathered,
+        verify_links=False,
+    )
+    assert results[1] == []
+    assert len(results[2]) == 1
+    assert [f.company for f in good.added] == ["Acme"]

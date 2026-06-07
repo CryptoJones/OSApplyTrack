@@ -31,7 +31,6 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -157,88 +156,55 @@ def _passes_location(item: Listing, criteria: Criteria) -> bool:
 
 @dataclass
 class Seen:
-    """The persistent dedup ledger (``applications/.seen.json``)."""
+    """The per-run dedup ledger, backed by the ``seen`` table.
+
+    ``urls`` / ``slugs`` hold the normalized keys already pinged — loaded from the
+    ``seen`` table and seeded from the tenant's existing applications. ``sink``, if
+    set, persists each *newly* seen key back to the table so a company is never
+    re-pinged on a later run, even after its lead is deleted.
+    """
 
     urls: set[str]
     slugs: set[str]
-
-    @classmethod
-    def load(cls, path: Path) -> Seen:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        return cls(set(data.get("urls", [])), set(data.get("slugs", [])))
-
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {"urls": sorted(self.urls), "slugs": sorted(self.slugs)},
-                indent=2,
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+    sink: Callable[[str, str], None] | None = None
 
     def has(self, url: str, slug: str) -> bool:
         nu = _norm_url(url)
         return (bool(nu) and nu in self.urls) or (bool(slug) and slug in self.slugs)
 
-    def add(self, url: str, slug: str) -> None:
+    def note(self, url: str, slug: str) -> tuple[str, str]:
+        """Record keys in memory only; return the normalized keys newly added."""
         nu = _norm_url(url)
+        new_url = nu if nu and nu not in self.urls else ""
+        new_slug = slug if slug and slug not in self.slugs else ""
         if nu:
             self.urls.add(nu)
         if slug:
             self.slugs.add(slug)
+        return new_url, new_slug
+
+    def add(self, url: str, slug: str) -> None:
+        """Record keys and persist the newly seen ones through ``sink``."""
+        new_url, new_slug = self.note(url, slug)
+        if self.sink is not None and (new_url or new_slug):
+            self.sink(new_url, new_slug)
 
 
 @dataclass
 class Blacklist:
-    """Companies to skip entirely on future polls (``applications/.blacklist.json``).
+    """Companies to skip entirely, read from the ``blacklist`` table.
 
     Unlike :class:`Seen` (which blocks one URL/role), a blacklisted company is
-    dropped wholesale, so no role from it is ever staged again until removed.
+    dropped wholesale, so no role from it is ever staged. The .NET API owns the
+    writes (``/api/blacklist``); the poller only reads, comparing on the same
+    normalized key.
     """
 
     companies: set[str]
 
-    @classmethod
-    def load(cls, path: Path) -> Blacklist:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        return cls({_norm_company(c) for c in data.get("companies", []) if _norm_company(c)})
-
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"companies": sorted(self.companies)}, indent=2, ensure_ascii=False)
-            + "\n",
-            encoding="utf-8",
-        )
-
     def has(self, company: str) -> bool:
         key = _norm_company(company)
         return bool(key) and key in self.companies
-
-    def add(self, company: str) -> bool:
-        """Add a company; returns True if it was newly added."""
-        key = _norm_company(company)
-        if not key or key in self.companies:
-            return False
-        self.companies.add(key)
-        return True
-
-    def remove(self, company: str) -> bool:
-        """Remove a company; returns True if it was present."""
-        key = _norm_company(company)
-        if key in self.companies:
-            self.companies.discard(key)
-            return True
-        return False
 
 
 class LeadRepo(Protocol):
@@ -256,6 +222,14 @@ class LeadRepo(Protocol):
         """Return the tenant's blacklisted company keys."""
         ...
 
+    def load_seen(self) -> tuple[set[str], set[str]]:
+        """Return the persisted ``(url_keys, slug_keys)`` dedup ledger."""
+        ...
+
+    def mark_seen(self, url_key: str, slug_key: str) -> None:
+        """Persist newly seen normalized keys (either may be empty)."""
+        ...
+
     def add_lead(self, fields: AppFields) -> str:
         """Stage one new lead and return its slug ``name``."""
         ...
@@ -266,9 +240,10 @@ def _seed_from_existing(repo: LeadRepo, seen: Seen) -> None:
 
     Guarantees we never re-add a role you already have a row for — even one you
     created by hand in the SPA — using the same URL + ``company + role`` keys the
-    live listings are checked against."""
+    live listings are checked against. In-memory only (``note``): existing rows are
+    not re-persisted to the ``seen`` table."""
     for link, company, role in repo.iter_existing():
-        seen.add(link, _norm_slug(company, role))
+        seen.note(link, _norm_slug(company, role))
 
 
 # -- fetchers: remote job boards --------------------------------------------
@@ -683,7 +658,7 @@ def run_poll(
     listings: Iterable[Listing] | None = None,
     verify_links: bool | None = None,
 ) -> list[str]:
-    """Fetch, dedupe, filter, score, and stage new leads. Returns added slug names.
+    """Fetch this tenant's enabled sources, then score and stage. Returns slug names.
 
     ``profile`` is the tenant's :class:`~applytrack.criteria.Criteria` (the caller
     loads it via :meth:`applytrack.db.PollRepo.load_profile`); ``repo`` is the
@@ -694,11 +669,10 @@ def run_poll(
     When ``verify_links`` is on, each candidate's posting URL is probed as a
     browser before it becomes an entry, and unreachable/dead links are dropped.
     It defaults to on for live runs and off when ``listings`` is supplied.
-    """
-    seen = Seen(set(), set())
-    _seed_from_existing(repo, seen)
-    blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
+    The multi-tenant worker (:mod:`applytrack.worker`) bypasses this and calls
+    :func:`score_and_stage` directly over a shared, fetched-once listing set.
+    """
     if verify_links is None:
         verify_links = listings is None
 
@@ -706,6 +680,44 @@ def run_poll(
         if fetchers is None:
             fetchers = build_fetchers(profile)
         listings = _gather(fetchers, limit_per_source)
+
+    return score_and_stage(repo, profile, listings, verify_links=verify_links)
+
+
+def _select_for_profile(
+    gathered: dict[str, list[Listing]], profile: Criteria
+) -> list[Listing]:
+    """Pick the listings for one tenant from a per-source gather, by enabled source.
+
+    Lets the worker fetch each source once and route the shared buckets per tenant,
+    so ``score_and_stage`` stays source-agnostic and a tenant only ever sees roles
+    from the sources/boards it actually enabled."""
+    out: list[Listing] = []
+    for name, on in profile.sources.items():
+        if on:
+            out.extend(gathered.get(name, []))
+    for board in profile.ats_boards:
+        out.extend(gathered.get(f"{board.provider}:{board.slug}", []))
+    return out
+
+
+def score_and_stage(
+    repo: LeadRepo,
+    profile: Criteria,
+    listings: Iterable[Listing],
+    *,
+    verify_links: bool = False,
+) -> list[str]:
+    """Dedupe, filter, score, and stage ``listings`` for one tenant. Returns slug names.
+
+    The dedup ledger is loaded from the ``seen`` table and seeded from the tenant's
+    existing applications; each newly seen key is persisted so a company is never
+    re-pinged on a later run. Network is touched only when ``verify_links`` is on.
+    """
+    url_keys, slug_keys = repo.load_seen()
+    seen = Seen(url_keys, slug_keys, sink=repo.mark_seen)
+    _seed_from_existing(repo, seen)
+    blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
     verify_client = (
         httpx.Client(timeout=12.0, follow_redirects=True, headers=BROWSER_HEADERS)

@@ -22,11 +22,24 @@ def _poll(args: argparse.Namespace) -> int:
     from applytrack.db import PollRepo
     from applytrack.importer import connect
     from applytrack.poll import run_poll
+    from applytrack.worker import run_all_tenants
 
     with connect(args.database_url) as conn:
-        # Each lead stands alone: a slug collision must skip one listing, not abort
-        # the run, so commit per-statement rather than in one all-or-nothing txn.
+        # Each lead/seen-key stands alone: a slug collision must skip one listing,
+        # not abort the run, so commit per-statement rather than one big txn.
         conn.autocommit = True
+        if args.tenant is None:
+            # Cron mode: fan out across every active tenant, fetching sources once.
+            results = run_all_tenants(conn, limit_per_source=args.limit)
+            total = sum(len(names) for names in results.values())
+            print(
+                f"applytrack poll: {total} new lead(s) added "
+                f"across {len(results)} active tenant(s)."
+            )
+            for tid, names in sorted(results.items()):
+                for name in names:
+                    print(f"  + [{tid}] {name}")
+            return 0
         repo = PollRepo(conn, args.tenant)
         profile = repo.load_profile()
         added = run_poll(repo, profile, limit_per_source=args.limit)
@@ -55,7 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_poll = sub.add_parser("poll", help="fetch new matching leads from job boards")
-    p_poll.add_argument("--tenant", type=int, default=1, help="tenant_id to poll for")
+    p_poll.add_argument(
+        "--tenant", type=int, default=None,
+        help="tenant_id to poll for (default: every active tenant — cron mode)")
     p_poll.add_argument("--limit", type=int, default=40, help="max results per source to scan")
     p_poll.add_argument(
         "--database-url", default=None,
