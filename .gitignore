@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Python tooling caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# .NET
+bin/
+obj/
+*.user
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+# Local secrets / env
+.env
+*.env
+!.env.example

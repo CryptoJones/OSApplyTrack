@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+#
+# Container mode: `docker compose up` brings up Postgres + the .NET API.
+# Local mode: `docker compose up -d db` then `dotnet run` (or the Python poller)
+# against localhost — the same build, just a different connection string.
+# The Python poller service is added once it writes to Postgres (plan Steps 3-4).
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-applytrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-applytrack}
+      POSTGRES_DB: ${POSTGRES_DB:-applytrack}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-applytrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./api
+      dockerfile: ApplyTrack.Api/Dockerfile
+    environment:
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:-applytrack}"
+      ASPNETCORE_URLS: "http://+:8080"
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
