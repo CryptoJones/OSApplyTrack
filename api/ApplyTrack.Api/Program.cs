@@ -7,6 +7,7 @@ using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Endpoints;
 using ApplyTrack.Api.Middleware;
+using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -59,6 +60,19 @@ var app = builder.Build();
 // .NET API and the Python poller share.
 Migrator.Upgrade(connectionString);
 
+// Behind a TLS-terminating reverse proxy (Caddy/nginx/`tailscale serve` — the usual
+// self-host front), honor X-Forwarded-Proto so Request.IsHttps is true and the session
+// cookie keeps its Secure flag. The app is meant to sit behind that proxy, so forwarded
+// headers are accepted from any hop — don't expose Kestrel directly to the internet.
+// Plain-HTTP local/dev sends no such header, so this is a no-op there.
+var forwarded = new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedFor,
+};
+forwarded.KnownNetworks.Clear();
+forwarded.KnownProxies.Clear();
+app.UseForwardedHeaders(forwarded);
+
 // Catch the domain exceptions first so every downstream handler can throw them and
 // get the FastAPI-compatible {"detail": "..."} body + status the SPA expects.
 app.UseMiddleware<ApiExceptionMiddleware>();
@@ -77,6 +91,7 @@ app.MapAppsEndpoints();
 app.MapBlacklistEndpoints();
 app.MapCriteriaEndpoints();
 app.MapAuthEndpoints();
+app.MapAccountEndpoints();
 
 app.Run();
 

@@ -90,6 +90,17 @@ public sealed partial class ApplicationRepo
         }).ToList();
     }
 
+    /// <summary>
+    /// Every application as a full record, for the account export. Ordered by slug so
+    /// the zip is deterministic. Tenant-scoped like every other read.
+    /// </summary>
+    public async Task<IReadOnlyList<AppRecord>> ExportAllAsync()
+    {
+        var rows = await _conn.QueryAsync<AppRow>(
+            "SELECT * FROM applications WHERE tenant_id = @t ORDER BY name", new { t = _t });
+        return rows.Select(r => new AppRecord(r.Name, r.ToFields(), r.Version)).ToList();
+    }
+
     public async Task<AppRecord?> GetAsync(string name)
     {
         var n = Slug.Normalize(name);

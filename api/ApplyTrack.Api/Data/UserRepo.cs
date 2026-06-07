@@ -37,4 +37,13 @@ public sealed class UserRepo
     public Task<User?> GetAsync(long id) =>
         _conn.QuerySingleOrDefaultAsync<User?>(
             "SELECT id, email, status FROM users WHERE id = @id", new { id });
+
+    /// <summary>
+    /// Delete the account. The per-tenant tables carry <c>ON DELETE CASCADE</c> FKs to
+    /// <c>users(id)</c> (migrations 0005/0006/0009), so this one statement also drops the
+    /// tenant's applications, search profile, blacklist, seen ledger, queued poll
+    /// requests, sessions, and magic tokens. Returns rows affected (0 if already gone).
+    /// </summary>
+    public Task<int> DeleteAsync(long id) =>
+        _conn.ExecuteAsync("DELETE FROM users WHERE id = @id", new { id });
 }

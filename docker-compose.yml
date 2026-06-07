@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Aaron K. Clark
 #
-# Container mode: `docker compose up` brings up Postgres + the .NET API.
-# Local mode: `docker compose up -d db` then `dotnet run` (or the Python poller)
+# Container mode: `docker compose up` brings up Postgres + the .NET API + the Python
+# poller — the whole two-runtime stack.
+# Local mode: `docker compose up -d db` then `dotnet run` (or `applytrack poll`)
 # against localhost — the same build, just a different connection string.
-# The Python poller service is added once it writes to Postgres (plan Steps 3-4).
 services:
   db:
     image: postgres:17-alpine
@@ -21,6 +21,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   api:
     build:
@@ -34,6 +35,21 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The Python discovery poller (second runtime). Shares the same Postgres; the .NET
+  # API owns the schema (DbUp migrates it on startup), so on a cold boot the poller's
+  # first tick may run before migrations land — its loop retries, no action needed.
+  poller:
+    build:
+      context: .
+      dockerfile: Dockerfile.poller
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:-applytrack}@db:5432/${POSTGRES_DB:-applytrack}"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -15,15 +15,18 @@ namespace ApplyTrack.Api.Tests;
 [Collection(PostgresCollection.Name)]
 public class RepoTests(PostgresFixture pg)
 {
-    private static int _seq = 1000;
-    private static long NextTenant() => Interlocked.Increment(ref _seq);
-
     private async Task<NpgsqlConnection> OpenAsync()
     {
         var conn = new NpgsqlConnection(pg.ConnectionString);
         await conn.OpenAsync();
         return conn;
     }
+
+    // tenant_id is a real FK to users(id) (migration 0009), so each test's tenant must
+    // be a live user row. A unique email yields a fresh, empty tenant on the shared
+    // container — the same isolation the old synthetic-id counter gave, now FK-valid.
+    private static Task<long> NewTenantAsync(NpgsqlConnection conn) =>
+        TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
 
     private static AppFields Fields(string company, string role = "", string status = "lead",
         string lane = "ai", string notes = "") => new()
@@ -34,8 +37,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Create_then_get_round_trips_fields_and_starts_at_version_1()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
 
         var name = await repo.CreateAsync(Fields("Acme Corp", "Engineer", notes: "hello world"));
@@ -54,8 +57,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Create_requires_a_company()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         await Assert.ThrowsAsync<AppValidationException>(() => repo.CreateAsync(Fields("")));
     }
@@ -63,8 +66,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Create_duplicate_name_is_rejected()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         await repo.CreateAsync(Fields("Dup Co", "Dev"));
         await Assert.ThrowsAsync<AppValidationException>(() => repo.CreateAsync(Fields("Dup Co", "Dev")));
@@ -73,8 +76,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Get_missing_returns_null_and_delete_missing_throws()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         Assert.Null(await repo.GetAsync("nope.md"));
         await Assert.ThrowsAsync<AppNotFoundException>(() => repo.DeleteAsync("nope.md"));
@@ -83,8 +86,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Tenants_are_isolated()
     {
-        long t1 = NextTenant(), t2 = NextTenant();
         await using var conn = await OpenAsync();
+        long t1 = await NewTenantAsync(conn), t2 = await NewTenantAsync(conn);
         await new ApplicationRepo(conn, t1).CreateAsync(Fields("Only In One", "Dev"));
 
         var other = new ApplicationRepo(conn, t2);
@@ -95,8 +98,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task List_orders_by_status_pipeline_then_company()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         await repo.CreateAsync(Fields("Zeta", "X", status: "lead"));
         await repo.CreateAsync(Fields("Alpha", "X", status: "offer"));
@@ -110,8 +113,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Stats_counts_by_status_and_lane()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         await repo.CreateAsync(Fields("A", "1", status: "lead", lane: "ai"));
         await repo.CreateAsync(Fields("B", "2", status: "lead", lane: "dotnet"));
@@ -127,8 +130,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Update_bumps_version_and_enforces_optimistic_lock()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         var name = await repo.CreateAsync(Fields("Lock Co", "Dev"));
 
@@ -150,8 +153,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Update_missing_throws_not_found()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         await Assert.ThrowsAsync<AppNotFoundException>(() =>
             repo.UpdateStructuredAsync("ghost.md", Fields("Ghost"), null));
@@ -160,8 +163,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Update_preserves_created_when_payload_omits_it()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         var name = await repo.CreateAsync(new AppFields { Company = "Keep", Role = "Dev", Created = "2020-01-01" });
 
@@ -172,8 +175,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Raw_update_round_trips_through_the_markdown_codec()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new ApplicationRepo(conn, t);
         var name = await repo.CreateAsync(Fields("Raw Co", "Dev"));
 
@@ -189,8 +192,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Criteria_defaults_when_absent_then_round_trips_after_upsert()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new CriteriaRepo(conn, t);
 
         var defaults = await repo.GetAsync();
@@ -223,8 +226,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Criteria_empty_keywords_fall_back_to_defaults_on_read()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var repo = new CriteriaRepo(conn, t);
         await repo.UpsertAsync(new Criteria { Keywords = [], Sources = Criteria.DefaultSources() });
         Assert.NotEmpty((await repo.GetAsync()).Keywords);
@@ -233,8 +236,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Blacklist_add_is_normalized_deduped_and_sorted()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var bl = new BlacklistRepo(conn, t);
 
         Assert.True(await bl.AddAsync("Foo Bar, Inc."));
@@ -249,8 +252,8 @@ public class RepoTests(PostgresFixture pg)
     [Fact]
     public async Task Blacklist_passes_only_open_leads_for_the_matching_company()
     {
-        var t = NextTenant();
         await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
         var apps = new ApplicationRepo(conn, t);
         await apps.CreateAsync(Fields("Evil Corp", "A", status: "lead"));
         await apps.CreateAsync(Fields("Evil Corp", "B", status: "ready"));

@@ -1,0 +1,14 @@
+# Keep the poller build context (repo root) lean: ship only pyproject.toml + src/.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+api
+*.md
+.env
+.env.*
+!.env.example

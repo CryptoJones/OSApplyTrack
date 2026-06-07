@@ -7,8 +7,8 @@ namespace ApplyTrack.Api.Auth;
 /// The session cookie and its hardening. <c>HttpOnly</c> keeps it out of JS;
 /// <c>SameSite=Lax</c> plus JSON-only fetch mutations is the v1 CSRF defense (no
 /// separate token). <c>Secure</c> tracks the request scheme so plain-HTTP local/dev
-/// still works while real HTTPS deploys get the flag (behind a TLS proxy, wire up
-/// forwarded headers in Step 5 so <c>IsHttps</c> is true).
+/// still works while real HTTPS deploys get the flag (behind a TLS proxy,
+/// <c>Program.cs</c> honors <c>X-Forwarded-Proto</c> so <c>IsHttps</c> is true).
 /// </summary>
 public static class AuthCookie
 {
