@@ -9,8 +9,10 @@ investigate a suspect link on demand).
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -60,6 +62,61 @@ class LinkStatus:
         return f"dead — HTTP {self.status_code}"
 
 
+# How many redirect hops to walk before giving up. We follow them by hand (rather
+# than letting httpx auto-follow) so every hop's host can be SSRF-checked first.
+_MAX_REDIRECTS = 5
+
+
+def _ip_is_public(ip: str) -> bool:
+    """True only for a globally-routable unicast address.
+
+    Rejects loopback, RFC-1918/ULA private, link-local (incl. the
+    169.254.169.254 cloud-metadata endpoint), reserved, multicast, and the
+    unspecified address. IPv4-mapped IPv6 is unwrapped so ``::ffff:127.0.0.1``
+    can't sneak a loopback past the check.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return not (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _host_is_public(host: str) -> bool:
+    """True only when every address ``host`` resolves to is a public IP.
+
+    The SSRF gate: a lead URL (or a redirect it chains to) is attacker-influenced,
+    and the poller fetches it server-side, so a link pointing at ``localhost`` or
+    an internal/metadata IP must be refused. An IP literal is checked directly; a
+    name is resolved and *all* of its A/AAAA records must be public, so a public
+    hostname that maps to an internal address is still rejected. (A determined
+    attacker could still race DNS between this check and the connect; closing that
+    fully needs connect-by-IP, out of scope for v1's self-host threat model.)
+    """
+    host = (host or "").strip().strip("[]")  # tolerate bracketed IPv6 literals
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return _ip_is_public(host)
+    except ValueError:
+        pass  # not a literal — resolve it below
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    return bool(infos) and all(_ip_is_public(str(info[4][0])) for info in infos)
+
+
 def _is_home(url: str) -> bool:
     """True when a URL points at a bare host root (path empty or just '/')."""
     return urlsplit(url).path.strip("/") == ""
@@ -95,24 +152,42 @@ def probe(
 
     A link is considered *not ok* when it is malformed, the connection fails, the
     server answers 4xx/5xx, or a deep URL redirects to the site's homepage -- the
-    classic "this listing was pulled" signal. Redirects are followed; the
-    verdict is about the final response.
+    classic "this listing was pulled" signal. Redirects are followed by hand so
+    each hop is SSRF-checked before we connect; the verdict is about the final
+    response.
     """
     url = (url or "").strip()
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
         return LinkStatus(url=url, ok=False, error="not an http(s) URL")
+    if not _host_is_public(parts.hostname or ""):
+        return LinkStatus(url=url, ok=False, error="refused non-public address")
 
     owns_client = client is None
     client = client or httpx.Client(
-        timeout=timeout, follow_redirects=True, headers=BROWSER_HEADERS
+        timeout=timeout, follow_redirects=False, headers=BROWSER_HEADERS
     )
     try:
+        current = url
         try:
-            resp = client.get(url)
+            for _ in range(_MAX_REDIRECTS + 1):
+                # follow_redirects=False on the call overrides whatever default the
+                # caller's shared client carries, so the per-hop guard can't be
+                # bypassed by an auto-following client.
+                resp = client.get(current, follow_redirects=False)
+                if not (resp.is_redirect and "location" in resp.headers):
+                    break
+                current = urljoin(current, resp.headers["location"])
+                hop = urlsplit(current)
+                if hop.scheme not in ("http", "https"):
+                    return LinkStatus(url=url, ok=False, error="redirect to non-http(s) URL")
+                if not _host_is_public(hop.hostname or ""):
+                    return LinkStatus(url=url, ok=False, error="redirect to non-public address")
+            else:
+                return LinkStatus(url=url, ok=False, error="too many redirects")
         except httpx.HTTPError as exc:
             return LinkStatus(url=url, ok=False, error=type(exc).__name__)
-        final_url = str(resp.url)
+        final_url = current
         started_deep = parts.path.strip("/") != ""
         to_home = started_deep and _is_home(final_url)
         generic = not to_home and _looks_like_index(final_url)

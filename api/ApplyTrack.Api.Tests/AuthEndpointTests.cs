@@ -192,4 +192,20 @@ public class AuthEndpointTests : IAsyncLifetime
         Assert.Equal(1, aliceList.GetArrayLength());
         Assert.Equal("Alice Co", aliceList[0].GetProperty("company").GetString());
     }
+
+    [Fact]
+    public async Task Responses_carry_the_security_headers()
+    {
+        var res = await NewClient().GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        Assert.True(res.Headers.TryGetValues("Content-Security-Policy", out var csp));
+        Assert.Contains("script-src 'self'", string.Join(" ", csp));
+        Assert.True(res.Headers.TryGetValues("X-Content-Type-Options", out var nosniff));
+        Assert.Equal("nosniff", string.Join("", nosniff));
+        Assert.True(res.Headers.Contains("X-Frame-Options"));
+        Assert.True(res.Headers.Contains("Referrer-Policy"));
+        // Plain-HTTP test host: HSTS must NOT be emitted.
+        Assert.False(res.Headers.Contains("Strict-Transport-Security"));
+    }
 }

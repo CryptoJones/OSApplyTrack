@@ -82,7 +82,7 @@ public static class AppsEndpoints
         {
             await polls.EnqueueAsync();
             return Results.Ok(new { count = 0 });
-        });
+        }).RequireRateLimiting("poll");
 
         // -- Not in v1 -----------------------------------------------------------
         // The link probe and LLM cover-letter engine are out of scope here; answer

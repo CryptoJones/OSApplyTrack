@@ -297,7 +297,7 @@ function renderView(data) {
       ${metaRow(f)}
       <div class="mt-4 flex flex-wrap gap-2">${applyBtn}${copyBtn}${checkBtn}</div>
       <div id="link-status" class="mt-2 text-sm"></div>
-      <div class="prose-omi mt-5">${marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false })}</div>
+      <div class="prose-omi mt-5">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
       <div class="mt-8 flex items-center gap-2 border-t border-rule pt-4">
         <button class="btn btn-primary" data-act="applied">Mark applied</button>
         <button class="btn btn-ghost" data-act="pass">Pass</button>

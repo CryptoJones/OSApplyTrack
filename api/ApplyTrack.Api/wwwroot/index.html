@@ -7,21 +7,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>applytrack</title>
 
-  <!-- Apply saved theme before paint to avoid a flash of defaults. -->
-  <script>
-    (function () {
-      try {
-        var th = localStorage.getItem("applytrack-theme");
-        if (th) document.documentElement.setAttribute("data-theme", th);
-      } catch (e) {}
-    })();
-  </script>
+  <!-- Apply saved theme before paint to avoid a flash of defaults. Kept as an
+       external file (not inline) so the CSP can be a strict script-src 'self'. -->
+  <script src="theme-init.js"></script>
 
   <!-- Vendored locally so the UI renders fully offline (no CDN, no Google Fonts). -->
   <link rel="stylesheet" href="vendor/fonts.css" />
   <link rel="stylesheet" href="vendor/tailwind.css" />
   <link rel="stylesheet" href="app.css" />
   <script src="vendor/marked.min.js"></script>
+  <!-- Notes are rendered from Markdown; DOMPurify strips any HTML the markdown
+       carries (job-board descriptions, user-typed notes) before it hits the DOM. -->
+  <script src="vendor/purify.min.js"></script>
 </head>
 
 <body class="h-full bg-paper font-body text-ink">

@@ -24,8 +24,8 @@ public static class AuthEndpoints
     {
         // Always 200, whether or not the address is known/valid — no account
         // enumeration. Upsert the user, store only the sha256 of a fresh token, email
-        // the link. (Rate-limiting is a follow-up; the always-200 + 15-min TTL caps
-        // the blast radius in the meantime.)
+        // the link. Per-IP rate-limited ("auth" policy) so the always-200 surface
+        // can't be abused for email spam or enumeration probing.
         app.MapPost("/api/auth/request", async (
             LinkRequest body, HttpContext ctx,
             UserRepo users, MagicTokenRepo tokens, IEmailSender email) =>
@@ -41,7 +41,7 @@ public static class AuthEndpoints
             }
 
             return Results.Ok(new { ok = true });
-        });
+        }).RequireRateLimiting("auth");
 
         // Consume the token (single-use, unexpired), mint a session, set the cookie,
         // and redirect to / so the token leaves the URL/history.

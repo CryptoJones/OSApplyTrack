@@ -3,6 +3,7 @@
 
 using System.Data;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Endpoints;
@@ -54,6 +55,23 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNameCaseInsensitive = true;
 });
 
+// Per-IP throttles on the two abuse-prone unauthenticated/expensive routes:
+// magic-link requests (email spam / user enumeration probing) and the on-demand
+// poll (each one fans out to external job boards). Other routes are unmetered.
+static string ClientPartition(HttpContext ctx) =>
+    ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(5) }));
+    options.AddPolicy("poll", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1) }));
+});
+
 var app = builder.Build();
 
 // Bring the schema up to date on startup — the cross-runtime contract both the
@@ -73,6 +91,10 @@ forwarded.KnownNetworks.Clear();
 forwarded.KnownProxies.Clear();
 app.UseForwardedHeaders(forwarded);
 
+// Stamp CSP + the other hardening headers on every response. After UseForwardedHeaders
+// so Request.IsHttps is accurate (HSTS only when actually behind HTTPS).
+app.UseMiddleware<SecurityHeadersMiddleware>();
+
 // Catch the domain exceptions first so every downstream handler can throw them and
 // get the FastAPI-compatible {"detail": "..."} body + status the SPA expects.
 app.UseMiddleware<ApiExceptionMiddleware>();
@@ -85,6 +107,9 @@ app.UseStaticFiles();
 
 // The tenancy choke-point: resolve the session -> tenant, enforce auth on /api.
 app.UseMiddleware<TenantMiddleware>();
+
+// Enforce the per-route rate-limit policies declared above (RequireRateLimiting).
+app.UseRateLimiter();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapAppsEndpoints();

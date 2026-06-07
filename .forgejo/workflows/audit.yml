@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+#
+# Dependency-vulnerability audit for both runtimes. Targets Forgejo Actions
+# (Codeberg); the syntax is GitHub-Actions-compatible, so it runs as-is on GitHub
+# too if the repo is mirrored. Enable Actions in the repo settings for it to fire.
+name: dependency-audit
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly Mon 06:00 UTC — catch CVEs disclosed after merge
+
+jobs:
+  dotnet:
+    runs-on: docker
+    container:
+      image: mcr.microsoft.com/dotnet/sdk:10.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan NuGet packages
+        working-directory: api
+        run: |
+          dotnet restore
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee /tmp/audit.txt
+          if grep -q "has the following vulnerable packages" /tmp/audit.txt; then
+            echo "::error::Vulnerable NuGet packages found"; exit 1
+          fi
+
+  python:
+    runs-on: docker
+    container:
+      image: python:3.12-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan Python packages
+        run: |
+          pip install --no-cache-dir pip-audit .
+          pip-audit

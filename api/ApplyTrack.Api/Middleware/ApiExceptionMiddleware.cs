@@ -14,8 +14,13 @@ namespace ApplyTrack.Api.Middleware;
 public sealed class ApiExceptionMiddleware
 {
     private readonly RequestDelegate _next;
+    private readonly ILogger<ApiExceptionMiddleware> _logger;
 
-    public ApiExceptionMiddleware(RequestDelegate next) => _next = next;
+    public ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExceptionMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
 
     public async Task InvokeAsync(HttpContext context)
     {
@@ -34,6 +39,16 @@ public sealed class ApiExceptionMiddleware
         catch (AppValidationException ex)
         {
             await WriteDetail(context, StatusCodes.Status400BadRequest, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            // Anything not a known domain exception: log the detail server-side, but
+            // hand the client a generic {"detail"} 500 so internals never leak.
+            _logger.LogError(ex, "Unhandled exception for {Method} {Path}",
+                context.Request.Method, context.Request.Path);
+            if (context.Response.HasStarted)
+                throw;
+            await WriteDetail(context, StatusCodes.Status500InternalServerError, "internal error");
         }
     }
 

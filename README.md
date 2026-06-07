@@ -68,6 +68,16 @@ deployment, swap in an SMTP/HTTP sender behind `IEmailSender` (deferred for v1).
 session cookie gets its `Secure` flag automatically. Don't expose Kestrel directly
 to the internet.
 
+**Hardening.** For any deployment reachable beyond `localhost`, change
+`POSTGRES_PASSWORD` (and the matching connection string) from the `applytrack`
+default before first boot — the bundled value is for local dev only. The API
+already sends a strict Content-Security-Policy and the usual hardening headers
+(`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and HSTS once
+it sees HTTPS) on every response, and the magic-link and poll endpoints are
+per-IP rate-limited. To watch for newly-disclosed CVEs in the dependencies, run
+`dotnet list package --vulnerable --include-transitive` (in `api/`) and
+`pip-audit` (at the repo root); CI runs both on every push.
+
 ## First-run import (optional)
 
 If you're coming from the original single-user `applytrack`, import your existing
