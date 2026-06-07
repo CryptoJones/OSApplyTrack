@@ -869,3 +869,59 @@ body,
   align-items: center;
 }
 .btn-xs { padding: 0.1rem 0.45rem; font-size: 0.75rem; line-height: 1.2; }
+
+/* ============================================================ LOGIN ====== */
+
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+}
+.login-card {
+  width: 100%;
+  max-width: 23rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 2rem 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 70px -34px var(--shadow);
+  text-align: center;
+}
+.login-mark { font-size: 1.75rem; font-weight: 800; letter-spacing: -0.01em; }
+.login-sub { color: var(--text-soft); font-size: 0.9rem; }
+.login-error {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: #e5484d;
+}
+.login-input {
+  width: 100%;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.7rem;
+}
+.login-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.login-btn { width: 100%; padding: 0.6rem; }
+.login-btn:disabled { opacity: 0.6; cursor: default; }
+.login-note {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}

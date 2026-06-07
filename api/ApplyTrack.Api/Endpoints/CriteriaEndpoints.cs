@@ -3,8 +3,6 @@
 
 using System.Text.Json;
 using ApplyTrack.Api.Data;
-using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace ApplyTrack.Api.Endpoints;
 
@@ -18,18 +16,12 @@ public static class CriteriaEndpoints
 {
     public static void MapCriteriaEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/criteria", async ([FromServices] NpgsqlDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new CriteriaRepo(conn, Tenant.BootstrapId);
-            return Results.Ok(await repo.GetAsync());
-        });
+        app.MapGet("/api/criteria", async (CriteriaRepo repo) =>
+            Results.Ok(await repo.GetAsync()));
 
-        app.MapPut("/api/criteria", async (JsonElement payload, [FromServices] NpgsqlDataSource db) =>
+        app.MapPut("/api/criteria", async (JsonElement payload, CriteriaRepo repo) =>
         {
             var criteria = Criteria.FromJson(payload);
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new CriteriaRepo(conn, Tenant.BootstrapId);
             await repo.UpsertAsync(criteria);
             return Results.Ok(criteria);
         });

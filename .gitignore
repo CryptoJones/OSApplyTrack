@@ -25,3 +25,6 @@ artifacts/
 .env
 *.env
 !.env.example
+
+# Local agent runtime state
+.claude/

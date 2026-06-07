@@ -47,6 +47,9 @@ async function api(method, path, body) {
   }
   const res = await fetch(path, opts);
   if (!res.ok) {
+    // No session (or it was revoked): drop straight to the login view. The poll
+    // loop swallows the throw, so an expired session bounces here on its own.
+    if (res.status === 401) showLogin();
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (_) {}
     const err = new Error(detail);
@@ -71,6 +74,48 @@ async function saveWithConflict(path, body, label) {
     }
     throw e;
   }
+}
+
+// ---- Auth gate ------------------------------------------------------------
+
+// The one additive piece of UI over the original SPA: a full-screen login card
+// shown whenever the API answers 401. Magic-link only — POST the address, then
+// tell the user to check their mail (self-hosters read the link off the logs).
+function showLogin() {
+  if (document.getElementById("login-overlay")) return; // already up
+  const badLink = new URLSearchParams(location.search).get("error") === "invalid_link";
+  const overlay = document.createElement("div");
+  overlay.id = "login-overlay";
+  overlay.className = "login-overlay";
+  overlay.innerHTML = `
+    <form id="login-form" class="login-card">
+      <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
+      <p class="login-sub">Sign in with a one-time magic link.</p>
+      ${badLink ? `<p class="login-error">That link was invalid or expired — request a fresh one.</p>` : ""}
+      <input id="login-email" class="login-input" type="email" required autocomplete="email"
+        inputmode="email" placeholder="you@example.com" aria-label="Email address" />
+      <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
+      <p class="login-note">We email you a link to sign in. Self-hosting? It's printed to the server logs.</p>
+    </form>`;
+  document.body.appendChild(overlay);
+
+  const form = overlay.querySelector("#login-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = overlay.querySelector("#login-email").value.trim();
+    if (!email) return;
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    btn.textContent = "Sending…";
+    // Always reports success: the API returns 200 either way (no account enumeration).
+    try { await api("POST", "/api/auth/request", { email }); } catch (_) {}
+    form.innerHTML = `
+      <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
+      <p class="login-sub">Check your inbox.</p>
+      <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way.
+        Self-hosting? Look for it in the server logs.</p>`;
+  });
+  overlay.querySelector("#login-email").focus();
 }
 
 // ---- Helpers --------------------------------------------------------------
@@ -895,6 +940,13 @@ function initTheme() {
 initTheme();
 
 (async function boot() {
+  try {
+    // Gate the app on a live session; a 401 here pops the login view (via api())
+    // and we stop booting until the user signs in and reloads.
+    await api("GET", "/api/auth/me");
+  } catch (e) {
+    if (e.status === 401) return;
+  }
   try {
     await refresh();
     renderEmpty();

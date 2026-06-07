@@ -2,8 +2,6 @@
 // Copyright 2026 Aaron K. Clark
 
 using ApplyTrack.Api.Data;
-using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace ApplyTrack.Api.Endpoints;
 
@@ -19,44 +17,33 @@ public static class BlacklistEndpoints
 
     public static void MapBlacklistEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/blacklist", async ([FromServices] NpgsqlDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new BlacklistRepo(conn, Tenant.BootstrapId);
-            return Results.Ok(await repo.ListAsync());
-        });
+        app.MapGet("/api/blacklist", async (BlacklistRepo repo) =>
+            Results.Ok(await repo.ListAsync()));
 
-        app.MapPost("/api/blacklist", async (BlacklistAdd payload, [FromServices] NpgsqlDataSource db) =>
+        app.MapPost("/api/blacklist", async (BlacklistAdd payload, BlacklistRepo bl) =>
         {
             var company = (payload.Company ?? "").Trim();
             if (company.Length == 0)
                 throw new AppValidationException("company is required");
-            await using var conn = await db.OpenConnectionAsync();
-            var bl = new BlacklistRepo(conn, Tenant.BootstrapId);
             var added = await bl.AddAsync(company);
             var passed = await bl.PassOpenLeadsAsync(company);
             return Results.Ok(new { company, added, passed });
         });
 
-        app.MapPost("/api/apps/{name}/blacklist", async (string name, [FromServices] NpgsqlDataSource db) =>
+        app.MapPost("/api/apps/{name}/blacklist", async (string name, ApplicationRepo apps, BlacklistRepo bl) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var apps = new ApplicationRepo(conn, Tenant.BootstrapId);
             var rec = await apps.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
             var company = rec.Fields.Company.Trim();
             if (company.Length == 0)
                 throw new AppValidationException("application has no company to blacklist");
-            var bl = new BlacklistRepo(conn, Tenant.BootstrapId);
             var added = await bl.AddAsync(company);
             var passed = await bl.PassOpenLeadsAsync(company);
             return Results.Ok(new { company, added, passed });
         });
 
-        app.MapDelete("/api/blacklist/{company}", async (string company, [FromServices] NpgsqlDataSource db) =>
+        app.MapDelete("/api/blacklist/{company}", async (string company, BlacklistRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new BlacklistRepo(conn, Tenant.BootstrapId);
             var removed = await repo.RemoveAsync(company);
             return Results.Ok(new { company, removed });
         });

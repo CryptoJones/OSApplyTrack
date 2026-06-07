@@ -3,16 +3,16 @@
 
 using ApplyTrack.Api.Data;
 using Microsoft.AspNetCore.Mvc;
-using Npgsql;
 
 namespace ApplyTrack.Api.Endpoints;
 
 /// <summary>
 /// The <c>/api/apps</c> + <c>/api/stats</c> routes, written against the SPA's
 /// existing contract (same URLs, JSON shapes, and <c>?expected_version=</c> 409
-/// flow as the Python FastAPI app). Step 1 is single-tenant on the bootstrap
-/// tenant; <c>poll</c>, <c>check-link</c>, and <c>draft</c> are not in v1 and
-/// answer 501 so the SPA shows a clean "not available" toast instead of a crash.
+/// flow as the Python FastAPI app). The <see cref="ApplicationRepo"/> arrives from DI
+/// already scoped to the current tenant; <c>poll</c>, <c>check-link</c>, and
+/// <c>draft</c> are not in v1 and answer 501 so the SPA shows a clean "not available"
+/// toast instead of a crash.
 /// </summary>
 public static class AppsEndpoints
 {
@@ -21,25 +21,17 @@ public static class AppsEndpoints
 
     public static void MapAppsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/apps", async ([FromServices] NpgsqlDataSource db) =>
-        {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
-            return Results.Ok(await repo.ListAsync());
-        });
+        app.MapGet("/api/apps", async (ApplicationRepo repo) =>
+            Results.Ok(await repo.ListAsync()));
 
-        app.MapGet("/api/stats", async ([FromServices] NpgsqlDataSource db) =>
+        app.MapGet("/api/stats", async (ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             var (status, lane) = await repo.StatsAsync();
             return Results.Ok(new { status, lane });
         });
 
-        app.MapGet("/api/apps/{name}", async (string name, [FromServices] NpgsqlDataSource db) =>
+        app.MapGet("/api/apps/{name}", async (string name, ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             var rec = await repo.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
             return Results.Ok(new
@@ -52,10 +44,8 @@ public static class AppsEndpoints
             });
         });
 
-        app.MapPost("/api/apps", async (AppFields payload, [FromServices] NpgsqlDataSource db) =>
+        app.MapPost("/api/apps", async (AppFields payload, ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             var filename = await repo.CreateAsync(payload);
             return Results.Json(new { filename }, statusCode: StatusCodes.Status201Created);
         });
@@ -63,10 +53,8 @@ public static class AppsEndpoints
         app.MapPut("/api/apps/{name}", async (
             string name, AppFields payload,
             [FromQuery(Name = "expected_version")] string? expectedVersion,
-            [FromServices] NpgsqlDataSource db) =>
+            ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             var filename = await repo.UpdateStructuredAsync(name, payload, expectedVersion);
             return Results.Ok(new { filename });
         });
@@ -74,18 +62,14 @@ public static class AppsEndpoints
         app.MapPut("/api/apps/{name}/raw", async (
             string name, RawUpdate payload,
             [FromQuery(Name = "expected_version")] string? expectedVersion,
-            [FromServices] NpgsqlDataSource db) =>
+            ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             var filename = await repo.UpdateRawAsync(name, payload.Content, expectedVersion);
             return Results.Ok(new { filename });
         });
 
-        app.MapDelete("/api/apps/{name}", async (string name, [FromServices] NpgsqlDataSource db) =>
+        app.MapDelete("/api/apps/{name}", async (string name, ApplicationRepo repo) =>
         {
-            await using var conn = await db.OpenConnectionAsync();
-            var repo = new ApplicationRepo(conn, Tenant.BootstrapId);
             await repo.DeleteAsync(name);
             return Results.NoContent();
         });

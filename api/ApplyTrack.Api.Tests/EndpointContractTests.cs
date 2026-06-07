@@ -4,7 +4,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Auth;
 using Dapper;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Npgsql;
@@ -15,7 +15,9 @@ namespace ApplyTrack.Api.Tests;
 /// Boots the whole API in-memory against the test Postgres and asserts the wire
 /// contract the verbatim SPA depends on: exact URLs, snake_case JSON keys, the
 /// <c>?expected_version=</c> 409 flow, FastAPI-style <c>{"detail"}</c> errors, and
-/// the v1 501s. Runs on the bootstrap tenant, wiped before each test.
+/// the v1 501s. Each test runs as a fresh tenant (its own seeded user + session
+/// cookie), so the tenant starts empty without a wipe and tests stay isolated on
+/// the shared container.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public class EndpointContractTests : IAsyncLifetime
@@ -28,21 +30,15 @@ public class EndpointContractTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        await using (var conn = new NpgsqlConnection(_pg.ConnectionString))
-        {
-            await conn.OpenAsync();
-            await conn.ExecuteAsync(
-                """
-                DELETE FROM applications WHERE tenant_id = @t;
-                DELETE FROM blacklist WHERE tenant_id = @t;
-                DELETE FROM search_profiles WHERE tenant_id = @t;
-                """,
-                new { t = Tenant.BootstrapId });
-        }
-
         _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString));
+
+        // The contract tests exercise the app routes, not the login flow, so seed an
+        // authenticated session straight into the DB and ride it via the cookie. A
+        // unique email => a brand-new tenant => an empty slate every test.
+        var (_, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
         _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
     }
 
     public async Task DisposeAsync()
