@@ -864,6 +864,69 @@ async function runPoll() {
 }
 $("#poll-btn").addEventListener("click", runPoll);
 
+// ---- Data export / import (account portability) ---------------------------
+
+// Download the whole account as one JSON file. Uses fetch directly (not api(),
+// which parses JSON) so we can stream the file straight to a download.
+async function exportData() {
+  const btn = $("#export-btn");
+  if (btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Exporting…";
+  try {
+    const res = await fetch("/api/account/export");
+    if (!res.ok) {
+      if (res.status === 401) showLogin();
+      throw new Error("Export failed.");
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename="?([^"]+)"?/.exec(cd);
+    const filename = m ? m[1] : "applytrack-export.json";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Exported your data.");
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+$("#export-btn").addEventListener("click", exportData);
+
+// Import an exported snapshot. Apps that share a slug are overwritten; the rest are
+// added. Parse client-side first so a bad file fails fast without hitting the server.
+$("#import-btn").addEventListener("click", () => $("#import-file").click());
+$("#import-file").addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ""; // let the same file be re-picked later
+  if (!file) return;
+  let doc;
+  try {
+    doc = JSON.parse(await file.text());
+  } catch (_) {
+    return toast("That file isn't a valid JSON export.");
+  }
+  if (!confirm("Import overwrites applications that share a name with ones in this file. Continue?")) return;
+  try {
+    const r = await api("POST", "/api/account/import", doc);
+    await refresh();
+    renderEmpty();
+    const n = r.imported_applications || 0;
+    toast(`Imported ${n} application${n === 1 ? "" : "s"}.`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 // ---- Live refresh (the hourly poller writes new files) --------------------
 
 const POLL_MS = 5000;

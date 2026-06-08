@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
-using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -13,11 +12,12 @@ using Npgsql;
 namespace ApplyTrack.Api.Tests;
 
 /// <summary>
-/// The Step 5 account self-service routes over HTTP: <c>GET /api/account/export</c>
-/// produces a real zip of the tenant's data, and <c>DELETE /api/account</c> rides the
+/// The account self-service routes over HTTP: <c>GET /api/account/export</c> produces a
+/// single JSON migration snapshot, <c>POST /api/account/import</c> loads one back
+/// (overwrite-by-slug, atomic), and <c>DELETE /api/account</c> rides the
 /// <c>ON DELETE CASCADE</c> FKs to wipe every per-tenant table in one statement. Each
 /// test runs as a fresh seeded tenant (its own user + session cookie) on the shared
-/// container, so deleting one never touches another.
+/// container, so one tenant's data never leaks into another.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public class AccountEndpointTests : IAsyncLifetime
@@ -48,8 +48,11 @@ public class AccountEndpointTests : IAsyncLifetime
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
+    private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage res) =>
+        JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
+
     [Fact]
-    public async Task Export_returns_a_zip_of_markdown_plus_a_settings_json()
+    public async Task Export_returns_one_json_document_of_apps_criteria_and_blacklist()
     {
         await _client.PostAsync("/api/apps",
             Json("""{"company":"Acme Corp","role":"Engineer","notes":"hello"}"""));
@@ -57,36 +60,126 @@ public class AccountEndpointTests : IAsyncLifetime
 
         var res = await _client.GetAsync("/api/account/export");
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.Equal("application/zip", res.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("application/json", res.Content.Headers.ContentType?.MediaType);
 
-        var bytes = await res.Content.ReadAsByteArrayAsync();
-        using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        var doc = await ReadJsonAsync(res);
+        Assert.Equal("applytrack-export", doc.GetProperty("format").GetString());
+        Assert.Equal(1, doc.GetProperty("version").GetInt32());
 
-        // One Markdown file per application, under applications/, rendered via the codec.
-        var md = zip.GetEntry("applications/acme-corp-engineer.md");
-        Assert.NotNull(md);
-        using (var r = new StreamReader(md!.Open()))
-            Assert.Contains("Acme Corp", await r.ReadToEndAsync());
+        // Each application is a flat record carrying its slug name + structured fields.
+        var apps = doc.GetProperty("applications");
+        Assert.Equal(1, apps.GetArrayLength());
+        Assert.Equal("acme-corp-engineer.md", apps[0].GetProperty("name").GetString());
+        Assert.Equal("Acme Corp", apps[0].GetProperty("company").GetString());
+        Assert.Equal("hello", apps[0].GetProperty("notes").GetString());
 
-        // settings.json carries the criteria + the normalized blacklist key.
-        var settingsEntry = zip.GetEntry("settings.json");
-        Assert.NotNull(settingsEntry);
-        using var sr = new StreamReader(settingsEntry!.Open());
-        var settings = JsonDocument.Parse(await sr.ReadToEndAsync()).RootElement;
-        Assert.True(settings.GetProperty("criteria").TryGetProperty("min_fit_score", out _));
-        Assert.Equal("evil-corp", settings.GetProperty("blacklist")[0].GetString());
+        // The settings travel too: criteria object + the normalized blacklist key.
+        Assert.True(doc.GetProperty("criteria").TryGetProperty("min_fit_score", out _));
+        Assert.Equal("evil-corp", doc.GetProperty("blacklist")[0].GetString());
     }
 
     [Fact]
-    public async Task Export_of_an_empty_account_is_still_a_valid_zip_with_settings()
+    public async Task Export_of_an_empty_account_is_valid_json_with_no_applications()
     {
-        var res = await _client.GetAsync("/api/account/export");
-        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var doc = await ReadJsonAsync(await _client.GetAsync("/api/account/export"));
+        Assert.Empty(doc.GetProperty("applications").EnumerateArray());
+        // Criteria is always present (defaults when nothing is saved).
+        Assert.True(doc.GetProperty("criteria").TryGetProperty("keywords", out _));
+    }
 
-        using var zip = new ZipArchive(
-            new MemoryStream(await res.Content.ReadAsByteArrayAsync()), ZipArchiveMode.Read);
-        Assert.NotNull(zip.GetEntry("settings.json"));
-        Assert.DoesNotContain(zip.Entries, e => e.FullName.StartsWith("applications/"));
+    [Fact]
+    public async Task Import_creates_applications_criteria_and_blacklist()
+    {
+        var body = """
+        {
+          "format": "applytrack-export", "version": 1,
+          "applications": [
+            { "name": "acme-corp-engineer.md", "company": "Acme Corp", "role": "Engineer",
+              "status": "applied", "link": "https://acme.example/job", "notes": "imported" }
+          ],
+          "criteria": { "keywords": ["rust", "go"], "min_fit_score": 70 },
+          "blacklist": ["Evil Corp"]
+        }
+        """;
+        var res = await _client.PostAsync("/api/account/import", Json(body));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var summary = await ReadJsonAsync(res);
+        Assert.Equal(1, summary.GetProperty("imported_applications").GetInt32());
+        Assert.Equal(1, summary.GetProperty("imported_blacklist").GetInt32());
+        Assert.True(summary.GetProperty("criteria_applied").GetBoolean());
+
+        // The app reads back through the normal API (fields nested under "fields").
+        var app = await ReadJsonAsync(await _client.GetAsync("/api/apps/acme-corp-engineer.md"));
+        Assert.Equal("applied", app.GetProperty("fields").GetProperty("status").GetString());
+        Assert.Equal("imported", app.GetProperty("fields").GetProperty("notes").GetString());
+
+        var criteria = await ReadJsonAsync(await _client.GetAsync("/api/criteria"));
+        Assert.Equal(70, criteria.GetProperty("min_fit_score").GetInt32());
+        Assert.Contains("rust",
+            criteria.GetProperty("keywords").EnumerateArray().Select(k => k.GetString()));
+
+        var blacklist = await ReadJsonAsync(await _client.GetAsync("/api/blacklist"));
+        Assert.Equal("evil-corp", blacklist[0].GetString());
+    }
+
+    [Fact]
+    public async Task Import_overwrites_an_existing_application_by_slug()
+    {
+        await _client.PostAsync("/api/apps",
+            Json("""{"company":"Acme Corp","role":"Engineer","status":"lead","notes":"original"}"""));
+
+        // Same slug, new status + notes -> overwrite, not a second row.
+        var body = """
+        { "applications": [
+            { "name": "acme-corp-engineer.md", "company": "Acme Corp", "role": "Engineer",
+              "status": "offer", "notes": "overwritten" } ] }
+        """;
+        Assert.Equal(HttpStatusCode.OK,
+            (await _client.PostAsync("/api/account/import", Json(body))).StatusCode);
+
+        var apps = await ReadJsonAsync(await _client.GetAsync("/api/apps"));
+        Assert.Equal(1, apps.GetArrayLength());
+        var app = await ReadJsonAsync(await _client.GetAsync("/api/apps/acme-corp-engineer.md"));
+        Assert.Equal("offer", app.GetProperty("fields").GetProperty("status").GetString());
+        Assert.Equal("overwritten", app.GetProperty("fields").GetProperty("notes").GetString());
+    }
+
+    [Fact]
+    public async Task Export_then_import_into_another_tenant_round_trips_the_data()
+    {
+        // Tenant A (this _client) creates data and exports it.
+        await _client.PostAsync("/api/apps",
+            Json("""{"company":"Acme Corp","role":"Engineer","status":"applied"}"""));
+        await _client.PutAsync("/api/criteria", Json("""{"keywords":["rust"]}"""));
+        await _client.PostAsync("/api/blacklist", Json("""{"company":"Evil Corp"}"""));
+        var exported = await (await _client.GetAsync("/api/account/export"))
+            .Content.ReadAsStringAsync();
+
+        // Tenant B: a fresh user + session on the same container imports A's bytes.
+        var (_, sidB) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        using var clientB = _factory.CreateClient();
+        clientB.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sidB}");
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await clientB.PostAsync("/api/account/import", Json(exported))).StatusCode);
+
+        // B now sees A's data; isolation holds through the import path.
+        var appsB = await ReadJsonAsync(await clientB.GetAsync("/api/apps"));
+        Assert.Equal(1, appsB.GetArrayLength());
+        var critB = await ReadJsonAsync(await clientB.GetAsync("/api/criteria"));
+        Assert.Contains("rust",
+            critB.GetProperty("keywords").EnumerateArray().Select(k => k.GetString()));
+        var blB = await ReadJsonAsync(await clientB.GetAsync("/api/blacklist"));
+        Assert.Equal("evil-corp", blB[0].GetString());
+    }
+
+    [Fact]
+    public async Task Import_rejects_a_file_with_no_importable_data()
+    {
+        var res = await _client.PostAsync("/api/account/import", Json("{}"));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        var detail = (await ReadJsonAsync(res)).GetProperty("detail").GetString();
+        Assert.Contains("no importable data", detail);
     }
 
     [Fact]

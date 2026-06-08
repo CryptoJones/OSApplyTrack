@@ -190,6 +190,32 @@ public class RepoTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task UpsertByName_inserts_then_overwrites_bumping_version()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ApplicationRepo(conn, t);
+
+        // First upsert inserts at version 1, preserving the supplied slug verbatim.
+        await repo.UpsertByNameAsync("acme-corp-engineer.md",
+            Fields("Acme Corp", "Engineer", status: "lead", notes: "first"));
+        var first = await repo.GetAsync("acme-corp-engineer.md");
+        Assert.NotNull(first);
+        Assert.Equal("lead", first!.Fields.Status);
+        Assert.Equal(1, first.Version);
+
+        // Second upsert on the same slug overwrites the fields and bumps the version —
+        // no duplicate row. This is the importer's overwrite-by-slug contract.
+        await repo.UpsertByNameAsync("acme-corp-engineer.md",
+            Fields("Acme Corp", "Engineer", status: "applied", notes: "second"));
+        var second = await repo.GetAsync("acme-corp-engineer.md");
+        Assert.Equal("applied", second!.Fields.Status);
+        Assert.Equal("second", second.Fields.Notes);
+        Assert.Equal(2, second.Version);
+        Assert.Single(await repo.ListAsync());
+    }
+
+    [Fact]
     public async Task Criteria_defaults_when_absent_then_round_trips_after_upsert()
     {
         await using var conn = await OpenAsync();

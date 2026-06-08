@@ -57,7 +57,7 @@ public sealed class CriteriaRepo
         return Criteria.FromJson(doc.RootElement);
     }
 
-    public async Task UpsertAsync(Criteria c)
+    public async Task UpsertAsync(Criteria c, IDbTransaction? tx = null)
     {
         await _conn.ExecuteAsync(
             """
@@ -87,6 +87,7 @@ public sealed class CriteriaRepo
                 exclude = JsonSerializer.Serialize(c.ExcludeLocations, JsonOpts),
                 sources = JsonSerializer.Serialize(c.Sources, JsonOpts),
                 boards = JsonSerializer.Serialize(c.AtsBoards, JsonOpts),
-            });
+            },
+            tx);
     }
 }

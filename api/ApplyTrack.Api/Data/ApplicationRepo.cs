@@ -155,6 +155,43 @@ public sealed partial class ApplicationRepo
         return name;
     }
 
+    /// <summary>
+    /// Insert-or-overwrite an application keyed on its slug <c>name</c> — the importer's
+    /// path. Used by the account import: an incoming app replaces a matching local one
+    /// (bumping <c>version</c>) and a brand-new slug is inserted. Slug-preserving so apply
+    /// links survive the move. The C# twin of the Python <c>importer.py</c> upsert; runs
+    /// inside the caller's transaction when one is supplied so the whole import is atomic.
+    /// </summary>
+    public async Task UpsertByNameAsync(string name, AppFields raw, IDbTransaction? tx = null)
+    {
+        var n = Slug.Normalize(name);
+        var f = raw.Normalized();
+        var created = f.Created.Length > 0 ? f.Created : MarkdownCodec.Today();
+        await _conn.ExecuteAsync(
+            """
+            INSERT INTO applications
+                (tenant_id, name, company, role, lane, status, link, location, salary,
+                 source, contact, contact_email, applied, followup, created, score, notes)
+            VALUES
+                (@t, @n, @Company, @Role, @Lane, @Status, @Link, @Location, @Salary,
+                 @Source, @Contact, @ContactEmail, @Applied, @Followup, @created, @Score, @Notes)
+            ON CONFLICT (tenant_id, name) DO UPDATE SET
+                company = EXCLUDED.company, role = EXCLUDED.role, lane = EXCLUDED.lane,
+                status = EXCLUDED.status, link = EXCLUDED.link, location = EXCLUDED.location,
+                salary = EXCLUDED.salary, source = EXCLUDED.source, contact = EXCLUDED.contact,
+                contact_email = EXCLUDED.contact_email, applied = EXCLUDED.applied,
+                followup = EXCLUDED.followup, created = EXCLUDED.created, score = EXCLUDED.score,
+                notes = EXCLUDED.notes, version = applications.version + 1, updated_at = now()
+            """,
+            new
+            {
+                t = _t, n, created,
+                f.Company, f.Role, f.Lane, f.Status, f.Link, f.Location, f.Salary,
+                f.Source, f.Contact, f.ContactEmail, f.Applied, f.Followup, f.Score, f.Notes,
+            },
+            tx);
+    }
+
     public Task<string> UpdateStructuredAsync(string name, AppFields fields, string? expectedVersion) =>
         DoUpdateAsync(name, fields.Normalized(), expectedVersion);
 

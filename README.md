@@ -24,8 +24,9 @@ discover fresh remote roles from public job boards and stage them as leads — s
 your pipeline refills itself while you sleep.
 
 Run it on your laptop with one `docker compose up`, or self-host it for your whole
-job search. Your data is yours: one-click export to plain Markdown, one-call
-account deletion, no lock-in, no telemetry, no SaaS.
+job search. Your data is yours: one-click export to a single JSON snapshot you can
+import into any other instance, one-call account deletion, no lock-in, no
+telemetry, no SaaS.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="OSApplyTrack — the multi-lane pipeline dashboard with auto-discovered leads" width="900">
@@ -67,8 +68,10 @@ account deletion, no lock-in, no telemetry, no SaaS.
 - **It's genuinely multi-tenant.** Every row is owned by a tenant; every query in
   both runtimes unconditionally filters `WHERE tenant_id`. One deployment cleanly
   serves many users with hard data isolation.
-- **It's yours to keep.** Export a real backup (Markdown + settings) any time;
-  delete your account and every row it owns cascades away in a single statement.
+- **It's yours to keep.** Export your whole account as one JSON snapshot and import
+  it into another instance any time — applications, criteria, and blacklist travel
+  together, so you're never locked in. Delete your account and every row it owns
+  cascades away in a single statement.
 - **It's a single-binary-feeling deploy.** Postgres + a .NET API that also serves
   the SPA + a Python cron worker — three containers, one `docker compose up`.
 
@@ -213,7 +216,8 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/account/export` | A zip: one Markdown file per application + `settings.json`. |
+| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist. |
+| `POST`   | `/api/account/import` | Load a snapshot; applications upsert by slug, all in one transaction. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
 
 ### Not in v1
@@ -299,9 +303,15 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 
 ## Your data
 
-- **Export** — `GET /api/account/export` returns a zip: one Markdown file per
-  application plus a `settings.json` with your criteria and blacklist. A real
-  backup, and the door's never locked.
+- **Export** — `GET /api/account/export` returns a single JSON snapshot of your
+  whole account: every application (all fields + its slug, so apply links survive a
+  move), your search criteria, and your company blacklist. A real backup, and the
+  door's never locked.
+- **Import** — `POST /api/account/import` loads a snapshot back. Applications
+  upsert by slug (an incoming app overwrites a matching local one, new slugs are
+  added, untouched apps stay), so re-importing is idempotent. The whole load runs in
+  one transaction — a mid-import failure leaves your account untouched. Use it to
+  migrate from one instance to another: export here, import there.
 - **Delete** — `DELETE /api/account` removes your account and, via
   `ON DELETE CASCADE`, every row that belongs to it (applications, search profile,
   blacklist, seen ledger, queued polls, sessions, tokens) in one statement.

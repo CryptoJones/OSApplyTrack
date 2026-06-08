@@ -231,9 +231,11 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
     email creds, base URL.
   - **README rewrite:** self-host quickstart, the two-runtime model, env vars,
     `import-md` first-run migration, Apache-2.0 badge.
-- **Data export** `GET /api/account/export` → zip of `.md` (reuse the Python
-  `export_markdown` via CLI, or a C# composer) + a settings JSON. Good OSS
-  citizenship + a backup story.
+- **Data export + import** (landed) `GET /api/account/export` → one JSON snapshot
+  (every application + criteria + blacklist); `POST /api/account/import` loads it
+  back, upserting applications by slug in a single transaction. The round-trip lets
+  a user migrate between instances, not just back up — no lock-in. SPA gets Export
+  /Import buttons in the masthead.
 - **Data delete** `DELETE /api/account` → FK `ON DELETE CASCADE` from `users`
   drops applications/seen/profiles/sessions/tokens/blacklist in one statement; SPA
   confirms.
@@ -277,7 +279,8 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
   (dedup + seed-from-existing). Per-tenant failure doesn't abort others. Poll
   button enqueues; worker drains it.
 - **Step 5:** `docker compose up` brings up all three; `GET /api/account/export`
-  returns a valid zip; `DELETE /api/account` cascades to zero rows.
+  returns a JSON snapshot that `POST /api/account/import` round-trips on another
+  instance; `DELETE /api/account` cascades to zero rows.
 
 ---
 

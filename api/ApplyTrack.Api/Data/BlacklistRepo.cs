@@ -32,7 +32,7 @@ public sealed class BlacklistRepo
     }
 
     /// <summary>Add the normalized company key; returns whether a new row was inserted.</summary>
-    public async Task<bool> AddAsync(string company)
+    public async Task<bool> AddAsync(string company, IDbTransaction? tx = null)
     {
         var key = Slug.NormCompany(company);
         if (key.Length == 0)
@@ -42,7 +42,7 @@ public sealed class BlacklistRepo
             INSERT INTO blacklist (tenant_id, company) VALUES (@t, @key)
             ON CONFLICT (tenant_id, company) DO NOTHING
             """,
-            new { t = _t, key });
+            new { t = _t, key }, tx);
         return affected > 0;
     }
 
