@@ -62,6 +62,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+      # The image tags are v-stripped semver (metadata-action {{version}}): tag
+      # v1.1.0 publishes :1.1.0. Strip the v so the pull commands in the notes match.
+      - id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,8 +76,8 @@ jobs:
             ## Container images (GitHub Container Registry)
 
             ```bash
-            docker pull ghcr.io/cryptojones/osapplytrack-api:${{ github.ref_name }}
-            docker pull ghcr.io/cryptojones/osapplytrack-poller:${{ github.ref_name }}
+            docker pull ghcr.io/cryptojones/osapplytrack-api:${{ steps.ver.outputs.version }}
+            docker pull ghcr.io/cryptojones/osapplytrack-poller:${{ steps.ver.outputs.version }}
             ```
 
             `latest` and the matching MAJOR / MAJOR.MINOR tags are published too.
