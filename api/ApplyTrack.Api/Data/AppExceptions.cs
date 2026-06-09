@@ -11,3 +11,7 @@ public sealed class AppNotFoundException(string message) : Exception(message);
 
 /// <summary>Row changed since the caller's base version — maps to HTTP 409.</summary>
 public sealed class AppConflictException(string message) : Exception(message);
+
+/// <summary>The configured LLM endpoint is unreachable or returned an unusable
+/// response — maps to HTTP 502. The message is safe to surface to the user.</summary>
+public sealed class LlmUnavailableException(string message) : Exception(message);

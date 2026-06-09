@@ -30,6 +30,12 @@ services:
     environment:
       ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:-applytrack}"
       ASPNETCORE_URLS: "http://+:8080"
+      # Cover-letter AI (all optional; see .env.example). Empty defaults leave drafting
+      # off until a tenant configures their own endpoint in the SPA's AI panel.
+      Llm__BaseUrl: ${Llm__BaseUrl:-}
+      Llm__Model: ${Llm__Model:-}
+      Llm__ApiKey: ${Llm__ApiKey:-}
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:

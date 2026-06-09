@@ -193,13 +193,12 @@ public class EndpointContractTests : IAsyncLifetime
         Assert.Equal(1, queued);
     }
 
-    [Theory]
-    [InlineData("GET", "/api/apps/whatever.md/check-link")]
-    [InlineData("POST", "/api/apps/whatever.md/draft")]
-    public async Task Out_of_v1_endpoints_return_501(string method, string url)
+    [Fact]
+    public async Task Check_link_is_out_of_v1_and_returns_501()
     {
-        var req = new HttpRequestMessage(new HttpMethod(method), url);
-        var res = await _client.SendAsync(req);
+        // Drafting is now implemented (see MaterialsEndpointTests); check-link is the
+        // last remaining v1 stub.
+        var res = await _client.GetAsync("/api/apps/whatever.md/check-link");
         Assert.Equal(HttpStatusCode.NotImplemented, res.StatusCode);
         Assert.False(string.IsNullOrEmpty((await ReadJson(res)).GetProperty("detail").GetString()));
     }

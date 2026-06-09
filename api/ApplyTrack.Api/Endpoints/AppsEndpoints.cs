@@ -2,6 +2,8 @@
 // Copyright 2026 Aaron K. Clark
 
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Materials;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ApplyTrack.Api.Endpoints;
@@ -10,9 +12,9 @@ namespace ApplyTrack.Api.Endpoints;
 /// The <c>/api/apps</c> + <c>/api/stats</c> routes, written against the SPA's
 /// existing contract (same URLs, JSON shapes, and <c>?expected_version=</c> 409
 /// flow as the Python FastAPI app). The <see cref="ApplicationRepo"/> arrives from DI
-/// already scoped to the current tenant; <c>poll</c>, <c>check-link</c>, and
-/// <c>draft</c> are not in v1 and answer 501 so the SPA shows a clean "not available"
-/// toast instead of a crash.
+/// already scoped to the current tenant. <c>draft</c> generates a cover letter via the
+/// configured LLM (the result surfaces as <c>material</c> on the app-detail GET);
+/// <c>check-link</c> is still out of v1 and answers 501.
 /// </summary>
 public static class AppsEndpoints
 {
@@ -30,7 +32,7 @@ public static class AppsEndpoints
             return Results.Ok(new { status, lane });
         });
 
-        app.MapGet("/api/apps/{name}", async (string name, ApplicationRepo repo) =>
+        app.MapGet("/api/apps/{name}", async (string name, ApplicationRepo repo, CoverLetterRepo letters) =>
         {
             var rec = await repo.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
@@ -40,7 +42,7 @@ public static class AppsEndpoints
                 raw = MarkdownCodec.Render(rec.Fields),
                 fields = rec.Fields,
                 version = rec.Version.ToString(),
-                material = "",
+                material = await letters.GetBodyAsync(rec.Name) ?? "",
             });
         });
 
@@ -84,13 +86,30 @@ public static class AppsEndpoints
             return Results.Ok(new { count = 0 });
         }).RequireRateLimiting("poll");
 
+        // Draft a tailored cover letter for the application through the configured
+        // (instance-default or per-tenant) LLM, then persist it — overwrite-by-app, so
+        // re-drafting replaces. The body also surfaces as `material` on the next
+        // GET /api/apps/{name}. Rate-limited: each call is an expensive upstream request.
+        app.MapPost("/api/apps/{name}/draft", async (
+            string name,
+            ApplicationRepo apps, ResumeRepo resumes, LlmSettingsRepo llm,
+            LlmOptions instance, CoverLetterDrafter drafter, CoverLetterRepo letters,
+            CancellationToken ct) =>
+        {
+            var rec = await apps.GetAsync(name)
+                ?? throw new AppNotFoundException($"application not found: '{name}'");
+            var resume = await resumes.GetAsync();
+            var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
+            var body = await drafter.DraftAsync(rec.Fields, resume, cfg, ct);
+            await letters.UpsertAsync(rec.Name, body, cfg.Model);
+            return Results.Ok(new { ok = true, material = body });
+        }).RequireRateLimiting("draft");
+
         // -- Not in v1 -----------------------------------------------------------
-        // The link probe and LLM cover-letter engine are out of scope here; answer
-        // 501 with a {detail} body the SPA can surface as a toast.
+        // The link probe is still out of scope here; answer 501 with a {detail} body
+        // the SPA can surface as a toast.
         app.MapGet("/api/apps/{name}/check-link",
             (string name) => NotImplemented("link checking is not available yet"));
-        app.MapPost("/api/apps/{name}/draft",
-            (string name) => NotImplemented("cover-letter drafting is not available in this version"));
     }
 
     private static IResult NotImplemented(string detail) =>

@@ -40,6 +40,12 @@ public sealed class ApiExceptionMiddleware
         {
             await WriteDetail(context, StatusCodes.Status400BadRequest, ex.Message);
         }
+        catch (LlmUnavailableException ex)
+        {
+            // Upstream LLM problem, not a client error: surface the (safe) message so
+            // the SPA can toast something actionable instead of a generic 500.
+            await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
+        }
         catch (Exception ex)
         {
             // Anything not a known domain exception: log the detail server-side, but

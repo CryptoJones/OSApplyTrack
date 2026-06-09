@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
+using Dapper;
 using Npgsql;
 
 namespace ApplyTrack.Api.Tests;
@@ -294,5 +296,110 @@ public class RepoTests(PostgresFixture pg)
         Assert.Equal(2, byStatus["passed"]);   // A + B flipped
         Assert.Equal(1, byStatus["applied"]);  // C untouched
         Assert.Equal(1, byStatus["lead"]);     // Good Corp untouched
+    }
+
+    [Fact]
+    public async Task Resume_round_trips_and_defaults_to_empty_when_absent()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ResumeRepo(conn, t);
+
+        Assert.True((await repo.GetAsync()).IsEmpty);
+
+        await repo.UpsertAsync(new Resume
+        {
+            FullName = "Ada Byte",
+            Headline = "Backend Engineer",
+            Skills = ["C#", "Postgres"],
+            Experience = [new ResumeExperience("Globex", "Engineer", "2020-2024", ["Cut p99 latency"])],
+        });
+
+        var got = await repo.GetAsync();
+        Assert.False(got.IsEmpty);
+        Assert.Equal("Ada Byte", got.FullName);
+        Assert.Equal(new[] { "C#", "Postgres" }, got.Skills);
+        Assert.Equal("Globex", got.Experience[0].Company);
+        Assert.Equal("Cut p99 latency", got.Experience[0].Highlights[0]);
+    }
+
+    [Fact]
+    public async Task LlmSettings_encrypts_the_key_and_decrypts_it_only_for_the_drafter()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var protector = new SecretProtector("test-master-key");
+        var repo = new LlmSettingsRepo(conn, t, protector);
+
+        await repo.UpsertAsync("https://api.openai.com/v1", "gpt-4o-mini",
+            changeKey: true, newKeyPlaintext: "sk-secret-123");
+
+        // The client-safe view exposes only the flag, never the key.
+        var (baseUrl, model, hasKey) = await repo.GetViewAsync();
+        Assert.Equal("https://api.openai.com/v1", baseUrl);
+        Assert.Equal("gpt-4o-mini", model);
+        Assert.True(hasKey);
+
+        // The drafter-facing override carries the decrypted key.
+        var ovr = await repo.GetOverrideAsync();
+        Assert.Equal("sk-secret-123", ovr!.ApiKey);
+
+        // The ciphertext on disk is not the plaintext.
+        var stored = await conn.QuerySingleAsync<string>(
+            "SELECT api_key_ciphertext FROM llm_settings WHERE tenant_id = @t", new { t });
+        Assert.NotEqual("sk-secret-123", stored);
+    }
+
+    [Fact]
+    public async Task LlmSettings_leaves_the_key_alone_unless_asked_to_change_it()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new LlmSettingsRepo(conn, t, new SecretProtector("test-master-key"));
+
+        await repo.UpsertAsync("http://a/v1", "m1", changeKey: true, newKeyPlaintext: "sk-keep");
+
+        // A later save that doesn't touch the key preserves it.
+        await repo.UpsertAsync("http://b/v1", "m2", changeKey: false, newKeyPlaintext: null);
+        Assert.Equal("sk-keep", (await repo.GetOverrideAsync())!.ApiKey);
+        Assert.Equal("http://b/v1", (await repo.GetOverrideAsync())!.BaseUrl);
+
+        // An explicit blank change clears it.
+        await repo.UpsertAsync("http://b/v1", "m2", changeKey: true, newKeyPlaintext: "");
+        Assert.False((await repo.GetViewAsync()).HasApiKey);
+    }
+
+    [Fact]
+    public async Task LlmSettings_refuses_to_store_a_key_without_a_master_secret()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new LlmSettingsRepo(conn, t, new SecretProtector(null));
+        await Assert.ThrowsAsync<AppValidationException>(() =>
+            repo.UpsertAsync("http://a/v1", "m1", changeKey: true, newKeyPlaintext: "sk-nope"));
+    }
+
+    [Fact]
+    public async Task CoverLetter_upsert_overwrites_and_delete_is_idempotent()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        // The composite FK requires the application to exist first.
+        var apps = new ApplicationRepo(conn, t);
+        var name = await apps.CreateAsync(Fields("Acme Corp", "Engineer"));
+        var letters = new CoverLetterRepo(conn, t);
+
+        Assert.Null(await letters.GetBodyAsync(name));
+
+        await letters.UpsertAsync(name, "first body", "model-a");
+        Assert.Equal("first body", await letters.GetBodyAsync(name));
+
+        // Re-drafting overwrites in place (one letter per app).
+        await letters.UpsertAsync(name, "second body", "model-b");
+        Assert.Equal("second body", await letters.GetBodyAsync(name));
+
+        Assert.True(await letters.DeleteAsync(name));
+        Assert.Null(await letters.GetBodyAsync(name));
+        Assert.False(await letters.DeleteAsync(name)); // nothing left to delete
     }
 }

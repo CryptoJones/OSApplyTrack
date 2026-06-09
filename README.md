@@ -44,6 +44,7 @@ telemetry, no SaaS.
 - [API reference](#api-reference)
 - [Data model](#data-model)
 - [The discovery poller](#the-discovery-poller)
+- [Cover letters](#cover-letters)
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
 - [First-run import](#first-run-import-optional)
@@ -65,6 +66,10 @@ telemetry, no SaaS.
   boards, scores them against your saved criteria, drops anything from a
   blacklisted company, dedupes against what you've already seen, and stages the
   survivors as fresh leads.
+- **It drafts your cover letters.** Point it at any OpenAI-compatible LLM — a local
+  Ollama/vLLM model (so your résumé never leaves the box, $0 per draft) or a hosted
+  provider — and generate a letter per application, tailored from your structured
+  résumé. Keys are yours, encrypted at rest.
 - **It's genuinely multi-tenant.** Every row is owned by a tenant; every query in
   both runtimes unconditionally filters `WHERE tenant_id`. One deployment cleanly
   serves many users with hard data isolation.
@@ -172,6 +177,8 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `ConnectionStrings__Postgres` | _(compose default)_ | Override to point the API at an external Postgres. |
 | `DATABASE_URL` | _(compose default)_ | Override to point the poller at an external Postgres (libpq URL). |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
+| `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in the UI. See [Cover letters](#cover-letters). |
+| `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
 
 ## API reference
 
@@ -199,6 +206,7 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 | `PUT`    | `/api/apps/{name}?expected_version=…` | Update structured fields (409 on version mismatch). |
 | `PUT`    | `/api/apps/{name}/raw?expected_version=…` | Replace the full Markdown document. |
 | `DELETE` | `/api/apps/{name}` | Delete → `204`. |
+| `POST`   | `/api/apps/{name}/draft` | Draft a tailored cover letter via the configured LLM; saves it and returns `{ok, material}`. Rate-limited. |
 | `POST`   | `/api/poll` | Enqueue an on-demand poll → `{count:0}`. Rate-limited; the worker drains it. |
 
 ### Criteria & blacklist
@@ -220,10 +228,21 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 | `POST`   | `/api/account/import` | Load a snapshot; applications upsert by slug, all in one transaction. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
 
+### Materials (cover letters)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET`    | `/api/resume` | The tenant's structured résumé — the only facts the drafter may assert. |
+| `PUT`    | `/api/resume` | Normalize + store the résumé (dedupes skills, drops empty rows/links). |
+| `GET`    | `/api/llm-settings` | The tenant's endpoint override + the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
+| `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it). |
+| `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
+
 ### Not in v1
 
-`GET /api/apps/{name}/check-link` and `POST /api/apps/{name}/draft` answer **501**
-with a `{detail}` body the SPA surfaces as a clean toast (see [Roadmap](#roadmap)).
+`GET /api/apps/{name}/check-link` answers **501** with a `{detail}` body the SPA
+surfaces as a clean toast (see [Roadmap](#roadmap)). Cover-letter drafting
+(`POST /api/apps/{name}/draft`) is implemented — see [Cover letters](#cover-letters).
 
 ## Data model
 
@@ -240,6 +259,9 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `sessions` | Opaque server-side sessions (instant revocation on logout). |
 | `seen` | The dedupe ledger — listings already surfaced, so leads don't repeat. |
 | `poll_requests` | The on-demand "Poll now" queue the worker drains. |
+| `resume_profiles` | Per-tenant structured résumé — the facts the cover-letter drafter feeds the LLM. |
+| `llm_settings` | Per-tenant LLM endpoint override; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
+| `cover_letters` | Generated cover letters, one per application (`FK → applications ON DELETE CASCADE`). |
 
 Account deletion relies on `ON DELETE CASCADE` foreign keys (migrations
 `0005`/`0006`/`0009`): one `DELETE FROM users` removes every dependent row.
@@ -267,6 +289,29 @@ host cron or a systemd timer? Run the CLI directly and drop the service:
 Each accepts `--database-url` (a libpq URL), falling back to `DATABASE_URL` / the
 `POSTGRES_*` env vars.
 
+## Cover letters
+
+OSApplyTrack drafts a tailored cover letter per application from a structured
+résumé you control — provider-agnostic, and built so your data can stay on-prem.
+
+- **Bring your own model.** The drafter calls an OpenAI-compatible
+  `POST {base_url}/chat/completions`, so the same code points at a free local model
+  (Ollama, vLLM, LM Studio) or any hosted provider (OpenAI, OpenRouter, Together,
+  Groq, …). A local model means **$0 per draft** and the résumé never leaves the box.
+- **Operator default + per-tenant override.** The instance sets a default endpoint
+  via `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey`; each tenant can override any
+  field in the **AI** panel (override just the model, keep the URL, etc.).
+- **Your résumé is the only source of truth.** The **Résumé** panel captures name,
+  headline, summary, experience, skills, certifications, and links — the LLM is told
+  these are the *only* facts it may assert, so it can't invent employers or metrics.
+- **Keys encrypted at rest.** A tenant's own API key is write-only: sealed with
+  AES-256-GCM under `APPLYTRACK_SECRETS_KEY` and never echoed back. Without that
+  master key the per-tenant-key path is disabled (the instance default still works).
+- **Generate from the application sheet.** Each app gets a **Generate cover letter**
+  action; the result renders inline with copy / download `.md` / regenerate /
+  discard. Letters are stored per application and are excluded from the export
+  snapshot by design.
+
 ## Security & hardening
 
 OSApplyTrack is built to face the public internet behind a reverse proxy:
@@ -285,6 +330,11 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 - **Output sanitization.** User Markdown is rendered with `marked` and scrubbed
   through **DOMPurify** before it touches the DOM — defense in depth against stored
   XSS even though the poller already strips HTML at ingestion.
+- **Encrypted secrets at rest.** A tenant's own LLM API key is sealed with
+  **AES-256-GCM** under an operator master key (`APPLYTRACK_SECRETS_KEY`) before it
+  reaches the database, and is never returned by the API — only a `has_api_key`
+  flag. With no master key configured, the per-tenant-key path is disabled rather
+  than storing anything in the clear.
 - **Rate limiting.** The magic-link and poll endpoints are per-IP fixed-window
   rate-limited so the always-200 auth surface can't be abused for spam or probing.
 - **SSRF-hardened link probing.** The link prober refuses to connect to
@@ -387,8 +437,8 @@ v1 is intentionally focused. Deferred, with clean seams already in place:
   console; swap in an SMTP/HTTP sender behind the interface for a real deployment.
 - **Link checking.** `/api/apps/{name}/check-link` returns 501 today; the
   SSRF-hardened prober already exists in the poller for when it's enabled.
-- **LLM cover-letter drafting.** `/api/apps/{name}/draft` returns 501; the
-  materials/LLM engine is out of v1 scope.
+- **Richer cover-letter output.** The materials engine ships plain-text/Markdown
+  letters ([Cover letters](#cover-letters)); LaTeX/PDF rendering is the next module.
 
 ## Contributing
 

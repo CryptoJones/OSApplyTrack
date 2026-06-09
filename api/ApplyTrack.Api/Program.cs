@@ -5,8 +5,11 @@ using System.Data;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Endpoints;
+using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Middleware;
 using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
@@ -45,6 +48,26 @@ builder.Services.AddScoped(sp => new PollRequestRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddSingleton<IEmailSender, ConsoleEmailSender>();
 
+// Materials engine (cover-letter drafting). The LLM endpoint is an OpenAI-compatible
+// server chosen entirely by config — a free local model (Ollama/vLLM) or any hosted
+// provider — so résumé data can stay on-prem and per-draft cost is the operator's
+// dial. Instance defaults come from the `Llm` config section; a tenant may override
+// them, and a tenant's own API key is encrypted at rest with the operator's master key.
+var llmOptions = builder.Configuration.GetSection("Llm").Get<LlmOptions>() ?? new LlmOptions();
+builder.Services.AddSingleton(llmOptions);
+builder.Services.AddSingleton(new SecretProtector(
+    builder.Configuration["Secrets:Key"] ?? builder.Configuration["APPLYTRACK_SECRETS_KEY"]));
+builder.Services.AddHttpClient();
+builder.Services.AddSingleton<ILlmClient, OpenAiCompatibleLlmClient>();
+builder.Services.AddSingleton<CoverLetterDrafter>();
+builder.Services.AddScoped(sp => new ResumeRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new LlmSettingsRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
+builder.Services.AddScoped(sp => new CoverLetterRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
 // key policy is deliberately left unset so map keys — status names, lane names,
@@ -70,6 +93,10 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("poll", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1) }));
+    // Cover-letter drafting fans out to the LLM (cost + latency) — throttle harder.
+    options.AddPolicy("draft", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(5) }));
 });
 
 var app = builder.Build();
@@ -117,6 +144,7 @@ app.MapBlacklistEndpoints();
 app.MapCriteriaEndpoints();
 app.MapAuthEndpoints();
 app.MapAccountEndpoints();
+app.MapMaterialsEndpoints();
 
 app.Run();
 

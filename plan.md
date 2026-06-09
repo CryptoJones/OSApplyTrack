@@ -23,8 +23,10 @@ with a **polyglot** backend:
   the SPA already calls (the 8 data endpoints, `?expected_version=`, the 409
   conflict flow). The SPA is the contract the .NET API is written *against*.
 - **Multi-tenant stays** (self-hostable, multi-user). Only monetization is dropped.
-- AI cover-letter/materials engine (`materials.py` + LaTeX résumé) stays **out of
-  v1** — heaviest cost, scariest data; later optional module.
+- AI cover-letter/materials engine — was deferred past v1; **landed post-v1** as an
+  optional module (provider-agnostic OpenAI-compatible drafting, per-tenant encrypted
+  keys, structured résumé, Markdown output). See Step 6. LaTeX/PDF résumé is the
+  remaining future work.
 
 ## Architecture
 
@@ -144,8 +146,9 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
   --dir applications --tenant 1` CLI that reuses the existing `parse_app` to upsert
   the live Markdown into Postgres (psycopg3). The Markdown codec already exists in
   Python; no reason to reimplement it in C# for a one-shot.
-- **Out of v1 here:** `/api/apps/{name}/draft` (materials/LLM) returns `501`; the
-  SPA's draft button is hidden/disabled. On-demand `/api/poll` — see Step 4.
+- **Materials (post-v1):** `/api/apps/{name}/draft` now drafts a cover letter via the
+  configured LLM and persists it (Step 6); the SPA's Generate button is live. The
+  check-link endpoint remains the only `501`. On-demand `/api/poll` — see Step 4.
 - **Tests (.NET):** repo CRUD, optimistic-lock 409, list/stats, endpoint-shape
   contract tests; **(Python):** existing 27 stay green.
 - **Milestone:** identical app, on Postgres, served by .NET. Ship this first.
@@ -240,6 +243,28 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
   drops applications/seen/profiles/sessions/tokens/blacklist in one statement; SPA
   confirms.
 
+### Step 6 — Cover-letter materials engine (post-v1, optional module)
+Was the heaviest-cost / scariest-data piece, deferred past v1; landed once the core
+was stable. Provider-agnostic and local-model-first so résumé data can stay on-prem.
+- **Schema (DbUp 0010–0012):** `resume_profiles`, `llm_settings`
+  (`api_key_ciphertext`), `cover_letters((tenant_id, application_name))` — all
+  per-tenant, FK→`users`/`applications` `ON DELETE CASCADE`.
+- **Config layering:** instance default (`Llm__BaseUrl`/`Model`/`ApiKey` env) merged
+  field-by-field with a per-tenant override (key decrypted) → `EffectiveLlmConfig`.
+  Drafting is simply off until either layer is configured.
+- **Secrets at rest:** per-tenant API keys encrypted with AES-256-GCM
+  (`SecretProtector`), master key via `APPLYTRACK_SECRETS_KEY`; the key field is
+  write-only (never echoed back) and removable.
+- **Endpoints:** `GET/PUT /api/resume`, `GET/PUT /api/llm-settings`,
+  `POST /api/apps/{name}/draft` (rate-limited), `DELETE /api/apps/{name}/cover-letter`.
+  The drafter calls an OpenAI-compatible `/chat/completions`, length-gates the result
+  (40..6000 chars), and persists Markdown.
+- **SPA (extend-only):** Résumé editor, AI-settings panel, and an inline
+  draft→render→copy/download/discard flow on the application sheet.
+- **Tests:** repo CRUD + crypto round-trip, config resolution, a stub LLM client for
+  the drafter; full headless-browser E2E of the SPA flows. LaTeX/PDF output is the
+  remaining future work.
+
 ## Critical files
 - **New .NET:** `api/Program.cs`, `Endpoints/{Apps,Auth,Account}.cs`,
   `Data/{Repo,Slug}.cs`, `Auth/*`, `Migrations/*.sql`, `wwwroot/` (the SPA),
@@ -281,6 +306,10 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
 - **Step 5:** `docker compose up` brings up all three; `GET /api/account/export`
   returns a JSON snapshot that `POST /api/account/import` round-trips on another
   instance; `DELETE /api/account` cascades to zero rows.
+- **Step 6:** with an OpenAI-compatible endpoint configured (instance env or the
+  SPA's AI panel), fill the résumé → open an application → Generate drafts a cover
+  letter inline; copy/download/discard work; the saved per-tenant API key is never
+  echoed back and survives a reopen. Backend + headless-browser E2E green.
 
 ---
 

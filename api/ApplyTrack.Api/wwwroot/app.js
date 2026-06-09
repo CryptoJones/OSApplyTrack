@@ -277,9 +277,6 @@ function renderView(data) {
       : url
       ? `<a class="btn btn-ghost" href="${escapeHtml(url)}" target="_blank" rel="noopener">Posting ↗</a>`
       : "";
-  const copyBtn = data.material
-    ? `<button class="btn btn-ghost" data-act="copy-path">Copy cover letter path</button>`
-    : `<button class="btn btn-ghost" data-act="draft">Generate cover letter</button>`;
   const checkBtn = f.link
     ? `<button class="btn btn-ghost" data-act="check-link">Investigate link</button>`
     : "";
@@ -297,9 +294,10 @@ function renderView(data) {
         </div>
       </div>
       ${metaRow(f)}
-      <div class="mt-4 flex flex-wrap gap-2">${applyBtn}${copyBtn}${checkBtn}</div>
+      <div class="mt-4 flex flex-wrap gap-2">${applyBtn}${checkBtn}</div>
       <div id="link-status" class="mt-2 text-sm"></div>
       <div class="prose-omi mt-5">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
+      ${materialSection(data)}
       <div class="mt-8 flex items-center gap-2 border-t border-rule pt-4">
         <button class="btn btn-primary" data-act="applied">Mark applied</button>
         <button class="btn btn-ghost" data-act="pass">Pass</button>
@@ -314,10 +312,14 @@ function renderView(data) {
   contentEl.querySelector('[data-act="pass"]').onclick = () => markStatus(data, "pass");
   contentEl.querySelector('[data-act="blacklist"]').onclick = () => blacklistCompany(data);
   contentEl.querySelector('[data-act="delete"]').onclick = () => deleteApp(data.filename);
-  const copyEl = contentEl.querySelector('[data-act="copy-path"]');
-  if (copyEl) copyEl.onclick = () => copyPath(data.material);
   const draftEl = contentEl.querySelector('[data-act="draft"]');
   if (draftEl) draftEl.onclick = () => draftMaterial(data.filename, draftEl);
+  const matCopyEl = contentEl.querySelector('[data-act="mat-copy"]');
+  if (matCopyEl) matCopyEl.onclick = () => copyText(data.material, "Cover letter copied.");
+  const matDownEl = contentEl.querySelector('[data-act="mat-download"]');
+  if (matDownEl) matDownEl.onclick = () => downloadMaterial(data);
+  const matDiscardEl = contentEl.querySelector('[data-act="mat-discard"]');
+  if (matDiscardEl) matDiscardEl.onclick = () => discardMaterial(data.filename);
   const checkEl = contentEl.querySelector('[data-act="check-link"]');
   if (checkEl) checkEl.onclick = () => investigateLink(data.filename, checkEl);
 }
@@ -353,12 +355,69 @@ function isoDate(offsetDays = 0) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-async function copyPath(path) {
+// The cover-letter panel on the app sheet. `material` is the letter TEXT (stored
+// per-app server-side), so it renders inline with copy / download / regenerate /
+// discard — no filesystem path. Absent material shows the generate affordance.
+function materialSection(data) {
+  if (!data.material) {
+    return `
+      <div class="material-block mt-6 border-t border-rule pt-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="field-label">Cover letter</div>
+            <p class="font-mono text-[11px] text-ink-faint">Draft a tailored letter from your résumé via the configured AI.</p>
+          </div>
+          <button class="btn btn-primary shrink-0" data-act="draft">Generate cover letter</button>
+        </div>
+      </div>`;
+  }
+  const html = DOMPurify.sanitize(marked.parse(data.material, { gfm: true, breaks: true }));
+  return `
+    <div class="material-block mt-6 border-t border-rule pt-4">
+      <div class="flex items-center justify-between gap-3">
+        <div class="field-label">Cover letter</div>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-ghost btn-xs" data-act="mat-copy">Copy</button>
+          <button class="btn btn-ghost btn-xs" data-act="mat-download">Download .md</button>
+          <button class="btn btn-ghost btn-xs" data-act="draft">Regenerate</button>
+          <button class="btn btn-ghost btn-xs" data-act="mat-discard">Discard</button>
+        </div>
+      </div>
+      <div class="prose-omi material-body mt-3">${html}</div>
+    </div>`;
+}
+
+async function copyText(text, okMsg) {
   try {
-    await navigator.clipboard.writeText(path);
-    toast("Cover letter path copied.");
+    await navigator.clipboard.writeText(text);
+    toast(okMsg);
   } catch (_) {
     toast("Couldn't copy to clipboard.");
+  }
+}
+
+// Save the letter as a local Markdown file (cover letters are out of the export
+// snapshot by design, so this is how a draft leaves the app).
+function downloadMaterial(data) {
+  const blob = new Blob([data.material], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${stem(data.filename)}-cover-letter.md`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function discardMaterial(name) {
+  if (!confirm("Discard this cover letter? You can regenerate it later.")) return;
+  try {
+    await api("DELETE", `/api/apps/${encodeURIComponent(name)}/cover-letter`);
+    openApp(name);
+    toast("Cover letter discarded.");
+  } catch (e) {
+    toast(e.message);
   }
 }
 
@@ -811,6 +870,305 @@ async function openCriteria() {
   }
 }
 $("#criteria-btn").addEventListener("click", openCriteria);
+
+// ---- Résumé panel ---------------------------------------------------------
+
+// The structured résumé feeds the cover-letter prompt as the only facts the model
+// may assert. Experience + links are dynamic lists (like ATS boards); because their
+// rows hold live inputs, we sync the DOM back into these arrays before any add/remove
+// re-render so in-progress edits aren't clobbered.
+let resumeExperience = [];
+let resumeLinks = [];
+
+function expRows() {
+  if (!resumeExperience.length)
+    return `<div class="board-empty font-mono text-[11px] text-ink-faint">No experience added.</div>`;
+  return resumeExperience.map((e, i) => `
+    <div class="exp-row" data-exp="${i}">
+      <div class="grid grid-cols-3 gap-2">
+        <input class="field-input" data-exp-field="title" placeholder="Title" value="${escapeHtml(e.title || "")}" />
+        <input class="field-input" data-exp-field="company" placeholder="Company" value="${escapeHtml(e.company || "")}" />
+        <input class="field-input mono" data-exp-field="dates" placeholder="2020–2024" value="${escapeHtml(e.dates || "")}" />
+      </div>
+      <textarea class="field-textarea mono mt-2" rows="3" data-exp-field="highlights"
+        placeholder="One highlight per line">${escapeHtml((e.highlights || []).join("\n"))}</textarea>
+      <div class="mt-1 flex justify-end">
+        <button class="btn btn-ghost btn-xs" data-remove-exp="${i}" type="button">✕ Remove</button>
+      </div>
+    </div>`).join("");
+}
+
+function syncExperienceFromDom() {
+  contentEl.querySelectorAll("[data-exp]").forEach((row) => {
+    const i = Number(row.dataset.exp);
+    const val = (f) => row.querySelector(`[data-exp-field="${f}"]`).value;
+    resumeExperience[i] = {
+      title: val("title").trim(),
+      company: val("company").trim(),
+      dates: val("dates").trim(),
+      highlights: val("highlights").split("\n").map((s) => s.trim()).filter(Boolean),
+    };
+  });
+}
+
+function renderExperience() {
+  const el = $("#resume-experience");
+  if (!el) return;
+  el.innerHTML = expRows();
+  el.querySelectorAll("[data-remove-exp]").forEach((btn) => {
+    btn.onclick = () => {
+      syncExperienceFromDom();
+      resumeExperience.splice(Number(btn.dataset.removeExp), 1);
+      renderExperience();
+    };
+  });
+}
+
+function linkRows() {
+  if (!resumeLinks.length)
+    return `<div class="board-empty font-mono text-[11px] text-ink-faint">No links added.</div>`;
+  return resumeLinks.map((l, i) => `
+    <div class="link-row grid grid-cols-[1fr_2fr_auto] gap-2 items-center" data-link="${i}">
+      <input class="field-input" data-link-field="label" placeholder="Label (GitHub)" value="${escapeHtml(l.label || "")}" />
+      <input class="field-input mono" data-link-field="url" placeholder="https://…" value="${escapeHtml(l.url || "")}" />
+      <button class="btn btn-ghost btn-xs" data-remove-link="${i}" type="button">✕</button>
+    </div>`).join("");
+}
+
+function syncLinksFromDom() {
+  contentEl.querySelectorAll("[data-link]").forEach((row) => {
+    const i = Number(row.dataset.link);
+    const val = (f) => row.querySelector(`[data-link-field="${f}"]`).value;
+    resumeLinks[i] = { label: val("label").trim(), url: val("url").trim() };
+  });
+}
+
+function renderLinks() {
+  const el = $("#resume-links");
+  if (!el) return;
+  el.innerHTML = linkRows();
+  el.querySelectorAll("[data-remove-link]").forEach((btn) => {
+    btn.onclick = () => {
+      syncLinksFromDom();
+      resumeLinks.splice(Number(btn.dataset.removeLink), 1);
+      renderLinks();
+    };
+  });
+}
+
+function resumeMarkup(r) {
+  return `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Résumé</div>
+      <h2 class="sheet-title">The facts behind your cover letters</h2>
+      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+        The drafting AI may assert only what's here — no invented employers, titles, or metrics.
+      </p>
+
+      <div class="mt-5 grid grid-cols-2 gap-4">
+        <div>
+          <label class="field-label">Full name</label>
+          <input id="r-name" class="field-input" value="${escapeHtml(r.full_name || "")}" placeholder="Ada Lovelace" />
+        </div>
+        <div>
+          <label class="field-label">Location</label>
+          <input id="r-location" class="field-input" value="${escapeHtml(r.location || "")}" placeholder="Remote / Lincoln, NE" />
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">Headline</label>
+        <input id="r-headline" class="field-input" value="${escapeHtml(r.headline || "")}" placeholder="Backend engineer · distributed systems" />
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">Summary</label>
+        <textarea id="r-summary" class="field-textarea" rows="4" placeholder="A few sentences on what you do and the value you bring.">${escapeHtml(r.summary || "")}</textarea>
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">Experience</label>
+        <div id="resume-experience" class="board-list space-y-3"></div>
+        <button class="btn btn-ghost mt-2" data-act="add-exp" type="button">+ Add role</button>
+      </div>
+
+      <div class="mt-4 grid grid-cols-2 gap-4">
+        <div>
+          <label class="field-label">Skills — one per line or comma-separated</label>
+          <textarea id="r-skills" class="field-textarea mono" rows="6"
+            placeholder="C#&#10;PostgreSQL&#10;Distributed systems">${escapeHtml((r.skills || []).join("\n"))}</textarea>
+        </div>
+        <div>
+          <label class="field-label">Certifications — one per line</label>
+          <textarea id="r-certs" class="field-textarea mono" rows="6"
+            placeholder="AWS Solutions Architect&#10;CKA">${escapeHtml((r.certifications || []).join("\n"))}</textarea>
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">Links</label>
+        <div id="resume-links" class="board-list space-y-2"></div>
+        <button class="btn btn-ghost mt-2" data-act="add-link" type="button">+ Add link</button>
+      </div>
+
+      <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-primary" data-act="save">Save résumé</button>
+      </div>
+    </article>`;
+}
+
+function gatherResume() {
+  syncExperienceFromDom();
+  syncLinksFromDom();
+  const splitList = (sel) => $(sel).value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+  return {
+    full_name: $("#r-name").value.trim(),
+    headline: $("#r-headline").value.trim(),
+    location: $("#r-location").value.trim(),
+    summary: $("#r-summary").value.trim(),
+    skills: splitList("#r-skills"),
+    certifications: splitList("#r-certs"),
+    experience: resumeExperience.filter(
+      (e) => e.company || e.title || e.dates || (e.highlights && e.highlights.length)),
+    links: resumeLinks.filter((l) => l.url),
+  };
+}
+
+function wireResume() {
+  contentEl.querySelector('[data-act="cancel"]').onclick = () =>
+    state.current ? openApp(state.current) : renderEmpty();
+  contentEl.querySelector('[data-act="add-exp"]').onclick = () => {
+    syncExperienceFromDom();
+    resumeExperience.push({ title: "", company: "", dates: "", highlights: [] });
+    renderExperience();
+  };
+  contentEl.querySelector('[data-act="add-link"]').onclick = () => {
+    syncLinksFromDom();
+    resumeLinks.push({ label: "", url: "" });
+    renderLinks();
+  };
+  contentEl.querySelector('[data-act="save"]').onclick = async () => {
+    try {
+      await api("PUT", "/api/resume", gatherResume());
+      toast("Résumé saved.");
+      state.current ? openApp(state.current) : renderEmpty();
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
+async function openResume() {
+  try {
+    const r = await api("GET", "/api/resume");
+    state.mode = "resume";
+    state.current = null;
+    renderSidebar();
+    resumeExperience = (r.experience || []).map((e) => ({
+      title: e.title || "", company: e.company || "", dates: e.dates || "",
+      highlights: e.highlights || [],
+    }));
+    resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
+    contentEl.innerHTML = resumeMarkup(r);
+    renderExperience();
+    renderLinks();
+    wireResume();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+$("#resume-btn").addEventListener("click", openResume);
+
+// ---- AI / LLM settings panel ----------------------------------------------
+
+function llmMarkup(s) {
+  const inst = s.instance || {};
+  const secretsOff = !s.secrets_available;
+  const keyNote = secretsOff
+    ? "Set APPLYTRACK_SECRETS_KEY on the server to store a per-tenant key."
+    : s.has_api_key
+    ? "A key is saved (hidden). Enter a new one to replace it, or tick the box to remove it."
+    : "No key saved. The instance default key (if any) is used.";
+  return `
+    <article class="sheet">
+      <div class="sheet-eyebrow">AI · cover-letter endpoint</div>
+      <h2 class="sheet-title">Where cover letters are drafted</h2>
+      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+        Any OpenAI-compatible endpoint — a local model (Ollama / vLLM) or a hosted provider.
+        Leave a field blank to inherit the instance default.
+      </p>
+
+      <div class="mt-5">
+        <label class="field-label">Base URL</label>
+        <input id="l-base" class="field-input mono" value="${escapeHtml(s.base_url || "")}"
+          placeholder="${escapeHtml(inst.base_url || "http://localhost:11434/v1")}" />
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">Model</label>
+        <input id="l-model" class="field-input mono" value="${escapeHtml(s.model || "")}"
+          placeholder="${escapeHtml(inst.model || "llama3.1")}" />
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label">API key ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
+        <input id="l-key" type="password" class="field-input mono" autocomplete="off"
+          placeholder="${secretsOff ? "operator hasn't enabled per-tenant keys" : "leave blank to keep the saved key"}"
+          ${secretsOff ? "disabled" : ""} />
+        <label class="source-row mt-2 ${s.has_api_key && !secretsOff ? "" : "hidden"}">
+          <input id="l-clear" type="checkbox" /> <span>Remove the saved key</span>
+        </label>
+        <p class="mt-1 font-mono text-[11px] text-ink-faint">${escapeHtml(keyNote)}</p>
+      </div>
+
+      <div class="mt-4 rounded-md border border-rule px-3 py-2 font-mono text-[11px] text-ink-faint">
+        Instance default — ${inst.base_url ? escapeHtml(inst.base_url) : "no URL"} ·
+        ${inst.model ? escapeHtml(inst.model) : "no model"} ·
+        ${inst.has_api_key ? "key set" : "no key"}
+      </div>
+
+      <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-primary" data-act="save">Save AI settings</button>
+      </div>
+    </article>`;
+}
+
+function wireLlm() {
+  contentEl.querySelector('[data-act="cancel"]').onclick = () =>
+    state.current ? openApp(state.current) : renderEmpty();
+  contentEl.querySelector('[data-act="save"]').onclick = async () => {
+    const body = { base_url: $("#l-base").value.trim(), model: $("#l-model").value.trim() };
+    // api_key is omitted unless the user typed a new one or asked to clear it —
+    // mirrors the server's "omitted = leave alone" semantics.
+    const keyEl = $("#l-key");
+    const clearEl = $("#l-clear");
+    if (keyEl && keyEl.value) body.api_key = keyEl.value;
+    else if (clearEl && clearEl.checked) body.api_key = "";
+    try {
+      await api("PUT", "/api/llm-settings", body);
+      toast("AI settings saved.");
+      state.current ? openApp(state.current) : renderEmpty();
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
+async function openLlmSettings() {
+  try {
+    const s = await api("GET", "/api/llm-settings");
+    state.mode = "llm";
+    state.current = null;
+    renderSidebar();
+    contentEl.innerHTML = llmMarkup(s);
+    wireLlm();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+$("#ai-btn").addEventListener("click", openLlmSettings);
 
 // ---- Boot + refresh -------------------------------------------------------
 
