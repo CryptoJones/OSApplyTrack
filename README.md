@@ -397,6 +397,27 @@ pip install -e '.[dev]'
 DATABASE_URL=postgresql://applytrack:applytrack@localhost:5432/applytrack applytrack poll
 ```
 
+The API listens on **http://localhost:5049** (per `launchSettings.json`), runs the
+DbUp migrations on startup, and serves the SPA — so that one URL is the whole app.
+In Development with no SMTP configured, the magic-link login URL is printed to the
+**console** running `dotnet run`; click it to sign in.
+
+**Enable cover-letter drafting (optional).** Drafting stays off until an
+OpenAI-compatible endpoint is set. To turn it on for local testing, point the API at
+a local model — e.g. [Ollama](https://ollama.com) (`ollama serve`, then
+`ollama pull llama3.1:8b`):
+
+```sh
+cd api
+Llm__BaseUrl=http://localhost:11434/v1 Llm__Model=llama3.1:8b \
+  dotnet run --project ApplyTrack.Api
+```
+
+A hosted provider works the same way — add `Llm__ApiKey=…` (and set
+`APPLYTRACK_SECRETS_KEY` if tenants will store their own keys). Or skip the env
+entirely and configure it per-tenant in the SPA's **AI** panel. See
+[Cover letters](#cover-letters).
+
 ## Tests
 
 ```sh
