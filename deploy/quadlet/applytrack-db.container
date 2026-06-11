@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack Postgres
+
+[Container]
+ContainerName=applytrack-db
+Image=docker.io/library/postgres:17-alpine
+Network=applytrack.network
+Volume=applytrack-pgdata.volume:/var/lib/postgresql/data
+EnvironmentFile=%h/.config/applytrack/applytrack.env
+# Notify=healthy: the unit only reaches "started" once pg_isready passes, so the
+# API/poller units' After= ordering doubles as a health gate.
+HealthCmd=pg_isready -U applytrack
+HealthInterval=5s
+HealthTimeout=5s
+HealthRetries=10
+Notify=healthy
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

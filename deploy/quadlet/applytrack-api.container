@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack API (.NET, serves the SPA)
+Requires=applytrack-db.service
+After=applytrack-db.service
+
+[Container]
+ContainerName=applytrack-api
+Image=ghcr.io/cryptojones/osapplytrack-api:latest
+Network=applytrack.network
+EnvironmentFile=%h/.config/applytrack/applytrack.env
+Environment=ASPNETCORE_URLS=http://+:8080
+# 0.0.0.0 so the LAN can reach it; Postgres stays on the container network.
+# Relocating? Change the HOST side only (the container side stays 8080) and
+# keep the ExecStartPre port below in sync.
+PublishPort=8080:8080
+
+[Service]
+# Guard rail: refuse to start when something else already listens on the host
+# port, instead of silently winning the bind race (8080 is contested — vLLM,
+# llama.cpp, and half of all dev tools default to it). A clear journal error
+# beats a mystery conflict. Keep the port here in sync with PublishPort.
+ExecStartPre=/bin/sh -c 'if ss -tlnH "sport = :8080" | grep -q .; then echo "applytrack-api: host port 8080 is already in use — refusing to bind over it (edit PublishPort + this check)"; exit 1; fi'
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -120,6 +120,13 @@ docker compose up --build   # brings up db + api + poller
 
 Open **http://localhost:8080**.
 
+> **Port guard rail.** 8080 is a contested port (vLLM, llama.cpp, and plenty of
+> dev tools default to it), so the stack **checks before it binds**: a compose
+> preflight refuses to start the api when anything already listens on
+> `API_PORT`, with a clear error instead of silently winning the bind race.
+> Relocate by setting `API_PORT` in `.env`. The
+> [quadlet units](deploy/quadlet/) ship the same guard via `ExecStartPre`.
+
 Prefer prebuilt images? Each release publishes both runtimes to the GitHub
 Container Registry, so you can skip the local build:
 

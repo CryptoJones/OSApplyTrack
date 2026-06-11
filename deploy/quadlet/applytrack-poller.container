@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack discovery poller (Python)
+Requires=applytrack-db.service
+After=applytrack-db.service
+
+[Container]
+ContainerName=applytrack-poller
+Image=ghcr.io/cryptojones/osapplytrack-poller:latest
+Network=applytrack.network
+EnvironmentFile=%h/.config/applytrack/applytrack.env
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

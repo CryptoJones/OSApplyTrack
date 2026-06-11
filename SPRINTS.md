@@ -109,6 +109,11 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   surfaces that previously had **no UI**: blacklist view/remove
   (`DELETE /api/blacklist/{company}`), account delete (double-confirm), sign-out.
   Export / Share / Import live under Account.
+- ✅ **Port guard rails** — the stack checks before it binds instead of silently
+  winning the race for a contested port (8080: vLLM/llama.cpp/dev tools).
+  Compose gains a host-network `portcheck` preflight that fails the `api`
+  service with a clear message when `API_PORT` is taken; `deploy/quadlet/` now
+  ships example rootless-podman units with the same `ExecStartPre` guard.
 - ✅ **Cover-letter kill switch** (DbUp 0013) — per-tenant
   `cover_letters_enabled` on `llm_settings`, surfaced as a checkbox in
   Settings · AI. OFF hides every drafting affordance in the SPA and
