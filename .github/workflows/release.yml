@@ -86,4 +86,6 @@ jobs:
 
             `docker compose up` brings up Postgres + API + poller — see the
             [README](https://github.com/CryptoJones/OSApplyTrack#quickstart-docker).
+
+            Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
         run: gh release create "$TAG" --title "$TAG" --verify-tag --notes "$NOTES"
