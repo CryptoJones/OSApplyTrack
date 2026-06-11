@@ -164,26 +164,39 @@ public static partial class JobPostingParser
 
     private static ScrapeResult FromMetaTags(string html, string? source)
     {
-        var ogTitle = MetaContent(html, "og:title") ?? TitleTag(html);
+        var ogTitle = MetaContent(html, "og:title");
         var siteName = MetaContent(html, "og:site_name");
         var description = Clean(HtmlToText(
             MetaContent(html, "og:description") ?? MetaContent(html, "description")));
 
+        // Run the title patterns over og:title first, then <title> — the new
+        // job-boards.greenhouse.io pages put the bare role in og:title and hide
+        // "Job Application for ROLE at COMPANY" in <title> only.
         string? company = null, role = null, location = null;
-        if (ogTitle is not null)
+        foreach (var title in new[] { ogTitle, TitleTag(html) })
         {
+            if (title is null)
+                continue;
             // Greenhouse: "Job Application for ROLE at COMPANY"
             // LinkedIn:   "COMPANY hiring ROLE in LOCATION | LinkedIn"
             // Generic:    "ROLE at COMPANY"
-            if (GreenhouseTitle().Match(ogTitle) is { Success: true } g)
-                (role, company) = (g.Groups[1].Value, g.Groups[2].Value);
-            else if (LinkedInTitle().Match(ogTitle) is { Success: true } li)
-                (company, role, location) = (li.Groups[1].Value, li.Groups[2].Value, li.Groups[3].Value);
-            else if (RoleAtCompanyTitle().Match(ogTitle) is { Success: true } at)
-                (role, company) = (at.Groups[1].Value, at.Groups[2].Value);
-            else
-                role = ogTitle;
+            if (GreenhouseTitle().Match(title) is { Success: true } g)
+                (role, company) = (role ?? g.Groups[1].Value, company ?? g.Groups[2].Value);
+            else if (LinkedInTitle().Match(title) is { Success: true } li)
+                (company, role, location) =
+                    (company ?? li.Groups[1].Value, role ?? li.Groups[2].Value, location ?? li.Groups[3].Value);
+            else if (RoleAtCompanyTitle().Match(title) is { Success: true } at)
+                (role, company) = (role ?? at.Groups[1].Value, company ?? at.Groups[2].Value);
+            if (company is not null)
+                break;
         }
+        role ??= ogTitle;
+
+        // Greenhouse (and friends) put the *location* in og:description. If nothing
+        // else claimed the location slot and the "description" reads like a place,
+        // not prose, file it where the user actually wants it.
+        if (location is null && description is not null && LooksLikeLocation(description))
+            (location, description) = (description, null);
 
         return new(
             Company: Clean(company) ?? Clean(siteName),
@@ -213,6 +226,12 @@ public static partial class JobPostingParser
         var m = TitleElement().Match(html);
         return m.Success ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
     }
+
+    // Short, no sentence punctuation, and shaped like "Remote, India" / "Lincoln, NE" —
+    // prose descriptions have periods and run long.
+    private static bool LooksLikeLocation(string s) =>
+        s.Length <= 60 && !s.Contains('.') && !s.Contains('\n')
+        && (s.Contains("remote", StringComparison.OrdinalIgnoreCase) || LocationShape().IsMatch(s));
 
     // ---- Shared helpers -----------------------------------------------------
 
@@ -308,6 +327,9 @@ public static partial class JobPostingParser
 
     [GeneratedRegex(@"^(.+?) at (.+?)(?:\s*[|·–—-]\s*[^|·–—-]*)?$")]
     private static partial Regex RoleAtCompanyTitle();
+
+    [GeneratedRegex(@"^[\w .'()/&-]+(,\s*[\w .'()/&-]+){1,3}$")]
+    private static partial Regex LocationShape();
 
     [GeneratedRegex(@"<(?:br|/p|/li|/div|/h[1-6])[^>]*>", RegexOptions.IgnoreCase)]
     private static partial Regex BlockBreak();

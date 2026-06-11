@@ -119,6 +119,26 @@ public class ScrapeTests
     }
 
     [Fact]
+    public void Handles_the_new_greenhouse_job_boards_pages()
+    {
+        // Real shape of job-boards.greenhouse.io (June 2026): no JSON-LD, bare role
+        // in og:title, the company only in <title>, and the LOCATION in og:description.
+        const string html = """
+            <meta property="og:title" content="Backend Engineer, Analytics Instrumentation (Golang)   "/>
+            <meta property="og:description" content="Remote, India"/>
+            <title>Job Application for Backend Engineer, Analytics Instrumentation (Golang)    at GitLab</title>
+            """;
+
+        var r = JobPostingParser.Parse(html, new Uri("https://job-boards.greenhouse.io/gitlab/jobs/8481929002"));
+
+        Assert.Equal("Backend Engineer, Analytics Instrumentation (Golang)", r.Role);
+        Assert.Equal("GitLab", r.Company);
+        Assert.Equal("Remote, India", r.Location);
+        Assert.Null(r.Description); // the og:description WAS the location
+        Assert.Equal("greenhouse", r.Source);
+    }
+
+    [Fact]
     public void Falls_back_to_linkedin_style_og_titles_with_a_location()
     {
         const string html = """
