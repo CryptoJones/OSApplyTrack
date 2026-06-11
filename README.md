@@ -2,8 +2,6 @@
 
 > ### Your job hunt, self-hosted and on autopilot.
 
-**by [Aaron K. Clark](https://github.com/CryptoJones)**
-
 [![CI](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/CryptoJones/OSApplyTrack?logo=github&sort=semver)](https://github.com/CryptoJones/OSApplyTrack/releases/latest)
 [![GHCR](https://img.shields.io/badge/ghcr.io-images-2496ED.svg?logo=docker&logoColor=white)](https://github.com/CryptoJones?tab=packages&repo_name=OSApplyTrack)
@@ -479,3 +477,5 @@ Both test suites and the dependency audit run in CI.
 ## License
 
 [Apache-2.0](./LICENSE). Copyright 2026 Aaron K. Clark.
+
+Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
