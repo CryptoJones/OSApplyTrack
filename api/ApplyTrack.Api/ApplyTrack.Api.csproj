@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ApplyTrack.Api</RootNamespace>
-    <Version>1.2.1</Version>
+    <Version>1.3.0</Version>
     <Authors>Aaron K. Clark</Authors>
     <Copyright>Copyright 2026 Aaron K. Clark</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
