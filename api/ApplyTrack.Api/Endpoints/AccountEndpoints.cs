@@ -16,9 +16,17 @@ namespace ApplyTrack.Api.Endpoints;
 /// can walk your data to a host with better features/pricing. All are under <c>/api</c>,
 /// so the tenancy choke-point already requires a session and the repos arrive
 /// pre-scoped — these only ever touch the caller's own tenant.
+///
+/// Two export flavours, told apart by their <c>format</c> field: the private migration
+/// snapshot (everything, re-imported into your own account) and the shared opportunity
+/// list (public posting facts only, handed to a peer who imports it as fresh leads).
 /// </summary>
 public static class AccountEndpoints
 {
+    // The format discriminator of the peer-facing list; the migration snapshot's
+    // sibling. Import branches on it.
+    private const string SharedFormat = "applytrack-shared";
+
     // The export is a single private migration snapshot. snake_case + indented so it
     // round-trips byte-compatibly with the /api/* shapes and a human can read it.
     private static readonly JsonSerializerOptions ExportJson = new()
@@ -46,6 +54,23 @@ public static class AccountEndpoints
             return Results.File(bytes, "application/json", filename);
         });
 
+        // The peer-facing counterpart: a curated opportunity list to hand to someone
+        // else ("here's where I found 80 places hiring — work it too"). Only the facts
+        // of the posting itself leave the account — slug (so the importer can de-dup),
+        // company, role, link, location, source. Everything personal — status, notes,
+        // contact, dates, score, salary — is stripped at the source, not trusted to a
+        // client-side filter.
+        app.MapGet("/api/account/export/shared", async (ApplicationRepo apps) =>
+        {
+            var records = await apps.ExportAllAsync();
+            var doc = new SharedExportDoc(
+                Applications: records.Select(SharedApplicationExport.From).ToList());
+
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(doc, ExportJson);
+            var filename = $"applytrack-shared-{DateTime.UtcNow:yyyy-MM-dd}.json";
+            return Results.File(bytes, "application/json", filename);
+        });
+
         // Import a snapshot produced by export (this or another instance). Overwrite by
         // slug — an incoming app replaces a matching local one, a new slug is added,
         // untouched local apps stay; re-importing is idempotent. The whole load runs in
@@ -55,6 +80,38 @@ public static class AccountEndpoints
             ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist) =>
         {
             var hasApps = body.Applications is { Count: > 0 };
+
+            // A shared opportunity list imports differently from a migration snapshot:
+            // every entry lands as a fresh lead with personal state blank, and a slug
+            // the importer already tracks is skipped, never overwritten — a peer's
+            // list must not clobber the importer's own pipeline. Whatever personal
+            // fields a doctored file carries are dropped here, by construction.
+            if (body.Format == SharedFormat)
+            {
+                if (!hasApps)
+                    throw new AppValidationException("no importable data in file");
+
+                if (conn.State != ConnectionState.Open)
+                    conn.Open();
+                using var sharedTx = conn.BeginTransaction();
+
+                int added = 0, skipped = 0;
+                foreach (var a in body.Applications!)
+                {
+                    if (await apps.InsertIfAbsentAsync(a.Name, a.ToSharedLeadFields(), sharedTx))
+                        added++;
+                    else
+                        skipped++;
+                }
+                sharedTx.Commit();
+
+                return Results.Ok(new
+                {
+                    imported_applications = added,
+                    skipped_applications = skipped,
+                });
+            }
+
             var hasCriteria = body.Criteria is { ValueKind: JsonValueKind.Object };
             var hasBlacklist = body.Blacklist is { Count: > 0 };
             if (!hasApps && !hasCriteria && !hasBlacklist)
@@ -110,6 +167,32 @@ public static class AccountEndpoints
         [JsonPropertyOrder(-2)] public int Version => 1;
         [JsonPropertyOrder(-1)] public DateTime ExportedAt => DateTime.UtcNow;
     }
+
+    /// <summary>
+    /// The shared-list envelope — same self-describing shape as <see cref="ExportDoc"/>
+    /// but a distinct <c>format</c>, so import can tell the two apart. No criteria, no
+    /// blacklist: those are personal settings and never leave the account this way.
+    /// </summary>
+    private sealed record SharedExportDoc(
+        IReadOnlyList<SharedApplicationExport> Applications)
+    {
+        [JsonPropertyOrder(-3)] public string Format => SharedFormat;
+        [JsonPropertyOrder(-2)] public int Version => 1;
+        [JsonPropertyOrder(-1)] public DateTime ExportedAt => DateTime.UtcNow;
+    }
+}
+
+/// <summary>
+/// One application reduced to the facts of the posting itself: the slug (the importer's
+/// de-dup key) plus company, role, link, location and source. Everything that describes
+/// the exporter rather than the job — status, contact, dates, score, salary, notes —
+/// has no field here, so it cannot leak by accident.
+/// </summary>
+public sealed record SharedApplicationExport(
+    string Name, string Company, string Role, string Link, string Location, string Source)
+{
+    public static SharedApplicationExport From(AppRecord r) =>
+        new(r.Name, r.Fields.Company, r.Fields.Role, r.Fields.Link, r.Fields.Location, r.Fields.Source);
 }
 
 /// <summary>
@@ -137,15 +220,28 @@ public sealed record ApplicationExport(
         ContactEmail = ContactEmail, Applied = Applied, Followup = Followup,
         Created = Created, Score = Score, Notes = Notes,
     };
+
+    /// <summary>
+    /// The shared-list import view: only the public posting facts cross accounts.
+    /// Status falls back to the <see cref="AppFields"/> default (<c>lead</c>) and every
+    /// personal field stays blank, whatever the incoming document claims.
+    /// </summary>
+    public AppFields ToSharedLeadFields() => new()
+    {
+        Company = Company, Role = Role, Link = Link, Location = Location, Source = Source,
+    };
 }
 
 /// <summary>
 /// The posted import body. Every part is optional so a hand-trimmed file (just apps,
 /// say) still imports; the endpoint rejects a file with nothing usable. <c>Criteria</c>
 /// stays a raw <see cref="JsonElement"/> so it runs through <see cref="Criteria.FromJson"/>
-/// — the same normalization the <c>/api/criteria</c> PUT applies.
+/// — the same normalization the <c>/api/criteria</c> PUT applies. <c>Format</c> selects
+/// the import semantics: <c>applytrack-shared</c> gets the leads-only path, anything
+/// else (including absent — pre-1.3 exports) the migration upsert.
 /// </summary>
 public sealed record ImportDoc(
+    string? Format,
     List<ApplicationExport>? Applications,
     JsonElement? Criteria,
     List<string>? Blacklist);

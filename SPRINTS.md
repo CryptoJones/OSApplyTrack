@@ -98,6 +98,23 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   api + poller images and pushes them to GHCR
   (`ghcr.io/cryptojones/osapplytrack-{api,poller}`, semver + `latest`, public) and
   publishes a GitHub Release. Versions bumped to 1.0.0; release + GHCR badges added.
+- ✅ **Shared opportunity list** (issue #1) — `GET /api/account/export/shared`
+  exports the peer-facing sibling of the migration snapshot
+  (`format: applytrack-shared`): slug + company/role/link/location/source only,
+  personal state stripped server-side. Import branches on the `format` field:
+  every entry lands as a fresh `lead`, slugs already tracked are skipped (new
+  `ApplicationRepo.InsertIfAbsentAsync`, `ON CONFLICT DO NOTHING`). 5 new tests.
+- ✅ **Settings hub** — one ⚙ Settings masthead button replaces the six scattered
+  panel/export buttons; tabs for Criteria, Résumé, AI, Blacklist, Account. New
+  surfaces that previously had **no UI**: blacklist view/remove
+  (`DELETE /api/blacklist/{company}`), account delete (double-confirm), sign-out.
+  Export / Share / Import live under Account.
+- ✅ **Cover-letter kill switch** (DbUp 0013) — per-tenant
+  `cover_letters_enabled` on `llm_settings`, surfaced as a checkbox in
+  Settings · AI. OFF hides every drafting affordance in the SPA and
+  `POST /api/apps/{name}/draft` refuses with a clear 400, so tenants who don't
+  want to run a model never see or call one. Omitted-means-keep PUT semantics,
+  same as `api_key`.
 
 ## Backlog / ideas
 

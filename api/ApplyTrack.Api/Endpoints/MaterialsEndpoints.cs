@@ -36,12 +36,15 @@ public static class MaterialsEndpoints
         app.MapGet("/api/llm-settings", async (
             LlmSettingsRepo repo, LlmOptions instance, SecretProtector protector) =>
         {
-            var (baseUrl, model, hasKey) = await repo.GetViewAsync();
+            var (baseUrl, model, hasKey, lettersEnabled) = await repo.GetViewAsync();
             return Results.Ok(new
             {
                 base_url = baseUrl,
                 model,
                 has_api_key = hasKey,
+                // Whether this tenant wants cover letters at all; OFF hides the
+                // drafting UI and the draft endpoint refuses.
+                cover_letters_enabled = lettersEnabled,
                 // Read-only view of the operator-set fallback so the UI can show what a
                 // tenant inherits when they leave a field blank.
                 instance = new
@@ -66,10 +69,23 @@ public static class MaterialsEndpoints
                 && payload.TryGetProperty("api_key", out _);
             var newKey = changeKey ? GetString(payload, "api_key") : null;
 
-            await repo.UpsertAsync(baseUrl, model, changeKey, newKey);
+            // Same omitted-means-keep semantics for the cover-letter toggle.
+            bool? lettersEnabled = payload.ValueKind == JsonValueKind.Object
+                && payload.TryGetProperty("cover_letters_enabled", out var en)
+                && en.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? en.GetBoolean()
+                : null;
 
-            var (savedUrl, savedModel, hasKey) = await repo.GetViewAsync();
-            return Results.Ok(new { base_url = savedUrl, model = savedModel, has_api_key = hasKey });
+            await repo.UpsertAsync(baseUrl, model, changeKey, newKey, lettersEnabled);
+
+            var (savedUrl, savedModel, hasKey, savedEnabled) = await repo.GetViewAsync();
+            return Results.Ok(new
+            {
+                base_url = savedUrl,
+                model = savedModel,
+                has_api_key = hasKey,
+                cover_letters_enabled = savedEnabled,
+            });
         });
 
         // ---- Discard a generated cover letter ---------------------------------

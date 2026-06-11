@@ -186,6 +186,42 @@ public class MaterialsEndpointTests : IAsyncLifetime
         Assert.True(v.GetProperty("secrets_available").GetBoolean());
     }
 
+    // ---- Cover-letter toggle ------------------------------------------------
+
+    [Fact]
+    public async Task Cover_letters_default_on_and_the_toggle_round_trips()
+    {
+        // No llm_settings row yet: the engine defaults ON.
+        var v = await ReadJson(await _client.GetAsync("/api/llm-settings"));
+        Assert.True(v.GetProperty("cover_letters_enabled").GetBoolean());
+
+        // Turn it off; the PUT echoes the new state.
+        var put = await ReadJson(await _client.PutAsync("/api/llm-settings",
+            Json("""{"cover_letters_enabled":false}""")));
+        Assert.False(put.GetProperty("cover_letters_enabled").GetBoolean());
+
+        // A later PUT that omits the field leaves the stored toggle alone —
+        // the same omitted-means-keep semantics as api_key.
+        await _client.PutAsync("/api/llm-settings", Json("""{"model":"llama3.1"}"""));
+        var after = await ReadJson(await _client.GetAsync("/api/llm-settings"));
+        Assert.False(after.GetProperty("cover_letters_enabled").GetBoolean());
+        Assert.Equal("llama3.1", after.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Draft_is_refused_when_cover_letters_are_disabled()
+    {
+        // Fully configured (stub model + résumé) — the toggle alone must refuse.
+        using var client = await AuthedClientAsync(NewFactory(WithStub(new StubLlmClient())));
+        await client.PutAsync("/api/resume", Json(NonEmptyResume));
+        await client.PutAsync("/api/llm-settings", Json("""{"cover_letters_enabled":false}"""));
+        var name = await CreateAppAsync(client, "Acme Corp", "Engineer");
+
+        var res = await client.PostAsync($"/api/apps/{name}/draft", null);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("turned off", (await ReadJson(res)).GetProperty("detail").GetString());
+    }
+
     // ---- Drafting ----------------------------------------------------------
 
     [Fact]

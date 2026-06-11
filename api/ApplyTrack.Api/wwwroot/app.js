@@ -24,7 +24,9 @@ const state = {
   filterStatus: "",
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new
+  mode: "empty", // empty | view | edit | raw | new | settings
+  settingsTab: "criteria",
+  coverLettersEnabled: true,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -359,6 +361,8 @@ function isoDate(offsetDays = 0) {
 // per-app server-side), so it renders inline with copy / download / regenerate /
 // discard — no filesystem path. Absent material shows the generate affordance.
 function materialSection(data) {
+  // The tenant turned the engine off (Settings · AI): no drafting UI at all.
+  if (!state.coverLettersEnabled && !data.material) return "";
   if (!data.material) {
     return `
       <div class="material-block mt-6 border-t border-rule pt-4">
@@ -883,28 +887,20 @@ function wireCriteria() {
     try {
       await api("PUT", "/api/criteria", gatherCriteria());
       toast("Criteria saved.");
-      state.current ? openApp(state.current) : renderEmpty();
     } catch (e) {
       toast(e.message);
     }
   };
 }
 
-async function openCriteria() {
-  try {
-    const c = await api("GET", "/api/criteria");
-    state.mode = "criteria";
-    state.current = null;
-    renderSidebar();
-    criteriaBoards = (c.ats_boards || []).map((b) => ({ provider: b.provider, slug: b.slug }));
-    contentEl.innerHTML = criteriaMarkup(c);
-    renderBoards();
-    wireCriteria();
-  } catch (e) {
-    toast(e.message);
-  }
+// Settings · Criteria tab.
+async function loadCriteriaTab(body) {
+  const c = await api("GET", "/api/criteria");
+  criteriaBoards = (c.ats_boards || []).map((b) => ({ provider: b.provider, slug: b.slug }));
+  body.innerHTML = criteriaMarkup(c);
+  renderBoards();
+  wireCriteria();
 }
-$("#criteria-btn").addEventListener("click", openCriteria);
 
 // ---- Résumé panel ---------------------------------------------------------
 
@@ -1087,33 +1083,25 @@ function wireResume() {
     try {
       await api("PUT", "/api/resume", gatherResume());
       toast("Résumé saved.");
-      state.current ? openApp(state.current) : renderEmpty();
     } catch (e) {
       toast(e.message);
     }
   };
 }
 
-async function openResume() {
-  try {
-    const r = await api("GET", "/api/resume");
-    state.mode = "resume";
-    state.current = null;
-    renderSidebar();
-    resumeExperience = (r.experience || []).map((e) => ({
-      title: e.title || "", company: e.company || "", dates: e.dates || "",
-      highlights: e.highlights || [],
-    }));
-    resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
-    contentEl.innerHTML = resumeMarkup(r);
-    renderExperience();
-    renderLinks();
-    wireResume();
-  } catch (e) {
-    toast(e.message);
-  }
+// Settings · Résumé tab.
+async function loadResumeTab(body) {
+  const r = await api("GET", "/api/resume");
+  resumeExperience = (r.experience || []).map((e) => ({
+    title: e.title || "", company: e.company || "", dates: e.dates || "",
+    highlights: e.highlights || [],
+  }));
+  resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
+  body.innerHTML = resumeMarkup(r);
+  renderExperience();
+  renderLinks();
+  wireResume();
 }
-$("#resume-btn").addEventListener("click", openResume);
 
 // ---- AI / LLM settings panel ----------------------------------------------
 
@@ -1133,6 +1121,17 @@ function llmMarkup(s) {
         Any OpenAI-compatible endpoint — a local model (Ollama / vLLM) or a hosted provider.
         Leave a field blank to inherit the instance default.
       </p>
+
+      <div class="mt-5">
+        <label class="source-row">
+          <input id="l-enabled" type="checkbox"${s.cover_letters_enabled === false ? "" : " checked"} />
+          <span>Enable cover-letter drafting</span>
+        </label>
+        <p class="mt-1 font-mono text-[11px] text-ink-faint">
+          Untick if you don't want to run a model — the app hides every drafting affordance
+          and never calls an LLM for this account.
+        </p>
+      </div>
 
       <div class="mt-5">
         <label class="field-label">Base URL</label>
@@ -1174,7 +1173,11 @@ function wireLlm() {
   contentEl.querySelector('[data-act="cancel"]').onclick = () =>
     state.current ? openApp(state.current) : renderEmpty();
   contentEl.querySelector('[data-act="save"]').onclick = async () => {
-    const body = { base_url: $("#l-base").value.trim(), model: $("#l-model").value.trim() };
+    const body = {
+      base_url: $("#l-base").value.trim(),
+      model: $("#l-model").value.trim(),
+      cover_letters_enabled: $("#l-enabled").checked,
+    };
     // api_key is omitted unless the user typed a new one or asked to clear it —
     // mirrors the server's "omitted = leave alone" semantics.
     const keyEl = $("#l-key");
@@ -1182,28 +1185,22 @@ function wireLlm() {
     if (keyEl && keyEl.value) body.api_key = keyEl.value;
     else if (clearEl && clearEl.checked) body.api_key = "";
     try {
-      await api("PUT", "/api/llm-settings", body);
+      const r = await api("PUT", "/api/llm-settings", body);
+      state.coverLettersEnabled = r.cover_letters_enabled !== false;
       toast("AI settings saved.");
-      state.current ? openApp(state.current) : renderEmpty();
     } catch (e) {
       toast(e.message);
     }
   };
 }
 
-async function openLlmSettings() {
-  try {
-    const s = await api("GET", "/api/llm-settings");
-    state.mode = "llm";
-    state.current = null;
-    renderSidebar();
-    contentEl.innerHTML = llmMarkup(s);
-    wireLlm();
-  } catch (e) {
-    toast(e.message);
-  }
+// Settings · AI tab.
+async function loadLlmTab(body) {
+  const s = await api("GET", "/api/llm-settings");
+  state.coverLettersEnabled = s.cover_letters_enabled !== false;
+  body.innerHTML = llmMarkup(s);
+  wireLlm();
 }
-$("#ai-btn").addEventListener("click", openLlmSettings);
 
 // ---- Boot + refresh -------------------------------------------------------
 
@@ -1259,16 +1256,16 @@ $("#poll-btn").addEventListener("click", runPoll);
 
 // ---- Data export / import (account portability) ---------------------------
 
-// Download the whole account as one JSON file. Uses fetch directly (not api(),
-// which parses JSON) so we can stream the file straight to a download.
-async function exportData() {
-  const btn = $("#export-btn");
+// Download one of the two export flavours as a JSON file: the full private snapshot
+// (Export) or the anonymized shareable opportunity list (Share). Uses fetch directly
+// (not api(), which parses JSON) so we can stream the file straight to a download.
+async function downloadExport(btn, url, fallbackName, doneMsg) {
   if (btn.disabled) return;
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Exporting…";
   try {
-    const res = await fetch("/api/account/export");
+    const res = await fetch(url);
     if (!res.ok) {
       if (res.status === 401) showLogin();
       throw new Error("Export failed.");
@@ -1276,16 +1273,16 @@ async function exportData() {
     const blob = await res.blob();
     const cd = res.headers.get("Content-Disposition") || "";
     const m = /filename="?([^"]+)"?/.exec(cd);
-    const filename = m ? m[1] : "applytrack-export.json";
-    const url = URL.createObjectURL(blob);
+    const filename = m ? m[1] : fallbackName;
+    const url2 = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
+    a.href = url2;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
-    toast("Exported your data.");
+    URL.revokeObjectURL(url2);
+    toast(doneMsg);
   } catch (e) {
     toast(e.message);
   } finally {
@@ -1293,11 +1290,11 @@ async function exportData() {
     btn.textContent = label;
   }
 }
-$("#export-btn").addEventListener("click", exportData);
 
-// Import an exported snapshot. Apps that share a slug are overwritten; the rest are
-// added. Parse client-side first so a bad file fails fast without hitting the server.
-$("#import-btn").addEventListener("click", () => $("#import-file").click());
+// Import an exported file (triggered from Settings · Account). A migration snapshot
+// overwrites apps that share a slug; a shared opportunity list (format
+// "applytrack-shared") adds new leads and skips slugs already tracked. Parse
+// client-side first so a bad file fails fast without hitting the server.
 $("#import-file").addEventListener("change", async (e) => {
   const file = e.target.files && e.target.files[0];
   e.target.value = ""; // let the same file be re-picked later
@@ -1308,17 +1305,193 @@ $("#import-file").addEventListener("change", async (e) => {
   } catch (_) {
     return toast("That file isn't a valid JSON export.");
   }
-  if (!confirm("Import overwrites applications that share a name with ones in this file. Continue?")) return;
+  const shared = !!doc && doc.format === "applytrack-shared";
+  const prompt = shared
+    ? "Import this shared list as new leads? Opportunities you already track are left untouched."
+    : "Import overwrites applications that share a name with ones in this file. Continue?";
+  if (!confirm(prompt)) return;
   try {
     const r = await api("POST", "/api/account/import", doc);
     await refresh();
     renderEmpty();
     const n = r.imported_applications || 0;
-    toast(`Imported ${n} application${n === 1 ? "" : "s"}.`);
+    if (shared) {
+      const s = r.skipped_applications || 0;
+      toast(`Added ${n} new lead${n === 1 ? "" : "s"}.`
+        + (s ? ` Skipped ${s} you already track.` : ""));
+    } else {
+      toast(`Imported ${n} application${n === 1 ? "" : "s"}.`);
+    }
   } catch (err) {
     toast(err.message);
   }
 });
+
+// ---- Settings hub -----------------------------------------------------------
+// Every per-tenant setting in one place: discovery criteria, the résumé, the AI
+// endpoint (+ cover-letter toggle), the company blacklist, and account-level data
+// portability (export / share / import / delete) plus sign-out. Each tab talks to
+// the tenant-scoped /api routes, so one user's settings never touch another's.
+
+const SETTINGS_TABS = [
+  ["criteria", "Criteria"],
+  ["resume", "Résumé"],
+  ["ai", "AI"],
+  ["blacklist", "Blacklist"],
+  ["account", "Account"],
+];
+
+async function openSettings(tab) {
+  if (SETTINGS_TABS.some(([k]) => k === tab)) state.settingsTab = tab;
+  state.mode = "settings";
+  state.current = null;
+  renderSidebar();
+  contentEl.innerHTML = `
+    <nav class="flex flex-wrap items-center gap-2">
+      ${SETTINGS_TABS.map(([k, label]) =>
+        `<button class="btn ${k === state.settingsTab ? "btn-primary" : "btn-ghost"}"
+           data-tab="${k}" type="button">${label}</button>`).join("")}
+    </nav>
+    <div id="settings-body" class="mt-4"></div>`;
+  contentEl.querySelectorAll("[data-tab]").forEach((b) => {
+    b.onclick = () => openSettings(b.dataset.tab);
+  });
+  const body = $("#settings-body");
+  try {
+    if (state.settingsTab === "criteria") await loadCriteriaTab(body);
+    else if (state.settingsTab === "resume") await loadResumeTab(body);
+    else if (state.settingsTab === "ai") await loadLlmTab(body);
+    else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
+    else await loadAccountTab(body);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+$("#settings-btn").addEventListener("click", () => openSettings());
+
+// Settings · Blacklist tab — the first place blacklisted companies can be seen and
+// un-blacklisted (adding happens here or via "Blacklist company" on an app).
+async function loadBlacklistTab(body) {
+  const companies = await api("GET", "/api/blacklist");
+  body.innerHTML = `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Blacklist</div>
+      <h2 class="sheet-title">Companies the poller skips</h2>
+      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+        Leads from these companies are never staged. Names are stored normalized
+        (lowercased, punctuation-insensitive).
+      </p>
+      <div id="bl-list" class="board-list mt-5">
+        ${companies.length
+          ? companies.map((c) =>
+              `<div class="board-row">
+                <span class="board-slug mono">${escapeHtml(c)}</span>
+                <button class="btn btn-ghost btn-xs" data-bl-remove="${escapeHtml(c)}" type="button">✕</button>
+              </div>`).join("")
+          : `<div class="board-empty font-mono text-[11px] text-ink-faint">No blacklisted companies.</div>`}
+      </div>
+      <div class="board-add mt-3">
+        <input id="bl-company" class="field-input mono" placeholder="company name (e.g. Evil Corp)" />
+        <button class="btn btn-ghost" data-act="bl-add" type="button">+ Blacklist company</button>
+      </div>
+    </article>`;
+  body.querySelectorAll("[data-bl-remove]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("DELETE", `/api/blacklist/${encodeURIComponent(btn.dataset.blRemove)}`);
+        toast(`Removed "${btn.dataset.blRemove}" from the blacklist.`);
+        await loadBlacklistTab(body);
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+  });
+  body.querySelector('[data-act="bl-add"]').onclick = async () => {
+    const company = $("#bl-company").value.trim();
+    if (!company) return toast("Enter a company to blacklist.");
+    try {
+      await api("POST", "/api/blacklist", { company });
+      toast(`Blacklisted "${company}".`);
+      await loadBlacklistTab(body);
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
+// Settings · Account tab — data portability (the OSS no-lock-in promise) and the
+// account-level actions: sign out, and the cascade delete of everything.
+async function loadAccountTab(body) {
+  body.innerHTML = `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Account</div>
+      <h2 class="sheet-title">Your data, portable</h2>
+
+      <div class="mt-5">
+        <div class="field-label">Export — private migration snapshot</div>
+        <p class="font-mono text-[11px] text-ink-faint">
+          Everything: applications, criteria, blacklist. Import it on another instance to move home.
+        </p>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <button class="btn btn-ghost" data-act="export" type="button">⤓ Export my data</button>
+          <button class="btn btn-ghost" data-act="import" type="button">⤒ Import a file</button>
+        </div>
+      </div>
+
+      <div class="mt-5 border-t border-rule pt-4">
+        <div class="field-label">Share — anonymized opportunity list</div>
+        <p class="font-mono text-[11px] text-ink-faint">
+          Company, role, link, location, source only — no status, notes, contacts, dates, or score.
+          A peer imports it and every entry lands as a fresh lead.
+        </p>
+        <div class="mt-3">
+          <button class="btn btn-ghost" data-act="share" type="button">⤴ Share an opportunity list</button>
+        </div>
+      </div>
+
+      <div class="mt-5 border-t border-rule pt-4">
+        <div class="field-label">Session</div>
+        <div class="mt-3">
+          <button class="btn btn-ghost" data-act="logout" type="button">Sign out</button>
+        </div>
+      </div>
+
+      <div class="mt-5 border-t border-rule pt-4">
+        <div class="field-label">Danger zone</div>
+        <p class="font-mono text-[11px] text-ink-faint">
+          Deletes your account and every application, setting, and session with it. Immediate and unrecoverable.
+        </p>
+        <div class="mt-3">
+          <button class="btn btn-danger" data-act="delete-account" type="button">Delete my account</button>
+        </div>
+      </div>
+    </article>`;
+
+  const act = (name) => body.querySelector(`[data-act="${name}"]`);
+  act("export").onclick = () =>
+    downloadExport(act("export"), "/api/account/export",
+      "applytrack-export.json", "Exported your data.");
+  act("share").onclick = () =>
+    downloadExport(act("share"), "/api/account/export/shared",
+      "applytrack-shared.json", "Exported a shareable list — personal state stripped.");
+  act("import").onclick = () => $("#import-file").click();
+  act("logout").onclick = async () => {
+    try {
+      await api("POST", "/api/auth/logout");
+    } catch (_) {}
+    location.reload();
+  };
+  act("delete-account").onclick = async () => {
+    if (!confirm("Delete your account? Every application, setting, and cover letter goes with it.")) return;
+    if (!confirm("Last chance — this is immediate and unrecoverable. Really delete?")) return;
+    try {
+      await api("DELETE", "/api/account");
+      location.reload();
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
 
 // ---- Live refresh (the hourly poller writes new files) --------------------
 
@@ -1405,6 +1578,12 @@ initTheme();
   } catch (e) {
     if (e.status === 401) return;
   }
+  // Whether this tenant wants cover letters decides if the app sheet renders any
+  // drafting UI at all; default ON when the lookup fails so nothing is hidden by error.
+  try {
+    const s = await api("GET", "/api/llm-settings");
+    state.coverLettersEnabled = s.cover_letters_enabled !== false;
+  } catch (_) {}
   try {
     await refresh();
     renderEmpty();

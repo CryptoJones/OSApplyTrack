@@ -335,7 +335,7 @@ public class RepoTests(PostgresFixture pg)
             changeKey: true, newKeyPlaintext: "sk-secret-123");
 
         // The client-safe view exposes only the flag, never the key.
-        var (baseUrl, model, hasKey) = await repo.GetViewAsync();
+        var (baseUrl, model, hasKey, _) = await repo.GetViewAsync();
         Assert.Equal("https://api.openai.com/v1", baseUrl);
         Assert.Equal("gpt-4o-mini", model);
         Assert.True(hasKey);

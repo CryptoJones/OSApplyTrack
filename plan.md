@@ -239,6 +239,12 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
   back, upserting applications by slug in a single transaction. The round-trip lets
   a user migrate between instances, not just back up — no lock-in. SPA gets Export
   /Import buttons in the masthead.
+- **Shared opportunity list** (landed; issue #1) `GET /api/account/export/shared` →
+  the peer-facing sibling format (`format: applytrack-shared`): slug + company,
+  role, link, location, source only — personal state (status, notes, contacts,
+  dates, score, salary) stripped at the source. Importing one lands every entry as
+  a fresh `lead` and skips slugs the importer already tracks (never overwrites).
+  Lives in Settings · Account as **Share an opportunity list**.
 - **Data delete** `DELETE /api/account` → FK `ON DELETE CASCADE` from `users`
   drops applications/seen/profiles/sessions/tokens/blacklist in one statement; SPA
   confirms.
@@ -246,6 +252,16 @@ Postgres, with a hardcoded bootstrap `tenant_id = 1` (auth lands in Step 2).
 ### Step 6 — Cover-letter materials engine (post-v1, optional module)
 Was the heaviest-cost / scariest-data piece, deferred past v1; landed once the core
 was stable. Provider-agnostic and local-model-first so résumé data can stay on-prem.
+
+> **⚠ REQUIREMENT — any LLM, and strictly optional.** The engine talks the
+> OpenAI-compatible `/chat/completions` shape and **must keep working against any
+> endpoint that speaks it** — local (Ollama / vLLM / LM Studio) or hosted (OpenAI,
+> OpenRouter, Together, Groq, Anthropic's compat shim, …). Never hard-code a
+> vendor, model, or paid key into the backend. And the whole engine is
+> **opt-out per tenant**: `cover_letters_enabled` (DbUp 0013, surfaced in
+> Settings · AI) turns off every drafting affordance and refuses
+> `POST /api/apps/{name}/draft`, so users who don't want to run a model never
+> see, configure, or pay for one.
 - **Schema (DbUp 0010–0012):** `resume_profiles`, `llm_settings`
   (`api_key_ciphertext`), `cover_letters((tenant_id, application_name))` — all
   per-tenant, FK→`users`/`applications` `ON DELETE CASCADE`.

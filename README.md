@@ -232,7 +232,8 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist. |
-| `POST`   | `/api/account/import` | Load a snapshot; applications upsert by slug, all in one transaction. |
+| `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
+| `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
 
 ### Materials (cover letters)
@@ -242,7 +243,7 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 | `GET`    | `/api/resume` | The tenant's structured résumé — the only facts the drafter may assert. |
 | `PUT`    | `/api/resume` | Normalize + store the résumé (dedupes skills, drops empty rows/links). |
 | `GET`    | `/api/llm-settings` | The tenant's endpoint override + the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
-| `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it). |
+| `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
 
 ### Not in v1
@@ -301,14 +302,19 @@ Each accepts `--database-url` (a libpq URL), falling back to `DATABASE_URL` / th
 OSApplyTrack drafts a tailored cover letter per application from a structured
 résumé you control — provider-agnostic, and built so your data can stay on-prem.
 
+> **⚠ Any LLM — or none at all.** The backend is hard-required to work with **any
+> OpenAI-compatible endpoint**; no vendor is baked in. And the whole engine is
+> **optional**: untick *Enable cover-letter drafting* in **Settings · AI** and the
+> app hides every drafting affordance and never calls a model for your account.
+
 - **Bring your own model.** The drafter calls an OpenAI-compatible
   `POST {base_url}/chat/completions`, so the same code points at a free local model
   (Ollama, vLLM, LM Studio) or any hosted provider (OpenAI, OpenRouter, Together,
   Groq, …). A local model means **$0 per draft** and the résumé never leaves the box.
 - **Operator default + per-tenant override.** The instance sets a default endpoint
   via `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey`; each tenant can override any
-  field in the **AI** panel (override just the model, keep the URL, etc.).
-- **Your résumé is the only source of truth.** The **Résumé** panel captures name,
+  field in the **Settings · AI** tab (override just the model, keep the URL, etc.).
+- **Your résumé is the only source of truth.** The **Settings · Résumé** tab captures name,
   headline, summary, experience, skills, certifications, and links — the LLM is told
   these are the *only* facts it may assert, so it can't invent employers or metrics.
 - **Keys encrypted at rest.** A tenant's own API key is write-only: sealed with
@@ -369,6 +375,12 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   added, untouched apps stay), so re-importing is idempotent. The whole load runs in
   one transaction — a mid-import failure leaves your account untouched. Use it to
   migrate from one instance to another: export here, import there.
+- **Share** — `GET /api/account/export/shared` exports a peer-shareable
+  *opportunity list*: only the facts of each posting (company, role, link,
+  location, source, plus the slug for de-dup). Status, notes, contacts, dates,
+  score, and salary are stripped at the source. A peer imports the file and every
+  entry lands as a fresh `lead`; anything they already track is skipped, never
+  overwritten. All three live in **Settings · Account**.
 - **Delete** — `DELETE /api/account` removes your account and, via
   `ON DELETE CASCADE`, every row that belongs to it (applications, search profile,
   blacklist, seen ledger, queued polls, sessions, tokens) in one statement.
@@ -422,7 +434,7 @@ Llm__BaseUrl=http://localhost:11434/v1 Llm__Model=llama3.1:8b \
 
 A hosted provider works the same way — add `Llm__ApiKey=…` (and set
 `APPLYTRACK_SECRETS_KEY` if tenants will store their own keys). Or skip the env
-entirely and configure it per-tenant in the SPA's **AI** panel. See
+entirely and configure it per-tenant in **Settings · AI**. See
 [Cover letters](#cover-letters).
 
 ## Tests

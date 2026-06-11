@@ -192,6 +192,37 @@ public sealed partial class ApplicationRepo
             tx);
     }
 
+    /// <summary>
+    /// Insert an application keyed on its slug <c>name</c> only when the slug is new —
+    /// the shared-list importer's path. Unlike <see cref="UpsertByNameAsync"/> an
+    /// existing application is left untouched: a peer's list must never clobber the
+    /// importer's own pipeline state. Returns whether a row was actually inserted.
+    /// </summary>
+    public async Task<bool> InsertIfAbsentAsync(string name, AppFields raw, IDbTransaction? tx = null)
+    {
+        var n = Slug.Normalize(name);
+        var f = raw.Normalized();
+        var created = f.Created.Length > 0 ? f.Created : MarkdownCodec.Today();
+        var affected = await _conn.ExecuteAsync(
+            """
+            INSERT INTO applications
+                (tenant_id, name, company, role, lane, status, link, location, salary,
+                 source, contact, contact_email, applied, followup, created, score, notes)
+            VALUES
+                (@t, @n, @Company, @Role, @Lane, @Status, @Link, @Location, @Salary,
+                 @Source, @Contact, @ContactEmail, @Applied, @Followup, @created, @Score, @Notes)
+            ON CONFLICT (tenant_id, name) DO NOTHING
+            """,
+            new
+            {
+                t = _t, n, created,
+                f.Company, f.Role, f.Lane, f.Status, f.Link, f.Location, f.Salary,
+                f.Source, f.Contact, f.ContactEmail, f.Applied, f.Followup, f.Score, f.Notes,
+            },
+            tx);
+        return affected == 1;
+    }
+
     public Task<string> UpdateStructuredAsync(string name, AppFields fields, string? expectedVersion) =>
         DoUpdateAsync(name, fields.Normalized(), expectedVersion);
 

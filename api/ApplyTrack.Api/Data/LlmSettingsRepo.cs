@@ -29,7 +29,7 @@ public sealed class LlmSettingsRepo
         _protector = protector;
     }
 
-    private sealed record Row(string BaseUrl, string Model, string ApiKeyCiphertext);
+    private sealed record Row(string BaseUrl, string Model, string ApiKeyCiphertext, bool CoverLettersEnabled);
 
     /// <summary>The tenant's override with the API key decrypted, or null when no row exists.</summary>
     public async Task<LlmOverride?> GetOverrideAsync()
@@ -55,23 +55,26 @@ public sealed class LlmSettingsRepo
         return new LlmOverride(row.BaseUrl, row.Model, key);
     }
 
-    /// <summary>The client-safe view: base_url, model, and whether a key is stored — never the key itself.</summary>
-    public async Task<(string BaseUrl, string Model, bool HasApiKey)> GetViewAsync()
+    /// <summary>The client-safe view: base_url, model, whether a key is stored (never the
+    /// key itself), and the cover-letter toggle. No row means all defaults, toggle ON.</summary>
+    public async Task<(string BaseUrl, string Model, bool HasApiKey, bool CoverLettersEnabled)> GetViewAsync()
     {
         var row = await ReadRowAsync();
         return row is null
-            ? ("", "", false)
-            : (row.BaseUrl, row.Model, row.ApiKeyCiphertext.Length > 0);
+            ? ("", "", false, true)
+            : (row.BaseUrl, row.Model, row.ApiKeyCiphertext.Length > 0, row.CoverLettersEnabled);
     }
 
     /// <summary>
     /// Save the override. <paramref name="changeKey"/> distinguishes "leave the stored
     /// key alone" (false) from "set/clear it" (true): a blank <paramref name="newKeyPlaintext"/>
     /// with changeKey clears it, a non-blank one replaces it. Storing a key requires a
-    /// configured master key.
+    /// configured master key. <paramref name="coverLettersEnabled"/> follows the same
+    /// pattern: null leaves the stored toggle alone (a new row defaults to ON).
     /// </summary>
     public async Task UpsertAsync(
-        string baseUrl, string model, bool changeKey, string? newKeyPlaintext, IDbTransaction? tx = null)
+        string baseUrl, string model, bool changeKey, string? newKeyPlaintext,
+        bool? coverLettersEnabled = null, IDbTransaction? tx = null)
     {
         var ciphertext = "";
         if (changeKey && !string.IsNullOrEmpty(newKeyPlaintext))
@@ -87,15 +90,16 @@ public sealed class LlmSettingsRepo
         var keyUpdate = changeKey ? "api_key_ciphertext = EXCLUDED.api_key_ciphertext," : "";
         await _conn.ExecuteAsync(
             $"""
-             INSERT INTO llm_settings (tenant_id, base_url, model, api_key_ciphertext, updated_at)
-             VALUES (@t, @baseUrl, @model, @ciphertext, now())
+             INSERT INTO llm_settings (tenant_id, base_url, model, api_key_ciphertext, cover_letters_enabled, updated_at)
+             VALUES (@t, @baseUrl, @model, @ciphertext, coalesce(@enabled, true), now())
              ON CONFLICT (tenant_id) DO UPDATE SET
                  base_url   = EXCLUDED.base_url,
                  model      = EXCLUDED.model,
                  {keyUpdate}
+                 cover_letters_enabled = coalesce(@enabled, llm_settings.cover_letters_enabled),
                  updated_at = now()
              """,
-            new { t = _t, baseUrl = baseUrl.Trim(), model = model.Trim(), ciphertext },
+            new { t = _t, baseUrl = baseUrl.Trim(), model = model.Trim(), ciphertext, enabled = coverLettersEnabled },
             tx);
     }
 
@@ -103,7 +107,8 @@ public sealed class LlmSettingsRepo
         // Alias to separator-free names so the record maps without depending on
         // Dapper's global MatchNamesWithUnderscores flag.
         _conn.QuerySingleOrDefaultAsync<Row?>(
-            "SELECT base_url AS baseurl, model, api_key_ciphertext AS apikeyciphertext "
+            "SELECT base_url AS baseurl, model, api_key_ciphertext AS apikeyciphertext, "
+            + "cover_letters_enabled AS coverlettersenabled "
             + "FROM llm_settings WHERE tenant_id = @t",
             new { t = _t });
 }

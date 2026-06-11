@@ -98,6 +98,14 @@ public static class AppsEndpoints
         {
             var rec = await apps.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
+
+            // The tenant's kill switch comes first: when drafting is off, refuse
+            // before touching the résumé or the model.
+            var (_, _, _, lettersEnabled) = await llm.GetViewAsync();
+            if (!lettersEnabled)
+                throw new AppValidationException(
+                    "cover-letter drafting is turned off — enable it in Settings · AI");
+
             var resume = await resumes.GetAsync();
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
             var body = await drafter.DraftAsync(rec.Fields, resume, cfg, ct);
