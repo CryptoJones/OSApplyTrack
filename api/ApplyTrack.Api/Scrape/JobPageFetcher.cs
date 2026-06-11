@@ -35,7 +35,7 @@ public sealed class JobPageFetcher
         // Some boards refuse the default HttpClient UA; identify as a browser-compatible
         // bot with a pointer back to the project.
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (compatible; OSApplyTrack/1.1; +https://github.com/CryptoJones/OSApplyTrack)");
+            "Mozilla/5.0 (compatible; OSApplyTrack/1.2; +https://github.com/CryptoJones/OSApplyTrack)");
         _http.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml");
         _http.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en");
     }
