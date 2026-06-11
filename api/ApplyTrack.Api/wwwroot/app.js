@@ -521,7 +521,11 @@ function formMarkup(f, { isNew }) {
 
       <div class="mt-4">
         <label class="field-label">Posting link</label>
-        <input id="f-link" class="field-input mono" value="${escapeHtml(f.link || "")}" placeholder="https://…" />
+        <div class="flex gap-2">
+          <input id="f-link" class="field-input mono flex-1" value="${escapeHtml(f.link || "")}" placeholder="https://…" />
+          <button id="f-autofill" class="btn btn-ghost shrink-0" type="button"
+            title="Fetch the posting and fill in the empty fields">⤓ Autofill</button>
+        </div>
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-4">
@@ -641,6 +645,37 @@ function wireForm({ isNew }) {
   };
   const del = contentEl.querySelector('[data-act="delete"]');
   if (del) del.onclick = () => deleteApp(state.current);
+
+  // Autofill: scrape the posting server-side and fill only the still-empty fields,
+  // so it never clobbers anything the user already typed.
+  const autofill = contentEl.querySelector("#f-autofill");
+  autofill.onclick = async () => {
+    const url = $("#f-link").value.trim();
+    if (!url) return toast("Paste a posting link first.");
+    const label = autofill.textContent;
+    autofill.disabled = true;
+    autofill.textContent = "Fetching…";
+    try {
+      const r = await api("POST", "/api/scrape", { url });
+      let filled = 0;
+      const fill = (sel, val) => {
+        const el = $(sel);
+        if (val && !el.value.trim()) { el.value = val; filled++; }
+      };
+      fill("#f-company", r.company);
+      fill("#f-role", r.role);
+      fill("#f-location", r.location);
+      fill("#f-salary", r.salary);
+      fill("#f-source", r.source);
+      fill("#f-notes", r.description);
+      toast(filled ? `Filled ${filled} field${filled === 1 ? "" : "s"}.` : "Couldn't find job data on that page.");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      autofill.disabled = false;
+      autofill.textContent = label;
+    }
+  };
 }
 
 // ---- Raw editor -----------------------------------------------------------

@@ -15,3 +15,7 @@ public sealed class AppConflictException(string message) : Exception(message);
 /// <summary>The configured LLM endpoint is unreachable or returned an unusable
 /// response — maps to HTTP 502. The message is safe to surface to the user.</summary>
 public sealed class LlmUnavailableException(string message) : Exception(message);
+
+/// <summary>An /api/scrape upstream fetch failed (unreachable, non-HTML, oversized,
+/// or a redirect loop) — maps to HTTP 502. The message is safe to surface.</summary>
+public sealed class ScrapeUnavailableException(string message) : Exception(message);

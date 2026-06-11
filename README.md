@@ -164,6 +164,12 @@ overwrite-confirm flow — two tabs can't silently clobber each other.
 against the tenant's criteria, drops blacklisted companies, dedupes against the
 `seen` ledger, and inserts the rest as `lead`-status applications.
 
+**Autofill.** When entering a lead by hand, paste the posting link and hit
+**⤓ Autofill**: the server fetches the page (`POST /api/scrape` — SSRF-guarded,
+rate-limited) and fills the still-empty fields from the page's
+schema.org `JobPosting` JSON-LD, falling back to OpenGraph/`<title>` heuristics.
+Fields you already typed are never overwritten.
+
 ## Configuration
 
 All configuration is environment variables (see [`.env.example`](./.env.example)):
@@ -208,6 +214,7 @@ open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
 | `DELETE` | `/api/apps/{name}` | Delete → `204`. |
 | `POST`   | `/api/apps/{name}/draft` | Draft a tailored cover letter via the configured LLM; saves it and returns `{ok, material}`. Rate-limited. |
 | `POST`   | `/api/poll` | Enqueue an on-demand poll → `{count:0}`. Rate-limited; the worker drains it. |
+| `POST`   | `/api/scrape` | Body `{url}`. Fetch a posting page server-side (SSRF-guarded) and extract `{company, role, location, salary, source, description}` for the editor's Autofill. Rate-limited; 502 when the page can't be read. |
 
 ### Criteria & blacklist
 

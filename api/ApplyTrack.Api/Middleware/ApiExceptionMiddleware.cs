@@ -46,6 +46,11 @@ public sealed class ApiExceptionMiddleware
             // the SPA can toast something actionable instead of a generic 500.
             await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
         }
+        catch (ScrapeUnavailableException ex)
+        {
+            // Same shape for a job board the scraper couldn't read.
+            await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
+        }
         catch (Exception ex)
         {
             // Anything not a known domain exception: log the detail server-side, but

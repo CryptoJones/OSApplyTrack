@@ -11,6 +11,7 @@ using ApplyTrack.Api.Endpoints;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Middleware;
+using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
 
@@ -68,6 +69,10 @@ builder.Services.AddScoped(sp => new LlmSettingsRepo(
 builder.Services.AddScoped(sp => new CoverLetterRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 
+// The editor's Autofill button: server-side fetch of a job-posting URL (SSRF-guarded;
+// its own pinned HttpClient, so not from the factory) + the JobPosting/OG parser.
+builder.Services.AddSingleton<JobPageFetcher>();
+
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
 // key policy is deliberately left unset so map keys — status names, lane names,
@@ -97,6 +102,10 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("draft", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(5) }));
+    // Each scrape is an outbound fetch of an arbitrary site — same budget as poll.
+    options.AddPolicy("scrape", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1) }));
 });
 
 var app = builder.Build();
@@ -145,6 +154,7 @@ app.MapCriteriaEndpoints();
 app.MapAuthEndpoints();
 app.MapAccountEndpoints();
 app.MapMaterialsEndpoints();
+app.MapScrapeEndpoints();
 
 app.Run();
 
