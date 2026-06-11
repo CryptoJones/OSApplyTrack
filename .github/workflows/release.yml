@@ -17,8 +17,28 @@ permissions:
   packages: write   # push images to ghcr.io
 
 jobs:
+  # Guard against tag/project version drift (v1.1.0 shipped while the csproj still
+  # said 1.0.0, which later caused a tag collision): the tag must match the version
+  # in BOTH runtimes' manifests or nothing builds.
+  versions:
+    name: verify tag matches project versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compare tag to csproj + pyproject
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          csproj=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' api/ApplyTrack.Api/ApplyTrack.Api.csproj)
+          pyproject=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          echo "tag=$tag csproj=$csproj pyproject=$pyproject"
+          [ "$tag" = "$csproj" ] && [ "$tag" = "$pyproject" ] || {
+            echo "::error::tag v$tag does not match csproj ($csproj) and/or pyproject ($pyproject) — bump them before tagging"
+            exit 1
+          }
+
   images:
     name: build + push ${{ matrix.name }} image
+    needs: versions
     runs-on: ubuntu-latest
     strategy:
       matrix:
