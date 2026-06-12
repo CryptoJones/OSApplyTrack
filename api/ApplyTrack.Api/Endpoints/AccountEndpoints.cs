@@ -23,9 +23,11 @@ namespace ApplyTrack.Api.Endpoints;
 /// </summary>
 public static class AccountEndpoints
 {
-    // The format discriminator of the peer-facing list; the migration snapshot's
-    // sibling. Import branches on it.
+    // The format discriminators. Import branches on these: the peer-facing list takes
+    // the non-destructive insert-if-absent path; our own snapshot (or a pre-1.3 file
+    // with no format field) takes the overwrite-by-slug migration path.
     private const string SharedFormat = "applytrack-shared";
+    private const string ExportFormat = "applytrack-export";
 
     // The export is a single private migration snapshot. snake_case + indented so it
     // round-trips byte-compatibly with the /api/* shapes and a human can read it.
@@ -112,6 +114,13 @@ public static class AccountEndpoints
                 });
             }
 
+            // Only our own snapshot (or a pre-1.3 file with no discriminator) may take
+            // the overwrite-by-slug path. Reject anything else — a typo, a foreign
+            // exporter, or a future "applytrack-shared" variant — rather than silently
+            // clobbering the importer's apps with a near-miss format string.
+            if (!string.IsNullOrEmpty(body.Format) && body.Format != ExportFormat)
+                throw new AppValidationException($"unrecognized import format \"{body.Format}\"");
+
             var hasCriteria = body.Criteria is { ValueKind: JsonValueKind.Object };
             var hasBlacklist = body.Blacklist is { Count: > 0 };
             if (!hasApps && !hasCriteria && !hasBlacklist)
@@ -163,7 +172,7 @@ public static class AccountEndpoints
         Criteria Criteria,
         IReadOnlyList<string> Blacklist)
     {
-        [JsonPropertyOrder(-3)] public string Format => "applytrack-export";
+        [JsonPropertyOrder(-3)] public string Format => ExportFormat;
         [JsonPropertyOrder(-2)] public int Version => 1;
         [JsonPropertyOrder(-1)] public DateTime ExportedAt => DateTime.UtcNow;
     }
