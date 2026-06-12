@@ -165,6 +165,7 @@ public static partial class JobPostingParser
     private static ScrapeResult FromMetaTags(string html, string? source)
     {
         var ogTitle = MetaContent(html, "og:title");
+        var titleTag = TitleTag(html);
         var siteName = MetaContent(html, "og:site_name");
         var description = Clean(HtmlToText(
             MetaContent(html, "og:description") ?? MetaContent(html, "description")));
@@ -173,7 +174,7 @@ public static partial class JobPostingParser
         // job-boards.greenhouse.io pages put the bare role in og:title and hide
         // "Job Application for ROLE at COMPANY" in <title> only.
         string? company = null, role = null, location = null;
-        foreach (var title in new[] { ogTitle, TitleTag(html) })
+        foreach (var title in new[] { ogTitle, titleTag })
         {
             if (title is null)
                 continue;
@@ -190,7 +191,9 @@ public static partial class JobPostingParser
             if (company is not null)
                 break;
         }
-        role ??= ogTitle;
+        // Last resort: if no pattern claimed the role, take the raw title text
+        // (og:title, else the <title> element) rather than returning nothing.
+        role ??= ogTitle ?? titleTag;
 
         // Greenhouse (and friends) put the *location* in og:description. If nothing
         // else claimed the location slot and the "description" reads like a place,
@@ -210,15 +213,18 @@ public static partial class JobPostingParser
     private static string? MetaContent(string html, string name)
     {
         // Attribute order varies by generator: property-then-content and the reverse.
+        // The content value is delimited by a captured quote and closed by the SAME
+        // quote (\1) — a plain ["'] on both ends would terminate a double-quoted value
+        // at the first apostrophe inside it (e.g. content="Bob's Burgers" → "Bob").
         var forward = Regex.Match(html,
-            $"""<meta[^>]+(?:property|name)\s*=\s*["']{Regex.Escape(name)}["'][^>]*?content\s*=\s*["'](.*?)["']""",
+            $"""<meta[^>]+(?:property|name)\s*=\s*["']{Regex.Escape(name)}["'][^>]*?content\s*=\s*(["'])(.*?)\1""",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         if (forward.Success)
-            return WebUtility.HtmlDecode(forward.Groups[1].Value);
+            return WebUtility.HtmlDecode(forward.Groups[2].Value);
         var reverse = Regex.Match(html,
-            $"""<meta[^>]+content\s*=\s*["'](.*?)["'][^>]*?(?:property|name)\s*=\s*["']{Regex.Escape(name)}["']""",
+            $"""<meta[^>]+content\s*=\s*(["'])(.*?)\1[^>]*?(?:property|name)\s*=\s*["']{Regex.Escape(name)}["']""",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        return reverse.Success ? WebUtility.HtmlDecode(reverse.Groups[1].Value) : null;
+        return reverse.Success ? WebUtility.HtmlDecode(reverse.Groups[2].Value) : null;
     }
 
     private static string? TitleTag(string html)
@@ -227,11 +233,20 @@ public static partial class JobPostingParser
         return m.Success ? WebUtility.HtmlDecode(m.Groups[1].Value) : null;
     }
 
-    // Short, no sentence punctuation, and shaped like "Remote, India" / "Lincoln, NE" —
-    // prose descriptions have periods and run long.
-    private static bool LooksLikeLocation(string s) =>
-        s.Length <= 60 && !s.Contains('.') && !s.Contains('\n')
-        && (s.Contains("remote", StringComparison.OrdinalIgnoreCase) || LocationShape().IsMatch(s));
+    // Short, no sentence punctuation, and shaped like "Remote, India" / "Lincoln, NE".
+    // Prose descriptions have periods and run long; a bare "remote" mention alone is
+    // NOT enough — "Help us build the future of remote work" is a tagline, not a place.
+    private static bool LooksLikeLocation(string s)
+    {
+        if (s.Length > 60 || s.Contains('.') || s.Contains('\n'))
+            return false;
+        // Comma-separated place tokens: "Lincoln, NE", "Remote, India".
+        if (LocationShape().IsMatch(s))
+            return true;
+        // A short, remote-dominated marker ("Remote", "100% Remote", "Remote (US)"),
+        // not a longer sentence that merely contains the word "remote".
+        return s.Length <= 25 && s.Contains("remote", StringComparison.OrdinalIgnoreCase);
+    }
 
     // ---- Shared helpers -----------------------------------------------------
 
@@ -243,10 +258,27 @@ public static partial class JobPostingParser
         foreach (var (needle, id) in KnownBoards)
             if (host.Contains(needle))
                 return id;
-        // "careers.acme.com" / "acme.com" → "acme"
+        // "careers.acme.com" / "acme.com" → "acme". Skip a two-part public suffix
+        // ("co.uk", "com.au", "co.jp") so we land on the organization label, not the
+        // suffix component — "careers.acme.co.uk" → "acme", not "co".
         var parts = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length >= 2 ? parts[^2] : (parts.Length == 1 ? parts[0] : null);
+        if (parts.Length == 1)
+            return parts[0];
+        if (parts.Length < 2)
+            return null;
+        var orgIndex = parts.Length - 2;
+        if (parts.Length >= 3 && parts[^1].Length == 2 && SecondLevelSuffixes.Contains(parts[^2]))
+            orgIndex = parts.Length - 3;
+        return parts[orgIndex];
     }
+
+    // Second-level labels that sit under a two-letter ccTLD as a public suffix
+    // (acme.co.uk, acme.com.au, acme.co.jp). Not the full Public Suffix List — just
+    // the common ones, enough to keep the board id off the suffix.
+    private static readonly HashSet<string> SecondLevelSuffixes = new(StringComparer.Ordinal)
+    {
+        "co", "com", "org", "net", "gov", "edu", "ac", "or", "ne", "go", "gob",
+    };
 
     private static readonly (string Needle, string Id)[] KnownBoards =
     [

@@ -376,6 +376,12 @@ function materialSection(data) {
       </div>`;
   }
   const html = DOMPurify.sanitize(marked.parse(data.material, { gfm: true, breaks: true }));
+  // Regenerate is a drafting affordance — hide it when the engine is off (the server
+  // refuses the draft anyway). Copy / Download / Discard act on the stored letter, so
+  // they stay available.
+  const regenerate = state.coverLettersEnabled
+    ? `<button class="btn btn-ghost btn-xs" data-act="draft">Regenerate</button>`
+    : "";
   return `
     <div class="material-block mt-6 border-t border-rule pt-4">
       <div class="flex items-center justify-between gap-3">
@@ -383,7 +389,7 @@ function materialSection(data) {
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-ghost btn-xs" data-act="mat-copy">Copy</button>
           <button class="btn btn-ghost btn-xs" data-act="mat-download">Download .md</button>
-          <button class="btn btn-ghost btn-xs" data-act="draft">Regenerate</button>
+          ${regenerate}
           <button class="btn btn-ghost btn-xs" data-act="mat-discard">Discard</button>
         </div>
       </div>
@@ -894,8 +900,9 @@ function wireCriteria() {
 }
 
 // Settings · Criteria tab.
-async function loadCriteriaTab(body) {
+async function loadCriteriaTab(body, gen = settingsGen) {
   const c = await api("GET", "/api/criteria");
+  if (settingsSuperseded(gen)) return;
   criteriaBoards = (c.ats_boards || []).map((b) => ({ provider: b.provider, slug: b.slug }));
   body.innerHTML = criteriaMarkup(c);
   renderBoards();
@@ -1090,8 +1097,9 @@ function wireResume() {
 }
 
 // Settings · Résumé tab.
-async function loadResumeTab(body) {
+async function loadResumeTab(body, gen = settingsGen) {
   const r = await api("GET", "/api/resume");
+  if (settingsSuperseded(gen)) return;
   resumeExperience = (r.experience || []).map((e) => ({
     title: e.title || "", company: e.company || "", dates: e.dates || "",
     highlights: e.highlights || [],
@@ -1195,8 +1203,9 @@ function wireLlm() {
 }
 
 // Settings · AI tab.
-async function loadLlmTab(body) {
+async function loadLlmTab(body, gen = settingsGen) {
   const s = await api("GET", "/api/llm-settings");
+  if (settingsSuperseded(gen)) return;
   state.coverLettersEnabled = s.cover_letters_enabled !== false;
   body.innerHTML = llmMarkup(s);
   wireLlm();
@@ -1341,8 +1350,15 @@ const SETTINGS_TABS = [
   ["account", "Account"],
 ];
 
+// Bumped on every openSettings call. The fetch-then-render tab loaders bind Save via
+// document-level selectors, so a load that resolves AFTER the user switched tabs would
+// render into the wrong (detached) body and cross-wire the visible tab's Save button.
+// Each loader re-reads this after its fetch and bails if it's been superseded.
+let settingsGen = 0;
+
 async function openSettings(tab) {
   if (SETTINGS_TABS.some(([k]) => k === tab)) state.settingsTab = tab;
+  const gen = ++settingsGen;
   state.mode = "settings";
   state.current = null;
   renderSidebar();
@@ -1358,14 +1374,19 @@ async function openSettings(tab) {
   });
   const body = $("#settings-body");
   try {
-    if (state.settingsTab === "criteria") await loadCriteriaTab(body);
-    else if (state.settingsTab === "resume") await loadResumeTab(body);
-    else if (state.settingsTab === "ai") await loadLlmTab(body);
+    if (state.settingsTab === "criteria") await loadCriteriaTab(body, gen);
+    else if (state.settingsTab === "resume") await loadResumeTab(body, gen);
+    else if (state.settingsTab === "ai") await loadLlmTab(body, gen);
     else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
     else await loadAccountTab(body);
   } catch (e) {
     toast(e.message);
   }
+}
+
+// True once a newer openSettings has started — a stale loader must not touch the DOM.
+function settingsSuperseded(gen) {
+  return gen !== settingsGen;
 }
 $("#settings-btn").addEventListener("click", () => openSettings());
 
