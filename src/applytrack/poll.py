@@ -28,12 +28,16 @@ from __future__ import annotations
 
 import json
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
 
+# Stdlib import is the Element *type* only — never a parser entry point; all parsing
+# below goes through defusedxml, which is XXE / billion-laughs safe.
+from xml.etree.ElementTree import Element  # nosec B405
+
+import defusedxml.ElementTree as ET  # hardened XML parser (forbids entities/external)
 import httpx
 
 from applytrack.criteria import AtsBoard, Criteria
@@ -441,7 +445,7 @@ WWR_FEEDS = (
 )
 
 
-def _rss_text(item: ET.Element, tag: str) -> str:
+def _rss_text(item: Element, tag: str) -> str:
     el = item.find(tag)
     return (el.text or "").strip() if el is not None and el.text else ""
 
