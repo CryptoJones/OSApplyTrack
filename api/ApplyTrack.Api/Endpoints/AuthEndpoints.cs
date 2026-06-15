@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.ComponentModel.DataAnnotations;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Data;
 using Microsoft.AspNetCore.Mvc;
@@ -27,16 +28,25 @@ public static class AuthEndpoints
         // the link. Per-IP rate-limited ("auth" policy) so the always-200 surface
         // can't be abused for email spam or enumeration probing.
         app.MapPost("/api/auth/request", async (
-            LinkRequest body, HttpContext ctx,
+            LinkRequest body, HttpContext ctx, IConfiguration config,
             UserRepo users, MagicTokenRepo tokens, IEmailSender email) =>
         {
+            // Validate shape + cap length (RFC 5321 max 254) before any row is born:
+            // a junk or unbounded address must never reach EnsureAsync. Still always
+            // 200 below — a rejected address is silently dropped, no enumeration signal.
             var address = (body.Email ?? "").Trim();
-            if (address.Length > 0 && address.Contains('@'))
+            if (address.Length is > 0 and <= 254 && new EmailAddressAttribute().IsValid(address))
             {
                 var userId = await users.EnsureAsync(address);
                 var token = Tokens.NewOpaque();
                 await tokens.CreateAsync(userId, Tokens.Sha256(token), DateTimeOffset.UtcNow + TokenTtl);
-                var link = $"{ctx.Request.Scheme}://{ctx.Request.Host}/api/auth/verify?token={token}";
+                // Build the link from the operator's configured origin, NOT the request's
+                // Host header. The Host is attacker-suppliable (and AllowedHosts may be "*"),
+                // so deriving the link from it lets an attacker request a victim's link
+                // pointed at attacker.example — host-header poisoning -> token capture ->
+                // account takeover. App:PublicBaseUrl pins it; we fall back to the request
+                // origin only when unset, for zero-config local dev.
+                var link = $"{Origin(config, ctx.Request)}/api/auth/verify?token={token}";
                 await email.SendMagicLinkAsync(address, link);
             }
 
@@ -80,6 +90,16 @@ public static class AuthEndpoints
             var user = await users.GetAsync(tenant.TenantId);
             return user is null ? Unauthorized() : Results.Ok(new { email = user.Email });
         });
+    }
+
+    // The canonical public origin for links we email out. Prefer the operator-configured
+    // App:PublicBaseUrl (e.g. https://apply.example.com); fall back to the request's own
+    // scheme+host only when unset, so local/dev works with no config. Never trust the
+    // request Host when a configured value exists — see the host-header note above.
+    private static string Origin(IConfiguration config, HttpRequest request)
+    {
+        var configured = (config["App:PublicBaseUrl"] ?? "").Trim().TrimEnd('/');
+        return configured.Length > 0 ? configured : $"{request.Scheme}://{request.Host}";
     }
 
     private static IResult Unauthorized() =>

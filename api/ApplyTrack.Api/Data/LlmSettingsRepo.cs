@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Llm;
 using Dapper;
+using Microsoft.Extensions.Logging;
 
 namespace ApplyTrack.Api.Data;
 
@@ -21,12 +22,15 @@ public sealed class LlmSettingsRepo
     private readonly IDbConnection _conn;
     private readonly long _t;
     private readonly SecretProtector _protector;
+    private readonly ILogger<LlmSettingsRepo> _log;
 
-    public LlmSettingsRepo(IDbConnection conn, long tenantId, SecretProtector protector)
+    public LlmSettingsRepo(
+        IDbConnection conn, long tenantId, SecretProtector protector, ILogger<LlmSettingsRepo> log)
     {
         _conn = conn;
         _t = tenantId;
         _protector = protector;
+        _log = log;
     }
 
     private sealed record Row(string BaseUrl, string Model, string ApiKeyCiphertext, bool CoverLettersEnabled);
@@ -48,7 +52,14 @@ public sealed class LlmSettingsRepo
             catch (CryptographicException)
             {
                 // Master key rotated/changed since this was stored: the key is no longer
-                // recoverable. Fall back to the instance default rather than hard-fail.
+                // recoverable. Fall back to the instance default rather than hard-fail —
+                // but warn, because this silently reroutes the tenant's drafting (and the
+                // résumé data in the prompt) to the instance-default endpoint. The tenant
+                // must re-enter the key in AI settings to restore their own provider.
+                _log.LogWarning(
+                    "Stored LLM API key for tenant {TenantId} failed to decrypt "
+                    + "(APPLYTRACK_SECRETS_KEY changed/rotated?); falling back to the "
+                    + "instance-default endpoint until the key is re-entered.", _t);
                 key = null;
             }
         }
