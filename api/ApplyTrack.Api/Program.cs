@@ -98,6 +98,8 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 // Per-IP throttles on the two abuse-prone unauthenticated/expensive routes:
 // magic-link requests (email spam / user enumeration probing) and the on-demand
 // poll (each one fans out to external job boards). Other routes are unmetered.
+// UseForwardedHeaders middleware already populates RemoteIpAddress from
+// X-Forwarded-For, so we read that instead of parsing the raw header.
 static string ClientPartition(HttpContext ctx) =>
     ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
