@@ -12,6 +12,7 @@ using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Middleware;
 using ApplyTrack.Api.Scrape;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
 
@@ -127,6 +128,9 @@ forwarded.KnownIPNetworks.Clear();
 forwarded.KnownProxies.Clear();
 app.UseForwardedHeaders(forwarded);
 
+LimitRequestBodySize(app, "/api/scrape", 64L * 1024);
+LimitRequestBodySize(app, "/api/account/import", 10L * 1024 * 1024);
+
 // Stamp CSP + the other hardening headers on every response. After UseForwardedHeaders
 // so Request.IsHttps is accurate (HSTS only when actually behind HTTPS).
 app.UseMiddleware<SecurityHeadersMiddleware>();
@@ -157,6 +161,19 @@ app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
 
 app.Run();
+
+static void LimitRequestBodySize(IEndpointRouteBuilder app, string path, long maxBytes)
+{
+    app.UseWhen(
+        ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == path,
+        branch => branch.Use(async (ctx, next) =>
+        {
+            var feature = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+            if (feature is { IsReadOnly: false })
+                feature.MaxRequestBodySize = maxBytes;
+            await next();
+        }));
+}
 
 // Exposed so the test project's WebApplicationFactory<Program> can boot the app.
 public partial class Program;

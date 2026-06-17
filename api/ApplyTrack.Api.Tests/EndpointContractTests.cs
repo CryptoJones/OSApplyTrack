@@ -194,6 +194,24 @@ public class EndpointContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Scrape_rejects_oversized_payload()
+    {
+        var padding = new string('x', 65 * 1024);
+        var res = await _client.PostAsync("/api/scrape", Json($$"""{"url":"","padding":"{{padding}}"}"""));
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Import_rejects_oversized_payload()
+    {
+        var padding = new string('x', 11 * 1024 * 1024);
+        var res = await _client.PostAsync(
+            "/api/account/import",
+            Json($$"""{"format":"applytrack-export","padding":"{{padding}}"}"""));
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, res.StatusCode);
+    }
+
+    [Fact]
     public async Task Check_link_is_out_of_v1_and_returns_501()
     {
         // Drafting is now implemented (see MaterialsEndpointTests); check-link is the
