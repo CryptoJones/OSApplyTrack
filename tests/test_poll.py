@@ -76,6 +76,38 @@ class FakeRepo:
         return name
 
 
+class FakeCursor:
+    def __init__(self, rows: list[tuple[int]]) -> None:
+        self.rows = rows
+        self.sql = ""
+
+    def __enter__(self) -> FakeCursor:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def execute(self, sql: str) -> None:
+        self.sql = sql
+
+    def fetchall(self) -> list[tuple[int]]:
+        return self.rows
+
+
+class FakeConnection:
+    def __init__(self, rows: list[tuple[int]]) -> None:
+        self.rows = rows
+
+    def __enter__(self) -> FakeConnection:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    def cursor(self) -> FakeCursor:
+        return FakeCursor(self.rows)
+
+
 def test_classify_weighs_title_over_body() -> None:
     score, hits = classify(
         "Senior .NET Engineer",
@@ -297,21 +329,31 @@ def test_run_all_tenants_isolates_per_tenant_failure() -> None:
 
 def test_drain_requests_empty_queue_is_noop() -> None:
     # An empty poll queue must short-circuit before any gather/network is attempted.
-    class _Cursor:
-        def __enter__(self) -> _Cursor:
-            return self
+    assert drain_requests(FakeConnection([])) == {}
 
-        def __exit__(self, *exc: object) -> None:
-            return None
 
-        def execute(self, *args: object) -> None:
-            pass
+def test_drain_requests_claims_queued_tenants_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
 
-        def fetchall(self) -> list[tuple[int]]:
-            return []
+    def fake_run_all_tenants(
+        conn: FakeConnection,
+        *,
+        limit_per_source: int,
+        tenant_ids: list[int],
+        repo_for: object,
+    ) -> dict[int, list[str]]:
+        calls["limit"] = limit_per_source
+        calls["tenant_ids"] = tenant_ids
+        calls["repo_for"] = repo_for
+        return {1: ["acme.md"], 2: ["globex.md"]}
 
-    class _Conn:
-        def cursor(self) -> _Cursor:
-            return _Cursor()
+    monkeypatch.setattr("applytrack.worker.run_all_tenants", fake_run_all_tenants)
 
-    assert drain_requests(_Conn()) == {}  # type: ignore[arg-type]
+    result = drain_requests(FakeConnection([(1,), (1,), (2,)]), limit_per_source=7)
+
+    assert result == {1: ["acme.md"], 2: ["globex.md"]}
+    assert calls == {
+        "limit": 7,
+        "tenant_ids": [1, 2],
+        "repo_for": None,
+    }

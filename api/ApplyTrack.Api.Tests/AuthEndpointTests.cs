@@ -194,6 +194,22 @@ public class AuthEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Auth_request_rate_limit_rejects_excess_requests()
+    {
+        var client = NewClient();
+        const string body = """{"email":"rate@example.com"}""";
+
+        for (var i = 0; i < 10; i++)
+        {
+            var res = await client.PostAsync("/api/auth/request", Json(body));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        }
+
+        var rejected = await client.PostAsync("/api/auth/request", Json(body));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    [Fact]
     public async Task Responses_carry_the_security_headers()
     {
         var res = await NewClient().GetAsync("/health");
