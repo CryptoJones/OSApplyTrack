@@ -24,7 +24,7 @@ public static class ScrapeEndpoints
                 throw new AppValidationException("a url is required");
             var (html, finalUrl) = await fetcher.FetchAsync(url, ct);
             return Results.Ok(JobPostingParser.Parse(html, finalUrl));
-        }).RequireRateLimiting("scrape");
+        }).RequireRateLimiting("scrape").RequireRequestSizeLimit(64L * 1024);
     }
 
     public sealed record ScrapeRequest(string? Url);

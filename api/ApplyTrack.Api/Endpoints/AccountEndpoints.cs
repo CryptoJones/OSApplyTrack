@@ -144,7 +144,7 @@ public static class AccountEndpoints
                 imported_blacklist = importedBlacklist,
                 criteria_applied = hasCriteria,
             });
-        });
+        }).RequireRequestSizeLimit(10L * 1024 * 1024);
 
         // Delete the account. The FK cascades (0005/0006/0009) drop every per-tenant row
         // in one statement; clearing the cookie tidies the now-dangling session client-side.
