@@ -89,4 +89,29 @@ public class RateLimitTests : IAsyncLifetime
         var rejected = await client.PostAsync("/api/poll", Json("{}"));
         Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
     }
+
+    [Fact]
+    public async Task Distinct_forwarded_ips_get_independent_rate_limit_buckets()
+    {
+        // The point of the PR: the partition key is the *forwarded* client IP, so
+        // exhausting one client's budget must not throttle a different client behind
+        // the same proxy. Same authenticated session, two different X-Forwarded-For.
+        var client = await AuthenticatedClient();
+
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "203.0.113.1");
+        for (var i = 0; i < 15; i++)
+        {
+            var res = await client.PostAsync("/api/poll", Json("{}"));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        }
+        var exhausted = await client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, exhausted.StatusCode);
+
+        // A request forwarded from a different client IP lands in a separate bucket
+        // and is still allowed — proving partitioning is per forwarded IP, not global.
+        client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.2");
+        var other = await client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.OK, other.StatusCode);
+    }
 }
