@@ -24,6 +24,8 @@ import psycopg
 
 from applytrack.store import AppFields, parse_app, today
 
+DEFAULT_STATEMENT_TIMEOUT_SECONDS = 30
+
 # Column order shared by the INSERT and its VALUES list — the structured fields
 # plus the slug + tenant. ``version``/``created_at``/``updated_at`` default in SQL.
 _FIELD_COLUMNS = (
@@ -62,17 +64,30 @@ def iter_markdown(data_dir: Path) -> Iterator[tuple[str, AppFields]]:
         yield path.name, parse_app(path.read_text(encoding="utf-8"))
 
 
+def _statement_timeout_options() -> dict[str, str]:
+    raw = os.environ.get("APPLYTRACK_STATEMENT_TIMEOUT_SECONDS")
+    try:
+        seconds = int(raw) if raw is not None else DEFAULT_STATEMENT_TIMEOUT_SECONDS
+    except ValueError:
+        seconds = DEFAULT_STATEMENT_TIMEOUT_SECONDS
+    if seconds <= 0:
+        return {}
+    return {"options": f"-c statement_timeout={seconds}s"}
+
+
 def connect(database_url: str | None = None) -> psycopg.Connection:
     """Open a psycopg connection from an explicit URL, ``DATABASE_URL``, or PG env."""
+    options = _statement_timeout_options()
     url = database_url or os.environ.get("DATABASE_URL")
     if url:
-        return psycopg.connect(url)
+        return psycopg.connect(url, **options)  # type: ignore[arg-type]
     return psycopg.connect(
         host=os.environ.get("PGHOST", "localhost"),
         port=os.environ.get("PGPORT", "5432"),
         dbname=os.environ.get("POSTGRES_DB", "applytrack"),
         user=os.environ.get("POSTGRES_USER", "applytrack"),
         password=os.environ.get("POSTGRES_PASSWORD", "applytrack"),
+        **options,  # type: ignore[arg-type]
     )
 
 
