@@ -194,6 +194,17 @@ public class AuthEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Ready_health_checks_database()
+    {
+        var res = await NewClient().GetAsync("/health/ready");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var body = await ReadJson(res);
+        Assert.Equal("ready", body.GetProperty("status").GetString());
+        Assert.Equal("ok", body.GetProperty("database").GetString());
+    }
+
+    [Fact]
     public async Task Responses_carry_the_security_headers()
     {
         var res = await NewClient().GetAsync("/health");
