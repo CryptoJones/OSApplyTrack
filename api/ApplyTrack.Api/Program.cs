@@ -86,8 +86,13 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 // Per-IP throttles on the two abuse-prone unauthenticated/expensive routes:
 // magic-link requests (email spam / user enumeration probing) and the on-demand
 // poll (each one fans out to external job boards). Other routes are unmetered.
-static string ClientPartition(HttpContext ctx) =>
-    ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+static string ClientPartition(HttpContext ctx)
+{
+    var forwardedFor = ctx.Request.Headers.XForwardedFor.FirstOrDefault();
+    if (!string.IsNullOrWhiteSpace(forwardedFor))
+        return forwardedFor.Split(',')[0].Trim();
+    return ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+}
 
 builder.Services.AddRateLimiter(options =>
 {

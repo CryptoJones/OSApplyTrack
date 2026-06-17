@@ -194,6 +194,21 @@ public class EndpointContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Poll_rate_limit_uses_forwarded_for_client_ip()
+    {
+        _client.DefaultRequestHeaders.Add("X-Forwarded-For", "203.0.113.10");
+
+        for (var i = 0; i < 15; i++)
+        {
+            var res = await _client.PostAsync("/api/poll", Json("{}"));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        }
+
+        var rejected = await _client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    [Fact]
     public async Task Check_link_is_out_of_v1_and_returns_501()
     {
         // Drafting is now implemented (see MaterialsEndpointTests); check-link is the
