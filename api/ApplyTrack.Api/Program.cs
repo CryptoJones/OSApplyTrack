@@ -156,11 +156,11 @@ app.MapGet("/health/ready", async (NpgsqlDataSource dataSource, CancellationToke
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1";
         await cmd.ExecuteScalarAsync(ct);
-        return Results.Ok(new { status = "ready", database = "ok" });
+        return Results.Ok(new { status = "ready", database = "connected" });
     }
     catch (Exception)
     {
-        return Results.Json(new { database = "disconnected" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        return Results.Json(new { status = "unavailable", database = "disconnected" }, statusCode: 503);
     }
 });
 app.MapAppsEndpoints();
