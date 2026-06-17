@@ -13,8 +13,12 @@ namespace ApplyTrack.Api.Data;
 /// </summary>
 public static class Migrator
 {
-    public static DatabaseUpgradeResult Upgrade(string connectionString)
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(1);
+
+    public static DatabaseUpgradeResult Upgrade(string connectionString, TimeSpan? timeout = null)
     {
+        var migrationTimeout = timeout ?? DefaultTimeout;
+
         // Create the target database if it does not exist yet, so a fresh local
         // Postgres or a fresh container is usable with no manual setup step.
         EnsureDatabase.For.PostgresqlDatabase(connectionString);
@@ -22,6 +26,7 @@ public static class Migrator
         var upgrader = DeployChanges.To
             .PostgresqlDatabase(connectionString)
             .WithScriptsEmbeddedInAssembly(typeof(Migrator).Assembly)
+            .WithExecutionTimeout(migrationTimeout)
             .LogToConsole()
             .Build();
 

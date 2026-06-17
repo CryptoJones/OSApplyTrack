@@ -26,6 +26,12 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
         + "or the ConnectionStrings__Postgres environment variable).");
 
 // One pooled data source for the app's lifetime.
+var postgres = new NpgsqlConnectionStringBuilder(connectionString);
+if (!postgres.ContainsKey("Command Timeout"))
+{
+    postgres.CommandTimeout = 30;
+}
+connectionString = postgres.ConnectionString;
 builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
 
 // Per-request plumbing for the tenancy choke-point. A scoped connection (DI disposes
@@ -112,7 +118,9 @@ var app = builder.Build();
 
 // Bring the schema up to date on startup — the cross-runtime contract both the
 // .NET API and the Python poller share.
-Migrator.Upgrade(connectionString);
+var migrationTimeout = TimeSpan.FromSeconds(PositiveTimeoutSeconds(
+    builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
+Migrator.Upgrade(connectionString, migrationTimeout);
 
 // Behind a TLS-terminating reverse proxy (Caddy/nginx/`tailscale serve` — the usual
 // self-host front), honor X-Forwarded-Proto so Request.IsHttps is true and the session
@@ -157,6 +165,9 @@ app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
 
 app.Run();
+
+static int PositiveTimeoutSeconds(string? raw, int defaultValue) =>
+    int.TryParse(raw, out var seconds) && seconds > 0 ? seconds : defaultValue;
 
 // Exposed so the test project's WebApplicationFactory<Program> can boot the app.
 public partial class Program;
