@@ -201,7 +201,7 @@ public class AuthEndpointTests : IAsyncLifetime
 
         var body = await ReadJson(res);
         Assert.Equal("ready", body.GetProperty("status").GetString());
-        Assert.Equal("ok", body.GetProperty("database").GetString());
+        Assert.Equal("connected", body.GetProperty("database").GetString());
     }
 
     [Fact]
