@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+
 namespace ApplyTrack.Api.Tests;
 
-public class ConfigurationTests
+[Collection(PostgresCollection.Name)]
+public class ConfigurationTests : IAsyncLifetime
 {
+    private readonly PostgresFixture _pg;
+    private WebApplicationFactory<Program> _factory = null!;
+
+    public ConfigurationTests(PostgresFixture pg) => _pg = pg;
+
+    public Task InitializeAsync()
+    {
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+            b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString));
+        return Task.CompletedTask;
+    }
+
+    public async Task DisposeAsync() => await _factory.DisposeAsync();
+
     [Fact]
     public void MigrationTimeoutSeconds_default_is_60()
     {
@@ -26,4 +44,16 @@ public class ConfigurationTests
         Assert.Equal(60, TimeoutConfiguration.PositiveTimeoutSeconds("", 60));
     }
 
+    [Fact]
+    public async Task App_boots_with_custom_MigrationTimeoutSeconds()
+    {
+        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString);
+            b.UseSetting("MigrationTimeoutSeconds", "120");
+        });
+        using var client = factory.CreateClient();
+        var response = await client.GetAsync("/health");
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
 }
