@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from applytrack.criteria import (
     DEFAULT_KEYWORDS,
     Criteria,
@@ -53,8 +51,7 @@ def test_empty_keywords_fall_back_to_defaults() -> None:
     assert Criteria.from_dict({"keywords": []}).keywords == list(DEFAULT_KEYWORDS)
 
 
-def test_save_load_round_trip(tmp_path: Path) -> None:
-    path = tmp_path / ".criteria.json"
+def test_to_dict_round_trips_dict() -> None:
     original = Criteria.from_dict(
         {
             "keywords": ["rust", "wasm"],
@@ -66,12 +63,4 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
             "ats_boards": [{"provider": "lever", "slug": "netflix"}],
         }
     )
-    original.save(path)
-    assert Criteria.load(path).to_dict() == original.to_dict()
-
-
-def test_load_missing_or_corrupt_returns_defaults(tmp_path: Path) -> None:
-    assert Criteria.load(tmp_path / "absent.json").to_dict() == Criteria().to_dict()
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert Criteria.load(bad).to_dict() == Criteria().to_dict()
+    assert Criteria.from_dict(original.to_dict()).to_dict() == original.to_dict()

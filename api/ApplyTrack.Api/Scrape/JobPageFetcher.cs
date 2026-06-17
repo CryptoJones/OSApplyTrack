@@ -81,7 +81,21 @@ public sealed class JobPageFetcher
                 if (mediaType.Length > 0 && !mediaType.Contains("html") && !mediaType.Contains("xml"))
                     throw new ScrapeUnavailableException("that URL isn't an HTML page");
 
-                return (await ReadCappedAsync(res, ct), uri);
+                // The body read can still fail after headers arrive — a connection reset
+                // mid-body, corrupt gzip/brotli under AutomaticDecompression, or the
+                // timeout firing during a slow body. Map those to the same 502 the
+                // contract uses for "couldn't reach that page", not a generic 500.
+                // (ReadCappedAsync's own size-cap ScrapeUnavailableException passes through.)
+                try
+                {
+                    return (await ReadCappedAsync(res, ct), uri);
+                }
+                catch (Exception ex)
+                    when (ex is IOException or HttpRequestException or TaskCanceledException
+                        or InvalidDataException)
+                {
+                    throw new ScrapeUnavailableException("couldn't read that page");
+                }
             }
         }
     }
@@ -105,8 +119,14 @@ public sealed class JobPageFetcher
     /// IPv6 unique-local/site-local equivalents. Public for the test suite.</summary>
     public static bool IsBlockedAddress(IPAddress ip)
     {
+        // Embedded-IPv4 forms (IPv4-mapped ::ffff:0:0/96, NAT64 64:ff9b::/96, 6to4
+        // 2002::/16, IPv4-compatible ::a.b.c.d) all carry an IPv4 target inside an
+        // IPv6 address — unwrap it so the v4 blocklist applies, or an AAAA like
+        // 64:ff9b::a9fe:a9fe (169.254.169.254) would slip past the v6 checks.
         if (ip.IsIPv4MappedToIPv6)
             ip = ip.MapToIPv4();
+        else if (TryExtractEmbeddedIPv4(ip, out var embedded))
+            return IsBlockedAddress(embedded);
 
         if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any)
             || ip.Equals(IPAddress.Broadcast))
@@ -128,6 +148,45 @@ public sealed class JobPageFetcher
 
         return ip.IsIPv6Multicast || ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal
             || (ip.GetAddressBytes()[0] & 0xFE) == 0xFC; // fc00::/7 unique local
+    }
+
+    // Pulls the embedded IPv4 target out of the transitional IPv6 forms that carry one.
+    // (IPv4-mapped ::ffff:a.b.c.d is handled separately by the caller via MapToIPv4.)
+    private static bool TryExtractEmbeddedIPv4(IPAddress ip, out IPAddress v4)
+    {
+        v4 = IPAddress.None;
+        if (ip.AddressFamily != AddressFamily.InterNetworkV6)
+            return false;
+        var b = ip.GetAddressBytes();
+
+        // NAT64 64:ff9b::/96 — the IPv4 is the low 32 bits.
+        if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b
+            && b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0
+            && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0)
+        {
+            v4 = new IPAddress(b[12..16]);
+            return true;
+        }
+
+        // 6to4 2002::/16 — the IPv4 is bytes 2..5 (2002:V4::/48).
+        if (b[0] == 0x20 && b[1] == 0x02)
+        {
+            v4 = new IPAddress(b[2..6]);
+            return true;
+        }
+
+        // IPv4-compatible ::a.b.c.d (first 96 bits zero), excluding :: (unspecified)
+        // and ::1 (loopback), which the family-agnostic checks above already catch.
+        var prefixZero = true;
+        for (var i = 0; i < 12; i++)
+            if (b[i] != 0) { prefixZero = false; break; }
+        if (prefixZero && !(b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] <= 1))
+        {
+            v4 = new IPAddress(b[12..16]);
+            return true;
+        }
+
+        return false;
     }
 
     private static async ValueTask<Stream> ConnectToPublicAddressOnlyAsync(

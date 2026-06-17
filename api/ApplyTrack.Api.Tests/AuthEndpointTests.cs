@@ -224,4 +224,33 @@ public class AuthEndpointTests : IAsyncLifetime
         // Plain-HTTP test host: HSTS must NOT be emitted.
         Assert.False(res.Headers.Contains("Strict-Transport-Security"));
     }
+
+    [Fact]
+    public async Task HSTS_is_emitted_over_https()
+    {
+        // TestServer derives Request.IsHttps from the request URI scheme, so an https
+        // BaseAddress exercises the middleware's HTTPS branch without real TLS.
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false,
+        });
+
+        var res = await client.GetAsync("/health");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True(res.Headers.TryGetValues("Strict-Transport-Security", out var hsts));
+        Assert.Contains("max-age=31536000", string.Join(" ", hsts));
+    }
+
+    [Fact]
+    public async Task Readiness_probe_reports_database_connected()
+    {
+        // /health/ready actually opens the (Testcontainers) DB — distinct from the
+        // static liveness probe.
+        var res = await NewClient().GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal("connected", (await ReadJson(res)).GetProperty("database").GetString());
+    }
 }

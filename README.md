@@ -120,12 +120,11 @@ docker compose up --build   # brings up db + api + poller
 
 Open **http://localhost:8080**.
 
-> **Port guard rail.** 8080 is a contested port (vLLM, llama.cpp, and plenty of
-> dev tools default to it), so the stack **checks before it binds**: a compose
-> preflight refuses to start the api when anything already listens on
-> `API_PORT`, with a clear error instead of silently winning the bind race.
-> Relocate by setting `API_PORT` in `.env`. The
-> [quadlet units](deploy/quadlet/) ship the same guard via `ExecStartPre`.
+> **Contested port?** 8080 is popular (vLLM, llama.cpp, and plenty of dev tools
+> default to it). If it's already taken, Docker refuses the bind loudly
+> (`address already in use`) instead of silently winning the race — relocate by
+> setting `API_PORT` in `.env`. The [quadlet units](deploy/quadlet/) add an
+> explicit `ExecStartPre` listener check for the same reason.
 
 Prefer prebuilt images? Each release publishes both runtimes to the GitHub
 Container Registry, so you can skip the local build:
@@ -415,7 +414,10 @@ Run Postgres in a container and the two runtimes on the host:
 ```sh
 docker compose up -d db
 
-# API (reads appsettings.json → localhost Postgres)
+# API (reads appsettings.json → localhost Postgres) — serves the whole app on
+# http://localhost:5049 (per launchSettings.json; the Docker setup uses 8080).
+# In the default configuration the magic-link login URL is printed to this
+# console; click it to sign in.
 cd api && dotnet run --project ApplyTrack.Api
 
 # Poller (one-shot poll; needs DATABASE_URL or the POSTGRES_* / PG* env vars)
@@ -423,15 +425,9 @@ pip install -e '.[dev]'
 DATABASE_URL=postgresql://applytrack:applytrack@localhost:5432/applytrack applytrack poll
 ```
 
-The API listens on **http://localhost:5049** (per `launchSettings.json`), runs the
-DbUp migrations on startup, and serves the SPA — so that one URL is the whole app.
-In Development with no SMTP configured, the magic-link login URL is printed to the
-**console** running `dotnet run`; click it to sign in.
-
 **Enable cover-letter drafting (optional).** Drafting stays off until an
-OpenAI-compatible endpoint is set. To turn it on for local testing, point the API at
-a local model — e.g. [Ollama](https://ollama.com) (`ollama serve`, then
-`ollama pull llama3.1:8b`):
+OpenAI-compatible endpoint **and model** are set. For local testing, point the API
+at [Ollama](https://ollama.com) (`ollama serve`, then `ollama pull llama3.1:8b`):
 
 ```sh
 cd api
@@ -439,10 +435,8 @@ Llm__BaseUrl=http://localhost:11434/v1 Llm__Model=llama3.1:8b \
   dotnet run --project ApplyTrack.Api
 ```
 
-A hosted provider works the same way — add `Llm__ApiKey=…` (and set
-`APPLYTRACK_SECRETS_KEY` if tenants will store their own keys). Or skip the env
-entirely and configure it per-tenant in **Settings · AI**. See
-[Cover letters](#cover-letters).
+See [Cover letters](#cover-letters) for hosted providers, per-tenant keys, and the
+**Settings · AI** tab — and `.env.example` for the same settings, annotated.
 
 ## Tests
 

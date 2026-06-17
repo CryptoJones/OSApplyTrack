@@ -23,6 +23,17 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
+      - name: Verify migration naming (NNNN_lowercase_name.sql)
+        run: |
+          fail=0
+          for f in api/ApplyTrack.Api/Migrations/*.sql; do
+            base=$(basename "$f")
+            if ! printf '%s' "$base" | grep -Eq '^[0-9]{4}_[a-z0-9_]+\.sql$'; then
+              echo "::error file=$f::Migration '$base' must match NNNN_lowercase_name.sql"
+              fail=1
+            fi
+          done
+          exit $fail
       - name: Test (xUnit + Testcontainers-Postgres)
         working-directory: api
         run: dotnet test --logger "console;verbosity=normal"
@@ -50,6 +61,8 @@ jobs:
         run: |
           ruff check src tests
           mypy src
+      - name: Security scan (bandit)
+        run: bandit -c pyproject.toml -r src/applytrack -q
       - name: Test (pytest)
         run: pytest -q
       - name: Audit Python packages

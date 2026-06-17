@@ -27,18 +27,26 @@ staging fails, so a transient error never causes a re-ping.
 from __future__ import annotations
 
 import json
+import logging
 import re
-import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
 
+# Stdlib import is the Element *type* only — never a parser entry point; all parsing
+# below goes through defusedxml, which is XXE / billion-laughs safe.
+from xml.etree.ElementTree import Element  # nosec B405
+
+import defusedxml.ElementTree as ET  # hardened XML parser (forbids entities/external)
 import httpx
+import psycopg
 
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.linkcheck import BROWSER_HEADERS, is_reachable
 from applytrack.store import AppFields
+
+logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -441,7 +449,7 @@ WWR_FEEDS = (
 )
 
 
-def _rss_text(item: ET.Element, tag: str) -> str:
+def _rss_text(item: Element, tag: str) -> str:
     el = item.find(tag)
     return (el.text or "").strip() if el is not None and el.text else ""
 
@@ -756,7 +764,13 @@ def score_and_stage(
             fields = _to_fields(item, profile.default_lane, score, hits)
             try:
                 name = repo.add_lead(fields)
-            except Exception:  # noqa: BLE001 - one bad listing must not abort the run
+            except psycopg.errors.UniqueViolation:
+                logger.debug(
+                    "skipping duplicate lead for %s: %s",
+                    item.company,
+                    item.role,
+                    exc_info=True,
+                )
                 continue
             # Leads stage as-is; the cover letter is drafted on demand later.
             added.append(name)

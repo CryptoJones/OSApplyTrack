@@ -179,6 +179,71 @@ public class ScrapeTests
         Assert.Equal("example", r.Source);
     }
 
+    [Fact]
+    public void Preserves_an_apostrophe_in_a_double_quoted_meta_value()
+    {
+        // A plain ["'] close would truncate the value at the apostrophe → "Bob".
+        const string html = """
+            <meta property="og:title" content="Staff Engineer at Bob's Burgers" />
+            """;
+
+        var r = JobPostingParser.Parse(html, new Uri("https://jobs.bobs.example/1"));
+
+        Assert.Equal("Staff Engineer", r.Role);
+        Assert.Equal("Bob's Burgers", r.Company);
+    }
+
+    [Fact]
+    public void Falls_back_to_the_raw_title_when_no_pattern_matches()
+    {
+        // Dash-separated (no " at "/"hiring"/"Job Application for") matches no pattern;
+        // the raw title is the role of last resort rather than returning nothing.
+        const string html = "<title>Senior Backend Engineer - Acme Careers</title>";
+
+        var r = JobPostingParser.Parse(html, new Uri("https://jobs.acme.example/9"));
+
+        Assert.Equal("Senior Backend Engineer - Acme Careers", r.Role);
+    }
+
+    [Fact]
+    public void Keeps_marketing_prose_as_the_description_not_the_location()
+    {
+        // A short og:description that merely mentions remote work is a tagline, not a
+        // place — it must not be lifted into the location (nor the description dropped).
+        const string html = """
+            <meta property="og:title" content="Platform Engineer at Globex" />
+            <meta property="og:description" content="Help us build the future of remote work" />
+            """;
+
+        var r = JobPostingParser.Parse(html, new Uri("https://jobs.globex.example/3"));
+
+        Assert.Null(r.Location);
+        Assert.Equal("Help us build the future of remote work", r.Description);
+    }
+
+    [Fact]
+    public void Lifts_a_bare_remote_marker_into_the_location()
+    {
+        const string html = """
+            <meta property="og:title" content="Designer at Hooli" />
+            <meta property="og:description" content="100% Remote" />
+            """;
+
+        var r = JobPostingParser.Parse(html, new Uri("https://jobs.hooli.example/5"));
+
+        Assert.Equal("100% Remote", r.Location);
+        Assert.Null(r.Description);
+    }
+
+    [Theory]
+    [InlineData("careers.acme.co.uk", "acme")]
+    [InlineData("jobs.acme.com.au", "acme")]
+    [InlineData("acme.co.jp", "acme")]
+    [InlineData("careers.acme.com", "acme")]
+    [InlineData("acme.io", "acme")]
+    public void Reads_the_org_label_past_a_two_part_public_suffix(string host, string expected) =>
+        Assert.Equal(expected, JobPostingParser.SourceFromHost(host));
+
     // ---- SSRF gates -----------------------------------------------------------
 
     [Theory]
@@ -213,9 +278,18 @@ public class ScrapeTests
         Assert.True(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
 
     [Theory]
+    [InlineData("64:ff9b::a9fe:a9fe")]  // NAT64 of 169.254.169.254 (cloud metadata)
+    [InlineData("64:ff9b::7f00:1")]     // NAT64 of 127.0.0.1
+    [InlineData("2002:c0a8:0001::")]    // 6to4 of 192.168.0.1
+    [InlineData("::a9fe:a9fe")]         // IPv4-compatible 169.254.169.254
+    public void Blocks_embedded_ipv4_in_transitional_ipv6(string ip) =>
+        Assert.True(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
+
+    [Theory]
     [InlineData("93.184.216.34")]          // example.com
     [InlineData("140.82.112.3")]           // github.com
     [InlineData("2606:2800:220:1:248:1893:25c8:1946")]
+    [InlineData("2002:5db8:d822::")]       // 6to4 wrapping a public v4 (93.184.216.34)
     public void Allows_public_addresses(string ip) =>
         Assert.False(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
 }
