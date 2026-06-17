@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import psycopg
+import pytest
+
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.poll import (
     Listing,
@@ -14,6 +17,7 @@ from applytrack.poll import (
     fetch_remoteok,
     fetch_remotive,
     run_poll,
+    score_and_stage,
 )
 from applytrack.store import AppFields, filename_for
 from applytrack.worker import drain_requests, run_all_tenants
@@ -139,6 +143,37 @@ def test_run_poll_dedupes_same_role() -> None:
         ],
     )
     assert len(added) == 1
+
+
+def test_score_and_stage_skips_database_duplicate_slug() -> None:
+    class DuplicateSlugRepo(FakeRepo):
+        def add_lead(self, fields: AppFields) -> str:
+            raise psycopg.errors.UniqueViolation("duplicate slug")
+
+    repo = DuplicateSlugRepo()
+    c = Criteria(keywords=["engineer"])
+    added = score_and_stage(
+        repo,
+        c,
+        listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
+    )
+    assert added == []
+    assert repo.added == []
+
+
+def test_score_and_stage_propagates_unexpected_stage_failure() -> None:
+    class BoomRepo(FakeRepo):
+        def add_lead(self, fields: AppFields) -> str:
+            raise RuntimeError("db down")
+
+    repo = BoomRepo()
+    c = Criteria(keywords=["engineer"])
+    with pytest.raises(RuntimeError, match="db down"):
+        score_and_stage(
+            repo,
+            c,
+            listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
+        )
 
 
 def test_run_poll_skips_roles_already_in_db() -> None:

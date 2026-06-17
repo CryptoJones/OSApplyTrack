@@ -22,15 +22,24 @@ public sealed class UserRepo
 
     /// <summary>
     /// Upsert by email, returning the user id (== tenant_id for v1). Idempotent so a
-    /// magic-link request for a new or existing address always resolves a user — the
-    /// no-op ON CONFLICT update is just there to make RETURNING fire on both paths.
+    /// magic-link request for a new or existing address always resolves a user.
+    /// <c>ON CONFLICT DO NOTHING</c> (not <c>DO UPDATE</c>) so the common existing-user
+    /// login path writes no dead tuple — the CTE returns the freshly-inserted id, or
+    /// falls through to SELECT the existing one. citext email column = case-insensitive
+    /// match, same as the unique index the conflict targets.
     /// </summary>
     public Task<long> EnsureAsync(string email) =>
         _conn.ExecuteScalarAsync<long>(
             """
-            INSERT INTO users (email) VALUES (@email)
-            ON CONFLICT (email) DO UPDATE SET status = users.status
-            RETURNING id
+            WITH ins AS (
+                INSERT INTO users (email) VALUES (@email)
+                ON CONFLICT (email) DO NOTHING
+                RETURNING id
+            )
+            SELECT id FROM ins
+            UNION ALL
+            SELECT id FROM users WHERE email = @email
+            LIMIT 1
             """,
             new { email });
 

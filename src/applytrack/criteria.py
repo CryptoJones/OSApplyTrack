@@ -1,25 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Aaron K. Clark
-"""User-editable discovery criteria for the poller (``applications/.criteria.json``).
+"""User-editable discovery criteria for the poller.
 
-The poller reads this instead of hardcoded constants, so *what counts as a match*
-is editable from the web UI. When the file is absent, :data:`DEFAULT_CRITERIA`
-reproduces the original built-in behavior: the three lanes' keyword lists
-flattened into one set, a minimum fit score of 55, Remotive + RemoteOK enabled,
-and no location filtering.
-
-The config is not secret (keywords, score, source toggles, company slugs), so it
-lives alongside the other ledgers in the git-tracked ``applications/`` folder.
-Auth secrets deliberately do *not* belong here.
+The .NET API persists this data in ``search_profiles``; the poller reads it
+through :class:`applytrack.db.PollRepo`.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
-
-CRITERIA_FILENAME = ".criteria.json"
 
 LANES = ("dotnet", "devrel", "ai")
 
@@ -155,26 +144,6 @@ class Criteria:
             "ats_boards": [asdict(b) for b in self.ats_boards],
         }
 
-    # -- file I/O -----------------------------------------------------------
 
-    @classmethod
-    def load(cls, path: Path) -> Criteria:
-        """Load criteria from ``path``; return defaults if missing or corrupt."""
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return cls()
-        if not isinstance(data, dict):
-            return cls()
-        return cls.from_dict(data)
-
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-
-# The behavior the poller falls back to when no config file exists.
+# Defaults used when a tenant has no persisted profile row.
 DEFAULT_CRITERIA = Criteria()

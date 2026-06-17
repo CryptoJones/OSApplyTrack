@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Data;
+using System.Data.Common;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ApplyTrack.Api.Auth;
@@ -23,9 +24,17 @@ namespace ApplyTrack.Api.Endpoints;
 /// </summary>
 public static class AccountEndpoints
 {
-    // The format discriminator of the peer-facing list; the migration snapshot's
-    // sibling. Import branches on it.
+    // The format discriminators. Import branches on these: the peer-facing list takes
+    // the non-destructive insert-if-absent path; our own snapshot (or a pre-1.3 file
+    // with no format field) takes the overwrite-by-slug migration path.
     private const string SharedFormat = "applytrack-shared";
+    private const string ExportFormat = "applytrack-export";
+
+    // Upper bound on items accepted in one import. The whole load runs in a single
+    // transaction with one round-trip per row, so an unbounded file would mean a
+    // long-held transaction and a slow, lock-holding load — cap it. A self-host
+    // account is small; this is generous headroom, not a real-world limit.
+    private const int MaxImportItems = 10_000;
 
     // The export is a single private migration snapshot. snake_case + indented so it
     // round-trips byte-compatibly with the /api/* shapes and a human can read it.
@@ -90,10 +99,14 @@ public static class AccountEndpoints
             {
                 if (!hasApps)
                     throw new AppValidationException("no importable data in file");
+                if (body.Applications!.Count > MaxImportItems)
+                    throw new AppValidationException(
+                        $"too many applications to import (max {MaxImportItems})");
 
-                if (conn.State != ConnectionState.Open)
-                    conn.Open();
-                using var sharedTx = conn.BeginTransaction();
+                var sharedDb = (DbConnection)conn;
+                if (sharedDb.State != ConnectionState.Open)
+                    await sharedDb.OpenAsync();
+                await using var sharedTx = await sharedDb.BeginTransactionAsync();
 
                 int added = 0, skipped = 0;
                 foreach (var a in body.Applications!)
@@ -103,7 +116,7 @@ public static class AccountEndpoints
                     else
                         skipped++;
                 }
-                sharedTx.Commit();
+                await sharedTx.CommitAsync();
 
                 return Results.Ok(new
                 {
@@ -112,14 +125,25 @@ public static class AccountEndpoints
                 });
             }
 
+            // Only our own snapshot (or a pre-1.3 file with no discriminator) may take
+            // the overwrite-by-slug path. Reject anything else — a typo, a foreign
+            // exporter, or a future "applytrack-shared" variant — rather than silently
+            // clobbering the importer's apps with a near-miss format string.
+            if (!string.IsNullOrEmpty(body.Format) && body.Format != ExportFormat)
+                throw new AppValidationException($"unrecognized import format \"{body.Format}\"");
+
             var hasCriteria = body.Criteria is { ValueKind: JsonValueKind.Object };
             var hasBlacklist = body.Blacklist is { Count: > 0 };
             if (!hasApps && !hasCriteria && !hasBlacklist)
                 throw new AppValidationException("no importable data in file");
+            if ((body.Applications?.Count ?? 0) > MaxImportItems
+                || (body.Blacklist?.Count ?? 0) > MaxImportItems)
+                throw new AppValidationException($"import too large (max {MaxImportItems} items)");
 
-            if (conn.State != ConnectionState.Open)
-                conn.Open();
-            using var tx = conn.BeginTransaction();
+            var db = (DbConnection)conn;
+            if (db.State != ConnectionState.Open)
+                await db.OpenAsync();
+            await using var tx = await db.BeginTransactionAsync();
 
             var importedApps = 0;
             foreach (var a in body.Applications ?? [])
@@ -136,7 +160,7 @@ public static class AccountEndpoints
                 if (await blacklist.AddAsync(company, tx))
                     importedBlacklist++;
 
-            tx.Commit();
+            await tx.CommitAsync();
 
             return Results.Ok(new
             {
@@ -163,7 +187,7 @@ public static class AccountEndpoints
         Criteria Criteria,
         IReadOnlyList<string> Blacklist)
     {
-        [JsonPropertyOrder(-3)] public string Format => "applytrack-export";
+        [JsonPropertyOrder(-3)] public string Format => ExportFormat;
         [JsonPropertyOrder(-2)] public int Version => 1;
         [JsonPropertyOrder(-1)] public DateTime ExportedAt => DateTime.UtcNow;
     }

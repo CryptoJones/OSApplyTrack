@@ -4,6 +4,7 @@
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using Dapper;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace ApplyTrack.Api.Tests;
@@ -329,7 +330,7 @@ public class RepoTests(PostgresFixture pg)
         await using var conn = await OpenAsync();
         var t = await NewTenantAsync(conn);
         var protector = new SecretProtector("test-master-key");
-        var repo = new LlmSettingsRepo(conn, t, protector);
+        var repo = new LlmSettingsRepo(conn, t, protector, NullLogger<LlmSettingsRepo>.Instance);
 
         await repo.UpsertAsync("https://api.openai.com/v1", "gpt-4o-mini",
             changeKey: true, newKeyPlaintext: "sk-secret-123");
@@ -355,7 +356,8 @@ public class RepoTests(PostgresFixture pg)
     {
         await using var conn = await OpenAsync();
         var t = await NewTenantAsync(conn);
-        var repo = new LlmSettingsRepo(conn, t, new SecretProtector("test-master-key"));
+        var repo = new LlmSettingsRepo(
+            conn, t, new SecretProtector("test-master-key"), NullLogger<LlmSettingsRepo>.Instance);
 
         await repo.UpsertAsync("http://a/v1", "m1", changeKey: true, newKeyPlaintext: "sk-keep");
 
@@ -374,7 +376,8 @@ public class RepoTests(PostgresFixture pg)
     {
         await using var conn = await OpenAsync();
         var t = await NewTenantAsync(conn);
-        var repo = new LlmSettingsRepo(conn, t, new SecretProtector(null));
+        var repo = new LlmSettingsRepo(
+            conn, t, new SecretProtector(null), NullLogger<LlmSettingsRepo>.Instance);
         await Assert.ThrowsAsync<AppValidationException>(() =>
             repo.UpsertAsync("http://a/v1", "m1", changeKey: true, newKeyPlaintext: "sk-nope"));
     }

@@ -23,26 +23,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Guard rail: refuse to claim the host port when anything else already listens
-  # on it, instead of silently winning the bind race (8080 is contested — vLLM,
-  # llama.cpp, and half of all dev tools default to it). Fails fast with a clear
-  # message; relocate with API_PORT in .env rather than binding over a neighbour.
-  # Host network so it sees real host listeners; inside Docker Desktop's VM it
-  # sees none and passes — no worse than before on that platform.
-  portcheck:
-    image: docker.io/library/busybox:1.37
-    network_mode: host
-    command:
-      - sh
-      - -c
-      - >
-        if nc -w 2 127.0.0.1 ${API_PORT:-8080} </dev/null 2>/dev/null;
-        then echo "ERROR: host port ${API_PORT:-8080} is already in use —
-        set API_PORT in .env instead of binding over whatever owns it" >&2;
-        exit 1;
-        else echo "portcheck: host port ${API_PORT:-8080} is free"; fi
-    restart: "no"
-
   api:
     build:
       context: ./api
@@ -56,13 +36,14 @@ services:
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+    # 8080 is contested (vLLM, llama.cpp, and half of all dev tools default to it).
+    # If it's already taken, Docker fails the bind loudly ("address already in use")
+    # rather than silently winning — relocate by setting API_PORT in .env.
     ports:
       - "${API_PORT:-8080}:8080"
     depends_on:
       db:
         condition: service_healthy
-      portcheck:
-        condition: service_completed_successfully
     restart: unless-stopped
 
   # The Python discovery poller (second runtime). Shares the same Postgres; the .NET
