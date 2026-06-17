@@ -150,11 +150,18 @@ app.UseRateLimiter();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapGet("/health/ready", async (NpgsqlDataSource dataSource, CancellationToken ct) =>
 {
-    await using var conn = await dataSource.OpenConnectionAsync(ct);
-    await using var cmd = conn.CreateCommand();
-    cmd.CommandText = "SELECT 1";
-    await cmd.ExecuteScalarAsync(ct);
-    return Results.Ok(new { status = "ready", database = "ok" });
+    try
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync(ct);
+        return Results.Ok(new { status = "ready", database = "ok" });
+    }
+    catch (Exception)
+    {
+        return Results.Json(new { database = "disconnected" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
 });
 app.MapAppsEndpoints();
 app.MapBlacklistEndpoints();
