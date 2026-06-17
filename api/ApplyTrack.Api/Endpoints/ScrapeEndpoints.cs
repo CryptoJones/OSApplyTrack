@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
-using Microsoft.AspNetCore.Mvc;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Scrape;
 
@@ -25,7 +24,7 @@ public static class ScrapeEndpoints
                 throw new AppValidationException("a url is required");
             var (html, finalUrl) = await fetcher.FetchAsync(url, ct);
             return Results.Ok(JobPostingParser.Parse(html, finalUrl));
-        }).RequireRateLimiting("scrape").WithMetadata(new RequestSizeLimitAttribute(64L * 1024));
+        }).RequireRateLimiting("scrape");
     }
 
     public sealed record ScrapeRequest(string? Url);
