@@ -4,6 +4,7 @@
 using System.Data;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using ApplyTrack.Api;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -118,7 +119,9 @@ var app = builder.Build();
 
 // Bring the schema up to date on startup — the cross-runtime contract both the
 // .NET API and the Python poller share.
-var migrationTimeout = TimeSpan.FromSeconds(PositiveTimeoutSeconds(
+// MigrationTimeoutSeconds (default 60) — increase for slower databases / many
+// migrations; the same timeout applies to every script the run executes.
+var migrationTimeout = TimeSpan.FromSeconds(TimeoutConfiguration.PositiveTimeoutSeconds(
     builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
 Migrator.Upgrade(connectionString, migrationTimeout);
 
@@ -165,9 +168,6 @@ app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
 
 app.Run();
-
-static int PositiveTimeoutSeconds(string? raw, int defaultValue) =>
-    int.TryParse(raw, out var seconds) && seconds > 0 ? seconds : defaultValue;
 
 // Exposed so the test project's WebApplicationFactory<Program> can boot the app.
 public partial class Program;
