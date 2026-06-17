@@ -96,8 +96,15 @@ public sealed partial class ApplicationRepo
     /// </summary>
     public async Task<IReadOnlyList<AppRecord>> ExportAllAsync()
     {
+        // Explicit column list (not SELECT *) so a future column add/reorder can't
+        // silently change what the export carries — every other read here does the same.
         var rows = await _conn.QueryAsync<AppRow>(
-            "SELECT * FROM applications WHERE tenant_id = @t ORDER BY name", new { t = _t });
+            """
+            SELECT name, company, role, lane, status, link, location, salary, source,
+                   contact, contact_email, applied, followup, created, score, notes, version
+            FROM applications WHERE tenant_id = @t ORDER BY name
+            """,
+            new { t = _t });
         return rows.Select(r => new AppRecord(r.Name, r.ToFields(), r.Version)).ToList();
     }
 
@@ -282,10 +289,19 @@ public sealed partial class ApplicationRepo
 
         if (affected == 0)
         {
-            // The row existed a moment ago; 0 rows means the version moved (a poller or
-            // another tab wrote first) — the SPA's 409 overwrite-confirm flow handles it.
-            throw new AppConflictException(
-                $"'{name}' changed since you opened it (expected version {ev})");
+            // The row existed a moment ago but the UPDATE matched nothing. Two distinct
+            // causes, two distinct statuses: the row was deleted out from under us (gone
+            // -> 404), or it's still there but its version moved (a poller/another tab
+            // wrote first -> 409, the SPA's overwrite-confirm flow). Re-check to tell them
+            // apart instead of always reporting a conflict.
+            var stillExists = await _conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM applications WHERE tenant_id = @t AND name = @n)",
+                new { t = _t, n });
+            if (!stillExists)
+                throw new AppNotFoundException($"application not found: '{name}'");
+            throw new AppConflictException(ev is null
+                ? $"'{name}' changed since you opened it"
+                : $"'{name}' changed since you opened it (expected version {ev})");
         }
         return n;
     }

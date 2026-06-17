@@ -25,7 +25,8 @@ rewrite of `applytrack` (the original single-user app lives at
   `wwwroot/`). The API is written *against* the SPA's existing endpoint contract:
   same URLs + JSON shapes, including `?expected_version=` and the 409 conflict
   flow. The SPA is not to be rewritten.
-- **Materials / LLM cover-letter engine is OUT of v1.** (Landed post-v1, in v1.1.0.)
+- **Materials / LLM cover-letter engine was out of v1; it landed post-v1, in
+  v1.1.0.**
 - **⚠ ANY-LLM, AND OPTIONAL:** the cover-letter engine **must run against any
   OpenAI-compatible endpoint** (local Ollama/vLLM/LM Studio or any hosted
   provider) — never hard-code one vendor, never require a specific model or a

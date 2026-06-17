@@ -192,4 +192,34 @@ public class SharedExportTests : IAsyncLifetime
         var detail = (await ReadJsonAsync(res)).GetProperty("detail").GetString();
         Assert.Contains("no importable data", detail);
     }
+
+    [Fact]
+    public async Task Import_of_an_unrecognized_format_is_rejected_and_clobbers_nothing()
+    {
+        // The importer is mid-pipeline on Acme.
+        await _client.PostAsync("/api/apps", Json(
+            """{"company":"Acme Corp","role":"Engineer","status":"onsite","notes":"my prep"}"""));
+
+        // A near-miss format string (a "shared" variant that isn't the exact
+        // discriminator) must NOT fall through to the overwrite-by-slug migration
+        // path — it's rejected outright.
+        var body = """
+        {
+          "format": "applytrack-shared-v2",
+          "applications": [
+            { "name": "acme-corp-engineer.md", "company": "Acme Corp", "role": "Engineer",
+              "status": "lead", "notes": "" }
+          ]
+        }
+        """;
+        var res = await _client.PostAsync("/api/account/import", Json(body));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("unrecognized import format",
+            (await ReadJsonAsync(res)).GetProperty("detail").GetString());
+
+        // The tracked app kept every personal field — nothing was overwritten.
+        var mine = await ReadJsonAsync(await _client.GetAsync("/api/apps/acme-corp-engineer.md"));
+        Assert.Equal("onsite", mine.GetProperty("fields").GetProperty("status").GetString());
+        Assert.Equal("my prep", mine.GetProperty("fields").GetProperty("notes").GetString());
+    }
 }

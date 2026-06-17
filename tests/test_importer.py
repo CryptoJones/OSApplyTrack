@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from applytrack.importer import iter_markdown, row_params
+import pytest
+
+from applytrack.importer import connect, iter_markdown, row_params
 from applytrack.store import parse_app, today
 
 
@@ -44,3 +46,38 @@ def test_iter_markdown_skips_dotfiles_and_sorts(tmp_path: Path) -> None:
 
     names = [name for name, _ in iter_markdown(tmp_path)]
     assert names == ["alpha.md", "beta.md"]
+
+
+def test_connect_sets_statement_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_connect(url: str, **kwargs: object) -> object:
+        calls["url"] = url
+        calls.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("APPLYTRACK_STATEMENT_TIMEOUT_SECONDS", "45")
+    monkeypatch.setattr("applytrack.importer.psycopg.connect", fake_connect)
+
+    connect("postgresql://db/app")
+
+    assert calls == {
+        "url": "postgresql://db/app",
+        "options": "-c statement_timeout=45s",
+    }
+
+
+def test_connect_ignores_non_positive_statement_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, object] = {}
+
+    def fake_connect(url: str, **kwargs: object) -> object:
+        calls["url"] = url
+        calls.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("APPLYTRACK_STATEMENT_TIMEOUT_SECONDS", "0")
+    monkeypatch.setattr("applytrack.importer.psycopg.connect", fake_connect)
+
+    connect("postgresql://db/app")
+
+    assert calls == {"url": "postgresql://db/app"}

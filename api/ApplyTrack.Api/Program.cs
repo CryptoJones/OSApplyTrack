@@ -26,14 +26,18 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
         "No 'Postgres' connection string configured (set ConnectionStrings:Postgres "
         + "or the ConnectionStrings__Postgres environment variable).");
 
-// One pooled data source for the app's lifetime.
+// One pooled data source for the app's lifetime. Registered via a factory (not the
+// pre-built-instance overload) so the DI container OWNS it and disposes it — and its
+// connection pool — on shutdown. The instance overload would leak the pool, which the
+// long-lived prod app tolerates but the test suite (many short-lived hosts) does not.
+// Default a 30s command timeout unless the connection string already pins one.
 var postgres = new NpgsqlConnectionStringBuilder(connectionString);
 if (!postgres.ContainsKey("Command Timeout"))
 {
     postgres.CommandTimeout = 30;
 }
 connectionString = postgres.ConnectionString;
-builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 
 // Per-request plumbing for the tenancy choke-point. A scoped connection (DI disposes
 // it at request end; Dapper opens/closes it around each command) underpins the repos.
@@ -72,7 +76,8 @@ builder.Services.AddScoped(sp => new ResumeRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new LlmSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
-    sp.GetRequiredService<SecretProtector>()));
+    sp.GetRequiredService<SecretProtector>(),
+    sp.GetRequiredService<ILogger<LlmSettingsRepo>>()));
 builder.Services.AddScoped(sp => new CoverLetterRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 
@@ -158,7 +163,28 @@ app.UseMiddleware<TenantMiddleware>();
 // Enforce the per-route rate-limit policies declared above (RequireRateLimiting).
 app.UseRateLimiter();
 
+// Liveness: cheap and static, so a transient DB blip never trips it into a restart loop.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+// Readiness: actually touch Postgres so an orchestrator can gate traffic on a working
+// DB. Deliberately a separate path from liveness — a DB hiccup should drain traffic,
+// not kill the pod. 503 (not an exception) on failure so it reads as "not ready" cleanly.
+app.MapGet("/health/ready", async (NpgsqlDataSource db) =>
+{
+    try
+    {
+        await using var conn = await db.OpenConnectionAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1";
+        await cmd.ExecuteScalarAsync();
+        return Results.Ok(new { status = "ready", database = "connected" });
+    }
+    catch
+    {
+        return Results.Json(
+            new { status = "unavailable", database = "disconnected" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 app.MapAppsEndpoints();
 app.MapBlacklistEndpoints();
 app.MapCriteriaEndpoints();
