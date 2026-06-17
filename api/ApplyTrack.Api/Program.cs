@@ -131,6 +131,29 @@ forwarded.KnownIPNetworks.Clear();
 forwarded.KnownProxies.Clear();
 app.UseForwardedHeaders(forwarded);
 
+// Enforce request-body size limits on the two endpoints that accept large uploads,
+// checked on Content-Length before the body is read, so it works under TestServer too.
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/scrape",
+    branch => branch.Use(async (ctx, next) =>
+    {
+        if (ctx.Request.ContentLength > 64L * 1024)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
+            return;
+        }
+        await next();
+    }));
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/account/import",
+    branch => branch.Use(async (ctx, next) =>
+    {
+        if (ctx.Request.ContentLength > 10L * 1024 * 1024)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
+            return;
+        }
+        await next();
+    }));
+
 // Stamp CSP + the other hardening headers on every response. After UseForwardedHeaders
 // so Request.IsHttps is accurate (HSTS only when actually behind HTTPS).
 app.UseMiddleware<SecurityHeadersMiddleware>();
