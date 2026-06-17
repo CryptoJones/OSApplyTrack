@@ -4,6 +4,7 @@
 using System.Data;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using ApplyTrack.Api;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -29,6 +30,13 @@ var connectionString = builder.Configuration.GetConnectionString("Postgres")
 // pre-built-instance overload) so the DI container OWNS it and disposes it — and its
 // connection pool — on shutdown. The instance overload would leak the pool, which the
 // long-lived prod app tolerates but the test suite (many short-lived hosts) does not.
+// Default a 30s command timeout unless the connection string already pins one.
+var postgres = new NpgsqlConnectionStringBuilder(connectionString);
+if (!postgres.ContainsKey("Command Timeout"))
+{
+    postgres.CommandTimeout = 30;
+}
+connectionString = postgres.ConnectionString;
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 
 // Per-request plumbing for the tenancy choke-point. A scoped connection (DI disposes
@@ -116,7 +124,11 @@ var app = builder.Build();
 
 // Bring the schema up to date on startup — the cross-runtime contract both the
 // .NET API and the Python poller share.
-Migrator.Upgrade(connectionString);
+// MigrationTimeoutSeconds (default 60) — increase for slower databases / many
+// migrations; the same timeout applies to every script the run executes.
+var migrationTimeout = TimeSpan.FromSeconds(TimeoutConfiguration.PositiveTimeoutSeconds(
+    builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
+Migrator.Upgrade(connectionString, migrationTimeout);
 
 // Behind a TLS-terminating reverse proxy (Caddy/nginx/`tailscale serve` — the usual
 // self-host front), honor X-Forwarded-Proto so Request.IsHttps is true and the session
