@@ -193,14 +193,14 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 // Readiness: actually touch Postgres so an orchestrator can gate traffic on a working
 // DB. Deliberately a separate path from liveness — a DB hiccup should drain traffic,
 // not kill the pod. 503 (not an exception) on failure so it reads as "not ready" cleanly.
-app.MapGet("/health/ready", async (NpgsqlDataSource db) =>
+app.MapGet("/health/ready", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
     try
     {
-        await using var conn = await db.OpenConnectionAsync();
+        await using var conn = await db.OpenConnectionAsync(ct);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT 1";
-        await cmd.ExecuteScalarAsync();
+        await cmd.ExecuteScalarAsync(ct);
         return Results.Ok(new { status = "ready", database = "connected" });
     }
     catch
