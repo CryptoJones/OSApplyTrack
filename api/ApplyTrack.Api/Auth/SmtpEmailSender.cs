@@ -35,27 +35,34 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                 $"Sign in to OSApplyTrack:\n\n{link}\n\n"
                 + "This link is single-use and expires in 15 minutes. "
                 + "If you didn't request it, you can ignore this email.",
-            // Styled to the app's cyberdeck theme (CryptoJones/cyberdeck-theme) so the
-            // email matches the mobile site it links to: cyan-on-near-black, monospace,
-            // neon glow. Inline styles only (clients strip <style>/external CSS) and no
-            // remote images (blocked by default and they hurt deliverability). The mono
-            // stack is system fonts (Menlo/Consolas) — email can't load the vendored one.
+            // Cyberdeck theme (CryptoJones/cyberdeck-theme), matching the mobile site:
+            // cyan-on-near-black, monospace. The dark canvas lives on a full-width
+            // <table> with a bgcolor ATTRIBUTE — Gmail strips <body> + its background,
+            // so a body-only color leaves a white page. Solid hex borders (no rgba —
+            // some clients drop it), inline styles only, no remote images, mono via
+            // system fonts (Menlo/Consolas) since email can't load the vendored one.
             HtmlBody =
                 $$"""
-                <body style="margin:0;padding:0;background:#07090f;">
-                  <div style="max-width:460px;margin:0 auto;padding:32px 24px;font-family:Menlo,Consolas,'DejaVu Sans Mono',monospace;">
-                    <div style="font-size:26px;font-weight:800;letter-spacing:-0.01em;margin:0 0 24px;">
-                      <span style="color:#27d4ff;text-shadow:0 0 12px rgba(39,212,255,0.5);">apply</span><span style="color:#cfd8e3;">track</span>
-                    </div>
-                    <div style="background:#0c121c;border:1px solid rgba(39,212,255,0.25);border-radius:10px;padding:28px;">
-                      <h1 style="margin:0 0 12px;font-size:18px;font-weight:700;color:#cfd8e3;">Sign in to OSApplyTrack</h1>
-                      <p style="margin:0 0 24px;font-size:14px;line-height:1.55;color:#88aaaa;">Click the button below to sign in. This link is single-use and expires in 15 minutes.</p>
-                      <a href="{{href}}" style="display:inline-block;background:#27d4ff;color:#07090f;text-decoration:none;padding:12px 26px;border-radius:7px;font-size:14px;font-weight:700;box-shadow:0 0 16px rgba(39,212,255,0.35);">Sign in</a>
-                      <p style="margin:24px 0 6px;font-size:12px;line-height:1.5;color:#5a6678;">Or paste this link into your browser:</p>
-                      <p style="margin:0;font-size:12px;line-height:1.5;word-break:break-all;"><a href="{{href}}" style="color:#55ff99;">{{href}}</a></p>
-                    </div>
-                    <p style="margin:20px 4px 0;font-size:11px;line-height:1.5;color:#5a6678;">If you didn't request this, you can safely ignore this email.</p>
-                  </div>
+                <body style="margin:0;padding:0;background-color:#07090f;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#07090f" style="background-color:#07090f;width:100%;margin:0;">
+                  <tr>
+                    <td align="center" bgcolor="#07090f" style="background-color:#07090f;padding:32px 16px;font-family:Menlo,Consolas,'DejaVu Sans Mono',monospace;">
+                      <table role="presentation" width="460" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:460px;text-align:left;">
+                        <tr><td style="padding:0 0 22px;font-size:26px;font-weight:800;letter-spacing:-0.01em;color:#cfd8e3;">
+                          <span style="color:#27d4ff;text-shadow:0 0 12px rgba(39,212,255,0.6);">apply</span>track
+                        </td></tr>
+                        <tr><td bgcolor="#0c121c" style="background-color:#0c121c;border:1px solid #1c5566;border-radius:10px;padding:26px;">
+                          <div style="font-size:18px;font-weight:700;color:#cfd8e3;padding:0 0 12px;">Sign in to OSApplyTrack</div>
+                          <div style="font-size:14px;line-height:1.55;color:#9fb0b0;padding:0 0 22px;">Click the button below to sign in. This link is single-use and expires in 15 minutes.</div>
+                          <a href="{{href}}" style="display:inline-block;background-color:#27d4ff;color:#07090f;text-decoration:none;padding:12px 28px;border-radius:7px;font-size:14px;font-weight:700;">Sign in &#8250;</a>
+                          <div style="font-size:12px;line-height:1.5;color:#6b7886;padding:22px 0 6px;">Or paste this link into your browser:</div>
+                          <div style="font-size:12px;line-height:1.5;word-break:break-all;"><a href="{{href}}" style="color:#55ff99;">{{href}}</a></div>
+                        </td></tr>
+                        <tr><td style="padding:18px 2px 0;font-size:11px;line-height:1.5;color:#5a6678;">If you didn't request this, you can safely ignore this email.</td></tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
                 </body>
                 """,
         }.ToMessageBody();
