@@ -4,7 +4,7 @@
 <html lang="en" dir="ltr" class="h-full" data-theme="midnight">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>applytrack</title>
 
   <!-- Apply saved theme before paint to avoid a flash of defaults. Kept as an
@@ -42,6 +42,7 @@
           <button class="swatch" data-theme="dusk" aria-label="Dusk theme"></button>
           <button class="swatch" data-theme="paper" aria-label="Paper theme"></button>
           <button class="swatch" data-theme="mint" aria-label="Mint theme"></button>
+          <button class="swatch" data-theme="cyberdeck" aria-label="Cyberdeck theme"></button>
         </div>
         <button id="settings-btn" class="btn btn-ghost" type="button" title="All your settings: criteria, résumé, AI, blacklist, account">⚙ Settings</button>
         <input id="import-file" type="file" accept="application/json,.json" class="hidden" aria-hidden="true" />
@@ -52,7 +53,7 @@
 
     <div id="pipeline" class="pipeline"></div>
 
-    <div class="flex min-h-0 flex-1">
+    <div id="workspace" class="flex min-h-0 flex-1">
       <aside class="sidebar flex w-80 flex-col">
         <div class="border-b border-rule px-4 py-3">
           <div class="catalog-search">
@@ -92,6 +93,15 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Phone-only bottom action bar (hidden ≥768px via .mobile-bar CSS). Buttons
+       proxy to the existing desktop controls; #m-list is the detail→list "back". -->
+  <nav class="mobile-bar" aria-label="App actions">
+    <button id="m-list" type="button" aria-label="List" title="List">☰</button>
+    <button id="m-new" type="button" aria-label="New application" title="New">+</button>
+    <button id="m-poll" type="button" aria-label="Poll for leads" title="Poll">↻</button>
+    <button id="m-settings" type="button" aria-label="Settings" title="Settings">⚙</button>
+  </nav>
 
   <script src="app.js"></script>
 </body>
