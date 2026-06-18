@@ -232,6 +232,7 @@ function renderSidebar() {
 function renderEmpty() {
   state.mode = "empty";
   state.current = null;
+  document.body.classList.remove("m-detail"); // mobile: back to the list pane
   renderSidebar();
   contentEl.innerHTML = `
     <div class="empty">
@@ -251,6 +252,7 @@ async function openApp(name) {
     state.mode = "view";
     renderSidebar();
     renderView(data);
+    document.body.classList.add("m-detail"); // mobile: slide the detail pane in
   } catch (e) {
     toast(e.message);
   }
@@ -623,6 +625,7 @@ function openEdit(data) {
 function openNew() {
   state.mode = "new";
   state.current = null;
+  document.body.classList.add("m-detail"); // mobile: show the form pane
   renderSidebar();
   const today = new Date().toISOString().slice(0, 10);
   contentEl.innerHTML = formMarkup({ created: today, lane: "ai", status: "lead" }, { isNew: true });
@@ -1361,6 +1364,7 @@ async function openSettings(tab) {
   const gen = ++settingsGen;
   state.mode = "settings";
   state.current = null;
+  document.body.classList.add("m-detail"); // mobile: show the settings pane
   renderSidebar();
   contentEl.innerHTML = `
     <nav class="flex flex-wrap items-center gap-2">
@@ -1389,6 +1393,13 @@ function settingsSuperseded(gen) {
   return gen !== settingsGen;
 }
 $("#settings-btn").addEventListener("click", () => openSettings());
+
+// Phone bottom bar — reuse the existing controls. ☰ is the detail→list "back"
+// (just hides the detail pane; the selected app stays rendered underneath).
+$("#m-new").addEventListener("click", openNew);
+$("#m-poll").addEventListener("click", runPoll);
+$("#m-settings").addEventListener("click", () => openSettings());
+$("#m-list").addEventListener("click", () => document.body.classList.remove("m-detail"));
 
 // Settings · Blacklist tab — the first place blacklisted companies can be seen and
 // un-blacklisted (adding happens here or via "Blacklist company" on an app).
@@ -1572,21 +1583,32 @@ document.addEventListener("keydown", (e) => {
 
 // ---- Theme switcher -------------------------------------------------------
 
-const THEMES = ["midnight", "carbon", "dusk", "paper", "mint"];
-function applyTheme(name) {
+const THEMES = ["midnight", "carbon", "dusk", "paper", "mint", "cyberdeck"];
+const MOBILE = window.matchMedia("(max-width: 767px)");
+function applyTheme(name, persist = true) {
   const theme = THEMES.includes(name) ? name : "midnight";
   document.documentElement.dataset.theme = theme;
-  try { localStorage.setItem("applytrack-theme", theme); } catch (_) {}
+  // Don't persist the phone-forced cyberdeck: it would otherwise leak onto desktop
+  // when a desktop window is resized across the breakpoint. The saved pref stays
+  // the user's explicit choice only.
+  if (persist) { try { localStorage.setItem("applytrack-theme", theme); } catch (_) {} }
   document.querySelectorAll(".swatch").forEach((s) => {
     s.classList.toggle("active", s.dataset.theme === theme);
   });
 }
+function savedTheme() {
+  try { return localStorage.getItem("applytrack-theme") || "midnight"; } catch (_) { return "midnight"; }
+}
 function initTheme() {
-  let saved = "midnight";
-  try { saved = localStorage.getItem("applytrack-theme") || saved; } catch (_) {}
-  applyTheme(saved);
+  // Phones are locked to cyberdeck (the mobile app look); desktop uses the saved
+  // choice. Re-evaluate when the viewport crosses the phone breakpoint (rotation
+  // or a resized desktop window).
+  applyTheme(MOBILE.matches ? "cyberdeck" : savedTheme(), !MOBILE.matches);
   document.querySelectorAll(".swatch").forEach((s) => {
     s.addEventListener("click", () => applyTheme(s.dataset.theme));
+  });
+  MOBILE.addEventListener("change", (e) => {
+    applyTheme(e.matches ? "cyberdeck" : savedTheme(), !e.matches);
   });
 }
 initTheme();

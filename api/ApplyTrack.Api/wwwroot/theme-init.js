@@ -5,7 +5,10 @@
 // script-src 'self').
 (function () {
   try {
-    var th = localStorage.getItem("applytrack-theme");
+    // Phones are locked to the cyberdeck theme (the mobile app look); desktop
+    // honors the saved choice. Decided before first paint so there's no flash.
+    var mobile = window.matchMedia("(max-width: 767px)").matches;
+    var th = mobile ? "cyberdeck" : localStorage.getItem("applytrack-theme");
     if (th) document.documentElement.setAttribute("data-theme", th);
   } catch (e) {}
 })();
