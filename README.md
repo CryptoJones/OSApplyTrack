@@ -141,7 +141,8 @@ To sign in, enter your email. In the default configuration the magic link is
 docker compose logs api | grep magic-link
 ```
 
-Open that link and you're in. The first account created is tenant `1`.
+Open that link and you're in. The first account created is tenant `1`. To mail
+the link instead, set the `Email__*` variables (see [Configuration](#configuration)).
 
 > **Tip:** the poller is the third service (`poller`). `docker compose up` starts
 > all three; if you only bring up `db` + `api`, no leads will ever be discovered
@@ -191,6 +192,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in the UI. See [Cover letters](#cover-letters). |
 | `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
+| `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
 
@@ -474,8 +476,6 @@ Dockerfile.poller         the poller image
 
 v1 is intentionally focused. Deferred, with clean seams already in place:
 
-- **Real email delivery.** The default `IEmailSender` writes the magic link to the
-  console; swap in an SMTP/HTTP sender behind the interface for a real deployment.
 - **Link checking.** `/api/apps/{name}/check-link` returns 501 today; the
   SSRF-hardened prober already exists in the poller for when it's enabled.
 - **Richer cover-letter output.** The materials engine ships plain-text/Markdown

@@ -14,6 +14,7 @@
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="dbup-postgresql" Version="7.0.1" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 

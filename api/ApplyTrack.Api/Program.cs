@@ -60,7 +60,17 @@ builder.Services.AddScoped(sp => new BlacklistRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new PollRequestRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
-builder.Services.AddSingleton<IEmailSender, ConsoleEmailSender>();
+// Magic-link delivery. With an SMTP host configured (Email:Host), mail goes out
+// over SMTP via MailKit — point it at any submission relay (local, your provider,
+// or a hosted service). With no host set, links are logged to the console so auth
+// works with zero email config. Deliverability to Gmail/Outlook needs a relay whose
+// IP has PTR + SPF/DKIM/DMARC — direct-to-MX from a residential IP gets rejected.
+var emailOptions = builder.Configuration.GetSection("Email").Get<EmailOptions>() ?? new EmailOptions();
+builder.Services.AddSingleton(emailOptions);
+if (emailOptions.IsConfigured)
+    builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+else
+    builder.Services.AddSingleton<IEmailSender, ConsoleEmailSender>();
 
 // Materials engine (cover-letter drafting). The LLM endpoint is an OpenAI-compatible
 // server chosen entirely by config — a free local model (Ollama/vLLM) or any hosted

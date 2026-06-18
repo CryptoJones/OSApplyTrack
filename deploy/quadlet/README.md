@@ -24,6 +24,14 @@ DATABASE_URL=postgresql://applytrack:<same>@applytrack-db:5432/applytrack
 #Llm__BaseUrl=
 #Llm__Model=
 #APPLYTRACK_SECRETS_KEY=
+# Optional email (magic-link login). Leave Email__Host unset to log links to the
+# console instead of sending. To relay through any SMTP provider (e.g. Resend):
+#Email__Host=smtp.resend.com
+#Email__Port=465
+#Email__Username=resend
+#Email__Password=<your SMTP password / API key>
+#Email__From=apply@your-verified-domain
+#Email__FromName=OSApplyTrack
 EOF
 chmod 600 ~/.config/applytrack/applytrack.env
 
