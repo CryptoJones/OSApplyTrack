@@ -45,7 +45,9 @@ builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 // per-tenant repos are built pre-scoped to it — endpoints never see a tenant_id or a
 // raw connection.
 builder.Services.AddScoped<IDbConnection>(sp =>
-    sp.GetRequiredService<NpgsqlDataSource>().CreateConnection());
+    new ResilientDbConnection(
+        sp.GetRequiredService<NpgsqlDataSource>().CreateConnection(),
+        sp.GetRequiredService<ILogger<ResilientDbConnection>>()));
 builder.Services.AddScoped<TenantContext>();
 builder.Services.AddScoped<UserRepo>();
 builder.Services.AddScoped<SessionRepo>();
