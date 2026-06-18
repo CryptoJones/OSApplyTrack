@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ApplyTrack.Api</RootNamespace>
-    <Version>1.5.1</Version>
+    <Version>1.6.0</Version>
     <Authors>Aaron K. Clark</Authors>
     <Copyright>Copyright 2026 Aaron K. Clark</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -14,6 +14,7 @@
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="dbup-postgresql" Version="7.0.1" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 

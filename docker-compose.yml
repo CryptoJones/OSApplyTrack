@@ -36,6 +36,15 @@ services:
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+      # Email / magic-link delivery (all optional; see .env.example). With Email__Host
+      # unset, login links are logged to the console instead of sent — no email config
+      # needed to try auth locally. Set Email__Host to relay through any SMTP provider.
+      Email__Host: ${Email__Host:-}
+      Email__Port: ${Email__Port:-587}
+      Email__Username: ${Email__Username:-}
+      Email__Password: ${Email__Password:-}
+      Email__From: ${Email__From:-}
+      Email__FromName: ${Email__FromName:-OSApplyTrack}
     # 8080 is contested (vLLM, llama.cpp, and half of all dev tools default to it).
     # If it's already taken, Docker fails the bind loudly ("address already in use")
     # rather than silently winning — relocate by setting API_PORT in .env.
