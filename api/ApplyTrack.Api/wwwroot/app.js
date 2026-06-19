@@ -94,6 +94,8 @@ function showLogin() {
       <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
       <p class="login-sub">Sign in with a one-time magic link.</p>
       ${badLink ? `<p class="login-error">That link was invalid or expired — request a fresh one.</p>` : ""}
+      <p class="login-signup-head">NEW HERE?</p>
+      <p class="login-signup">Just enter your email — your account is created automatically.</p>
       <input id="login-email" class="login-input" type="email" required autocomplete="email"
         inputmode="email" placeholder="you@example.com" aria-label="Email address" />
       <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
