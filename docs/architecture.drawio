@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="drawio" version="30.0.4">
+  <diagram name="Architecture">
+    <mxGraphModel dx="800" dy="600" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="900" pageHeight="500" math="0" shadow="0" background="#07090f">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="browser" value="&lt;b&gt;Browser&lt;/b&gt;&#xa;&lt;span style=&quot;color:#88aaaa;&quot;&gt;(the SPA)&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0c1018;strokeColor=#233247;fontColor=#cfd8e3;fontFamily=Menlo;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="130" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cron" value="&lt;b&gt;Cron&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0c1018;strokeColor=#233247;fontColor=#cfd8e3;fontFamily=Menlo;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="350" width="130" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api" value="&lt;b style=&quot;color:#27d4ff;&quot;&gt;ASP.NET Core&lt;/b&gt; &lt;span style=&quot;color:#88aaaa;&quot;&gt;(.NET 10, Kestrel)&lt;/span&gt;&lt;br&gt;&lt;br&gt;• serves the SPA + JSON API&lt;br&gt;• magic-link auth + sessions&lt;br&gt;• CRUD + criteria + blacklist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0c121c;strokeColor=#27d4ff;fontColor=#cfd8e3;fontFamily=Menlo;fontSize=13;align=left;verticalAlign=top;spacingLeft=14;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="280" y="60" width="340" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="poller" value="&lt;b style=&quot;color:#55ff99;&quot;&gt;Python poller&lt;/b&gt;&lt;br&gt;&lt;br&gt;• fetch + score + dedupe leads&lt;br&gt;• drain the on-demand poll queue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#0c121c;strokeColor=#55ff99;fontColor=#cfd8e3;fontFamily=Menlo;fontSize=13;align=left;verticalAlign=top;spacingLeft=14;spacingTop=12;" vertex="1" parent="1">
+          <mxGeometry x="280" y="300" width="340" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pg" value="&lt;b&gt;Postgres&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;span style=&quot;font-size:11px;color:#88aaaa;&quot;&gt;shared schema&lt;br&gt;&lt;span style=&quot;color:#55ff99;&quot;&gt;= the contract&lt;/span&gt;&lt;/span&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#0c1018;strokeColor=#27d4ff;fontColor=#cfd8e3;fontFamily=Menlo;fontSize=13;verticalAlign=middle;spacingTop=14;" vertex="1" parent="1">
+          <mxGeometry x="720" y="180" width="140" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_browser_api" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#5a6678;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="browser" target="api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_cron_poller" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#5a6678;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="cron" target="poller">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_api_pg" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#27d4ff;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="api" target="pg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e_poller_pg" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#55ff99;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="poller" target="pg">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

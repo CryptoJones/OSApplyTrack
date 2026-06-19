@@ -103,19 +103,9 @@ A polyglot backend behind one dependency-free vanilla-JS single-page app:
   the contract.** The .NET API owns auth/sessions + CRUD and migrates the schema;
   the poller writes leads and reads profiles/seen/users. Both filter `tenant_id`.
 
-```
-            ┌─────────────────────────────────┐
-Browser ──► │ ASP.NET Core (.NET 10, Kestrel)  │
- (the SPA)  │  • serves the SPA + JSON API     │──┐
-            │  • magic-link auth + sessions    │  │
-            │  • CRUD + criteria + blacklist   │  │
-            └─────────────────────────────────┘  ├──► Postgres  (shared schema
-            ┌─────────────────────────────────┐  │              = the contract)
- Cron  ───► │ Python poller                    │──┘
-            │  • fetch + score + dedupe leads  │
-            │  • drain the on-demand poll queue│
-            └─────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/architecture.drawio.png" alt="OSApplyTrack architecture — the browser SPA hits the ASP.NET Core API and a cron-driven Python poller, both sharing one Postgres schema" width="820">
+</p>
 
 The decoupling is deliberate: the API can answer "Poll now" instantly by enqueuing
 a request, while the poller drains that queue out of band. Neither runtime blocks
