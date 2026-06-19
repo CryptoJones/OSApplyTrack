@@ -35,41 +35,39 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                 $"Sign in to OSApplyTrack:\n\n{link}\n\n"
                 + "This link is single-use and expires in 15 minutes. "
                 + "If you didn't request it, you can ignore this email.",
-            // Cyberdeck theme (CryptoJones/cyberdeck-theme), matching the mobile site.
-            // A full HTML document with color-scheme:dark + supported-color-schemes:dark
-            // is REQUIRED: without it, iOS/Apple Mail (and Gmail) normalize the email to
-            // the device's LIGHT appearance — forcing a white background and darkening
-            // the light text (which is what made earlier versions render white). The dark
-            // canvas sits on a full-width <table> with a bgcolor attribute (clients strip
-            // <body> backgrounds); solid hex borders (no rgba); inline styles only; no
-            // remote images; mono via system fonts since email can't load the vendored one.
+            // A LIGHT layout with cyberdeck branding (the cyan applytrack wordmark on a
+            // near-black header band). This is deliberate, not a fallback: a forced-dark
+            // background does not survive — iOS/Apple Mail and Gmail auto-INVERT a
+            // dark-designed email to the device theme, turning the canvas white. A light
+            // design renders identically everywhere (verified by test sends to both
+            // clients). Table layout + bgcolor attributes, solid hex, inline styles only,
+            // no remote images; mono via system fonts since email can't load the vendored.
             HtmlBody =
                 $$"""
                 <!DOCTYPE html>
-                <html lang="en">
+                <html>
                 <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <meta name="color-scheme" content="dark">
-                <meta name="supported-color-schemes" content="dark">
+                <meta name="color-scheme" content="light dark">
                 </head>
-                <body style="margin:0;padding:0;background-color:#07090f;color-scheme:dark;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#07090f" style="background-color:#07090f;width:100%;margin:0;">
+                <body style="margin:0;padding:0;background-color:#eef2f5;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef2f5" style="background-color:#eef2f5;width:100%;margin:0;">
                   <tr>
-                    <td align="center" bgcolor="#07090f" style="background-color:#07090f;padding:32px 16px;font-family:Menlo,Consolas,'DejaVu Sans Mono',monospace;">
-                      <table role="presentation" width="460" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:460px;text-align:left;">
-                        <tr><td style="padding:0 0 22px;font-size:26px;font-weight:800;letter-spacing:-0.01em;color:#cfd8e3;">
-                          <span style="color:#27d4ff;">apply</span>track
+                    <td align="center" style="padding:28px 16px;font-family:Menlo,Consolas,'DejaVu Sans Mono',monospace;">
+                      <table role="presentation" width="460" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:460px;text-align:left;border-radius:12px;overflow:hidden;border:1px solid #d4dde2;">
+                        <tr><td bgcolor="#07090f" style="background-color:#07090f;padding:18px 22px;font-size:22px;font-weight:800;letter-spacing:-0.01em;">
+                          <span style="color:#27d4ff;">apply</span><span style="color:#eef2f5;">track</span>
                         </td></tr>
-                        <tr><td bgcolor="#0c121c" style="background-color:#0c121c;border:1px solid #1c5566;border-radius:10px;padding:26px;">
-                          <div style="font-size:18px;font-weight:700;color:#cfd8e3;padding:0 0 12px;">Sign in to OSApplyTrack</div>
-                          <div style="font-size:14px;line-height:1.55;color:#9fb0b0;padding:0 0 22px;">Click the button below to sign in. This link is single-use and expires in 15 minutes.</div>
+                        <tr><td bgcolor="#ffffff" style="background-color:#ffffff;padding:26px 22px;">
+                          <div style="font-size:18px;font-weight:700;color:#0c121c;padding:0 0 10px;">Sign in to OSApplyTrack</div>
+                          <div style="font-size:14px;line-height:1.55;color:#5a6678;padding:0 0 22px;">Click the button below to sign in. This link is single-use and expires in 15 minutes.</div>
                           <a href="{{href}}" style="display:inline-block;background-color:#27d4ff;color:#07090f;text-decoration:none;padding:12px 28px;border-radius:7px;font-size:14px;font-weight:700;">Sign in &#8250;</a>
-                          <div style="font-size:12px;line-height:1.5;color:#6b7886;padding:22px 0 6px;">Or paste this link into your browser:</div>
-                          <div style="font-size:12px;line-height:1.5;word-break:break-all;"><a href="{{href}}" style="color:#55ff99;">{{href}}</a></div>
+                          <div style="font-size:12px;line-height:1.5;color:#8a96a3;padding:22px 0 6px;">Or paste this link into your browser:</div>
+                          <div style="font-size:12px;line-height:1.5;word-break:break-all;"><a href="{{href}}" style="color:#0e8f78;">{{href}}</a></div>
                         </td></tr>
-                        <tr><td style="padding:18px 2px 0;font-size:11px;line-height:1.5;color:#5a6678;">If you didn't request this, you can safely ignore this email.</td></tr>
                       </table>
+                      <div style="max-width:460px;font-size:11px;line-height:1.5;color:#9aa6b2;padding:16px 4px 0;font-family:Menlo,Consolas,monospace;">If you didn't request this, you can safely ignore this email.</div>
                     </td>
                   </tr>
                 </table>
