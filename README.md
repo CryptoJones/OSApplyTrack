@@ -36,6 +36,12 @@ telemetry, no SaaS.
   <img src="docs/screenshot.png" alt="OSApplyTrack — the multi-lane pipeline dashboard with auto-discovered leads" width="900">
 </p>
 
+<p align="center">
+  <img src="docs/mobile.png" alt="OSApplyTrack on a phone — the cyberdeck-themed mobile app view" width="280">
+  <br>
+  <em>Open the magic link on your phone and it's a native-feeling app — tap a card for the full detail view. (cyberdeck theme)</em>
+</p>
+
 ---
 
 ## Table of contents
