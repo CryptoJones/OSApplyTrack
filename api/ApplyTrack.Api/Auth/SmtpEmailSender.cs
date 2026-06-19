@@ -34,7 +34,8 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
             TextBody =
                 $"Sign in to OSApplyTrack:\n\n{link}\n\n"
                 + "This link is single-use and expires in 15 minutes. "
-                + "If you didn't request it, you can ignore this email.",
+                + "If you didn't request it, you can ignore this email.\n\n"
+                + "Open source: https://github.com/CryptoJones/OSApplyTrack",
             // A LIGHT layout with cyberdeck branding (the cyan applytrack wordmark on a
             // near-black header band). This is deliberate, not a fallback: a forced-dark
             // background does not survive — iOS/Apple Mail and Gmail auto-INVERT a
@@ -68,6 +69,7 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                         </td></tr>
                       </table>
                       <div style="max-width:460px;font-size:11px;line-height:1.5;color:#9aa6b2;padding:16px 4px 0;font-family:Menlo,Consolas,monospace;">If you didn't request this, you can safely ignore this email.</div>
+                      <div style="max-width:460px;font-size:11px;line-height:1.5;color:#9aa6b2;padding:6px 4px 0;font-family:Menlo,Consolas,monospace;"><a href="https://github.com/CryptoJones/OSApplyTrack" style="color:#0e8f78;text-decoration:none;">github.com/CryptoJones/OSApplyTrack</a></div>
                     </td>
                   </tr>
                 </table>

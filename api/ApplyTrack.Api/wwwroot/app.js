@@ -97,7 +97,8 @@ function showLogin() {
       <input id="login-email" class="login-input" type="email" required autocomplete="email"
         inputmode="email" placeholder="you@example.com" aria-label="Email address" />
       <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
-      <p class="login-note">We email you a link to sign in. Self-hosting? It's printed to the server logs.</p>
+      <p class="login-note">We email you a link to sign in — check your spam folder if it doesn't arrive. Self-hosting? It's printed to the server logs.</p>
+      <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>
     </form>`;
   document.body.appendChild(overlay);
 
@@ -114,8 +115,9 @@ function showLogin() {
     form.innerHTML = `
       <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
       <p class="login-sub">Check your inbox.</p>
-      <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way.
-        Self-hosting? Look for it in the server logs.</p>`;
+      <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way —
+        check your spam folder too. Self-hosting? Look for it in the server logs.</p>
+      <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>`;
   });
   overlay.querySelector("#login-email").focus();
 }
