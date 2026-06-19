@@ -2,6 +2,11 @@
 
 > ### Your job hunt, self-hosted and on autopilot.
 
+### ▶ [Try out the app here →](https://w3b.cryptojones.dev/OSApplyTrack/)
+
+> Live demo instance. Sign in with a magic link — each visitor gets their own
+> tenant. (Self-signed TLS, so your browser may warn before you continue.)
+
 [![CI](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoJones/OSApplyTrack/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/CryptoJones/OSApplyTrack?logo=github&sort=semver)](https://github.com/CryptoJones/OSApplyTrack/releases/latest)
 [![GHCR](https://img.shields.io/badge/ghcr.io-images-2496ED.svg?logo=docker&logoColor=white)](https://github.com/CryptoJones?tab=packages&repo_name=OSApplyTrack)
