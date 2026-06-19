@@ -35,21 +35,31 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                 $"Sign in to OSApplyTrack:\n\n{link}\n\n"
                 + "This link is single-use and expires in 15 minutes. "
                 + "If you didn't request it, you can ignore this email.",
-            // Cyberdeck theme (CryptoJones/cyberdeck-theme), matching the mobile site:
-            // cyan-on-near-black, monospace. The dark canvas lives on a full-width
-            // <table> with a bgcolor ATTRIBUTE — Gmail strips <body> + its background,
-            // so a body-only color leaves a white page. Solid hex borders (no rgba —
-            // some clients drop it), inline styles only, no remote images, mono via
-            // system fonts (Menlo/Consolas) since email can't load the vendored one.
+            // Cyberdeck theme (CryptoJones/cyberdeck-theme), matching the mobile site.
+            // A full HTML document with color-scheme:dark + supported-color-schemes:dark
+            // is REQUIRED: without it, iOS/Apple Mail (and Gmail) normalize the email to
+            // the device's LIGHT appearance — forcing a white background and darkening
+            // the light text (which is what made earlier versions render white). The dark
+            // canvas sits on a full-width <table> with a bgcolor attribute (clients strip
+            // <body> backgrounds); solid hex borders (no rgba); inline styles only; no
+            // remote images; mono via system fonts since email can't load the vendored one.
             HtmlBody =
                 $$"""
-                <body style="margin:0;padding:0;background-color:#07090f;">
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta name="color-scheme" content="dark">
+                <meta name="supported-color-schemes" content="dark">
+                </head>
+                <body style="margin:0;padding:0;background-color:#07090f;color-scheme:dark;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#07090f" style="background-color:#07090f;width:100%;margin:0;">
                   <tr>
                     <td align="center" bgcolor="#07090f" style="background-color:#07090f;padding:32px 16px;font-family:Menlo,Consolas,'DejaVu Sans Mono',monospace;">
                       <table role="presentation" width="460" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:460px;text-align:left;">
                         <tr><td style="padding:0 0 22px;font-size:26px;font-weight:800;letter-spacing:-0.01em;color:#cfd8e3;">
-                          <span style="color:#27d4ff;text-shadow:0 0 12px rgba(39,212,255,0.6);">apply</span>track
+                          <span style="color:#27d4ff;">apply</span>track
                         </td></tr>
                         <tr><td bgcolor="#0c121c" style="background-color:#0c121c;border:1px solid #1c5566;border-radius:10px;padding:26px;">
                           <div style="font-size:18px;font-weight:700;color:#cfd8e3;padding:0 0 12px;">Sign in to OSApplyTrack</div>
@@ -64,6 +74,7 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                   </tr>
                 </table>
                 </body>
+                </html>
                 """,
         }.ToMessageBody();
 
