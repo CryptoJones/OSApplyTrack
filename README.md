@@ -197,8 +197,19 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 ## API reference
 
 All `/api/*` routes except the auth handshake require a valid session cookie;
-unauthenticated calls get **401** with a `{"detail": "..."}` body. `/health` is
-open. Error bodies are uniform `{"detail": "..."}` across 400/404/409/500.
+unauthenticated calls get **401** with a `{"detail": "..."}` body. The `/health`
+and `/health/ready` probes are open. Error bodies are uniform `{"detail": "..."}`
+across 400/404/409/500.
+
+### Health & probes
+
+Two unauthenticated endpoints, split so a database hiccup drains traffic without
+killing the process:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/health` | **Liveness.** Cheap and static — `200 {"status":"ok"}`. Never touches the database, so a transient DB blip can't trip it into a restart loop. Point your orchestrator's liveness probe here. |
+| `GET` | `/health/ready` | **Readiness.** Opens Postgres and runs `SELECT 1`. `200 {"status":"ready","database":"connected"}` when the DB is reachable (and startup migrations have run); `503 {"status":"unavailable","database":"disconnected"}` otherwise. Point load balancers / deploy gates here so traffic only arrives once the DB is up. |
 
 ### Auth
 
