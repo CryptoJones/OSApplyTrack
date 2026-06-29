@@ -30,11 +30,16 @@ from applytrack.importer import _FIELD_COLUMNS, row_params
 from applytrack.store import AppFields, filename_for
 
 # A plain INSERT (not the importer's upsert): a slug already present is a genuine
-# collision to skip, never an overwrite of a row the user may have since edited.
+# collision, so :meth:`PollRepo.add_lead` retries under a suffixed name rather than
+# overwriting a row the user may have since edited.
 _INSERT_SQL = f"""
 INSERT INTO applications (tenant_id, name, {", ".join(_FIELD_COLUMNS)})
 VALUES (%(tenant_id)s, %(name)s, {", ".join(f"%({c})s" for c in _FIELD_COLUMNS)})
 """
+
+# How many slug names (``stem.md``, ``stem-2.md`` … ``stem-N.md``) ``add_lead`` will
+# try before giving up — a backstop against an unforeseen unique-violation loop.
+_MAX_NAME_ATTEMPTS = 50
 
 # Column order mirrors search_profiles; the keys match Criteria.from_dict's dict.
 _PROFILE_COLUMNS = (
@@ -126,10 +131,25 @@ class PollRepo:
     def add_lead(self, fields: AppFields) -> str:
         """Stage one new lead, returning its slug ``name``.
 
-        Raises :class:`psycopg.errors.UniqueViolation` if the slug already exists
-        for this tenant; the caller treats that as "skip this listing".
+        When the natural ``company-role`` slug already exists for this tenant —
+        two genuinely distinct postings (distinct URLs) whose titles normalize to
+        the same name — a numeric ``-N`` suffix is appended so the second is
+        staged rather than dropped. Autocommit means each failed INSERT stands
+        alone, so the retry is clean. Only after :data:`_MAX_NAME_ATTEMPTS` free
+        names are exhausted does the underlying
+        :class:`psycopg.errors.UniqueViolation` propagate.
         """
-        name = filename_for(fields)
-        with self._conn.cursor() as cur:
-            cur.execute(_INSERT_SQL, row_params(name, fields, self._t))
-        return name
+        base = filename_for(fields)
+        stem = base[:-3] if base.endswith(".md") else base
+        name = base
+        attempt = 1
+        while True:
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(_INSERT_SQL, row_params(name, fields, self._t))
+                return name
+            except psycopg.errors.UniqueViolation:
+                attempt += 1
+                if attempt > _MAX_NAME_ATTEMPTS:
+                    raise
+                name = f"{stem}-{attempt}.md"
