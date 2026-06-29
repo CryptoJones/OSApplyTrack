@@ -4,12 +4,16 @@
 
 from __future__ import annotations
 
+import logging
+
+import httpx
 import psycopg
 import pytest
 
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.poll import (
     Listing,
+    _gather,
     _looks_remote,
     _passes_location,
     build_fetchers,
@@ -49,6 +53,7 @@ class FakeRepo:
             (self._seen_urls if kind == "url" else self._seen_slugs).add(key)
         self._profile = profile if profile is not None else Criteria()
         self.added: list[AppFields] = []
+        self._names: set[str] = set()
 
     def load_profile(self) -> Criteria:
         return self._profile
@@ -69,9 +74,16 @@ class FakeRepo:
             self._seen_slugs.add(slug_key)
 
     def add_lead(self, fields: AppFields) -> str:
-        name = filename_for(fields)
-        if any(filename_for(f) == name for f in self.added):
-            raise ValueError(f"an application named {name!r} already exists")
+        # Mirror PollRepo.add_lead: suffix -N on a slug-name collision so two
+        # genuinely distinct postings can coexist rather than the second failing.
+        base = filename_for(fields)
+        stem = base[:-3] if base.endswith(".md") else base
+        name = base
+        n = 1
+        while name in self._names:
+            n += 1
+            name = f"{stem}-{n}.md"
+        self._names.add(name)
         self.added.append(fields)
         return name
 
@@ -163,7 +175,8 @@ def test_run_poll_stages_matches_with_default_lane() -> None:
     assert fields.company == "Acme"
 
 
-def test_run_poll_dedupes_same_role() -> None:
+def test_run_poll_dedupes_same_url() -> None:
+    # The same posting seen twice (identical URL) stages exactly once.
     repo = FakeRepo()
     c = Criteria(keywords=["engineer"])
     added = run_poll(
@@ -171,7 +184,55 @@ def test_run_poll_dedupes_same_role() -> None:
         c,
         listings=[
             _lead("Acme", "Backend Engineer", link="https://acme.co/1"),
-            _lead("Acme", "Backend Engineer (Remote)", link="https://acme.co/2"),
+            _lead("Acme", "Backend Engineer", link="https://acme.co/1"),
+        ],
+    )
+    assert len(added) == 1
+
+
+def test_run_poll_keeps_distinct_urls_for_role_variants() -> None:
+    # Per-city variants of one role have distinct URLs -> distinct leads. The old
+    # behavior stripped the parenthetical, collapsed them, and dropped all but one.
+    repo = FakeRepo()
+    c = Criteria(keywords=["engineer"])
+    added = run_poll(
+        repo,
+        c,
+        listings=[
+            _lead("Acme", "Backend Engineer (Campinas)", link="https://acme.co/1"),
+            _lead("Acme", "Backend Engineer (São Paulo)", link="https://acme.co/2"),
+        ],
+    )
+    assert len(added) == 2
+
+
+def test_score_and_stage_unique_names_for_same_title_distinct_urls() -> None:
+    # Same role title (location only in a separate field) -> same slug stem but
+    # distinct URLs. Each must get its own row via a -N suffix, not be dropped.
+    repo = FakeRepo()
+    c = Criteria(keywords=["engineer"])
+    added = score_and_stage(
+        repo,
+        c,
+        listings=[
+            _lead("Acme", "Backend Engineer", link="https://acme.co/1", location="NYC"),
+            _lead("Acme", "Backend Engineer", link="https://acme.co/2", location="SF"),
+        ],
+    )
+    assert len(added) == 2
+    assert added == ["acme-backend-engineer.md", "acme-backend-engineer-2.md"]
+
+
+def test_run_poll_dedupes_urlless_by_slug() -> None:
+    # With no URL, the slug is the only key, so identical url-less posts collapse.
+    repo = FakeRepo()
+    c = Criteria(keywords=["engineer"])
+    added = run_poll(
+        repo,
+        c,
+        listings=[
+            _lead("Acme", "Backend Engineer", link=""),
+            _lead("Acme", "Backend Engineer", link=""),
         ],
     )
     assert len(added) == 1
@@ -250,6 +311,27 @@ def test_run_poll_applies_location_filter() -> None:
     assert added == []
 
 
+def test_gather_logs_and_continues_on_source_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A failing source is skipped but logged by name; the others still contribute.
+    def boom(client: httpx.Client, limit: int) -> list[Listing]:
+        raise ValueError("upstream schema changed")
+
+    boom.__name__ = "fetch_boom"
+
+    def ok(client: httpx.Client, limit: int) -> list[Listing]:
+        return [_lead("Acme", "Engineer", link="https://acme.co/1")]
+
+    ok.__name__ = "fetch_ok"
+
+    with caplog.at_level(logging.WARNING):
+        listings = _gather([boom, ok], 10)
+
+    assert [item.company for item in listings] == ["Acme"]
+    assert any("boom" in r.getMessage() for r in caplog.records)
+
+
 def test_build_fetchers_includes_sources_and_boards() -> None:
     c = Criteria(ats_boards=[AtsBoard(provider="greenhouse", slug="stripe")])
     fetchers = build_fetchers(c)
@@ -270,15 +352,30 @@ def test_run_poll_dedupes_across_runs_via_seen_ledger() -> None:
     assert len(repo.added) == 1
 
 
-def test_run_poll_honors_preloaded_seen_keys() -> None:
-    # A slug already in the seen table (e.g. from a since-deleted lead) is skipped.
-    repo = FakeRepo(seen=[("slug", "acme-backend-engineer")])
+def test_run_poll_honors_preloaded_seen_url() -> None:
+    # A URL already in the seen table (e.g. from a since-deleted lead) is skipped.
+    repo = FakeRepo(seen=[("url", "acme.co/1")])
     c = Criteria(keywords=["engineer"])
     added = run_poll(
         repo, c, listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/1")]
     )
     assert added == []
     assert repo.added == []
+
+
+def test_run_poll_preloaded_slug_blocks_only_urlless() -> None:
+    # The slug is the fallback key: a preloaded slug blocks a url-less listing, but
+    # a listing carrying a distinct URL is judged by URL and still staged.
+    c = Criteria(keywords=["engineer"])
+
+    urlless = FakeRepo(seen=[("slug", "acme-backend-engineer")])
+    assert run_poll(urlless, c, listings=[_lead("Acme", "Backend Engineer", link="")]) == []
+
+    with_url = FakeRepo(seen=[("slug", "acme-backend-engineer")])
+    added = run_poll(
+        with_url, c, listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/9")]
+    )
+    assert len(added) == 1
 
 
 def test_run_all_tenants_routes_sources_per_profile() -> None:

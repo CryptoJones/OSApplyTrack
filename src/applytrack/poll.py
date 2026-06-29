@@ -16,12 +16,15 @@ company ATS boards to scan.
 This runtime no longer touches the disk store; it shares one Postgres with the
 API and is driven against a tenant-scoped repo (see :class:`LeadRepo`).
 
-Deduplication is load-bearing — a company must never be pinged twice. For each
-run an in-memory ledger is seeded from the tenant's existing ``applications``
-rows, and every listing is checked against it using two independent keys: the
-normalized listing URL and the normalized ``company + role`` slug. If *either*
-key has been seen, the listing is skipped. New keys are recorded even when
-staging fails, so a transient error never causes a re-ping.
+Deduplication is load-bearing — the same posting must never be staged twice. For
+each run an in-memory ledger is seeded from the tenant's existing ``applications``
+rows. The posting URL is the authoritative key: a listing with a *distinct* URL is
+a distinct lead, even when its ``company + role`` slug matches one already seen
+(e.g. one role posted per city). The slug is only the fallback key for the
+minority of sources that give no URL. Keys are recorded for any listing we
+evaluate — staged, filtered, or link-dead — so we don't re-process it; the lone
+exception is a genuine *write* failure, which leaves the listing unrecorded so a
+later run can retry it.
 """
 
 from __future__ import annotations
@@ -51,7 +54,6 @@ logger = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-_PARENS_RE = re.compile(r"\([^)]*\)")
 _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 
 # Signals that a role is remote-friendly, for the optional remote-only filter.
@@ -96,12 +98,12 @@ def _norm_url(url: str) -> str:
 def _norm_slug(company: str, role: str) -> str:
     """Normalized ``company + role`` key, robust to spacing/punctuation.
 
-    Trailing parentheticals are dropped before keying, so the same role posted
-    across locations collapses to one key and a company is not pinged once per
-    city. This errs toward over-dedup, the safe direction for not annoying
-    employers.
+    The *full* role is kept (parentheticals included), so per-city variants like
+    ``Engineer (Campinas)`` vs ``Engineer (São Paulo)`` are distinct keys — they
+    are distinct openings. This is the *fallback* dedup key, used only for
+    listings that carry no URL; when a URL is present it is authoritative (see
+    :meth:`Seen.has`), so two distinct URLs are never collapsed by this slug.
     """
-    role = _PARENS_RE.sub(" ", role)
     return _SLUG_RE.sub("-", f"{company} {role}".lower()).strip("-")
 
 
@@ -177,8 +179,17 @@ class Seen:
     sink: Callable[[str, str], None] | None = None
 
     def has(self, url: str, slug: str) -> bool:
+        """Have we already processed this listing?
+
+        The URL is authoritative: when the listing has one, the verdict is purely
+        whether *that* URL was seen — a distinct URL is a distinct lead, never
+        suppressed by a colliding ``company + role`` slug. The slug is consulted
+        only for URL-less listings, where it is all we have.
+        """
         nu = _norm_url(url)
-        return (bool(nu) and nu in self.urls) or (bool(slug) and slug in self.slugs)
+        if nu:
+            return nu in self.urls
+        return bool(slug) and slug in self.slugs
 
     def note(self, url: str, slug: str) -> tuple[str, str]:
         """Record keys in memory only; return the normalized keys newly added."""
@@ -619,13 +630,26 @@ SOURCE_FETCHERS: dict[str, Fetcher] = {
 
 
 def make_ats_fetcher(board: AtsBoard) -> Fetcher | None:
-    """Bind a company slug to its provider's fetcher, yielding a plain Fetcher."""
+    """Bind a company slug to its provider's fetcher, yielding a plain Fetcher.
+
+    The returned callable carries a ``provider:slug`` ``__name__`` so a failure of
+    one board is named in the poll diagnostics rather than logged as ``<lambda>``.
+    """
     slug = board.slug
     if board.provider == "greenhouse":
-        return lambda client, limit: fetch_greenhouse(client, limit, slug)
-    if board.provider == "lever":
-        return lambda client, limit: fetch_lever(client, limit, slug)
-    return None
+
+        def _fetch(client: httpx.Client, limit: int) -> list[Listing]:
+            return fetch_greenhouse(client, limit, slug)
+
+    elif board.provider == "lever":
+
+        def _fetch(client: httpx.Client, limit: int) -> list[Listing]:
+            return fetch_lever(client, limit, slug)
+
+    else:
+        return None
+    _fetch.__name__ = f"{board.provider}:{slug}"
+    return _fetch
 
 
 def build_fetchers(criteria: Criteria) -> list[Fetcher]:
@@ -643,14 +667,21 @@ def build_fetchers(criteria: Criteria) -> list[Fetcher]:
 
 
 def _gather(fetchers: Iterable[Fetcher], limit: int) -> list[Listing]:
-    """Run each fetcher, tolerating per-source failures (offline, 4xx, parse)."""
+    """Run each fetcher, tolerating per-source failures (offline, 4xx, parse).
+
+    A failing source is skipped but logged at WARNING with its name, so a
+    dead/renamed source is visible in the worker logs instead of silently looking
+    like an empty job market. Any exception is caught — one broken source (e.g. a
+    changed upstream schema) must never abort the whole run.
+    """
     listings: list[Listing] = []
     with httpx.Client(timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
         for fetch in fetchers:
+            label = getattr(fetch, "__name__", repr(fetch)).removeprefix("fetch_")
             try:
                 listings.extend(fetch(client, limit))
-            except (httpx.HTTPError, ValueError, KeyError):
-                continue
+            except Exception:  # noqa: BLE001 - one bad source must not abort the run
+                logger.warning("poll source %s failed", label, exc_info=True)
     return listings
 
 
@@ -743,14 +774,17 @@ def score_and_stage(
             slug = _norm_slug(item.company, item.role)
             if seen.has(item.link, slug):
                 continue
-            # Record keys up front so a later failure still can't cause a re-ping.
-            seen.add(item.link, slug)
 
+            # We act on this listing one way or another below, so it is recorded
+            # as seen *except* on a genuine write failure (handled at stage time),
+            # which leaves it for a later run to retry.
             if not _passes_location(item, profile):
+                seen.add(item.link, slug)
                 continue
 
             score, hits = classify(item.role, item.description, profile.keywords)
             if not hits or score < profile.min_fit_score:
+                seen.add(item.link, slug)
                 continue
 
             # Block dead postings: don't create an entry we can't actually open.
@@ -759,20 +793,26 @@ def score_and_stage(
                 and item.link
                 and not is_reachable(item.link, client=verify_client)
             ):
+                seen.add(item.link, slug)
                 continue
 
             fields = _to_fields(item, profile.default_lane, score, hits)
             try:
+                # add_lead suffixes -N on a slug-name collision, so a distinct URL
+                # whose name matches an existing row is staged, not dropped.
                 name = repo.add_lead(fields)
             except psycopg.errors.UniqueViolation:
-                logger.debug(
-                    "skipping duplicate lead for %s: %s",
+                # add_lead exhausted its name attempts: surface and leave unseen
+                # so a later run retries it.
+                logger.warning(
+                    "stage failed (slug collision) for %s — %s",
                     item.company,
                     item.role,
                     exc_info=True,
                 )
                 continue
-            # Leads stage as-is; the cover letter is drafted on demand later.
+            # Staged: record keys, then collect. Cover letter is drafted on demand.
+            seen.add(item.link, slug)
             added.append(name)
     finally:
         if verify_client is not None:

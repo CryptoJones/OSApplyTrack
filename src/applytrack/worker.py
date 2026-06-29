@@ -19,6 +19,7 @@ the others.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from typing import Protocol
 
@@ -36,6 +37,8 @@ from applytrack.poll import (
     make_ats_fetcher,
     score_and_stage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TenantRepo(LeadRepo, Protocol):
@@ -69,7 +72,9 @@ def _gather_by_source(
 
     Built-in sources key by name (``"remotive"``); ATS boards key by
     ``"{provider}:{slug}"`` — the same keys :func:`_select_for_profile` routes by.
-    Per-source failures yield an empty bucket rather than aborting the gather.
+    A failing source yields an empty bucket and is logged at WARNING (rather than
+    aborting the gather or vanishing silently), so a dead/renamed source is visible
+    in the logs instead of looking like an empty market for every tenant.
     """
     builtin: set[str] = set()
     boards: dict[str, AtsBoard] = {}
@@ -85,16 +90,18 @@ def _gather_by_source(
         for name in sorted(builtin):
             try:
                 gathered[name] = SOURCE_FETCHERS[name](client, limit)
-            except (httpx.HTTPError, ValueError, KeyError):
+            except Exception:  # noqa: BLE001 - one bad source must not abort the gather
                 gathered[name] = []
+                logger.warning("poll source %s failed", name, exc_info=True)
         for key, board in boards.items():
             fetcher = make_ats_fetcher(board)
             if fetcher is None:
                 continue
             try:
                 gathered[key] = fetcher(client, limit)
-            except (httpx.HTTPError, ValueError, KeyError):
+            except Exception:  # noqa: BLE001 - one bad source must not abort the gather
                 gathered[key] = []
+                logger.warning("poll source %s failed", key, exc_info=True)
     return gathered
 
 
@@ -145,6 +152,7 @@ def run_all_tenants(
             repos[tid] = repo
         except Exception:  # noqa: BLE001 - one tenant's failure must not abort the rest
             results[tid] = []
+            logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
 
     if gathered is None:
         gathered = _gather_by_source(profiles.values(), limit_per_source)
@@ -159,6 +167,7 @@ def run_all_tenants(
             )
         except Exception:  # noqa: BLE001 - one tenant's failure must not abort the rest
             results[tid] = []
+            logger.warning("poll failed for tenant %s", tid, exc_info=True)
     return results
 
 
