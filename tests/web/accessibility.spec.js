@@ -120,6 +120,29 @@ test("keyboard navigation and validation retain visible focus", async ({ page })
   await expect(page.locator("#form-errors")).toContainText("Enter a company");
 });
 
+test("a populated desktop list scrolls without moving the application shell", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Desktop master-detail layout");
+  await page.evaluate(() => {
+    const list = document.querySelector("#app-list");
+    const row = list.firstElementChild;
+    for (let index = 0; index < 12; index += 1) list.append(row.cloneNode(true));
+  });
+  await page.locator("#app-list").evaluate((list) => { list.scrollTop = list.scrollHeight; });
+  await page.locator("#content").evaluate((content) => {
+    content.innerHTML = '<div style="height: 1600px">Tall application detail fixture</div>';
+  });
+  const geometry = await page.evaluate(() => {
+    const workspace = document.querySelector("#workspace").getBoundingClientRect();
+    const content = document.querySelector("#content").getBoundingClientRect();
+    return { workspaceTop: workspace.top, workspaceBottom: workspace.bottom, contentTop: content.top, contentBottom: content.bottom };
+  });
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(Math.abs(geometry.contentTop - geometry.workspaceTop)).toBeLessThan(1);
+  expect(geometry.contentBottom).toBeLessThanOrEqual(geometry.workspaceBottom + 1);
+  await expect(page.locator(".app-header")).toBeVisible();
+  await expect(page.locator("#content")).toBeInViewport();
+});
+
 test("mobile detail navigation hides only the inactive pane", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Mobile-specific navigation");
   await page.getByRole("button", { name: /Example Co/ }).click();

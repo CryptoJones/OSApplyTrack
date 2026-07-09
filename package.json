@@ -1,7 +1,9 @@
 {
   "name": "osapplytrack-web-tests",
   "private": true,
+  "type": "module",
   "scripts": {
+    "screenshots": "node scripts/capture-readme-screenshots.js",
     "test:web": "playwright test",
     "test:web:update": "playwright test --update-snapshots"
   },
