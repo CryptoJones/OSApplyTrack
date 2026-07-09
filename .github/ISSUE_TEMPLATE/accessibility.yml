@@ -1,0 +1,56 @@
+name: Accessibility problem
+description: Report a barrier when using ApplyTrack with assistive technology or accessibility settings.
+title: "[Accessibility]: "
+labels: ["accessibility"]
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for reporting an accessibility barrier. Do not include private application, résumé, or account information.
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Affected workflow
+      description: What were you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Describe the barrier and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe what would make the workflow usable.
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: Firefox 128
+  - type: input
+    id: assistive_technology
+    attributes:
+      label: Assistive technology and version
+      description: Leave blank when none is involved.
+      placeholder: NVDA 2026.1
+  - type: dropdown
+    id: input
+    attributes:
+      label: Primary input method
+      options:
+        - Keyboard
+        - Touch
+        - Mouse or trackpad
+        - Voice control
+        - Switch control
+        - Other
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include display preferences or reproducible steps, but no sensitive personal data.

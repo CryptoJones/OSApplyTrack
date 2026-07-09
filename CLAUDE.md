@@ -21,10 +21,10 @@ rewrite of `applytrack` (the original single-user app lives at
 - **Data: Dapper + Npgsql** over Postgres. Migrations via **DbUp** (idempotent
   `.sql` scripts). Optimistic locking via a manual `version` column. **Not** EF
   Core, **not** SQLAlchemy.
-- **Keep the existing vanilla-JS SPA VERBATIM** (`web/static/*` → the .NET app's
-  `wwwroot/`). The API is written *against* the SPA's existing endpoint contract:
-  same URLs + JSON shapes, including `?expected_version=` and the 409 conflict
-  flow. The SPA is not to be rewritten.
+- **Accessible build-free SPA.** The vanilla-JS interface in `wwwroot/` targets
+  WCAG 2.2 AA and may evolve, but it must remain unbundled and preserve the API's
+  URLs and JSON shapes, including `?expected_version=` and the 409 conflict flow.
+  Run `npm run test:web` after UI changes.
 - **Materials / LLM cover-letter engine was out of v1; it landed post-v1, in
   v1.1.0.**
 - **⚠ ANY-LLM, AND OPTIONAL:** the cover-letter engine **must run against any
