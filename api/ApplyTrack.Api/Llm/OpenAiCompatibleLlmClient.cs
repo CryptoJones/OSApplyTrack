@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Scrape;
@@ -20,6 +21,9 @@ namespace ApplyTrack.Api.Llm;
 /// </summary>
 public sealed class OpenAiCompatibleLlmClient : ILlmClient
 {
+    private const int MaxResponseBytes = 1024 * 1024;
+    private const int MaxErrorDetailBytes = 4 * 1024;
+
     private readonly IHttpClientFactory _factory;
     private readonly ILogger<OpenAiCompatibleLlmClient> _log;
 
@@ -64,7 +68,7 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         HttpResponseMessage res;
         try
         {
-            res = await http.SendAsync(req, ct);
+            res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
         }
         catch (Exception ex) when (FindValidation(ex) is { } validation)
         {
@@ -80,28 +84,31 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             throw new LlmUnavailableException($"could not reach the LLM endpoint ({ex.Message})");
         }
 
-        if (!res.IsSuccessStatusCode)
+        using (res)
         {
-            var detail = await SafeReadAsync(res, ct);
-            _log.LogWarning("LLM endpoint {Url} returned {Status}: {Detail}", url, (int)res.StatusCode, detail);
-            throw new LlmUnavailableException($"the LLM endpoint returned HTTP {(int)res.StatusCode}");
-        }
+            if (!res.IsSuccessStatusCode)
+            {
+                var detail = await SafeReadAsync(res, ct);
+                _log.LogWarning("LLM endpoint {Url} returned {Status}: {Detail}", url, (int)res.StatusCode, detail);
+                throw new LlmUnavailableException($"the LLM endpoint returned HTTP {(int)res.StatusCode}");
+            }
 
-        var json = await res.Content.ReadAsStringAsync(ct);
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var content = doc.RootElement
-                .GetProperty("choices")[0]
-                .GetProperty("message")
-                .GetProperty("content")
-                .GetString() ?? "";
-            return content.Trim();
-        }
-        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException)
-        {
-            _log.LogWarning(ex, "Unexpected LLM response shape from {Url}", url);
-            throw new LlmUnavailableException("the LLM endpoint returned an unexpected response shape");
+            var json = await ReadCappedStringAsync(res.Content, MaxResponseBytes, ct);
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var content = doc.RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message")
+                    .GetProperty("content")
+                    .GetString() ?? "";
+                return content.Trim();
+            }
+            catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException)
+            {
+                _log.LogWarning(ex, "Unexpected LLM response shape from {Url}", url);
+                throw new LlmUnavailableException("the LLM endpoint returned an unexpected response shape");
+            }
         }
     }
 
@@ -109,13 +116,41 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
     {
         try
         {
-            var body = await res.Content.ReadAsStringAsync(ct);
+            var body = await ReadCappedStringAsync(res.Content, MaxErrorDetailBytes, ct);
             return body.Length > 500 ? body[..500] : body;
+        }
+        catch (LlmUnavailableException)
+        {
+            return "(body too large)";
         }
         catch
         {
             return "(no body)";
         }
+    }
+
+    private static async Task<string> ReadCappedStringAsync(
+        HttpContent content, int maxBytes, CancellationToken ct)
+    {
+        if (content.Headers.ContentLength is long declared && declared > maxBytes)
+            throw new LlmUnavailableException("the LLM endpoint returned a response that is too large");
+
+        await using var stream = await content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+                throw new LlmUnavailableException("the LLM endpoint returned a response that is too large");
+            buffer.Write(chunk, 0, read);
+        }
+
+        var charset = content.Headers.ContentType?.CharSet?.Trim('"');
+        Encoding encoding;
+        try { encoding = charset is null ? Encoding.UTF8 : Encoding.GetEncoding(charset); }
+        catch (ArgumentException) { encoding = Encoding.UTF8; }
+        return encoding.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
     }
 
     private static async ValueTask<Stream> ConnectToPublicAddressOnlyAsync(
