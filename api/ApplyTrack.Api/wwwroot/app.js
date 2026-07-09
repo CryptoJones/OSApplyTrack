@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
+import { createApiClient } from "./api-client.js";
+import { applyPreferences, readPreferences, renderAccessibilityPreferences } from "./accessibility-preferences.js";
+
 "use strict";
 
 const STATUSES = ["lead", "ready", "applied", "screen", "onsite", "offer", "rejected", "passed"];
@@ -25,7 +28,7 @@ const state = {
   current: null,
   currentVersion: "",
   mode: "empty", // empty | view | edit | raw | new | settings
-  settingsTab: "criteria",
+  settingsTab: "accessibility",
   coverLettersEnabled: true,
 };
 
@@ -36,31 +39,14 @@ const contentEl = $("#content");
 const countEl = $("#app-count");
 const searchEl = $("#search");
 const toastEl = $("#toast");
+const statusMessageEl = $("#status-message");
+const alertMessageEl = $("#alert-message");
+const confirmDialogEl = $("#confirm-dialog");
 const laneSel = $("#filter-lane");
 const statusSel = $("#filter-status");
 
 // ---- API ------------------------------------------------------------------
-
-async function api(method, path, body) {
-  const opts = { method, headers: {} };
-  if (body !== undefined) {
-    opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
-  }
-  const res = await fetch(path, opts);
-  if (!res.ok) {
-    // No session (or it was revoked): drop straight to the login view. The poll
-    // loop swallows the throw, so an expired session bounces here on its own.
-    if (res.status === 401) showLogin();
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) {}
-    const err = new Error(detail);
-    err.status = res.status;
-    throw err;
-  }
-  if (res.status === 204) return null;
-  return res.json();
-}
+const api = createApiClient(showLogin);
 
 // PUT guarding against external edits (the hourly poller also writes files).
 // Send the version we last read; a 409 means it changed underneath us.
@@ -71,7 +57,11 @@ async function saveWithConflict(path, body, label) {
   try {
     return await api("PUT", versioned, body);
   } catch (e) {
-    if (e.status === 409 && confirm(`"${label}" changed on disk since you opened it. Overwrite with your version?`)) {
+    if (e.status === 409 && await confirmAction({
+      title: "Application changed",
+      message: `"${label}" changed since you opened it. Overwrite it with your version?`,
+      confirmLabel: "Overwrite",
+    })) {
       return api("PUT", path, body);
     }
     throw e;
@@ -89,19 +79,23 @@ function showLogin() {
   const overlay = document.createElement("div");
   overlay.id = "login-overlay";
   overlay.className = "login-overlay";
+  $("#app-shell").inert = true;
+  $(".mobile-actions").inert = true;
   overlay.innerHTML = `
-    <form id="login-form" class="login-card">
-      <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
+    <main class="login-card" aria-labelledby="login-title">
+    <form id="login-form">
+      <h1 id="login-title" class="login-mark">ApplyTrack</h1>
       <p class="login-sub">Sign in with a one-time magic link.</p>
       ${badLink ? `<p class="login-error">That link was invalid or expired — request a fresh one.</p>` : ""}
       <p class="login-signup-head">NEW HERE?</p>
       <p class="login-signup">Just enter your email — your account is created automatically.</p>
+      <label class="field" for="login-email"><span class="field-label">Email address</span>
       <input id="login-email" class="login-input" type="email" required autocomplete="email"
-        inputmode="email" placeholder="you@example.com" aria-label="Email address" />
+        inputmode="email" placeholder="you@example.com" /></label>
       <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
       <p class="login-note">We email you a link to sign in — check your spam folder if it doesn't arrive. Self-hosting? It's printed to the server logs.</p>
       <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>
-    </form>`;
+    </form></main>`;
   document.body.appendChild(overlay);
 
   const form = overlay.querySelector("#login-form");
@@ -115,11 +109,12 @@ function showLogin() {
     // Always reports success: the API returns 200 either way (no account enumeration).
     try { await api("POST", "/api/auth/request", { email }); } catch (_) {}
     form.innerHTML = `
-      <h1 class="login-mark font-display"><span class="text-stamp">apply</span><span>track</span></h1>
-      <p class="login-sub">Check your inbox.</p>
+      <h1 class="login-mark">ApplyTrack</h1>
+      <h2 tabindex="-1" class="login-sub">Check your inbox</h2>
       <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way —
         check your spam folder too. Self-hosting? Look for it in the server logs.</p>
       <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>`;
+    form.querySelector("h2").focus();
   });
   overlay.querySelector("#login-email").focus();
 }
@@ -132,9 +127,55 @@ const escapeHtml = (s) =>
 
 function toast(msg) {
   toastEl.textContent = msg;
+  toastEl.setAttribute("aria-hidden", "false");
+  announce(msg);
   toastEl.classList.add("show");
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => toastEl.classList.remove("show"), 2600);
+  toast._t = setTimeout(() => {
+    toastEl.classList.remove("show");
+    toastEl.setAttribute("aria-hidden", "true");
+  }, 4000);
+}
+
+function announce(message, assertive = false) {
+  const el = assertive ? alertMessageEl : statusMessageEl;
+  el.textContent = "";
+  requestAnimationFrame(() => { el.textContent = message; });
+}
+
+function confirmAction({ title, message, confirmLabel = "Confirm" }) {
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  $("#confirm-accept").textContent = confirmLabel;
+  confirmDialogEl.returnValue = "cancel";
+  confirmDialogEl.showModal();
+  return new Promise((resolve) => {
+    confirmDialogEl.addEventListener("close", () => resolve(confirmDialogEl.returnValue === "confirm"), { once: true });
+  });
+}
+
+function focusView(selector = "h1, h2") {
+  requestAnimationFrame(() => {
+    const target = contentEl.querySelector(selector) || contentEl;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+    contentEl.scrollTop = 0;
+  });
+}
+
+function showDetailPane() {
+  document.body.classList.add("m-detail");
+  if (window.matchMedia("(max-width: 767px)").matches)
+    $("#application-list").setAttribute("aria-hidden", "true");
+}
+
+function showListPane({ restoreFocus = true } = {}) {
+  document.body.classList.remove("m-detail");
+  $("#application-list").removeAttribute("aria-hidden");
+  if (restoreFocus) {
+    const active = listEl.querySelector('[aria-current="true"]');
+    (active || searchEl).focus();
+  }
 }
 
 const stem = (filename) => filename.replace(/\.md$/i, "");
@@ -154,13 +195,15 @@ function safeUrl(u) {
 function renderPipeline() {
   const counts = state.stats.status || {};
   const parts = STATUSES.filter((s) => counts[s]).map((s) => {
-    const active = state.filterStatus === s ? " active" : "";
-    return `<span class="pipe-stat${active}" data-status="${s}">
-      <span class="n">${counts[s]}</span>${escapeHtml(STATUS_LABEL[s] || s)}</span>`;
+    const active = state.filterStatus === s;
+    const label = STATUS_LABEL[s] || s;
+    return `<button type="button" class="pipe-stat" data-status="${s}" aria-pressed="${active}"
+      aria-label="${escapeHtml(label)}, ${counts[s]} applications">
+      <span class="n" aria-hidden="true">${counts[s]}</span><span>${escapeHtml(label)}</span></button>`;
   });
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
   if (total) parts.push(`<span class="pipe-total"><span class="n">${total}</span>total</span>`);
-  pipelineEl.innerHTML = parts.join("") || `<span class="pipe-stat">no applications yet</span>`;
+  pipelineEl.innerHTML = parts.join("") || `<span>No applications yet</span>`;
   pipelineEl.querySelectorAll(".pipe-stat[data-status]").forEach((el) => {
     el.addEventListener("click", () => {
       state.filterStatus = state.filterStatus === el.dataset.status ? "" : el.dataset.status;
@@ -199,36 +242,38 @@ function renderSidebar() {
   const apps = filteredApps();
   listEl.innerHTML = "";
   if (apps.length === 0) {
-    listEl.innerHTML = `<li class="px-2 py-6 text-center font-mono text-[10px] uppercase tracking-widest text-ink-faint">no matches</li>`;
+    listEl.innerHTML = `<li class="empty-result">No applications match the current filters.</li>`;
   }
   apps.forEach((a, i) => {
     const li = document.createElement("li");
-    li.className = "index-card" + (a.filename === state.current ? " active" : "");
-    li.style.animationDelay = `${Math.min(i, 12) * 28}ms`;
+    li.className = "application-list-item";
     li.dataset.name = a.filename;
     const score = a.score ? `<span class="score-chip">fit ${escapeHtml(a.score)}</span>` : "";
     const contactLine =
       a.contact || a.contact_email
-        ? `<div class="ic-meta flex items-center gap-2">✉ ${escapeHtml(a.contact || a.contact_email)}${
+        ? `<span class="ic-meta">Contact: ${escapeHtml(a.contact || a.contact_email)}${
             a.contact && a.contact_email ? " · " + escapeHtml(a.contact_email) : ""
-          }</div>`
+          }</span>`
         : "";
-    li.innerHTML = `
-      <div class="flex items-center justify-between gap-2">
+    const selected = a.filename === state.current;
+    li.innerHTML = `<button type="button" class="application-card" aria-current="${selected}" data-name="${escapeHtml(a.filename)}">
+      <span class="application-card-header">
         <div class="ic-title">${escapeHtml(a.company)}</div>
         ${statusBadge(a.status)}
-      </div>
-      <div class="ic-meta flex items-center gap-2">${lanePill(a.lane)}${score}
+      </span>
+      <span class="ic-meta">${lanePill(a.lane)} ${score}
         ${a.applied ? "· applied " + escapeHtml(a.applied) : ""}
-        ${a.followup ? "· ↻ " + escapeHtml(a.followup) : ""}</div>
-      ${a.role ? `<div class="ic-snippet">${escapeHtml(a.role)}</div>` : ""}
-      ${contactLine}`;
-    li.addEventListener("click", () => openApp(a.filename));
+        ${a.followup ? "· follow-up " + escapeHtml(a.followup) : ""}</span>
+      ${a.role ? `<span class="ic-snippet">${escapeHtml(a.role)}</span>` : ""}
+      ${contactLine}</button>`;
+    li.querySelector("button").addEventListener("click", () => openApp(a.filename));
     listEl.appendChild(li);
   });
   const total = state.apps.length;
   const shown = apps.length;
-  countEl.textContent = shown === total ? `${total} apps` : `${shown}/${total}`;
+  countEl.textContent = shown === total
+    ? `${total} application${total === 1 ? "" : "s"}`
+    : `${shown} of ${total} applications`;
 }
 
 // ---- Main pane ------------------------------------------------------------
@@ -236,15 +281,13 @@ function renderSidebar() {
 function renderEmpty() {
   state.mode = "empty";
   state.current = null;
-  document.body.classList.remove("m-detail"); // mobile: back to the list pane
+  showListPane({ restoreFocus: false });
+  document.title = "Applications | ApplyTrack";
   renderSidebar();
   contentEl.innerHTML = `
     <div class="empty">
-      <div class="card-glyph"></div>
-      <div class="empty-title">No application selected</div>
-      <p class="font-mono text-[11px] uppercase tracking-[0.18em]">
-        Pick one · or press <span class="text-stamp">+ New</span>
-      </p>
+      <h2 class="empty-title">No application selected</h2>
+      <p>Choose an application from the list or create a new one.</p>
     </div>`;
 }
 
@@ -256,7 +299,9 @@ async function openApp(name) {
     state.mode = "view";
     renderSidebar();
     renderView(data);
-    document.body.classList.add("m-detail"); // mobile: slide the detail pane in
+    showDetailPane();
+    document.title = `${data.fields.company || stem(name)} | ApplyTrack`;
+    focusView("h2");
   } catch (e) {
     toast(e.message);
   }
@@ -290,23 +335,23 @@ function renderView(data) {
     : "";
   contentEl.innerHTML = `
     <article class="sheet">
-      <div class="flex items-start justify-between gap-4">
+      <header class="view-header">
         <div>
           <div class="sheet-eyebrow">${statusBadge(f.status)} · ${escapeHtml(data.filename)}</div>
           <h2 class="sheet-title">${escapeHtml(f.company || stem(data.filename))}</h2>
           ${f.role ? `<div class="font-body text-lg text-ink-faint">${escapeHtml(f.role)}</div>` : ""}
         </div>
-        <div class="seg shrink-0">
-          <button data-act="edit" class="active">Edit</button>
-          <button data-act="raw">Raw</button>
+        <div class="seg" role="tablist" aria-label="Application editor mode">
+          <button type="button" role="tab" aria-selected="true" data-act="edit">Form</button>
+          <button type="button" role="tab" aria-selected="false" data-act="raw">Raw source</button>
         </div>
-      </div>
+      </header>
       ${metaRow(f)}
-      <div class="mt-4 flex flex-wrap gap-2">${applyBtn}${checkBtn}</div>
-      <div id="link-status" class="mt-2 text-sm"></div>
+      <div class="action-row">${applyBtn}${checkBtn}</div>
+      <div id="link-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
       <div class="prose-omi mt-5">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
       ${materialSection(data)}
-      <div class="mt-8 flex items-center gap-2 border-t border-rule pt-4">
+      <div class="action-row section-divider">
         <button class="btn btn-primary" data-act="applied">Mark applied</button>
         <button class="btn btn-ghost" data-act="pass">Pass</button>
         <button class="btn btn-ghost" data-act="blacklist">Blacklist company</button>
@@ -375,7 +420,7 @@ function materialSection(data) {
         <div class="flex items-center justify-between gap-3">
           <div>
             <div class="field-label">Cover letter</div>
-            <p class="font-mono text-[11px] text-ink-faint">Draft a tailored letter from your résumé via the configured AI.</p>
+            <p class="field-help">Draft a tailored letter from your résumé via the configured AI.</p>
           </div>
           <button class="btn btn-primary shrink-0" data-act="draft">Generate cover letter</button>
         </div>
@@ -427,7 +472,11 @@ function downloadMaterial(data) {
 }
 
 async function discardMaterial(name) {
-  if (!confirm("Discard this cover letter? You can regenerate it later.")) return;
+  if (!await confirmAction({
+    title: "Discard cover letter?",
+    message: "You can generate another cover letter later.",
+    confirmLabel: "Discard",
+  })) return;
   try {
     await api("DELETE", `/api/apps/${encodeURIComponent(name)}/cover-letter`);
     openApp(name);
@@ -490,7 +539,11 @@ async function markStatus(data, action) {
 // are passed. Then jump to the next actionable role, like Pass.
 async function blacklistCompany(data) {
   const company = data.fields.company || stem(data.filename);
-  if (!confirm(`Blacklist "${company}"? Future polls will skip it and its open leads will be passed.`))
+  if (!await confirmAction({
+    title: `Blacklist ${company}?`,
+    message: "Future polls will skip this company and its open leads will be passed.",
+    confirmLabel: "Blacklist company",
+  }))
     return;
   try {
     const r = await api("POST", `/api/apps/${encodeURIComponent(data.filename)}/blacklist`);
@@ -516,29 +569,34 @@ function formMarkup(f, { isNew }) {
   const eyebrow = isNew ? "New application" : `Editing · ${escapeHtml(state.current)}`;
   return `
     <article class="sheet">
-      <div class="sheet-eyebrow">${eyebrow}</div>
-      <input id="f-company" class="title-input mt-1" placeholder="Company…" value="${escapeHtml(f.company || "")}" />
+      <h2>${eyebrow}</h2>
+      <div id="form-errors" class="error-summary" role="alert" tabindex="-1" hidden></div>
+      <div class="field">
+        <label class="field-label" for="f-company">Company <span aria-hidden="true">*</span></label>
+        <input id="f-company" class="title-input" required aria-describedby="company-help" value="${escapeHtml(f.company || "")}" />
+        <span id="company-help" class="field-help">Required</span>
+      </div>
 
       <div class="mt-4">
-        <label class="field-label">Role</label>
+        <label class="field-label" for="f-role">Role</label>
         <input id="f-role" class="field-input" value="${escapeHtml(f.role || "")}" placeholder="Senior .NET Engineer" />
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Lane</label>
+          <label class="field-label" for="f-lane">Lane</label>
           <select id="f-lane" class="field-input mono">${laneOptions(f.lane || "ai")}</select>
         </div>
         <div>
-          <label class="field-label">Status</label>
+          <label class="field-label" for="f-status">Status</label>
           <select id="f-status" class="field-input mono">${statusOptions(f.status || "lead")}</select>
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Posting link</label>
+        <label class="field-label" for="f-link">Posting link</label>
         <div class="flex gap-2">
-          <input id="f-link" class="field-input mono flex-1" value="${escapeHtml(f.link || "")}" placeholder="https://…" />
+          <input id="f-link" type="url" class="field-input mono flex-1" value="${escapeHtml(f.link || "")}" placeholder="https://example.com/job" />
           <button id="f-autofill" class="btn btn-ghost shrink-0" type="button"
             title="Fetch the posting and fill in the empty fields">⤓ Autofill</button>
         </div>
@@ -546,56 +604,56 @@ function formMarkup(f, { isNew }) {
 
       <div class="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Location</label>
+          <label class="field-label" for="f-location">Location</label>
           <input id="f-location" class="field-input" value="${escapeHtml(f.location || "")}" placeholder="Remote / Lincoln, NE" />
         </div>
         <div>
-          <label class="field-label">Comp</label>
+          <label class="field-label" for="f-salary">Compensation</label>
           <input id="f-salary" class="field-input" value="${escapeHtml(f.salary || "")}" placeholder="optional" />
         </div>
       </div>
 
       <div class="mt-4 grid grid-cols-3 gap-4">
         <div>
-          <label class="field-label">Applied</label>
+          <label class="field-label" for="f-applied">Applied</label>
           <input id="f-applied" type="date" class="field-input mono" value="${escapeHtml(f.applied || "")}" />
         </div>
         <div>
-          <label class="field-label">Follow-up</label>
+          <label class="field-label" for="f-followup">Follow-up</label>
           <input id="f-followup" type="date" class="field-input mono" value="${escapeHtml(f.followup || "")}" />
         </div>
         <div>
-          <label class="field-label">Fit score</label>
-          <input id="f-score" class="field-input mono" value="${escapeHtml(f.score || "")}" placeholder="0–100" />
+          <label class="field-label" for="f-score">Fit score</label>
+          <input id="f-score" type="number" min="0" max="100" class="field-input mono" value="${escapeHtml(f.score || "")}" placeholder="0 to 100" />
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Source</label>
+        <label class="field-label" for="f-source">Source</label>
         <input id="f-source" class="field-input mono" value="${escapeHtml(f.source || "")}" placeholder="company careers / auto:remotive" />
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Contact</label>
+          <label class="field-label" for="f-contact">Contact</label>
           <input id="f-contact" class="field-input" value="${escapeHtml(f.contact || "")}" placeholder="Hiring manager / recruiter" />
         </div>
         <div>
-          <label class="field-label">Contact email</label>
-          <input id="f-contact-email" class="field-input mono" value="${escapeHtml(f.contact_email || "")}" placeholder="name@company.com" />
+          <label class="field-label" for="f-contact-email">Contact email</label>
+          <input id="f-contact-email" type="email" class="field-input mono" value="${escapeHtml(f.contact_email || "")}" placeholder="name@company.com" />
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Notes</label>
+        <label class="field-label" for="f-notes">Notes</label>
         <textarea id="f-notes" class="field-textarea" rows="9" placeholder="Why it fits, contacts, JD keywords, interview notes…">${escapeHtml(f.notes || "")}</textarea>
       </div>
 
       <div class="mt-7 flex items-center justify-between border-t border-rule pt-4">
         <div>${isNew ? "" : `<button class="btn btn-danger" data-act="delete">Delete</button>`}</div>
         <div class="flex gap-2">
-          <button class="btn btn-ghost" data-act="cancel">Cancel</button>
-          <button class="btn btn-primary" data-act="save">${isNew ? "Create" : "Save"}</button>
+          <button type="button" class="btn btn-ghost" data-act="cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" data-act="save">${isNew ? "Create" : "Save"}</button>
         </div>
       </div>
     </article>`;
@@ -624,16 +682,19 @@ function openEdit(data) {
   state.mode = "edit";
   contentEl.innerHTML = formMarkup(data.fields, { isNew: false });
   wireForm({ isNew: false });
+  document.title = `Edit ${data.fields.company || stem(data.filename)} | ApplyTrack`;
+  focusView("h2");
 }
 
 function openNew() {
   state.mode = "new";
   state.current = null;
-  document.body.classList.add("m-detail"); // mobile: show the form pane
+  showDetailPane();
   renderSidebar();
   const today = new Date().toISOString().slice(0, 10);
   contentEl.innerHTML = formMarkup({ created: today, lane: "ai", status: "lead" }, { isNew: true });
   wireForm({ isNew: true });
+  document.title = "New application | ApplyTrack";
   $("#f-company").focus();
 }
 
@@ -642,7 +703,18 @@ function wireForm({ isNew }) {
     state.current ? openApp(state.current) : renderEmpty();
   contentEl.querySelector('[data-act="save"]').onclick = async () => {
     const fields = gatherFields();
-    if (!fields.company) return toast("An application needs a company.");
+    const company = $("#f-company");
+    const summary = $("#form-errors");
+    company.removeAttribute("aria-invalid");
+    summary.hidden = true;
+    if (!fields.company) {
+      company.setAttribute("aria-invalid", "true");
+      summary.textContent = "Enter a company before saving this application.";
+      summary.hidden = false;
+      summary.focus();
+      announce(summary.textContent, true);
+      return;
+    }
     try {
       if (isNew) {
         const { filename } = await api("POST", "/api/apps", fields);
@@ -701,19 +773,22 @@ function openRaw(data) {
   state.mode = "raw";
   contentEl.innerHTML = `
     <article class="sheet">
-      <div class="flex items-center justify-between">
-        <div class="sheet-eyebrow">Source · ${escapeHtml(data.filename)}</div>
-        <div class="seg">
-          <button data-act="form">Form</button>
-          <button class="active">Raw</button>
+      <div class="view-header">
+        <h2>Raw source for ${escapeHtml(data.filename)}</h2>
+        <div class="seg" role="tablist" aria-label="Application editor mode">
+          <button type="button" role="tab" aria-selected="false" data-act="form">Form</button>
+          <button type="button" role="tab" aria-selected="true">Raw source</button>
         </div>
       </div>
-      <textarea id="f-raw" class="field-textarea mono mt-4" rows="24" spellcheck="false">${escapeHtml(data.raw)}</textarea>
+      <label class="field" for="f-raw"><span class="field-label">Application Markdown</span>
+      <textarea id="f-raw" class="field-textarea mono mt-4" rows="24" spellcheck="false">${escapeHtml(data.raw)}</textarea></label>
       <div class="mt-5 flex justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
         <button class="btn btn-primary" data-act="save">Save source</button>
       </div>
     </article>`;
+  document.title = `Raw source | ApplyTrack`;
+  focusView("h2");
   contentEl.querySelector('[data-act="form"]').onclick = () => openEdit(data);
   contentEl.querySelector('[data-act="cancel"]').onclick = () => openApp(data.filename);
   contentEl.querySelector('[data-act="save"]').onclick = async () => {
@@ -733,7 +808,11 @@ function openRaw(data) {
 // ---- Delete ---------------------------------------------------------------
 
 async function deleteApp(name) {
-  if (!confirm(`Delete "${stem(name)}"? This removes the file.`)) return;
+  if (!await confirmAction({
+    title: `Delete ${stem(name)}?`,
+    message: "This permanently deletes the application and its saved cover letter.",
+    confirmLabel: "Delete application",
+  })) return;
   try {
     await api("DELETE", `/api/apps/${encodeURIComponent(name)}`);
     await refresh();
@@ -774,13 +853,14 @@ function sourceToggles(sources) {
 
 function boardRows() {
   if (!criteriaBoards.length) {
-    return `<div class="board-empty font-mono text-[11px] text-ink-faint">No ATS boards added.</div>`;
+    return `<div class="board-empty field-help">No ATS boards added.</div>`;
   }
   return criteriaBoards.map((b, i) =>
     `<div class="board-row">
       <span class="board-prov">${escapeHtml(b.provider)}</span>
       <span class="board-slug mono">${escapeHtml(b.slug)}</span>
-      <button class="btn btn-ghost btn-xs" data-remove-board="${i}" type="button">✕</button>
+      <button class="btn btn-ghost btn-xs" data-remove-board="${i}" type="button"
+        aria-label="Remove ${escapeHtml(b.provider)} board ${escapeHtml(b.slug)}">Remove</button>
     </div>`).join("");
 }
 
@@ -805,30 +885,30 @@ function criteriaMarkup(c) {
           <h2 class="sheet-title">What the poller looks for</h2>
         </div>
       </div>
-      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+      <p class="field-help">
         Saved to <span class="mono">applications/.criteria.json</span> · used by every poll.
       </p>
 
       <div class="mt-5">
-        <label class="field-label">Keywords — one per line · any match stages a lead</label>
+        <label class="field-label" for="c-keywords">Keywords — one per line; any match stages a lead</label>
         <textarea id="c-keywords" class="field-textarea mono" rows="8"
           placeholder="developer advocate&#10;ai engineer&#10;.net">${escapeHtml((c.keywords || []).join("\n"))}</textarea>
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Default lane — routes the cover letter</label>
+          <label class="field-label" for="c-lane">Default lane — routes the cover letter</label>
           <select id="c-lane" class="field-input mono">${laneOptions(c.default_lane || "ai")}</select>
         </div>
         <div>
-          <label class="field-label">Min fit score (0–100)</label>
+          <label class="field-label" for="c-score">Minimum fit score (0 to 100)</label>
           <input id="c-score" type="number" min="0" max="100" class="field-input mono"
             value="${escapeHtml(String(c.min_fit_score ?? 55))}" />
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Location filters</label>
+        <div class="field-label">Location filters</div>
         <label class="source-row">
           <input id="c-remote-only" type="checkbox"${c.remote_only ? " checked" : ""} />
           <span>Remote-friendly roles only</span>
@@ -839,18 +919,18 @@ function criteriaMarkup(c) {
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Sources</label>
+        <div class="field-label">Sources</div>
         <div class="source-grid">${sourceToggles(c.sources || {})}</div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">ATS boards — follow a company's Greenhouse/Lever board</label>
+        <div class="field-label">ATS boards — follow a company's Greenhouse or Lever board</div>
         <div id="criteria-boards" class="board-list"></div>
         <div class="board-add mt-2">
-          <select id="c-board-provider" class="field-input mono">
+          <select id="c-board-provider" class="field-input mono" aria-label="ATS provider">
             ${ATS_PROVIDERS.map((p) => `<option value="${p}">${p}</option>`).join("")}
           </select>
-          <input id="c-board-slug" class="field-input mono" placeholder="company slug (e.g. stripe)" />
+          <input id="c-board-slug" class="field-input mono" aria-label="Company board slug" placeholder="company slug (e.g. stripe)" />
           <button class="btn btn-ghost" data-act="add-board" type="button">+ Add board</button>
         </div>
       </div>
@@ -927,15 +1007,15 @@ let resumeLinks = [];
 
 function expRows() {
   if (!resumeExperience.length)
-    return `<div class="board-empty font-mono text-[11px] text-ink-faint">No experience added.</div>`;
+    return `<div class="board-empty field-help">No experience added.</div>`;
   return resumeExperience.map((e, i) => `
     <div class="exp-row" data-exp="${i}">
       <div class="grid grid-cols-3 gap-2">
-        <input class="field-input" data-exp-field="title" placeholder="Title" value="${escapeHtml(e.title || "")}" />
-        <input class="field-input" data-exp-field="company" placeholder="Company" value="${escapeHtml(e.company || "")}" />
-        <input class="field-input mono" data-exp-field="dates" placeholder="2020–2024" value="${escapeHtml(e.dates || "")}" />
+        <input class="field-input" data-exp-field="title" aria-label="Experience ${i + 1} title" placeholder="Title" value="${escapeHtml(e.title || "")}" />
+        <input class="field-input" data-exp-field="company" aria-label="Experience ${i + 1} company" placeholder="Company" value="${escapeHtml(e.company || "")}" />
+        <input class="field-input mono" data-exp-field="dates" aria-label="Experience ${i + 1} dates" placeholder="2020–2024" value="${escapeHtml(e.dates || "")}" />
       </div>
-      <textarea class="field-textarea mono mt-2" rows="3" data-exp-field="highlights"
+      <textarea class="field-textarea mono mt-2" rows="3" data-exp-field="highlights" aria-label="Experience ${i + 1} highlights"
         placeholder="One highlight per line">${escapeHtml((e.highlights || []).join("\n"))}</textarea>
       <div class="mt-1 flex justify-end">
         <button class="btn btn-ghost btn-xs" data-remove-exp="${i}" type="button">✕ Remove</button>
@@ -971,12 +1051,12 @@ function renderExperience() {
 
 function linkRows() {
   if (!resumeLinks.length)
-    return `<div class="board-empty font-mono text-[11px] text-ink-faint">No links added.</div>`;
+    return `<div class="board-empty field-help">No links added.</div>`;
   return resumeLinks.map((l, i) => `
     <div class="link-row grid grid-cols-[1fr_2fr_auto] gap-2 items-center" data-link="${i}">
-      <input class="field-input" data-link-field="label" placeholder="Label (GitHub)" value="${escapeHtml(l.label || "")}" />
-      <input class="field-input mono" data-link-field="url" placeholder="https://…" value="${escapeHtml(l.url || "")}" />
-      <button class="btn btn-ghost btn-xs" data-remove-link="${i}" type="button">✕</button>
+      <input class="field-input" data-link-field="label" aria-label="Link ${i + 1} label" placeholder="Label (GitHub)" value="${escapeHtml(l.label || "")}" />
+      <input class="field-input mono" data-link-field="url" type="url" aria-label="Link ${i + 1} URL" placeholder="https://example.com" value="${escapeHtml(l.url || "")}" />
+        <button class="btn btn-ghost btn-xs" data-remove-link="${i}" type="button" aria-label="Remove link ${i + 1}">Remove</button>
     </div>`).join("");
 }
 
@@ -1006,52 +1086,52 @@ function resumeMarkup(r) {
     <article class="sheet">
       <div class="sheet-eyebrow">Résumé</div>
       <h2 class="sheet-title">The facts behind your cover letters</h2>
-      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+      <p class="field-help">
         The drafting AI may assert only what's here — no invented employers, titles, or metrics.
       </p>
 
       <div class="mt-5 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Full name</label>
+          <label class="field-label" for="r-name">Full name</label>
           <input id="r-name" class="field-input" value="${escapeHtml(r.full_name || "")}" placeholder="Ada Lovelace" />
         </div>
         <div>
-          <label class="field-label">Location</label>
+          <label class="field-label" for="r-location">Location</label>
           <input id="r-location" class="field-input" value="${escapeHtml(r.location || "")}" placeholder="Remote / Lincoln, NE" />
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Headline</label>
+        <label class="field-label" for="r-headline">Headline</label>
         <input id="r-headline" class="field-input" value="${escapeHtml(r.headline || "")}" placeholder="Backend engineer · distributed systems" />
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Summary</label>
+        <label class="field-label" for="r-summary">Summary</label>
         <textarea id="r-summary" class="field-textarea" rows="4" placeholder="A few sentences on what you do and the value you bring.">${escapeHtml(r.summary || "")}</textarea>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Experience</label>
+        <div class="field-label">Experience</div>
         <div id="resume-experience" class="board-list space-y-3"></div>
         <button class="btn btn-ghost mt-2" data-act="add-exp" type="button">+ Add role</button>
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <label class="field-label">Skills — one per line or comma-separated</label>
+          <label class="field-label" for="r-skills">Skills — one per line or comma-separated</label>
           <textarea id="r-skills" class="field-textarea mono" rows="6"
             placeholder="C#&#10;PostgreSQL&#10;Distributed systems">${escapeHtml((r.skills || []).join("\n"))}</textarea>
         </div>
         <div>
-          <label class="field-label">Certifications — one per line</label>
+          <label class="field-label" for="r-certs">Certifications — one per line</label>
           <textarea id="r-certs" class="field-textarea mono" rows="6"
             placeholder="AWS Solutions Architect&#10;CKA">${escapeHtml((r.certifications || []).join("\n"))}</textarea>
         </div>
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Links</label>
+        <div class="field-label">Links</div>
         <div id="resume-links" class="board-list space-y-2"></div>
         <button class="btn btn-ghost mt-2" data-act="add-link" type="button">+ Add link</button>
       </div>
@@ -1132,7 +1212,7 @@ function llmMarkup(s) {
     <article class="sheet">
       <div class="sheet-eyebrow">AI · cover-letter endpoint</div>
       <h2 class="sheet-title">Where cover letters are drafted</h2>
-      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+      <p class="field-help">
         Any OpenAI-compatible endpoint — a local model (Ollama / vLLM) or a hosted provider.
         Leave a field blank to inherit the instance default.
       </p>
@@ -1142,36 +1222,36 @@ function llmMarkup(s) {
           <input id="l-enabled" type="checkbox"${s.cover_letters_enabled === false ? "" : " checked"} />
           <span>Enable cover-letter drafting</span>
         </label>
-        <p class="mt-1 font-mono text-[11px] text-ink-faint">
+        <p class="field-help">
           Untick if you don't want to run a model — the app hides every drafting affordance
           and never calls an LLM for this account.
         </p>
       </div>
 
       <div class="mt-5">
-        <label class="field-label">Base URL</label>
+        <label class="field-label" for="l-base">Base URL</label>
         <input id="l-base" class="field-input mono" value="${escapeHtml(s.base_url || "")}"
           placeholder="${escapeHtml(inst.base_url || "http://localhost:11434/v1")}" />
       </div>
 
       <div class="mt-4">
-        <label class="field-label">Model</label>
+        <label class="field-label" for="l-model">Model</label>
         <input id="l-model" class="field-input mono" value="${escapeHtml(s.model || "")}"
           placeholder="${escapeHtml(inst.model || "llama3.1")}" />
       </div>
 
       <div class="mt-4">
-        <label class="field-label">API key ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
+        <label class="field-label" for="l-key">API key ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
         <input id="l-key" type="password" class="field-input mono" autocomplete="off"
           placeholder="${secretsOff ? "operator hasn't enabled per-tenant keys" : "leave blank to keep the saved key"}"
           ${secretsOff ? "disabled" : ""} />
         <label class="source-row mt-2 ${s.has_api_key && !secretsOff ? "" : "hidden"}">
           <input id="l-clear" type="checkbox" /> <span>Remove the saved key</span>
         </label>
-        <p class="mt-1 font-mono text-[11px] text-ink-faint">${escapeHtml(keyNote)}</p>
+        <p class="field-help">${escapeHtml(keyNote)}</p>
       </div>
 
-      <div class="mt-4 rounded-md border border-rule px-3 py-2 font-mono text-[11px] text-ink-faint">
+      <div class="mt-4 rounded-md border border-rule px-3 py-2 field-help">
         Instance default — ${inst.base_url ? escapeHtml(inst.base_url) : "no URL"} ·
         ${inst.model ? escapeHtml(inst.model) : "no model"} ·
         ${inst.has_api_key ? "key set" : "no key"}
@@ -1325,7 +1405,11 @@ $("#import-file").addEventListener("change", async (e) => {
   const prompt = shared
     ? "Import this shared list as new leads? Opportunities you already track are left untouched."
     : "Import overwrites applications that share a name with ones in this file. Continue?";
-  if (!confirm(prompt)) return;
+  if (!await confirmAction({
+    title: shared ? "Import shared opportunities?" : "Import account data?",
+    message: prompt,
+    confirmLabel: "Import",
+  })) return;
   try {
     const r = await api("POST", "/api/account/import", doc);
     await refresh();
@@ -1350,6 +1434,7 @@ $("#import-file").addEventListener("change", async (e) => {
 // the tenant-scoped /api routes, so one user's settings never touch another's.
 
 const SETTINGS_TABS = [
+  ["accessibility", "Accessibility"],
   ["criteria", "Criteria"],
   ["resume", "Résumé"],
   ["ai", "AI"],
@@ -1363,32 +1448,51 @@ const SETTINGS_TABS = [
 // Each loader re-reads this after its fetch and bails if it's been superseded.
 let settingsGen = 0;
 
-async function openSettings(tab) {
+async function openSettings(tab, focusSelectedTab = false) {
   if (SETTINGS_TABS.some(([k]) => k === tab)) state.settingsTab = tab;
   const gen = ++settingsGen;
   state.mode = "settings";
   state.current = null;
-  document.body.classList.add("m-detail"); // mobile: show the settings pane
+  showDetailPane();
   renderSidebar();
   contentEl.innerHTML = `
-    <nav class="flex flex-wrap items-center gap-2">
+    <h1>Settings</h1>
+    <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
       ${SETTINGS_TABS.map(([k, label]) =>
         `<button class="btn ${k === state.settingsTab ? "btn-primary" : "btn-ghost"}"
-           data-tab="${k}" type="button">${label}</button>`).join("")}
+           role="tab" aria-selected="${k === state.settingsTab}" data-tab="${k}" type="button">${label}</button>`).join("")}
     </nav>
-    <div id="settings-body" class="mt-4"></div>`;
+    <div id="settings-body" role="tabpanel" class="mt-4" aria-live="polite"></div>`;
   contentEl.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => openSettings(b.dataset.tab);
   });
+  const tabs = [...contentEl.querySelectorAll('[role="tab"]')];
+  tabs.forEach((tabButton, index) => tabButton.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    let next = index;
+    if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = tabs.length - 1;
+    openSettings(tabs[next].dataset.tab, true);
+  }));
   const body = $("#settings-body");
   try {
-    if (state.settingsTab === "criteria") await loadCriteriaTab(body, gen);
+    if (state.settingsTab === "accessibility") renderAccessibilityPreferences(body, announce);
+    else if (state.settingsTab === "criteria") await loadCriteriaTab(body, gen);
     else if (state.settingsTab === "resume") await loadResumeTab(body, gen);
     else if (state.settingsTab === "ai") await loadLlmTab(body, gen);
     else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
     else await loadAccountTab(body);
   } catch (e) {
     toast(e.message);
+  }
+  document.title = `${SETTINGS_TABS.find(([k]) => k === state.settingsTab)?.[1] || "Settings"} | ApplyTrack`;
+  if (focusSelectedTab) {
+    requestAnimationFrame(() => contentEl.querySelector('[role="tab"][aria-selected="true"]')?.focus());
+  } else {
+    focusView("#settings-body h2");
   }
 }
 
@@ -1403,7 +1507,7 @@ $("#settings-btn").addEventListener("click", () => openSettings());
 $("#m-new").addEventListener("click", openNew);
 $("#m-poll").addEventListener("click", runPoll);
 $("#m-settings").addEventListener("click", () => openSettings());
-$("#m-list").addEventListener("click", () => document.body.classList.remove("m-detail"));
+$("#m-list").addEventListener("click", () => showListPane());
 
 // Settings · Blacklist tab — the first place blacklisted companies can be seen and
 // un-blacklisted (adding happens here or via "Blacklist company" on an app).
@@ -1413,7 +1517,7 @@ async function loadBlacklistTab(body) {
     <article class="sheet">
       <div class="sheet-eyebrow">Blacklist</div>
       <h2 class="sheet-title">Companies the poller skips</h2>
-      <p class="mt-1 font-mono text-[11px] text-ink-faint">
+      <p class="field-help">
         Leads from these companies are never staged. Names are stored normalized
         (lowercased, punctuation-insensitive).
       </p>
@@ -1422,11 +1526,13 @@ async function loadBlacklistTab(body) {
           ? companies.map((c) =>
               `<div class="board-row">
                 <span class="board-slug mono">${escapeHtml(c)}</span>
-                <button class="btn btn-ghost btn-xs" data-bl-remove="${escapeHtml(c)}" type="button">✕</button>
+                <button class="btn btn-ghost btn-xs" data-bl-remove="${escapeHtml(c)}" type="button"
+                  aria-label="Remove ${escapeHtml(c)} from blacklist">Remove</button>
               </div>`).join("")
-          : `<div class="board-empty font-mono text-[11px] text-ink-faint">No blacklisted companies.</div>`}
+          : `<div class="board-empty field-help">No blacklisted companies.</div>`}
       </div>
       <div class="board-add mt-3">
+        <label class="sr-only" for="bl-company">Company name</label>
         <input id="bl-company" class="field-input mono" placeholder="company name (e.g. Evil Corp)" />
         <button class="btn btn-ghost" data-act="bl-add" type="button">+ Blacklist company</button>
       </div>
@@ -1465,7 +1571,7 @@ async function loadAccountTab(body) {
 
       <div class="mt-5">
         <div class="field-label">Export — private migration snapshot</div>
-        <p class="font-mono text-[11px] text-ink-faint">
+        <p class="field-help">
           Everything: applications, criteria, blacklist. Import it on another instance to move home.
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -1476,7 +1582,7 @@ async function loadAccountTab(body) {
 
       <div class="mt-5 border-t border-rule pt-4">
         <div class="field-label">Share — anonymized opportunity list</div>
-        <p class="font-mono text-[11px] text-ink-faint">
+        <p class="field-help">
           Company, role, link, location, source only — no status, notes, contacts, dates, or score.
           A peer imports it and every entry lands as a fresh lead.
         </p>
@@ -1494,7 +1600,7 @@ async function loadAccountTab(body) {
 
       <div class="mt-5 border-t border-rule pt-4">
         <div class="field-label">Danger zone</div>
-        <p class="font-mono text-[11px] text-ink-faint">
+        <p class="field-help">
           Deletes your account and every application, setting, and session with it. Immediate and unrecoverable.
         </p>
         <div class="mt-3">
@@ -1518,8 +1624,11 @@ async function loadAccountTab(body) {
     location.reload();
   };
   act("delete-account").onclick = async () => {
-    if (!confirm("Delete your account? Every application, setting, and cover letter goes with it.")) return;
-    if (!confirm("Last chance — this is immediate and unrecoverable. Really delete?")) return;
+    if (!await confirmAction({
+      title: "Delete your account?",
+      message: "Every application, setting, cover letter, and session will be deleted immediately. This cannot be undone.",
+      confirmLabel: "Delete my account",
+    })) return;
     try {
       await api("DELETE", "/api/account");
       location.reload();
@@ -1563,7 +1672,7 @@ async function navigateList(delta) {
   if (idx === -1) idx = delta > 0 ? -1 : 0;
   idx = Math.max(0, Math.min(apps.length - 1, idx + delta));
   await openApp(apps[idx].filename);
-  const active = listEl.querySelector(".index-card.active");
+  const active = listEl.querySelector('.application-card[aria-current="true"]');
   if (active) active.scrollIntoView({ block: "nearest" });
 }
 document.addEventListener("keydown", (e) => {
@@ -1585,37 +1694,14 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "k") { e.preventDefault(); navigateList(-1); }
 });
 
-// ---- Theme switcher -------------------------------------------------------
+applyPreferences(readPreferences(), false);
 
-const THEMES = ["midnight", "carbon", "dusk", "paper", "mint", "cyberdeck"];
-const MOBILE = window.matchMedia("(max-width: 767px)");
-function applyTheme(name, persist = true) {
-  const theme = THEMES.includes(name) ? name : "midnight";
-  document.documentElement.dataset.theme = theme;
-  // Don't persist the phone-forced cyberdeck: it would otherwise leak onto desktop
-  // when a desktop window is resized across the breakpoint. The saved pref stays
-  // the user's explicit choice only.
-  if (persist) { try { localStorage.setItem("applytrack-theme", theme); } catch (_) {} }
-  document.querySelectorAll(".swatch").forEach((s) => {
-    s.classList.toggle("active", s.dataset.theme === theme);
-  });
-}
-function savedTheme() {
-  try { return localStorage.getItem("applytrack-theme") || "midnight"; } catch (_) { return "midnight"; }
-}
-function initTheme() {
-  // Phones are locked to cyberdeck (the mobile app look); desktop uses the saved
-  // choice. Re-evaluate when the viewport crosses the phone breakpoint (rotation
-  // or a resized desktop window).
-  applyTheme(MOBILE.matches ? "cyberdeck" : savedTheme(), !MOBILE.matches);
-  document.querySelectorAll(".swatch").forEach((s) => {
-    s.addEventListener("click", () => applyTheme(s.dataset.theme));
-  });
-  MOBILE.addEventListener("change", (e) => {
-    applyTheme(e.matches ? "cyberdeck" : savedTheme(), !e.matches);
-  });
-}
-initTheme();
+const mobileQuery = window.matchMedia("(max-width: 767px)");
+mobileQuery.addEventListener("change", (event) => {
+  const list = $("#application-list");
+  if (!event.matches || !document.body.classList.contains("m-detail")) list.removeAttribute("aria-hidden");
+  else list.setAttribute("aria-hidden", "true");
+});
 
 (async function boot() {
   try {

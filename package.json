@@ -1,0 +1,13 @@
+{
+  "name": "osapplytrack-web-tests",
+  "private": true,
+  "scripts": {
+    "test:web": "playwright test",
+    "test:web:update": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.53.2",
+    "http-server": "^14.1.1"
+  }
+}

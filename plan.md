@@ -16,12 +16,10 @@ with a **polyglot** backend:
 - **Data layer → Dapper + Npgsql** in .NET: hand-written SQL mapped to records,
   migrations via **DbUp** (embedded, idempotent `.sql` scripts), manual
   `version`-column optimistic locking. (No EF Core.)
-- **Keep the existing UI verbatim.** `web/static/{index.html,app.js,app.css}` —
-  the vanilla-JS SPA, including the Criteria/blacklist panels — is carried over
-  untouched and served from the .NET app's `wwwroot/`. **Hard design pin:** the
-  .NET API must preserve the **exact endpoint URLs + JSON request/response shapes**
-  the SPA already calls (the 8 data endpoints, `?expected_version=`, the 409
-  conflict flow). The SPA is the contract the .NET API is written *against*.
+- **Accessible build-free UI.** The vanilla-JS SPA is served directly from
+  `wwwroot/`, targets WCAG 2.2 AA, and has automated Playwright/axe coverage.
+  The .NET API preserves the exact endpoint URLs and JSON request/response shapes
+  the SPA calls, including `?expected_version=` and the 409 conflict flow.
 - **Multi-tenant stays** (self-hostable, multi-user). Only monetization is dropped.
 - AI cover-letter/materials engine — was deferred past v1; **landed post-v1** as an
   optional module (provider-agnostic OpenAI-compatible drafting, per-tenant encrypted

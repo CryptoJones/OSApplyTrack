@@ -15,6 +15,24 @@ on:
     - cron: "0 6 * * 1"  # weekly Mon 06:00 UTC — catch CVEs disclosed after merge
 
 jobs:
+  web:
+    name: Web — WCAG checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install and audit development dependencies
+        run: |
+          npm ci
+          npm audit --audit-level=high
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test keyboard, responsive, and automated accessibility behavior
+        run: npm run test:web
+
   dotnet:
     name: .NET — test + audit
     runs-on: ubuntu-latest

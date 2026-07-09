@@ -37,9 +37,9 @@ telemetry, no SaaS.
 </p>
 
 <p align="center">
-  <img src="docs/mobile.png" alt="OSApplyTrack on a phone — the cyberdeck-themed mobile app view" width="280">
+  <img src="docs/mobile.png" alt="OSApplyTrack application detail view on a phone" width="280">
   <br>
-  <em>Open the magic link on your phone and it's a native-feeling app — tap a card for the full detail view. (cyberdeck theme)</em>
+  <em>The responsive list and detail view support touch, keyboard, and screen readers.</em>
 </p>
 
 ---
@@ -57,6 +57,7 @@ telemetry, no SaaS.
 - [Cover letters](#cover-letters)
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
+- [Accessibility](#accessibility)
 - [First-run import](#first-run-import-optional)
 - [Local development](#local-development)
 - [Tests](#tests)
@@ -404,6 +405,18 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   `ON DELETE CASCADE`, every row that belongs to it (applications, search profile,
   blacklist, seen ledger, queued polls, sessions, tokens) in one statement.
 
+## Accessibility
+
+The web interface targets **WCAG 2.2 Level AA**. It provides semantic screen-reader
+navigation, complete keyboard operation, visible focus, reduced-motion and
+high-contrast modes, light/dark/system colors, adjustable text size, and responsive
+reflow. Preferences are stored only in the current browser and apply before sign-in.
+
+Pull requests run Playwright and axe-core checks against login, application, editor,
+settings, validation, and responsive workflows. See the
+[accessibility statement and manual test matrix](docs/accessibility.md), or use the
+Accessibility problem issue template to report a barrier without sharing private data.
+
 ## First-run import (optional)
 
 If you're coming from the original single-user `applytrack`, import your existing
@@ -461,6 +474,11 @@ cd api && dotnet test
 pytest
 ruff check .
 mypy src
+
+# Web — Playwright keyboard/responsive tests + axe-core WCAG checks
+npm ci
+npx playwright install chromium
+npm run test:web
 ```
 
 The .NET suite drives the live HTTP stack with `WebApplicationFactory` against a
