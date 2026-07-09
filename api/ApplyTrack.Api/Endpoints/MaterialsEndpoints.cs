@@ -62,6 +62,7 @@ public static class MaterialsEndpoints
         {
             var baseUrl = GetString(payload, "base_url");
             var model = GetString(payload, "model");
+            LlmEndpointPolicy.ValidateTenantBaseUrl(baseUrl);
 
             // Distinguish "api_key omitted" (leave the stored key alone) from
             // "api_key present" (set it, or clear it when blank).

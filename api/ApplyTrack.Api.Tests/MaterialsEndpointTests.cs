@@ -144,16 +144,45 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Llm_settings_put_stores_the_endpoint_without_a_key()
+    public async Task Llm_settings_put_stores_a_public_endpoint_without_a_key()
     {
         var put = await ReadJson(await _client.PutAsync("/api/llm-settings",
-            Json("""{"base_url":"http://localhost:11434/v1","model":"llama3.1"}""")));
-        Assert.Equal("http://localhost:11434/v1", put.GetProperty("base_url").GetString());
-        Assert.Equal("llama3.1", put.GetProperty("model").GetString());
+            Json("""{"base_url":"https://api.openai.com/v1","model":"gpt-4o-mini"}""")));
+        Assert.Equal("https://api.openai.com/v1", put.GetProperty("base_url").GetString());
+        Assert.Equal("gpt-4o-mini", put.GetProperty("model").GetString());
         Assert.False(put.GetProperty("has_api_key").GetBoolean());
 
         var v = await ReadJson(await _client.GetAsync("/api/llm-settings"));
-        Assert.Equal("llama3.1", v.GetProperty("model").GetString());
+        Assert.Equal("gpt-4o-mini", v.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Llm_settings_refuses_tenant_localhost_endpoint()
+    {
+        var res = await _client.PutAsync("/api/llm-settings",
+            Json("""{"base_url":"http://localhost:11434/v1","model":"llama3.1"}"""));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("local or internal", (await ReadJson(res)).GetProperty("detail").GetString());
+
+        var v = await ReadJson(await _client.GetAsync("/api/llm-settings"));
+        Assert.Equal("", v.GetProperty("base_url").GetString());
+        Assert.Equal("", v.GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Instance_default_can_still_point_at_a_local_model()
+    {
+        using var client = await AuthedClientAsync(NewFactory(b =>
+        {
+            b.UseSetting("Llm:BaseUrl", "http://localhost:11434/v1");
+            b.UseSetting("Llm:Model", "llama3.1");
+        }));
+
+        var v = await ReadJson(await client.GetAsync("/api/llm-settings"));
+        var instance = v.GetProperty("instance");
+        Assert.Equal("http://localhost:11434/v1", instance.GetProperty("base_url").GetString());
+        Assert.Equal("llama3.1", instance.GetProperty("model").GetString());
+        Assert.False(v.GetProperty("has_api_key").GetBoolean());
     }
 
     [Fact]

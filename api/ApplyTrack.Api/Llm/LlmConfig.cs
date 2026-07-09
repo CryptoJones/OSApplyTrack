@@ -30,27 +30,31 @@ public sealed record LlmOverride(string BaseUrl, string Model, string? ApiKey);
 
 /// <summary>
 /// The endpoint settings actually used for a draft — a tenant's override merged
-/// over the instance defaults, field by field (a tenant may override just the
-/// model and keep the instance URL).
+/// over the instance defaults, field by field. <c>TenantBaseUrl</c> tracks whether
+/// the URL came from tenant-controlled settings; those URLs get stricter network
+/// handling and must never inherit an operator-owned instance API key.
 /// </summary>
-public sealed record EffectiveLlmConfig(string BaseUrl, string Model, string? ApiKey, int TimeoutSeconds)
+public sealed record EffectiveLlmConfig(
+    string BaseUrl, string Model, string? ApiKey, int TimeoutSeconds, bool TenantBaseUrl = false)
 {
     /// <summary>True once there is somewhere to send the request and a model to ask for.</summary>
     public bool IsConfigured => BaseUrl.Length > 0 && Model.Length > 0;
 
     public static EffectiveLlmConfig Resolve(LlmOptions instance, LlmOverride? ovr)
     {
-        string Pick(string? over, string fallback) =>
-            string.IsNullOrWhiteSpace(over) ? fallback.Trim() : over.Trim();
+        var tenantBaseUrl = !string.IsNullOrWhiteSpace(ovr?.BaseUrl);
+        var baseUrl = tenantBaseUrl ? ovr!.BaseUrl.Trim() : instance.BaseUrl.Trim();
+        var model = string.IsNullOrWhiteSpace(ovr?.Model) ? instance.Model.Trim() : ovr!.Model.Trim();
 
         var apiKey = !string.IsNullOrEmpty(ovr?.ApiKey)
             ? ovr.ApiKey
-            : string.IsNullOrEmpty(instance.ApiKey) ? null : instance.ApiKey;
+            : tenantBaseUrl || string.IsNullOrEmpty(instance.ApiKey) ? null : instance.ApiKey;
 
         return new EffectiveLlmConfig(
-            Pick(ovr?.BaseUrl, instance.BaseUrl),
-            Pick(ovr?.Model, instance.Model),
+            baseUrl,
+            model,
             apiKey,
-            instance.TimeoutSeconds);
+            instance.TimeoutSeconds,
+            tenantBaseUrl);
     }
 }
