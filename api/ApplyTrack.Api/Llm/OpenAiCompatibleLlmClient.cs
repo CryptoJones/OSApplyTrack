@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Scrape;
 
 namespace ApplyTrack.Api.Llm;
 
@@ -46,7 +49,12 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             },
         };
 
-        var http = _factory.CreateClient("llm");
+        using var guarded = cfg.TenantBaseUrl ? new SocketsHttpHandler
+        {
+            ConnectCallback = ConnectToPublicAddressOnlyAsync,
+        } : null;
+        using var guardedClient = guarded is null ? null : new HttpClient(guarded);
+        var http = guardedClient ?? _factory.CreateClient("llm");
         http.Timeout = TimeSpan.FromSeconds(cfg.TimeoutSeconds);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(payload) };
@@ -57,6 +65,10 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         try
         {
             res = await http.SendAsync(req, ct);
+        }
+        catch (Exception ex) when (FindValidation(ex) is { } validation)
+        {
+            throw validation;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -104,5 +116,34 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         {
             return "(no body)";
         }
+    }
+
+    private static async ValueTask<Stream> ConnectToPublicAddressOnlyAsync(
+        SocketsHttpConnectionContext ctx, CancellationToken ct)
+    {
+        var addresses = await Dns.GetHostAddressesAsync(ctx.DnsEndPoint.Host, ct);
+        var publicAddresses = Array.FindAll(addresses, a => !JobPageFetcher.IsBlockedAddress(a));
+        if (publicAddresses.Length == 0)
+            throw new AppValidationException("tenant LLM base URL points at a private or internal address");
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(publicAddresses, ctx.DnsEndPoint.Port, ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private static AppValidationException? FindValidation(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException!)
+            if (e is AppValidationException v)
+                return v;
+        return null;
     }
 }
