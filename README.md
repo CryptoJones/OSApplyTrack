@@ -80,7 +80,9 @@ telemetry, no SaaS.
 - **It drafts your cover letters.** Point it at any OpenAI-compatible LLM — a local
   Ollama/vLLM model (so your résumé never leaves the box, $0 per draft) or a hosted
   provider — and generate a letter per application, tailored from your uploaded
-  résumé. Keys are yours, encrypted at rest.
+  résumé. Set a reusable multi-line signature once in **Settings · AI**; it is
+  appended exactly to every new or regenerated letter. Download the result as
+  Markdown or PDF. Keys are yours, encrypted at rest.
 - **It's genuinely multi-tenant.** Every row is owned by a tenant; every query in
   both runtimes unconditionally filters `WHERE tenant_id`. One deployment cleanly
   serves many users with hard data isolation.
@@ -184,14 +186,14 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `applytrack` | Postgres credentials, shared by `db`, `api`, and `poller`. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `applytrack` / `JanewayDidNothingWrong` / `applytrack` | Postgres credentials, shared by `db`, `api`, and `poller`. Override the password for any deployment exposed beyond local development. |
 | `API_PORT` | `8080` | Host port the API publishes (the container always listens on 8080). |
 | `DRAIN_INTERVAL` | `60` | Seconds between drains of the on-demand poll queue (the SPA's "Poll now" button). |
 | `POLL_INTERVAL` | `3600` | Seconds between full multi-tenant polls. |
 | `ConnectionStrings__Postgres` | _(compose default)_ | Override to point the API at an external Postgres. |
 | `DATABASE_URL` | _(compose default)_ | Override to point the poller at an external Postgres (libpq URL). |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
-| `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in the UI. See [Cover letters](#cover-letters). |
+| `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
 | `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
@@ -264,8 +266,8 @@ killing the process:
 | `GET`    | `/api/resume` | The tenant's résumé brief — the only facts the drafter may assert. |
 | `PUT`    | `/api/resume` | Compatibility endpoint for structured résumé JSON. |
 | `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB) and store the extracted text as the model brief. |
-| `GET`    | `/api/llm-settings` | The tenant's endpoint override + the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
-| `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
+| `GET`    | `/api/llm-settings` | The tenant's endpoint override, model, reusable `cover_letter_signature`, and the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
+| `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` / `cover_letter_signature` (omit `api_key` or the signature to leave it untouched; blank clears either) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
 
 ### Not in v1
@@ -290,7 +292,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `seen` | The dedupe ledger — listings already surfaced, so leads don't repeat. |
 | `poll_requests` | The on-demand "Poll now" queue the worker drains. |
 | `resume_profiles` | Per-tenant résumé brief — the facts the cover-letter drafter feeds the LLM. |
-| `llm_settings` | Per-tenant LLM endpoint override; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
+| `llm_settings` | Per-tenant LLM endpoint, model, cover-letter toggle, and multi-line signature; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
 | `cover_letters` | Generated cover letters, one per application (`FK → applications ON DELETE CASCADE`). |
 
 Account deletion relies on `ON DELETE CASCADE` foreign keys (migrations
@@ -335,18 +337,22 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
   Groq, …). A local model means **$0 per draft** and the résumé never leaves the box.
 - **Operator default + per-tenant override.** The instance sets a default endpoint
   via `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey`; each tenant can override any
-  field in the **Settings · AI** tab (override just the model, keep the URL, etc.).
+  field in the **Settings · AI** tab (override just the model, keep the URL, set
+  the cover-letter toggle, or save a multi-line signature).
 - **Your résumé is the only source of truth.** The **Settings · Résumé** tab uploads
   a text-based PDF and stores the extracted résumé text as the model brief. The LLM
   is told these are the *only* facts it may assert, so it can't invent employers or
   metrics.
+- **Your signature is deterministic.** The model is instructed to stop after the
+  body paragraphs. The saved signature is appended server-side exactly as entered,
+  so drafts do not fall back to placeholders such as “The Candidate.”
 - **Keys encrypted at rest.** A tenant's own API key is write-only: sealed with
   AES-256-GCM under `APPLYTRACK_SECRETS_KEY` and never echoed back. Without that
   master key the per-tenant-key path is disabled (the instance default still works).
 - **Generate from the application sheet.** Each app gets a **Generate cover letter**
   action; the result renders inline with copy / download `.md` or PDF / regenerate /
-  discard. Letters are stored per application and are excluded from the export
-  snapshot by design.
+  discard. PDF output is generated server-side from the saved letter. Letters are
+  stored per application and are excluded from the export snapshot by design.
 
 ## Security & hardening
 
@@ -381,7 +387,8 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   cookie's `Secure` flag is set automatically. Don't expose Kestrel directly.
 - **Change the default password.** For any deployment reachable beyond `localhost`,
   change `POSTGRES_PASSWORD` (and the matching connection string) from the
-  `applytrack` default before first boot — the bundled value is local-dev only.
+  bundled development default before first boot — the documented value is not a
+  production secret.
 - **Dependency CVE watch.** [`.forgejo/workflows/audit.yml`](./.forgejo/workflows/audit.yml)
   runs `dotnet list package --vulnerable --include-transitive` and `pip-audit` on
   every push/PR and weekly, failing the build on a known-vulnerable dependency. Run
@@ -411,9 +418,12 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 ## Accessibility
 
 The web interface targets **WCAG 2.2 Level AA**. It provides semantic screen-reader
-navigation, complete keyboard operation, visible focus, reduced-motion and
-high-contrast modes, light/dark/system colors, adjustable text size, and responsive
-reflow. Preferences are stored only in the current browser and apply before sign-in.
+navigation, complete keyboard operation, visible focus, labeled controls, live status
+announcements, reduced-motion and high-contrast modes, light/dark/system colors,
+adjustable 100%/125%/150% text size, comfortable or compact spacing, and responsive
+reflow through 400% browser zoom. The **Settings · Accessibility** panel detects system
+preferences before sign-in and lets each browser override color, contrast, motion,
+text size, and density. Preferences are stored only in the current browser.
 
 Pull requests run Playwright and axe-core checks against login, application, editor,
 settings, validation, and responsive workflows. See the
@@ -451,7 +461,7 @@ cd api && dotnet run --project ApplyTrack.Api
 
 # Poller (one-shot poll; needs DATABASE_URL or the POSTGRES_* / PG* env vars)
 pip install -e '.[dev]'
-DATABASE_URL=postgresql://applytrack:applytrack@localhost:5432/applytrack applytrack poll
+DATABASE_URL=postgresql://applytrack:JanewayDidNothingWrong@localhost:5432/applytrack applytrack poll
 ```
 
 **Enable cover-letter drafting (optional).** Drafting stays off until an
@@ -510,8 +520,9 @@ v1 is intentionally focused. Deferred, with clean seams already in place:
 
 - **Link checking.** `/api/apps/{name}/check-link` returns 501 today; the
   SSRF-hardened prober already exists in the poller for when it's enabled.
-- **Richer cover-letter output.** The materials engine ships plain-text/Markdown
-  letters ([Cover letters](#cover-letters)) with direct Markdown and PDF downloads.
+- **Richer cover-letter output.** The materials engine already ships plain-text/
+  Markdown letters ([Cover letters](#cover-letters)) with direct Markdown and PDF
+  downloads; future work can add richer templates and provider-specific formats.
 
 ## Contributing
 

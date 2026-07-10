@@ -86,7 +86,7 @@ def connect(database_url: str | None = None) -> psycopg.Connection:
         port=os.environ.get("PGPORT", "5432"),
         dbname=os.environ.get("POSTGRES_DB", "applytrack"),
         user=os.environ.get("POSTGRES_USER", "applytrack"),
-        password=os.environ.get("POSTGRES_PASSWORD", "applytrack"),
+        password=os.environ.get("POSTGRES_PASSWORD", "JanewayDidNothingWrong"),
         **options,  # type: ignore[arg-type]
     )
 
