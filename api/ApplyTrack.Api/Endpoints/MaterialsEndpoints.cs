@@ -5,6 +5,7 @@ using System.Text.Json;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Materials;
 
 namespace ApplyTrack.Api.Endpoints;
 
@@ -28,6 +29,27 @@ public static class MaterialsEndpoints
         app.MapPut("/api/resume", async (JsonElement payload, ResumeRepo repo) =>
         {
             var resume = Resume.FromJson(payload);
+            await repo.UpsertAsync(resume);
+            return Results.Ok(resume);
+        });
+
+        app.MapPost("/api/resume/upload", async (HttpRequest request, ResumeRepo repo) =>
+        {
+            if (!request.HasFormContentType)
+                throw new AppValidationException("resume upload must use multipart/form-data");
+
+            var form = await request.ReadFormAsync();
+            var file = form.Files.GetFile("resume") ?? form.Files.GetFile("file") ?? form.Files.FirstOrDefault();
+            if (file is null || file.Length == 0)
+                throw new AppValidationException("choose a resume PDF to upload");
+            if (file.Length > ResumePdfImporter.MaxPdfBytes)
+                throw new AppValidationException("resume PDF is too large (max 5 MB)");
+
+            await using var stream = file.OpenReadStream();
+            using var buffer = new MemoryStream(capacity: (int)Math.Min(file.Length, ResumePdfImporter.MaxPdfBytes));
+            await stream.CopyToAsync(buffer);
+
+            var resume = ResumePdfImporter.FromPdf(buffer.ToArray());
             await repo.UpsertAsync(resume);
             return Results.Ok(resume);
         });

@@ -1090,6 +1090,20 @@ function resumeMarkup(r) {
         The drafting AI may assert only what's here — no invented employers, titles, or metrics.
       </p>
 
+      <section class="resume-upload mt-5" aria-labelledby="resume-upload-title">
+        <div>
+          <h3 id="resume-upload-title">Upload a PDF résumé</h3>
+          <p class="field-help">
+            Text-based PDFs are extracted into this profile. Review the fields after upload.
+          </p>
+        </div>
+        <div class="resume-upload-actions">
+          <label class="sr-only" for="r-pdf">Résumé PDF file</label>
+          <input id="r-pdf" class="field-input" type="file" accept="application/pdf,.pdf" />
+          <button class="btn btn-ghost" data-act="upload-resume" type="button">Upload PDF</button>
+        </div>
+      </section>
+
       <div class="mt-5 grid grid-cols-2 gap-4">
         <div>
           <label class="field-label" for="r-name">Full name</label>
@@ -1179,6 +1193,44 @@ function wireResume() {
       toast("Résumé saved.");
     } catch (e) {
       toast(e.message);
+    }
+  };
+  contentEl.querySelector('[data-act="upload-resume"]').onclick = async () => {
+    const input = $("#r-pdf");
+    const file = input.files?.[0];
+    if (!file) {
+      toast("Choose a PDF résumé first.");
+      input.focus();
+      return;
+    }
+    const btn = contentEl.querySelector('[data-act="upload-resume"]');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Uploading…";
+    try {
+      const form = new FormData();
+      form.append("resume", file);
+      const r = await api.form("/api/resume/upload", form);
+      resumeExperience = (r.experience || []).map((e) => ({
+        title: e.title || "", company: e.company || "", dates: e.dates || "",
+        highlights: e.highlights || [],
+      }));
+      resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
+      $("#r-name").value = r.full_name || "";
+      $("#r-location").value = r.location || "";
+      $("#r-headline").value = r.headline || "";
+      $("#r-summary").value = r.summary || "";
+      $("#r-skills").value = (r.skills || []).join("\n");
+      $("#r-certs").value = (r.certifications || []).join("\n");
+      renderExperience();
+      renderLinks();
+      toast("Résumé PDF imported.");
+      focusView("#r-name");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
     }
   };
 }

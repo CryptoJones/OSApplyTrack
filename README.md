@@ -262,6 +262,7 @@ killing the process:
 | --- | --- | --- |
 | `GET`    | `/api/resume` | The tenant's structured résumé — the only facts the drafter may assert. |
 | `PUT`    | `/api/resume` | Normalize + store the résumé (dedupes skills, drops empty rows/links). |
+| `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB) and store the extracted profile. |
 | `GET`    | `/api/llm-settings` | The tenant's endpoint override + the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
 | `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
