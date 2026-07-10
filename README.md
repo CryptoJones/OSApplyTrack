@@ -233,6 +233,7 @@ killing the process:
 | `PUT`    | `/api/apps/{name}/raw?expected_version=…` | Replace the full Markdown document. |
 | `DELETE` | `/api/apps/{name}` | Delete → `204`. |
 | `POST`   | `/api/apps/{name}/draft` | Draft a tailored cover letter via the configured LLM; saves it and returns `{ok, material}`. Rate-limited. |
+| `GET`    | `/api/apps/{name}/cover-letter.pdf` | Download the saved cover letter as a PDF. |
 | `POST`   | `/api/poll` | Enqueue an on-demand poll → `{count:0}`. Rate-limited; the worker drains it. |
 | `POST`   | `/api/scrape` | Body `{url}`. Fetch a posting page server-side (SSRF-guarded) and extract `{company, role, location, salary, source, description}` for the editor's Autofill. Rate-limited; 502 when the page can't be read. |
 
@@ -343,7 +344,7 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
   AES-256-GCM under `APPLYTRACK_SECRETS_KEY` and never echoed back. Without that
   master key the per-tenant-key path is disabled (the instance default still works).
 - **Generate from the application sheet.** Each app gets a **Generate cover letter**
-  action; the result renders inline with copy / download `.md` / regenerate /
+  action; the result renders inline with copy / download `.md` or PDF / regenerate /
   discard. Letters are stored per application and are excluded from the export
   snapshot by design.
 
@@ -510,7 +511,7 @@ v1 is intentionally focused. Deferred, with clean seams already in place:
 - **Link checking.** `/api/apps/{name}/check-link` returns 501 today; the
   SSRF-hardened prober already exists in the poller for when it's enabled.
 - **Richer cover-letter output.** The materials engine ships plain-text/Markdown
-  letters ([Cover letters](#cover-letters)); LaTeX/PDF rendering is the next module.
+  letters ([Cover letters](#cover-letters)) with direct Markdown and PDF downloads.
 
 ## Contributing
 

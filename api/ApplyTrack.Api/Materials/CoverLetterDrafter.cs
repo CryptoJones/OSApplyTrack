@@ -27,7 +27,8 @@ public sealed class CoverLetterDrafter
     };
 
     public async Task<string> DraftAsync(
-        AppFields app, Resume resume, EffectiveLlmConfig cfg, CancellationToken ct = default)
+        AppFields app, Resume resume, EffectiveLlmConfig cfg,
+        string signature = "", CancellationToken ct = default)
     {
         if (resume.IsEmpty)
             throw new AppValidationException("add your résumé in Résumé settings before drafting a cover letter");
@@ -38,14 +39,14 @@ public sealed class CoverLetterDrafter
         // Reject empty/implausible output rather than save a broken letter.
         if (body.Length is < 40 or > 6000)
             throw new LlmUnavailableException("the model returned an unusable draft — try again");
-        return body;
+        return signature.Trim() is { Length: > 0 } closing
+            ? $"{body}\n\n{closing}"
+            : body;
     }
 
     private static (string System, string User) BuildPrompt(AppFields app, Resume resume)
     {
         var lane = LaneLead.TryGetValue(app.Lane, out var lead) ? lead : LaneLead["ai"];
-        var name = resume.FullName.Length > 0 ? resume.FullName : "the candidate";
-
         var system =
             $"""
             You are an expert cover-letter writer drafting a tailored, ready-to-send cover
@@ -65,7 +66,8 @@ public sealed class CoverLetterDrafter
             Structure the letter as:
             - a "Dear Hiring Team," greeting,
             - 2-3 short body paragraphs, ~200-280 words total,
-            - a brief sign-off ending with "{name}".
+            - end after the final body paragraph; do not write a sign-off or signature.
+            The application will append the applicant's saved signature exactly.
             Do NOT include a date or a postal address.
             """;
 

@@ -108,7 +108,8 @@ public static class AppsEndpoints
 
             var resume = await resumes.GetAsync();
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
-            var body = await drafter.DraftAsync(rec.Fields, resume, cfg, ct);
+            var body = await drafter.DraftAsync(
+                rec.Fields, resume, cfg, await llm.GetCoverLetterSignatureAsync(), ct);
             await letters.UpsertAsync(rec.Name, body, cfg.Model);
             return Results.Ok(new { ok = true, material = body });
         }).RequireRateLimiting("draft");

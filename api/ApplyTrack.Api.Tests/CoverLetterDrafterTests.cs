@@ -60,6 +60,14 @@ public class CoverLetterDrafterTests
         Assert.Equal(new string('y', 100), body);
     }
 
+    [Fact]
+    public async Task A_saved_signature_is_appended_exactly()
+    {
+        var body = await new CoverLetterDrafter(new StubLlmClient())
+            .DraftAsync(new AppFields { Company = "Acme" }, SampleResume(), Cfg, "Sincerely,\nAda Byte");
+        Assert.EndsWith("Sincerely,\nAda Byte", body);
+    }
+
     [Theory]
     [InlineData("too short")]                  // under the 40-char floor
     [InlineData("")]                            // empty

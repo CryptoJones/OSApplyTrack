@@ -371,6 +371,8 @@ function renderView(data) {
   if (matCopyEl) matCopyEl.onclick = () => copyText(data.material, "Cover letter copied.");
   const matDownEl = contentEl.querySelector('[data-act="mat-download"]');
   if (matDownEl) matDownEl.onclick = () => downloadMaterial(data);
+  const matPdfEl = contentEl.querySelector('[data-act="mat-pdf"]');
+  if (matPdfEl) matPdfEl.onclick = () => downloadMaterialPdf(data);
   const matDiscardEl = contentEl.querySelector('[data-act="mat-discard"]');
   if (matDiscardEl) matDiscardEl.onclick = () => discardMaterial(data.filename);
   const checkEl = contentEl.querySelector('[data-act="check-link"]');
@@ -440,6 +442,7 @@ function materialSection(data) {
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-ghost btn-xs" data-act="mat-copy">Copy</button>
           <button class="btn btn-ghost btn-xs" data-act="mat-download">Download .md</button>
+          <button class="btn btn-ghost btn-xs" data-act="mat-pdf">Download PDF</button>
           ${regenerate}
           <button class="btn btn-ghost btn-xs" data-act="mat-discard">Discard</button>
         </div>
@@ -469,6 +472,26 @@ function downloadMaterial(data) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+async function downloadMaterialPdf(data) {
+  try {
+    const res = await fetch(`/api/apps/${encodeURIComponent(data.filename)}/cover-letter.pdf`, {
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("Couldn't download the cover letter PDF.");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${stem(data.filename)}-cover-letter.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 async function discardMaterial(name) {
@@ -1168,6 +1191,13 @@ function llmMarkup(s) {
       </div>
 
       <div class="mt-4">
+        <label class="field-label" for="l-signature">Cover-letter signature</label>
+        <textarea id="l-signature" class="field-input" rows="5"
+          placeholder="Sincerely,\nAda Byte">${escapeHtml(s.cover_letter_signature || "")}</textarea>
+        <p class="field-help">This text is appended exactly to every newly generated cover letter.</p>
+      </div>
+
+      <div class="mt-4">
         <label class="field-label" for="l-key">API key ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
         <input id="l-key" type="password" class="field-input mono" autocomplete="off"
           placeholder="${secretsOff ? "operator hasn't enabled per-tenant keys" : "leave blank to keep the saved key"}"
@@ -1198,6 +1228,7 @@ function wireLlm() {
     const body = {
       base_url: $("#l-base").value.trim(),
       model: $("#l-model").value.trim(),
+      cover_letter_signature: $("#l-signature").value.trim(),
       cover_letters_enabled: $("#l-enabled").checked,
     };
     // api_key is omitted unless the user typed a new one or asked to clear it —

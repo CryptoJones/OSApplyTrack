@@ -64,6 +64,7 @@ public static class MaterialsEndpoints
                 base_url = baseUrl,
                 model,
                 has_api_key = hasKey,
+                cover_letter_signature = await repo.GetCoverLetterSignatureAsync(),
                 // Whether this tenant wants cover letters at all; OFF hides the
                 // drafting UI and the draft endpoint refuses.
                 cover_letters_enabled = lettersEnabled,
@@ -99,7 +100,13 @@ public static class MaterialsEndpoints
                 ? en.GetBoolean()
                 : null;
 
-            await repo.UpsertAsync(baseUrl, model, changeKey, newKey, lettersEnabled);
+            string? signature = payload.ValueKind == JsonValueKind.Object
+                && payload.TryGetProperty("cover_letter_signature", out var sig)
+                && sig.ValueKind == JsonValueKind.String
+                ? sig.GetString()?.Trim()
+                : null;
+
+            await repo.UpsertAsync(baseUrl, model, changeKey, newKey, lettersEnabled, signature);
 
             var (savedUrl, savedModel, hasKey, savedEnabled) = await repo.GetViewAsync();
             return Results.Ok(new
@@ -107,6 +114,7 @@ public static class MaterialsEndpoints
                 base_url = savedUrl,
                 model = savedModel,
                 has_api_key = hasKey,
+                cover_letter_signature = await repo.GetCoverLetterSignatureAsync(),
                 cover_letters_enabled = savedEnabled,
             });
         });
@@ -118,6 +126,14 @@ public static class MaterialsEndpoints
             return removed
                 ? Results.NoContent()
                 : throw new AppNotFoundException($"no cover letter for '{name}'");
+        });
+
+        app.MapGet("/api/apps/{name}/cover-letter.pdf", async (string name, CoverLetterRepo letters) =>
+        {
+            var body = await letters.GetBodyAsync(name)
+                ?? throw new AppNotFoundException($"no cover letter for '{name}'");
+            var filename = $"{Slug.NameStem(Slug.Normalize(name))}-cover-letter.pdf";
+            return Results.File(CoverLetterPdfRenderer.Render(body), "application/pdf", filename);
         });
     }
 

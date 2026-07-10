@@ -33,7 +33,9 @@ public sealed class LlmSettingsRepo
         _log = log;
     }
 
-    private sealed record Row(string BaseUrl, string Model, string ApiKeyCiphertext, bool CoverLettersEnabled);
+    private sealed record Row(
+        string BaseUrl, string Model, string ApiKeyCiphertext,
+        bool CoverLettersEnabled, string CoverLetterSignature);
 
     /// <summary>The tenant's override with the API key decrypted, or null when no row exists.</summary>
     public async Task<LlmOverride?> GetOverrideAsync()
@@ -76,6 +78,10 @@ public sealed class LlmSettingsRepo
             : (row.BaseUrl, row.Model, row.ApiKeyCiphertext.Length > 0, row.CoverLettersEnabled);
     }
 
+    /// <summary>The tenant's exact multi-line closing signature, or blank when unset.</summary>
+    public async Task<string> GetCoverLetterSignatureAsync() =>
+        (await ReadRowAsync())?.CoverLetterSignature ?? "";
+
     /// <summary>
     /// Save the override. <paramref name="changeKey"/> distinguishes "leave the stored
     /// key alone" (false) from "set/clear it" (true): a blank <paramref name="newKeyPlaintext"/>
@@ -85,7 +91,8 @@ public sealed class LlmSettingsRepo
     /// </summary>
     public async Task UpsertAsync(
         string baseUrl, string model, bool changeKey, string? newKeyPlaintext,
-        bool? coverLettersEnabled = null, IDbTransaction? tx = null)
+        bool? coverLettersEnabled = null, string? coverLetterSignature = null,
+        IDbTransaction? tx = null)
     {
         var ciphertext = "";
         if (changeKey && !string.IsNullOrEmpty(newKeyPlaintext))
@@ -101,16 +108,24 @@ public sealed class LlmSettingsRepo
         var keyUpdate = changeKey ? "api_key_ciphertext = EXCLUDED.api_key_ciphertext," : "";
         await _conn.ExecuteAsync(
             $"""
-             INSERT INTO llm_settings (tenant_id, base_url, model, api_key_ciphertext, cover_letters_enabled, updated_at)
-             VALUES (@t, @baseUrl, @model, @ciphertext, coalesce(@enabled, true), now())
+             INSERT INTO llm_settings (
+                 tenant_id, base_url, model, api_key_ciphertext,
+                 cover_letters_enabled, cover_letter_signature, updated_at)
+             VALUES (@t, @baseUrl, @model, @ciphertext, coalesce(@enabled, true),
+                 coalesce(@signature, ''), now())
              ON CONFLICT (tenant_id) DO UPDATE SET
                  base_url   = EXCLUDED.base_url,
                  model      = EXCLUDED.model,
                  {keyUpdate}
                  cover_letters_enabled = coalesce(@enabled, llm_settings.cover_letters_enabled),
+                 cover_letter_signature = coalesce(@signature, llm_settings.cover_letter_signature),
                  updated_at = now()
              """,
-            new { t = _t, baseUrl = baseUrl.Trim(), model = model.Trim(), ciphertext, enabled = coverLettersEnabled },
+            new
+            {
+                t = _t, baseUrl = baseUrl.Trim(), model = model.Trim(), ciphertext,
+                enabled = coverLettersEnabled, signature = coverLetterSignature?.Trim(),
+            },
             tx);
     }
 
@@ -119,7 +134,8 @@ public sealed class LlmSettingsRepo
         // Dapper's global MatchNamesWithUnderscores flag.
         _conn.QuerySingleOrDefaultAsync<Row?>(
             "SELECT base_url AS baseurl, model, api_key_ciphertext AS apikeyciphertext, "
-            + "cover_letters_enabled AS coverlettersenabled "
+            + "cover_letters_enabled AS coverlettersenabled, "
+            + "cover_letter_signature AS coverlettersignature "
             + "FROM llm_settings WHERE tenant_id = @t",
             new { t = _t });
 }
