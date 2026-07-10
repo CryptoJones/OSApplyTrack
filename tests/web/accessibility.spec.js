@@ -40,7 +40,7 @@ async function mockApi(page) {
     let body = {};
     if (path === "/api/auth/me") body = { email: "person@example.com" };
     else if (path === "/api/llm-settings") body = {
-      cover_letters_enabled: true, secrets_available: true, has_api_key: false,
+      cover_letters_enabled: true, cover_letter_signature: "", secrets_available: true, has_api_key: false,
       base_url: "", model: "", instance: { base_url: "", model: "", has_api_key: false },
     };
     else if (path === "/api/apps" && method === "GET") body = [application];
@@ -57,7 +57,7 @@ async function mockApi(page) {
     else if (path === "/api/blacklist") body = [];
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
-    else body = { ok: true, filename: application.filename, cover_letters_enabled: true };
+    else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
 }

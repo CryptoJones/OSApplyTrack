@@ -317,6 +317,34 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Cover_letter_signature_round_trips_and_is_appended_to_new_drafts()
+    {
+        using var client = await AuthedClientAsync(NewFactory(WithStub(new StubLlmClient())));
+        await client.PutAsync("/api/resume", Json(NonEmptyResume));
+        await client.PutAsync("/api/llm-settings", Json("""{"cover_letter_signature":"Sincerely,\nAda Byte"}"""));
+        var settings = await ReadJson(await client.GetAsync("/api/llm-settings"));
+        Assert.Equal("Sincerely,\nAda Byte", settings.GetProperty("cover_letter_signature").GetString());
+
+        var name = await CreateAppAsync(client, "Acme Corp", "Engineer");
+        var draft = await ReadJson(await client.PostAsync($"/api/apps/{name}/draft", null));
+        Assert.EndsWith("Sincerely,\nAda Byte", draft.GetProperty("material").GetString());
+    }
+
+    [Fact]
+    public async Task Cover_letter_pdf_download_returns_a_pdf()
+    {
+        using var client = await AuthedClientAsync(NewFactory(WithStub(new StubLlmClient())));
+        await client.PutAsync("/api/resume", Json(NonEmptyResume));
+        var name = await CreateAppAsync(client, "Acme Corp", "Engineer");
+        await client.PostAsync($"/api/apps/{name}/draft", null);
+
+        var pdf = await client.GetAsync($"/api/apps/{name}/cover-letter.pdf");
+        Assert.Equal(HttpStatusCode.OK, pdf.StatusCode);
+        Assert.Equal("application/pdf", pdf.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("%PDF-", Encoding.ASCII.GetString((await pdf.Content.ReadAsByteArrayAsync())[..5]));
+    }
+
+    [Fact]
     public async Task Draft_is_refused_when_cover_letters_are_disabled()
     {
         // Fully configured (stub model + résumé) — the toggle alone must refuse.
