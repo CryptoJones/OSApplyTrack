@@ -998,87 +998,63 @@ async function loadCriteriaTab(body, gen = settingsGen) {
 
 // ---- Résumé panel ---------------------------------------------------------
 
-// The structured résumé feeds the cover-letter prompt as the only facts the model
-// may assert. Experience + links are dynamic lists (like ATS boards); because their
-// rows hold live inputs, we sync the DOM back into these arrays before any add/remove
-// re-render so in-progress edits aren't clobbered.
-let resumeExperience = [];
-let resumeLinks = [];
+// Uploaded résumé text feeds the cover-letter prompt as the only facts the model
+// may assert. Older structured résumé fields still round-trip through the API for
+// compatibility, but the settings UI now treats the PDF upload as the source.
+function resumePreviewText(r) {
+  const lines = [];
+  const fullName = (r.full_name || "").trim();
+  const headline = (r.headline || "").trim();
+  const location = (r.location || "").trim();
+  const summary = (r.summary || "").trim();
 
-function expRows() {
-  if (!resumeExperience.length)
-    return `<div class="board-empty field-help">No experience added.</div>`;
-  return resumeExperience.map((e, i) => `
-    <div class="exp-row" data-exp="${i}">
-      <div class="grid grid-cols-3 gap-2">
-        <input class="field-input" data-exp-field="title" aria-label="Experience ${i + 1} title" placeholder="Title" value="${escapeHtml(e.title || "")}" />
-        <input class="field-input" data-exp-field="company" aria-label="Experience ${i + 1} company" placeholder="Company" value="${escapeHtml(e.company || "")}" />
-        <input class="field-input mono" data-exp-field="dates" aria-label="Experience ${i + 1} dates" placeholder="2020–2024" value="${escapeHtml(e.dates || "")}" />
-      </div>
-      <textarea class="field-textarea mono mt-2" rows="3" data-exp-field="highlights" aria-label="Experience ${i + 1} highlights"
-        placeholder="One highlight per line">${escapeHtml((e.highlights || []).join("\n"))}</textarea>
-      <div class="mt-1 flex justify-end">
-        <button class="btn btn-ghost btn-xs" data-remove-exp="${i}" type="button">✕ Remove</button>
-      </div>
-    </div>`).join("");
+  if (fullName || headline)
+    lines.push(fullName && headline ? `${fullName} - ${headline}` : (fullName || headline));
+  if (location) lines.push(`Location: ${location}`);
+  if (summary) {
+    if (lines.length) lines.push("");
+    lines.push(summary);
+  }
+
+  const experience = r.experience || [];
+  if (experience.length) {
+    lines.push("", "Experience:");
+    experience.forEach((e) => {
+      const head = [e.title, e.company, e.dates].filter(Boolean).join(" · ");
+      if (head) lines.push(`- ${head}`);
+      (e.highlights || []).filter(Boolean).forEach((h) => lines.push(`  - ${h}`));
+    });
+  }
+  if ((r.skills || []).length) lines.push("", `Skills: ${(r.skills || []).join(", ")}`);
+  if ((r.certifications || []).length) lines.push("", `Certifications: ${(r.certifications || []).join(", ")}`);
+  if ((r.links || []).length) {
+    lines.push("", "Links:");
+    (r.links || []).forEach((l) => {
+      if (l.url) lines.push(l.label ? `- ${l.label}: ${l.url}` : `- ${l.url}`);
+    });
+  }
+
+  return lines.join("\n").trim();
 }
 
-function syncExperienceFromDom() {
-  contentEl.querySelectorAll("[data-exp]").forEach((row) => {
-    const i = Number(row.dataset.exp);
-    const val = (f) => row.querySelector(`[data-exp-field="${f}"]`).value;
-    resumeExperience[i] = {
-      title: val("title").trim(),
-      company: val("company").trim(),
-      dates: val("dates").trim(),
-      highlights: val("highlights").split("\n").map((s) => s.trim()).filter(Boolean),
-    };
-  });
-}
+function resumePreviewMarkup(r) {
+  const text = resumePreviewText(r);
+  if (!text) {
+    return `
+      <section class="resume-preview-wrap mt-5" aria-labelledby="resume-preview-title">
+        <h3 id="resume-preview-title">Current résumé</h3>
+        <div class="resume-preview-empty field-help">No résumé PDF has been uploaded yet.</div>
+      </section>`;
+  }
 
-function renderExperience() {
-  const el = $("#resume-experience");
-  if (!el) return;
-  el.innerHTML = expRows();
-  el.querySelectorAll("[data-remove-exp]").forEach((btn) => {
-    btn.onclick = () => {
-      syncExperienceFromDom();
-      resumeExperience.splice(Number(btn.dataset.removeExp), 1);
-      renderExperience();
-    };
-  });
-}
-
-function linkRows() {
-  if (!resumeLinks.length)
-    return `<div class="board-empty field-help">No links added.</div>`;
-  return resumeLinks.map((l, i) => `
-    <div class="link-row grid grid-cols-[1fr_2fr_auto] gap-2 items-center" data-link="${i}">
-      <input class="field-input" data-link-field="label" aria-label="Link ${i + 1} label" placeholder="Label (GitHub)" value="${escapeHtml(l.label || "")}" />
-      <input class="field-input mono" data-link-field="url" type="url" aria-label="Link ${i + 1} URL" placeholder="https://example.com" value="${escapeHtml(l.url || "")}" />
-        <button class="btn btn-ghost btn-xs" data-remove-link="${i}" type="button" aria-label="Remove link ${i + 1}">Remove</button>
-    </div>`).join("");
-}
-
-function syncLinksFromDom() {
-  contentEl.querySelectorAll("[data-link]").forEach((row) => {
-    const i = Number(row.dataset.link);
-    const val = (f) => row.querySelector(`[data-link-field="${f}"]`).value;
-    resumeLinks[i] = { label: val("label").trim(), url: val("url").trim() };
-  });
-}
-
-function renderLinks() {
-  const el = $("#resume-links");
-  if (!el) return;
-  el.innerHTML = linkRows();
-  el.querySelectorAll("[data-remove-link]").forEach((btn) => {
-    btn.onclick = () => {
-      syncLinksFromDom();
-      resumeLinks.splice(Number(btn.dataset.removeLink), 1);
-      renderLinks();
-    };
-  });
+  const preview = text.length > 6000
+    ? `${text.slice(0, 6000).trimEnd()}\n[preview truncated]`
+    : text;
+  return `
+    <section class="resume-preview-wrap mt-5" aria-labelledby="resume-preview-title">
+      <h3 id="resume-preview-title">Current résumé text</h3>
+      <pre class="resume-preview" tabindex="0">${escapeHtml(preview)}</pre>
+    </section>`;
 }
 
 function resumeMarkup(r) {
@@ -1087,114 +1063,28 @@ function resumeMarkup(r) {
       <div class="sheet-eyebrow">Résumé</div>
       <h2 class="sheet-title">The facts behind your cover letters</h2>
       <p class="field-help">
-        The drafting AI may assert only what's here — no invented employers, titles, or metrics.
+        The drafting AI may assert only what's in your uploaded résumé.
       </p>
 
       <section class="resume-upload mt-5" aria-labelledby="resume-upload-title">
         <div>
           <h3 id="resume-upload-title">Upload a PDF résumé</h3>
           <p class="field-help">
-            Text-based PDFs are extracted into this profile. Review the fields after upload.
+            Text-based PDFs are extracted and stored as the résumé text for cover-letter drafting.
           </p>
         </div>
         <div class="resume-upload-actions">
-          <label class="sr-only" for="r-pdf">Résumé PDF file</label>
+          <label class="field-label sr-only" for="r-pdf">Résumé PDF file</label>
           <input id="r-pdf" class="field-input" type="file" accept="application/pdf,.pdf" />
           <button class="btn btn-ghost" data-act="upload-resume" type="button">Upload PDF</button>
         </div>
       </section>
 
-      <div class="mt-5 grid grid-cols-2 gap-4">
-        <div>
-          <label class="field-label" for="r-name">Full name</label>
-          <input id="r-name" class="field-input" value="${escapeHtml(r.full_name || "")}" placeholder="Ada Lovelace" />
-        </div>
-        <div>
-          <label class="field-label" for="r-location">Location</label>
-          <input id="r-location" class="field-input" value="${escapeHtml(r.location || "")}" placeholder="Remote / Lincoln, NE" />
-        </div>
-      </div>
-
-      <div class="mt-4">
-        <label class="field-label" for="r-headline">Headline</label>
-        <input id="r-headline" class="field-input" value="${escapeHtml(r.headline || "")}" placeholder="Backend engineer · distributed systems" />
-      </div>
-
-      <div class="mt-4">
-        <label class="field-label" for="r-summary">Summary</label>
-        <textarea id="r-summary" class="field-textarea" rows="4" placeholder="A few sentences on what you do and the value you bring.">${escapeHtml(r.summary || "")}</textarea>
-      </div>
-
-      <div class="mt-4">
-        <div class="field-label">Experience</div>
-        <div id="resume-experience" class="board-list space-y-3"></div>
-        <button class="btn btn-ghost mt-2" data-act="add-exp" type="button">+ Add role</button>
-      </div>
-
-      <div class="mt-4 grid grid-cols-2 gap-4">
-        <div>
-          <label class="field-label" for="r-skills">Skills — one per line or comma-separated</label>
-          <textarea id="r-skills" class="field-textarea mono" rows="6"
-            placeholder="C#&#10;PostgreSQL&#10;Distributed systems">${escapeHtml((r.skills || []).join("\n"))}</textarea>
-        </div>
-        <div>
-          <label class="field-label" for="r-certs">Certifications — one per line</label>
-          <textarea id="r-certs" class="field-textarea mono" rows="6"
-            placeholder="AWS Solutions Architect&#10;CKA">${escapeHtml((r.certifications || []).join("\n"))}</textarea>
-        </div>
-      </div>
-
-      <div class="mt-4">
-        <div class="field-label">Links</div>
-        <div id="resume-links" class="board-list space-y-2"></div>
-        <button class="btn btn-ghost mt-2" data-act="add-link" type="button">+ Add link</button>
-      </div>
-
-      <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
-        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
-        <button class="btn btn-primary" data-act="save">Save résumé</button>
-      </div>
+      ${resumePreviewMarkup(r)}
     </article>`;
 }
 
-function gatherResume() {
-  syncExperienceFromDom();
-  syncLinksFromDom();
-  const splitList = (sel) => $(sel).value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-  return {
-    full_name: $("#r-name").value.trim(),
-    headline: $("#r-headline").value.trim(),
-    location: $("#r-location").value.trim(),
-    summary: $("#r-summary").value.trim(),
-    skills: splitList("#r-skills"),
-    certifications: splitList("#r-certs"),
-    experience: resumeExperience.filter(
-      (e) => e.company || e.title || e.dates || (e.highlights && e.highlights.length)),
-    links: resumeLinks.filter((l) => l.url),
-  };
-}
-
 function wireResume() {
-  contentEl.querySelector('[data-act="cancel"]').onclick = () =>
-    state.current ? openApp(state.current) : renderEmpty();
-  contentEl.querySelector('[data-act="add-exp"]').onclick = () => {
-    syncExperienceFromDom();
-    resumeExperience.push({ title: "", company: "", dates: "", highlights: [] });
-    renderExperience();
-  };
-  contentEl.querySelector('[data-act="add-link"]').onclick = () => {
-    syncLinksFromDom();
-    resumeLinks.push({ label: "", url: "" });
-    renderLinks();
-  };
-  contentEl.querySelector('[data-act="save"]').onclick = async () => {
-    try {
-      await api("PUT", "/api/resume", gatherResume());
-      toast("Résumé saved.");
-    } catch (e) {
-      toast(e.message);
-    }
-  };
   contentEl.querySelector('[data-act="upload-resume"]').onclick = async () => {
     const input = $("#r-pdf");
     const file = input.files?.[0];
@@ -1207,30 +1097,22 @@ function wireResume() {
     const label = btn.textContent;
     btn.disabled = true;
     btn.textContent = "Uploading…";
+    let uploaded = null;
     try {
       const form = new FormData();
       form.append("resume", file);
-      const r = await api.form("/api/resume/upload", form);
-      resumeExperience = (r.experience || []).map((e) => ({
-        title: e.title || "", company: e.company || "", dates: e.dates || "",
-        highlights: e.highlights || [],
-      }));
-      resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
-      $("#r-name").value = r.full_name || "";
-      $("#r-location").value = r.location || "";
-      $("#r-headline").value = r.headline || "";
-      $("#r-summary").value = r.summary || "";
-      $("#r-skills").value = (r.skills || []).join("\n");
-      $("#r-certs").value = (r.certifications || []).join("\n");
-      renderExperience();
-      renderLinks();
-      toast("Résumé PDF imported.");
-      focusView("#r-name");
+      uploaded = await api.form("/api/resume/upload", form);
+      toast("Résumé PDF uploaded.");
     } catch (e) {
       toast(e.message);
     } finally {
       btn.disabled = false;
       btn.textContent = label;
+    }
+    if (uploaded) {
+      contentEl.innerHTML = resumeMarkup(uploaded);
+      wireResume();
+      focusView("#resume-preview-title");
     }
   };
 }
@@ -1239,14 +1121,7 @@ function wireResume() {
 async function loadResumeTab(body, gen = settingsGen) {
   const r = await api("GET", "/api/resume");
   if (settingsSuperseded(gen)) return;
-  resumeExperience = (r.experience || []).map((e) => ({
-    title: e.title || "", company: e.company || "", dates: e.dates || "",
-    highlights: e.highlights || [],
-  }));
-  resumeLinks = (r.links || []).map((l) => ({ label: l.label || "", url: l.url || "" }));
   body.innerHTML = resumeMarkup(r);
-  renderExperience();
-  renderLinks();
   wireResume();
 }
 

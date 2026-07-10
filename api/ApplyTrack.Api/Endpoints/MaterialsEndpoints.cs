@@ -10,7 +10,7 @@ using ApplyTrack.Api.Materials;
 namespace ApplyTrack.Api.Endpoints;
 
 /// <summary>
-/// The materials-engine settings routes: the per-tenant structured résumé
+/// The materials-engine settings routes: the per-tenant résumé brief
 /// (<c>/api/resume</c>) that feeds the cover-letter prompt, and the per-tenant LLM
 /// endpoint override (<c>/api/llm-settings</c>) layered over the instance default.
 /// The API key is write-only — it is stored encrypted and never returned, only a
@@ -22,7 +22,7 @@ public static class MaterialsEndpoints
 {
     public static void MapMaterialsEndpoints(this IEndpointRouteBuilder app)
     {
-        // ---- Structured résumé -------------------------------------------------
+        // ---- Résumé brief ------------------------------------------------------
         app.MapGet("/api/resume", async (ResumeRepo repo) =>
             Results.Ok(await repo.GetAsync()));
 

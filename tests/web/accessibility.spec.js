@@ -110,6 +110,17 @@ test("settings sections expose labeled controls", async ({ page }) => {
   }
 });
 
+test("resume settings use PDF upload instead of manual fields", async ({ page }) => {
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Résumé", exact: true }).click();
+  await expect(page.getByLabel("Résumé PDF file")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload PDF" })).toBeVisible();
+  await expect(page.getByLabel("Full name")).toHaveCount(0);
+  await expect(page.getByLabel("Headline")).toHaveCount(0);
+  await expect(page.getByLabel("Summary")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save résumé" })).toHaveCount(0);
+});
+
 test("keyboard navigation and validation retain visible focus", async ({ page }) => {
   await page.keyboard.press("/");
   await expect(page.getByLabel("Search applications")).toBeFocused();
