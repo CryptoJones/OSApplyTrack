@@ -20,7 +20,7 @@ using UglyToad.PdfPig.Writer;
 namespace ApplyTrack.Api.Tests;
 
 /// <summary>
-/// The materials-engine routes over HTTP: the per-tenant structured résumé
+/// The materials-engine routes over HTTP: the per-tenant résumé brief
 /// (<c>/api/resume</c>), the per-tenant LLM endpoint override (<c>/api/llm-settings</c>,
 /// whose API key is write-only and never echoed), and cover-letter generation on
 /// <c>POST /api/apps/{name}/draft</c> with a stubbed model. Each test method runs as a
@@ -155,7 +155,7 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Resume_upload_pdf_extracts_and_stores_a_profile()
+    public async Task Resume_upload_pdf_stores_full_text_for_the_model()
     {
         using var form = PdfForm(
             "Ada Byte",
@@ -173,24 +173,26 @@ public class MaterialsEndpointTests : IAsyncLifetime
 
         var uploaded = await ReadJson(await _client.PostAsync("/api/resume/upload", form));
 
-        Assert.Equal("Ada Byte", uploaded.GetProperty("full_name").GetString());
-        Assert.Equal("Backend Engineer", uploaded.GetProperty("headline").GetString());
-        Assert.Equal("Lincoln, NE", uploaded.GetProperty("location").GetString());
-        Assert.Contains("Ships reliable services", uploaded.GetProperty("summary").GetString());
-        Assert.Contains("Ada Byte", uploaded.GetProperty("summary").GetString());
-        Assert.Equal(new[] { "C#", "Postgres", "Distributed systems" },
-            uploaded.GetProperty("skills").EnumerateArray().Select(s => s.GetString()));
-        Assert.Equal("CKA", uploaded.GetProperty("certifications")[0].GetString());
-        Assert.Equal("GitHub", uploaded.GetProperty("links")[0].GetProperty("label").GetString());
-        Assert.Equal("https://github.com/adabyte", uploaded.GetProperty("links")[0].GetProperty("url").GetString());
-        Assert.Equal("Experience from uploaded resume",
-            uploaded.GetProperty("experience")[0].GetProperty("title").GetString());
-        Assert.Contains("Cut p99 latency",
-            uploaded.GetProperty("experience")[0].GetProperty("highlights").EnumerateArray().Select(h => h.GetString()));
+        var text = uploaded.GetProperty("summary").GetString()!;
+        Assert.Equal("", uploaded.GetProperty("full_name").GetString());
+        Assert.Equal("", uploaded.GetProperty("headline").GetString());
+        Assert.Equal("", uploaded.GetProperty("location").GetString());
+        Assert.Empty(uploaded.GetProperty("skills").EnumerateArray());
+        Assert.Empty(uploaded.GetProperty("certifications").EnumerateArray());
+        Assert.Empty(uploaded.GetProperty("links").EnumerateArray());
+        Assert.Empty(uploaded.GetProperty("experience").EnumerateArray());
+        Assert.Contains("Ada Byte", text);
+        Assert.Contains("Backend Engineer", text);
+        Assert.Contains("Lincoln, NE", text);
+        Assert.Contains("Skills", text);
+        Assert.Contains("C#", text);
+        Assert.Contains("Postgres", text);
+        Assert.Contains("CKA", text);
+        Assert.Contains("Cut p99 latency", text);
 
         var got = await ReadJson(await _client.GetAsync("/api/resume"));
-        Assert.Equal("Ada Byte", got.GetProperty("full_name").GetString());
-        Assert.Contains("Postgres", got.GetProperty("skills").EnumerateArray().Select(s => s.GetString()));
+        Assert.Equal(text, got.GetProperty("summary").GetString());
+        Assert.Empty(got.GetProperty("experience").EnumerateArray());
     }
 
     [Fact]

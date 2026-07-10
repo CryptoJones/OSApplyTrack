@@ -306,6 +306,22 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 .resume-upload { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.85fr); gap: 1rem; align-items: end; padding-block: 1rem; border-block: 1px solid var(--border); }
 .resume-upload h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
 .resume-upload-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; align-items: center; }
+.resume-preview-wrap h3 { margin: 0 0 0.5rem; font-size: 1.05rem; }
+.resume-preview {
+  max-height: 32rem;
+  margin: 0;
+  padding: 0.8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+.resume-preview-empty { padding-block: 0.8rem; border-top: 1px solid var(--border); }
 .preference-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
 .source-row { min-height: 2.75rem; display: flex; align-items: center; gap: 0.6rem; }
@@ -314,7 +330,6 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 .board-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem; border: 1px solid var(--border); border-radius: var(--radius); }
 .board-slug { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .board-add { display: grid; grid-template-columns: minmax(8rem, 0.6fr) minmax(10rem, 1fr) auto; gap: 0.5rem; }
-.exp-row { margin-top: 0.7rem; padding: 0.8rem; border: 1px solid var(--border); border-radius: var(--radius); }
 
 .toast {
   position: fixed;

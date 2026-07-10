@@ -79,7 +79,7 @@ telemetry, no SaaS.
   survivors as fresh leads.
 - **It drafts your cover letters.** Point it at any OpenAI-compatible LLM — a local
   Ollama/vLLM model (so your résumé never leaves the box, $0 per draft) or a hosted
-  provider — and generate a letter per application, tailored from your structured
+  provider — and generate a letter per application, tailored from your uploaded
   résumé. Keys are yours, encrypted at rest.
 - **It's genuinely multi-tenant.** Every row is owned by a tenant; every query in
   both runtimes unconditionally filters `WHERE tenant_id`. One deployment cleanly
@@ -260,9 +260,9 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/resume` | The tenant's structured résumé — the only facts the drafter may assert. |
-| `PUT`    | `/api/resume` | Normalize + store the résumé (dedupes skills, drops empty rows/links). |
-| `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB) and store the extracted profile. |
+| `GET`    | `/api/resume` | The tenant's résumé brief — the only facts the drafter may assert. |
+| `PUT`    | `/api/resume` | Compatibility endpoint for structured résumé JSON. |
+| `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB) and store the extracted text as the model brief. |
 | `GET`    | `/api/llm-settings` | The tenant's endpoint override + the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
 | `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` (omit `api_key` to leave it untouched, blank to clear it) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
@@ -288,7 +288,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `sessions` | Opaque server-side sessions (instant revocation on logout). |
 | `seen` | The dedupe ledger — listings already surfaced, so leads don't repeat. |
 | `poll_requests` | The on-demand "Poll now" queue the worker drains. |
-| `resume_profiles` | Per-tenant structured résumé — the facts the cover-letter drafter feeds the LLM. |
+| `resume_profiles` | Per-tenant résumé brief — the facts the cover-letter drafter feeds the LLM. |
 | `llm_settings` | Per-tenant LLM endpoint override; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
 | `cover_letters` | Generated cover letters, one per application (`FK → applications ON DELETE CASCADE`). |
 
@@ -320,7 +320,7 @@ Each accepts `--database-url` (a libpq URL), falling back to `DATABASE_URL` / th
 
 ## Cover letters
 
-OSApplyTrack drafts a tailored cover letter per application from a structured
+OSApplyTrack drafts a tailored cover letter per application from an uploaded
 résumé you control — provider-agnostic, and built so your data can stay on-prem.
 
 > **⚠ Any LLM — or none at all.** The backend is hard-required to work with **any
@@ -335,9 +335,10 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
 - **Operator default + per-tenant override.** The instance sets a default endpoint
   via `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey`; each tenant can override any
   field in the **Settings · AI** tab (override just the model, keep the URL, etc.).
-- **Your résumé is the only source of truth.** The **Settings · Résumé** tab captures name,
-  headline, summary, experience, skills, certifications, and links — the LLM is told
-  these are the *only* facts it may assert, so it can't invent employers or metrics.
+- **Your résumé is the only source of truth.** The **Settings · Résumé** tab uploads
+  a text-based PDF and stores the extracted résumé text as the model brief. The LLM
+  is told these are the *only* facts it may assert, so it can't invent employers or
+  metrics.
 - **Keys encrypted at rest.** A tenant's own API key is write-only: sealed with
   AES-256-GCM under `APPLYTRACK_SECRETS_KEY` and never echoed back. Without that
   master key the per-tenant-key path is disabled (the instance default still works).

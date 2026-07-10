@@ -13,11 +13,10 @@ public sealed record ResumeExperience(string Company, string Title, string Dates
 public sealed record ResumeLink(string Label, string Url);
 
 /// <summary>
-/// Per-tenant structured résumé — the factual brief the cover-letter drafter feeds
-/// the LLM as "the only facts you may assert about the candidate". The multi-tenant
-/// heir to materials.py's hardcoded <c>_BACKGROUND</c>: instead of one person's
-/// facts baked into the code, every tenant supplies their own. Serializes to the
-/// snake_case <c>/api/resume</c> shape the SPA editor round-trips.
+/// Per-tenant résumé facts — the brief the cover-letter drafter feeds the LLM as
+/// "the only facts you may assert about the candidate". PDF upload stores the
+/// extracted résumé text in <see cref="Summary"/>; the older structured fields stay
+/// in the API shape for compatibility with existing rows and clients.
 /// </summary>
 public sealed class Resume
 {
