@@ -10,7 +10,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-applytrack}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-applytrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-JanewayDidNothingWrong}
       POSTGRES_DB: ${POSTGRES_DB:-applytrack}
     ports:
       - "5432:5432"
@@ -28,7 +28,7 @@ services:
       context: ./api
       dockerfile: ApplyTrack.Api/Dockerfile
     environment:
-      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:-applytrack}"
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:-JanewayDidNothingWrong}"
       ASPNETCORE_URLS: "http://+:8080"
       # Cover-letter AI (all optional; see .env.example). Empty defaults leave drafting
       # off until a tenant configures their own endpoint in the SPA's AI panel.
@@ -63,7 +63,7 @@ services:
       context: .
       dockerfile: Dockerfile.poller
     environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:-applytrack}@db:5432/${POSTGRES_DB:-applytrack}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:-JanewayDidNothingWrong}@db:5432/${POSTGRES_DB:-applytrack}"
     depends_on:
       db:
         condition: service_healthy
