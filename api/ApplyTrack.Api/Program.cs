@@ -179,6 +179,16 @@ app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path ==
         }
         await next();
     }));
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/resume/upload",
+    branch => branch.Use(async (ctx, next) =>
+    {
+        if (ctx.Request.ContentLength > ResumePdfImporter.MaxPdfBytes + 16L * 1024)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
+            return;
+        }
+        await next();
+    }));
 
 // Stamp CSP + the other hardening headers on every response. After UseForwardedHeaders
 // so Request.IsHttps is accurate (HSTS only when actually behind HTTPS).

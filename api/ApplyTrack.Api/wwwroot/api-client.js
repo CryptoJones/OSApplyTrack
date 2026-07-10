@@ -2,13 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 export function createApiClient(onUnauthorized) {
-  return async function api(method, path, body) {
-    const options = { method, headers: {} };
-    if (body !== undefined) {
-      options.headers["Content-Type"] = "application/json";
-      options.body = JSON.stringify(body);
-    }
-    const response = await fetch(path, options);
+  async function readResponse(response) {
     if (!response.ok) {
       if (response.status === 401) onUnauthorized();
       let detail = response.statusText;
@@ -19,5 +13,20 @@ export function createApiClient(onUnauthorized) {
     }
     if (response.status === 204) return null;
     return response.json();
+  }
+
+  async function api(method, path, body) {
+    const options = { method, headers: {} };
+    if (body !== undefined) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    return readResponse(await fetch(path, options));
+  }
+
+  api.form = async function form(path, body) {
+    return readResponse(await fetch(path, { method: "POST", body }));
   };
+
+  return api;
 }

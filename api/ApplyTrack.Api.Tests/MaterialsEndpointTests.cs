@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
@@ -11,6 +12,10 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using UglyToad.PdfPig.Content;
+using UglyToad.PdfPig.Core;
+using UglyToad.PdfPig.Fonts.Standard14Fonts;
+using UglyToad.PdfPig.Writer;
 
 namespace ApplyTrack.Api.Tests;
 
@@ -85,6 +90,25 @@ public class MaterialsEndpointTests : IAsyncLifetime
     private static async Task<JsonElement> ReadJson(HttpResponseMessage res) =>
         JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
 
+    private static MultipartFormDataContent PdfForm(params string[] lines)
+    {
+        var builder = new PdfDocumentBuilder();
+        var page = builder.AddPage(PageSize.A4);
+        var font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        var y = 790d;
+        foreach (var line in lines)
+        {
+            page.AddText(line, 12, new PdfPoint(40, y), font);
+            y -= 18d;
+        }
+
+        var file = new ByteArrayContent(builder.Build());
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+        return form;
+    }
+
     private static async Task<string> CreateAppAsync(HttpClient client, string company, string role)
     {
         var res = await client.PostAsync("/api/apps",
@@ -128,6 +152,59 @@ public class MaterialsEndpointTests : IAsyncLifetime
         Assert.Equal("Globex", got.GetProperty("experience")[0].GetProperty("company").GetString());
         Assert.Equal("Cut p99 latency",
             got.GetProperty("experience")[0].GetProperty("highlights")[0].GetString());
+    }
+
+    [Fact]
+    public async Task Resume_upload_pdf_extracts_and_stores_a_profile()
+    {
+        using var form = PdfForm(
+            "Ada Byte",
+            "Backend Engineer",
+            "Lincoln, NE | ada@example.test | github.com/adabyte",
+            "Summary",
+            "Ships reliable services.",
+            "Skills",
+            "C#; Postgres; Distributed systems",
+            "Certifications",
+            "CKA",
+            "Experience",
+            "Senior Engineer - Globex - 2020-2024",
+            "Cut p99 latency");
+
+        var uploaded = await ReadJson(await _client.PostAsync("/api/resume/upload", form));
+
+        Assert.Equal("Ada Byte", uploaded.GetProperty("full_name").GetString());
+        Assert.Equal("Backend Engineer", uploaded.GetProperty("headline").GetString());
+        Assert.Equal("Lincoln, NE", uploaded.GetProperty("location").GetString());
+        Assert.Contains("Ships reliable services", uploaded.GetProperty("summary").GetString());
+        Assert.Contains("Ada Byte", uploaded.GetProperty("summary").GetString());
+        Assert.Equal(new[] { "C#", "Postgres", "Distributed systems" },
+            uploaded.GetProperty("skills").EnumerateArray().Select(s => s.GetString()));
+        Assert.Equal("CKA", uploaded.GetProperty("certifications")[0].GetString());
+        Assert.Equal("GitHub", uploaded.GetProperty("links")[0].GetProperty("label").GetString());
+        Assert.Equal("https://github.com/adabyte", uploaded.GetProperty("links")[0].GetProperty("url").GetString());
+        Assert.Equal("Experience from uploaded resume",
+            uploaded.GetProperty("experience")[0].GetProperty("title").GetString());
+        Assert.Contains("Cut p99 latency",
+            uploaded.GetProperty("experience")[0].GetProperty("highlights").EnumerateArray().Select(h => h.GetString()));
+
+        var got = await ReadJson(await _client.GetAsync("/api/resume"));
+        Assert.Equal("Ada Byte", got.GetProperty("full_name").GetString());
+        Assert.Contains("Postgres", got.GetProperty("skills").EnumerateArray().Select(s => s.GetString()));
+    }
+
+    [Fact]
+    public async Task Resume_upload_rejects_non_pdf_bytes()
+    {
+        var file = new ByteArrayContent(Encoding.UTF8.GetBytes("Ada Byte"));
+        file.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        using var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.txt");
+
+        var res = await _client.PostAsync("/api/resume/upload", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("PDF", (await ReadJson(res)).GetProperty("detail").GetString());
     }
 
     // ---- LLM settings ------------------------------------------------------
