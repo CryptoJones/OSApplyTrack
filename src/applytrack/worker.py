@@ -40,6 +40,8 @@ from applytrack.poll import (
 
 logger = logging.getLogger(__name__)
 
+_TENANT_POLL_LOCK_PREFIX = "applytrack:tenant-poll:"
+
 
 class TenantRepo(LeadRepo, Protocol):
     """A :class:`~applytrack.poll.LeadRepo` that can also load its own profile.
@@ -63,6 +65,26 @@ def _active_tenant_ids(conn: psycopg.Connection) -> list[int]:
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM users WHERE status = 'active' ORDER BY id")
         return [int(row[0]) for row in cur.fetchall()]
+
+
+def _try_tenant_poll_lock(conn: psycopg.Connection, tenant_id: int) -> bool:
+    """Acquire this tenant's PostgreSQL session advisory lock without waiting."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+            (f"{_TENANT_POLL_LOCK_PREFIX}{tenant_id}",),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _release_tenant_poll_lock(conn: psycopg.Connection, tenant_id: int) -> None:
+    """Release a tenant poll lock acquired by :func:`_try_tenant_poll_lock`."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+            (f"{_TENANT_POLL_LOCK_PREFIX}{tenant_id}",),
+        )
 
 
 def _gather_by_source(
@@ -113,6 +135,7 @@ def run_all_tenants(
     repo_for: Callable[[int], TenantRepo] | None = None,
     gathered: dict[str, list[Listing]] | None = None,
     verify_links: bool = True,
+    locked_tenant_ids: set[int] | None = None,
 ) -> dict[int, list[str]]:
     """Poll every active tenant, returning ``{tenant_id: [staged slug names]}``.
 
@@ -121,6 +144,12 @@ def run_all_tenants(
     fetched once, and the shared buckets are routed per profile. The ``tenant_ids``
     / ``repo_for`` / ``gathered`` seams let the offline tests drive the same
     fan-out with in-memory fakes and a fixed listing set (no DB, no network).
+
+    Production also holds a PostgreSQL session advisory lock for each tenant from
+    profile setup through source gathering and staging. A concurrent drain,
+    scheduled run, or second poller container skips an already-locked tenant
+    without waiting. ``locked_tenant_ids`` lets the queue drainer re-enqueue those
+    skipped requests for a later attempt.
 
     Per-tenant failures are isolated: a tenant whose poll raises is recorded with
     an empty result and the run continues.
@@ -139,36 +168,70 @@ def run_all_tenants(
         tenant_ids = _active_tenant_ids(conn)
     tenant_ids = list(tenant_ids)
 
+    acquired_locks: list[int] = []
+    pollable_tenant_ids: list[int] = []
+    for tid in tenant_ids:
+        if conn is None:
+            pollable_tenant_ids.append(tid)
+            continue
+        try:
+            if _try_tenant_poll_lock(conn, tid):
+                acquired_locks.append(tid)
+                pollable_tenant_ids.append(tid)
+                continue
+            if locked_tenant_ids is not None:
+                locked_tenant_ids.add(tid)
+            logger.info(
+                "poll skipped for tenant %s: another poll is already active",
+                tid,
+            )
+        except Exception:  # noqa: BLE001 - one lock failure must not abort the run
+            logger.warning(
+                "poll lock acquisition failed for tenant %s", tid, exc_info=True
+            )
+
     # Build the per-tenant repo + profile up front: this is where each tenant's
     # WHERE tenant_id scoping is fixed for the rest of the run. A tenant whose
     # setup raises is isolated here so the shared gather still runs for the rest.
     repos: dict[int, TenantRepo] = {}
     profiles: dict[int, Criteria] = {}
-    results: dict[int, list[str]] = {}
-    for tid in tenant_ids:
-        try:
-            repo = repo_for(tid)
-            profiles[tid] = repo.load_profile()
-            repos[tid] = repo
-        except Exception:  # noqa: BLE001 - one tenant's failure must not abort the rest
-            results[tid] = []
-            logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
+    results: dict[int, list[str]] = {
+        tid: [] for tid in tenant_ids if tid not in pollable_tenant_ids
+    }
+    try:
+        for tid in pollable_tenant_ids:
+            try:
+                repo = repo_for(tid)
+                profiles[tid] = repo.load_profile()
+                repos[tid] = repo
+            except Exception:  # noqa: BLE001 - isolate one tenant's failure
+                results[tid] = []
+                logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
 
-    if gathered is None:
-        gathered = _gather_by_source(profiles.values(), limit_per_source)
+        if gathered is None:
+            gathered = _gather_by_source(profiles.values(), limit_per_source)
 
-    for tid in tenant_ids:
-        if tid not in repos:
-            continue  # setup failed above; its empty result is already recorded
-        try:
-            listings = _select_for_profile(gathered, profiles[tid])
-            results[tid] = score_and_stage(
-                repos[tid], profiles[tid], listings, verify_links=verify_links
-            )
-        except Exception:  # noqa: BLE001 - one tenant's failure must not abort the rest
-            results[tid] = []
-            logger.warning("poll failed for tenant %s", tid, exc_info=True)
-    return results
+        for tid in pollable_tenant_ids:
+            if tid not in repos:
+                continue  # setup failed above; its empty result is already recorded
+            try:
+                listings = _select_for_profile(gathered, profiles[tid])
+                results[tid] = score_and_stage(
+                    repos[tid], profiles[tid], listings, verify_links=verify_links
+                )
+            except Exception:  # noqa: BLE001 - isolate one tenant's failure
+                results[tid] = []
+                logger.warning("poll failed for tenant %s", tid, exc_info=True)
+        return results
+    finally:
+        if conn is not None:
+            for tid in acquired_locks:
+                try:
+                    _release_tenant_poll_lock(conn, tid)
+                except Exception:  # noqa: BLE001 - release the remaining locks
+                    logger.warning(
+                        "poll lock release failed for tenant %s", tid, exc_info=True
+                    )
 
 
 def drain_requests(
@@ -193,9 +256,23 @@ def drain_requests(
         tenant_ids = sorted({int(row[0]) for row in cur.fetchall()})
     if not tenant_ids:
         return {}
-    return run_all_tenants(
+    locked_tenant_ids: set[int] = set()
+    results = run_all_tenants(
         conn,
         limit_per_source=limit_per_source,
         tenant_ids=tenant_ids,
         repo_for=repo_for,
+        locked_tenant_ids=locked_tenant_ids,
     )
+    if locked_tenant_ids:
+        with conn.cursor() as cur:
+            for tenant_id in sorted(locked_tenant_ids):
+                cur.execute(
+                    "INSERT INTO poll_requests (tenant_id) VALUES (%s)",
+                    (tenant_id,),
+                )
+        logger.info(
+            "requeued %s tenant poll request(s) blocked by active polls",
+            len(locked_tenant_ids),
+        )
+    return results

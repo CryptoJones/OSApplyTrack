@@ -99,7 +99,7 @@ class FakeCursor:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         return None
 
-    def execute(self, sql: str) -> None:
+    def execute(self, sql: str, params: object = None) -> None:
         self.sql = sql
 
     def fetchall(self) -> list[tuple[int]]:
@@ -438,10 +438,12 @@ def test_drain_requests_claims_queued_tenants_once(monkeypatch: pytest.MonkeyPat
         limit_per_source: int,
         tenant_ids: list[int],
         repo_for: object,
+        locked_tenant_ids: set[int],
     ) -> dict[int, list[str]]:
         calls["limit"] = limit_per_source
         calls["tenant_ids"] = tenant_ids
         calls["repo_for"] = repo_for
+        calls["locked_tenant_ids"] = locked_tenant_ids
         return {1: ["acme.md"], 2: ["globex.md"]}
 
     monkeypatch.setattr("applytrack.worker.run_all_tenants", fake_run_all_tenants)
@@ -453,4 +455,105 @@ def test_drain_requests_claims_queued_tenants_once(monkeypatch: pytest.MonkeyPat
         "limit": 7,
         "tenant_ids": [1, 2],
         "repo_for": None,
+        "locked_tenant_ids": set(),
     }
+
+
+def test_run_all_tenants_skips_locked_tenant_and_releases_acquired_lock(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class LockCursor:
+        def __init__(self, connection: LockConnection) -> None:
+            self.connection = connection
+            self.row: tuple[bool] | None = None
+
+        def __enter__(self) -> LockCursor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[str]) -> None:
+            tenant_id = int(params[0].rsplit(":", 1)[1])
+            if "pg_try_advisory_lock" in sql:
+                self.row = (tenant_id not in self.connection.locked,)
+            else:
+                self.connection.released.append(tenant_id)
+
+        def fetchone(self) -> tuple[bool] | None:
+            return self.row
+
+    class LockConnection:
+        def __init__(self) -> None:
+            self.locked = {1}
+            self.released: list[int] = []
+
+        def cursor(self) -> LockCursor:
+            return LockCursor(self)
+
+    connection = LockConnection()
+    repos = {
+        1: FakeRepo(profile=Criteria(keywords=["engineer"])),
+        2: FakeRepo(profile=Criteria(keywords=["engineer"])),
+    }
+    locked_tenant_ids: set[int] = set()
+    with caplog.at_level(logging.INFO):
+        results = run_all_tenants(
+            connection,  # type: ignore[arg-type]
+            tenant_ids=[1, 2],
+            repo_for=lambda tid: repos[tid],
+            gathered={},
+            verify_links=False,
+            locked_tenant_ids=locked_tenant_ids,
+        )
+
+    assert results == {1: [], 2: []}
+    assert locked_tenant_ids == {1}
+    assert connection.released == [2]
+    assert any("another poll is already active" in r.getMessage() for r in caplog.records)
+
+
+def test_drain_requests_requeues_tenant_with_active_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class QueueCursor:
+        def __init__(self, connection: QueueConnection) -> None:
+            self.connection = connection
+
+        def __enter__(self) -> QueueCursor:
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple[int] | None = None) -> None:
+            if sql.startswith("INSERT"):
+                assert params is not None
+                self.connection.requeued.append(params[0])
+
+        def fetchall(self) -> list[tuple[int]]:
+            return [(7,)]
+
+    class QueueConnection:
+        def __init__(self) -> None:
+            self.requeued: list[int] = []
+
+        def cursor(self) -> QueueCursor:
+            return QueueCursor(self)
+
+    def fake_run_all_tenants(
+        conn: QueueConnection,
+        *,
+        limit_per_source: int,
+        tenant_ids: list[int],
+        repo_for: object,
+        locked_tenant_ids: set[int],
+    ) -> dict[int, list[str]]:
+        locked_tenant_ids.add(tenant_ids[0])
+        return {tenant_ids[0]: []}
+
+    monkeypatch.setattr("applytrack.worker.run_all_tenants", fake_run_all_tenants)
+    connection = QueueConnection()
+
+    assert drain_requests(connection) == {7: []}  # type: ignore[arg-type]
+    assert connection.requeued == [7]
