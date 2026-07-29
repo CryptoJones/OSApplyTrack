@@ -46,7 +46,7 @@ import httpx
 import psycopg
 
 from applytrack.criteria import AtsBoard, Criteria
-from applytrack.linkcheck import BROWSER_HEADERS, is_reachable
+from applytrack.linkcheck import BROWSER_HEADERS, is_reachable, ssrf_safe_client
 from applytrack.store import AppFields
 
 logger = logging.getLogger(__name__)
@@ -759,7 +759,7 @@ def score_and_stage(
     blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
     verify_client = (
-        httpx.Client(timeout=12.0, follow_redirects=True, headers=BROWSER_HEADERS)
+        ssrf_safe_client(timeout=12.0)
         if verify_links
         else None
     )
