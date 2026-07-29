@@ -39,7 +39,7 @@ public sealed record AppFields
         static string S(string? v) => (v ?? "").Trim();
         var lane = S(Lane).ToLowerInvariant();
         var status = S(Status).ToLowerInvariant();
-        return this with
+        var normalized = this with
         {
             Company = S(Company),
             Role = S(Role),
@@ -57,5 +57,7 @@ public sealed record AppFields
             Score = S(Score),
             Notes = (Notes ?? "").TrimEnd(),
         };
+        InputLimits.ValidateApplication(normalized);
+        return normalized;
     }
 }

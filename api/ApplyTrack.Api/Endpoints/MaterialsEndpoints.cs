@@ -85,6 +85,8 @@ public static class MaterialsEndpoints
         {
             var baseUrl = GetString(payload, "base_url");
             var model = GetString(payload, "model");
+            InputLimits.Text("base_url", baseUrl, InputLimits.LlmBaseUrl);
+            InputLimits.Text("model", model, InputLimits.LlmModel);
             LlmEndpointPolicy.ValidateTenantBaseUrl(baseUrl);
 
             // Distinguish "api_key omitted" (leave the stored key alone) from
@@ -92,6 +94,8 @@ public static class MaterialsEndpoints
             var changeKey = payload.ValueKind == JsonValueKind.Object
                 && payload.TryGetProperty("api_key", out _);
             var newKey = changeKey ? GetString(payload, "api_key") : null;
+            if (newKey is not null)
+                InputLimits.Text("api_key", newKey, InputLimits.LlmApiKey);
 
             // Same omitted-means-keep semantics for the cover-letter toggle.
             bool? lettersEnabled = payload.ValueKind == JsonValueKind.Object
@@ -105,6 +109,9 @@ public static class MaterialsEndpoints
                 && sig.ValueKind == JsonValueKind.String
                 ? sig.GetString()?.Trim()
                 : null;
+            if (signature is not null)
+                InputLimits.Text(
+                    "cover_letter_signature", signature, InputLimits.CoverLetterSignature);
 
             await repo.UpsertAsync(baseUrl, model, changeKey, newKey, lettersEnabled, signature);
 

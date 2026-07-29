@@ -192,6 +192,10 @@ app.UseMiddleware<SecurityHeadersMiddleware>();
 // get the FastAPI-compatible {"detail": "..."} body + status the SPA expects.
 app.UseMiddleware<ApiExceptionMiddleware>();
 
+// Bound ordinary JSON mutations before Minimal API model binding. Account import
+// and résumé PDF upload keep their separate, larger purpose-built limits.
+app.UseMiddleware<JsonBodyLimitMiddleware>();
+
 // Serve the vanilla-JS SPA verbatim from wwwroot (index.html as the default doc).
 // Static files short-circuit before the tenancy middleware, so the shell loads
 // without a session and the SPA's own login gate handles the 401s on /api.
