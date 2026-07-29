@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+#
+# Hardened self-hosting stack. Copy .env.production.example to .env.production,
+# replace every required value, then run:
+#   docker compose --env-file .env.production -f docker-compose.production.yml up -d
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-applytrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_DB: ${POSTGRES_DB:-applytrack}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-applytrack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/cryptojones/osapplytrack-api:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
+    environment:
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}"
+      ASPNETCORE_URLS: "http://+:8080"
+      App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:?Set APP_PUBLIC_BASE_URL to the public HTTPS origin}
+      AllowedHosts: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS to the public hostname}
+      Llm__BaseUrl: ${Llm__BaseUrl:-}
+      Llm__Model: ${Llm__Model:-}
+      Llm__ApiKey: ${Llm__ApiKey:-}
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+      Email__Host: ${Email__Host:-}
+      Email__Port: ${Email__Port:-587}
+      Email__Username: ${Email__Username:-}
+      Email__Password: ${Email__Password:-}
+      Email__From: ${Email__From:-}
+      Email__FromName: ${Email__FromName:-OSApplyTrack}
+      ForwardedHeaders__KnownProxies__0: ${FORWARDED_HEADERS_KNOWN_PROXY:-}
+      ForwardedHeaders__KnownNetworks__0: ${FORWARDED_HEADERS_KNOWN_NETWORK:-}
+    # Keep Kestrel off the public interface. Terminate TLS with a same-host reverse
+    # proxy and forward it to this loopback port.
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    networks:
+      - database
+      - egress
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "1654:1654"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+
+  poller:
+    image: ghcr.io/cryptojones/osapplytrack-poller:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-applytrack}"
+      DRAIN_INTERVAL: ${DRAIN_INTERVAL:-60}
+      POLL_INTERVAL: ${POLL_INTERVAL:-3600}
+    networks:
+      - database
+      - egress
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+
+networks:
+  database:
+    internal: true
+  egress:
+
+volumes:
+  pgdata:

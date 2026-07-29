@@ -151,6 +151,33 @@ the link instead, set the `Email__*` variables (see [Configuration](#configurati
 > all three; if you only bring up `db` + `api`, no leads will ever be discovered
 > because nothing drains the queue or runs the scheduled poll.
 
+### Production containers
+
+Use the separate hardened stack for self-hosting. It consumes versioned release
+images, keeps Postgres on an internal Docker network with no host port, and binds
+Kestrel to host loopback for a same-host TLS reverse proxy:
+
+```sh
+cp .env.production.example .env.production
+# Replace every CHANGE-ME value and set your real HTTPS origin/hostname.
+docker compose --env-file .env.production \
+  -f docker-compose.production.yml up -d
+```
+
+Production startup deliberately fails if `OSAPPLYTRACK_VERSION`,
+`POSTGRES_PASSWORD`, `APP_PUBLIC_BASE_URL`, or `ALLOWED_HOSTS` is missing. Pin
+`OSAPPLYTRACK_VERSION` to a released version rather than `latest`; generate a
+unique database password, and generate an independent `APPLYTRACK_SECRETS_KEY`
+if tenants may store LLM API keys. Keep `.env.production` out of source control.
+`openssl rand -hex 32` produces a connection-string-safe value for either secret.
+
+The API and poller images run as unprivileged users. In the production stack they
+also have read-only root filesystems, all Linux capabilities dropped,
+`no-new-privileges`, and only a bounded in-memory `/tmp`; neither runtime receives
+a host or named writable volume. Postgres alone owns the persistent `pgdata`
+volume. Front `127.0.0.1:${API_PORT:-8080}` with Caddy, nginx, or another
+TLS-terminating reverse proxy—do not expose Kestrel or the database directly.
+
 ## How it works
 
 **Sign-in (magic link).** `POST /api/auth/request` always returns `200 {ok:true}`
@@ -397,7 +424,8 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 - **Change the default password.** For any deployment reachable beyond `localhost`,
   change `POSTGRES_PASSWORD` (and the matching connection string) from the
   bundled development default before first boot — the documented value is not a
-  production secret.
+  production secret. The hardened `docker-compose.production.yml` has no password
+  default and refuses to start until one is supplied.
 - **Dependency CVE watch.** [`.forgejo/workflows/audit.yml`](./.forgejo/workflows/audit.yml)
   runs `dotnet list package --vulnerable --include-transitive` and `pip-audit` on
   every push/PR and weekly, failing the build on a known-vulnerable dependency. Run
@@ -520,6 +548,7 @@ api/                      the .NET solution
 src/applytrack/           the Python poller + CLI
 docker/                   poller entrypoint (two-cadence loop)
 docker-compose.yml        db + api + poller
+docker-compose.production.yml  hardened self-hosting stack
 Dockerfile.poller         the poller image
 ```
 
