@@ -27,7 +27,9 @@ test-results/
 # Local secrets / env
 .env
 *.env
+.env.*
 !.env.example
+!.env.production.example
 
 # Local agent runtime state
 .claude/

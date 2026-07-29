@@ -104,8 +104,17 @@ jobs:
 
             ## Run it
 
-            `docker compose up` brings up Postgres + API + poller — see the
-            [README](https://github.com/CryptoJones/OSApplyTrack#quickstart-docker).
+            Development: `docker compose up`.
+
+            Production: copy `.env.production.example`, set its required values,
+            then run:
+
+            ```bash
+            docker compose --env-file .env.production \
+              -f docker-compose.production.yml up -d
+            ```
+
+            See the [README](https://github.com/CryptoJones/OSApplyTrack#quickstart-docker).
 
             Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
         run: gh release create "$TAG" --title "$TAG" --verify-tag --notes "$NOTES"

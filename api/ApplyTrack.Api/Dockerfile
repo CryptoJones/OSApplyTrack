@@ -12,4 +12,5 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app .
 EXPOSE 8080
+USER app
 ENTRYPOINT ["dotnet", "ApplyTrack.Api.dll"]

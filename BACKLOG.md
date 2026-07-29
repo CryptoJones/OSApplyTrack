@@ -14,7 +14,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 
 ## Operations and scalability
 
-- [ ] [#53 — Add hardened production container defaults](https://github.com/CryptoJones/OSApplyTrack/issues/53)
+- [x] [#53 — Add hardened production container defaults](https://github.com/CryptoJones/OSApplyTrack/issues/53)
 - [ ] [#54 — Paginate or delta-refresh the applications list](https://github.com/CryptoJones/OSApplyTrack/issues/54)
 
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
