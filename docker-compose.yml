@@ -45,6 +45,10 @@ services:
       Email__Password: ${Email__Password:-}
       Email__From: ${Email__From:-}
       Email__FromName: ${Email__FromName:-OSApplyTrack}
+      # Same-host proxies are trusted by default. Set either value only when the
+      # proxy reaches this container from a different address or bridge network.
+      ForwardedHeaders__KnownProxies__0: ${FORWARDED_HEADERS_KNOWN_PROXY:-}
+      ForwardedHeaders__KnownNetworks__0: ${FORWARDED_HEADERS_KNOWN_NETWORK:-}
     # 8080 is contested (vLLM, llama.cpp, and half of all dev tools default to it).
     # If it's already taken, Docker fails the bind loudly ("address already in use")
     # rather than silently winning — relocate by setting API_PORT in .env.

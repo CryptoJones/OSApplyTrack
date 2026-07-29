@@ -192,6 +192,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `POLL_INTERVAL` | `3600` | Seconds between full multi-tenant polls. |
 | `ConnectionStrings__Postgres` | _(compose default)_ | Override to point the API at an external Postgres. |
 | `DATABASE_URL` | _(compose default)_ | Override to point the poller at an external Postgres (libpq URL). |
+| `FORWARDED_HEADERS_KNOWN_PROXY` / `FORWARDED_HEADERS_KNOWN_NETWORK` | _(empty)_ | Source IP or CIDR of a trusted reverse proxy when it is not on loopback. |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
 | `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
@@ -383,8 +384,12 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   private/loopback/link-local/reserved addresses and re-checks every redirect hop,
   so a hostile listing URL can't pivot into your network.
 - **Behind HTTPS.** Front the API with a TLS-terminating reverse proxy (Caddy,
-  nginx, or `tailscale serve`). The API honors `X-Forwarded-Proto`, so the session
-  cookie's `Secure` flag is set automatically. Don't expose Kestrel directly.
+  nginx, or `tailscale serve`). Same-host loopback proxies are trusted by default.
+  For a proxy container or remote load balancer, set
+  `FORWARDED_HEADERS_KNOWN_PROXY` to its source IP or
+  `FORWARDED_HEADERS_KNOWN_NETWORK` to its CIDR. Forwarded headers from every other
+  address are ignored, so a direct caller cannot forge its rate-limit IP or HTTPS
+  state. Don't expose Kestrel directly.
 - **Change the default password.** For any deployment reachable beyond `localhost`,
   change `POSTGRES_PASSWORD` (and the matching connection string) from the
   bundled development default before first boot — the documented value is not a

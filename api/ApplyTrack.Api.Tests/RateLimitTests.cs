@@ -4,15 +4,17 @@
 using System.Net;
 using System.Text;
 using ApplyTrack.Api.Auth;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ApplyTrack.Api.Tests;
 
 /// <summary>
-/// Asserts that the rate-limit partition key uses the client IP from forwarded
-/// headers (via UseForwardedHeaders → RemoteIpAddress) rather than raw header
-/// parsing, and that it falls back to the direct connection IP otherwise.
+/// Asserts that untrusted direct requests cannot replace the rate-limit partition
+/// with X-Forwarded-For, while explicitly trusted proxies retain per-client buckets.
 /// Each test boots a fresh factory so rate-limit state is unshared.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -25,8 +27,7 @@ public class RateLimitTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
-            b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString));
+        _factory = CreateFactory(trustProxy: false);
         return Task.CompletedTask;
     }
 
@@ -34,11 +35,23 @@ public class RateLimitTests : IAsyncLifetime
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
 
+    private WebApplicationFactory<Program> CreateFactory(bool trustProxy) =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString);
+            if (trustProxy)
+                b.UseSetting("ForwardedHeaders:KnownProxies:0", "192.0.2.10");
+            b.ConfigureTestServices(services =>
+                services.AddSingleton<IStartupFilter>(
+                    new RemoteIpStartupFilter(IPAddress.Parse("192.0.2.10"))));
+        });
+
     /// <summary>Seeds a fresh session and returns an authenticated client.</summary>
-    private async Task<HttpClient> AuthenticatedClient()
+    private async Task<HttpClient> AuthenticatedClient(
+        WebApplicationFactory<Program>? factory = null)
     {
         var (_, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
-        var client = _factory.CreateClient();
+        var client = (factory ?? _factory).CreateClient();
         client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
         return client;
     }
@@ -91,11 +104,8 @@ public class RateLimitTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Distinct_forwarded_ips_get_independent_rate_limit_buckets()
+    public async Task Distinct_spoofed_forwarded_ips_share_the_direct_connection_bucket()
     {
-        // The point of the PR: the partition key is the *forwarded* client IP, so
-        // exhausting one client's budget must not throttle a different client behind
-        // the same proxy. Same authenticated session, two different X-Forwarded-For.
         var client = await AuthenticatedClient();
 
         client.DefaultRequestHeaders.Add("X-Forwarded-For", "203.0.113.1");
@@ -107,11 +117,44 @@ public class RateLimitTests : IAsyncLifetime
         var exhausted = await client.PostAsync("/api/poll", Json("{}"));
         Assert.Equal(HttpStatusCode.TooManyRequests, exhausted.StatusCode);
 
-        // A request forwarded from a different client IP lands in a separate bucket
-        // and is still allowed — proving partitioning is per forwarded IP, not global.
+        client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.2");
+        var other = await client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, other.StatusCode);
+    }
+
+    [Fact]
+    public async Task Distinct_forwarded_ips_from_a_configured_proxy_get_independent_buckets()
+    {
+        await using var trustedFactory = CreateFactory(trustProxy: true);
+        var client = await AuthenticatedClient(trustedFactory);
+
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "203.0.113.1");
+        for (var i = 0; i < 15; i++)
+        {
+            var res = await client.PostAsync("/api/poll", Json("{}"));
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        }
+        var exhausted = await client.PostAsync("/api/poll", Json("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, exhausted.StatusCode);
+
         client.DefaultRequestHeaders.Remove("X-Forwarded-For");
         client.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.2");
         var other = await client.PostAsync("/api/poll", Json("{}"));
         Assert.Equal(HttpStatusCode.OK, other.StatusCode);
+    }
+
+    private sealed class RemoteIpStartupFilter(IPAddress remoteIp) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+                app.Use(async (context, nextMiddleware) =>
+                {
+                    context.Connection.RemoteIpAddress = remoteIp;
+                    await nextMiddleware();
+                });
+                next(app);
+            };
     }
 }

@@ -3,6 +3,8 @@
 
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
+using System.Net;
 
 namespace ApplyTrack.Api.Tests;
 
@@ -55,5 +57,51 @@ public class ConfigurationTests : IAsyncLifetime
         using var client = factory.CreateClient();
         var response = await client.GetAsync("/health");
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public void Forwarded_headers_keep_safe_loopback_defaults()
+    {
+        var configuration = new ConfigurationBuilder().Build();
+        var options = ForwardedHeadersConfiguration.Create(configuration);
+
+        Assert.Equal(1, options.ForwardLimit);
+        Assert.NotEmpty(options.KnownProxies);
+        Assert.DoesNotContain(IPAddress.Any, options.KnownProxies);
+        Assert.DoesNotContain(IPAddress.IPv6Any, options.KnownProxies);
+    }
+
+    [Fact]
+    public void Forwarded_headers_add_configured_proxy_and_network()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ForwardedHeaders:KnownProxies:0"] = "192.0.2.10",
+                ["ForwardedHeaders:KnownNetworks:0"] = "198.51.100.0/24",
+            })
+            .Build();
+
+        var options = ForwardedHeadersConfiguration.Create(configuration);
+
+        Assert.Contains(IPAddress.Parse("192.0.2.10"), options.KnownProxies);
+        Assert.Contains(IPNetwork.Parse("198.51.100.0/24"), options.KnownIPNetworks);
+    }
+
+    [Theory]
+    [InlineData("ForwardedHeaders:KnownProxies:0", "not-an-ip")]
+    [InlineData("ForwardedHeaders:KnownNetworks:0", "192.0.2.1/not-a-prefix")]
+    public void Forwarded_headers_reject_invalid_configuration(string key, string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { [key] = value })
+            .Build();
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+        {
+            _ = ForwardedHeadersConfiguration.Create(configuration);
+        });
+
+        Assert.Contains(value, error.Message);
     }
 }
