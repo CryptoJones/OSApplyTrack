@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
+import httpcore
 import httpx
 
 # Identify as a current Windows 11 desktop Chrome. Windows 11 still reports
@@ -91,30 +93,122 @@ def _ip_is_public(ip: str) -> bool:
     )
 
 
+def _normalize_host(host: str) -> str:
+    """Canonical key shared by URL parsing, DNS pinning, and httpcore."""
+    return (host or "").strip().strip("[]").rstrip(".").casefold()
+
+
+class _PinnedResolver:
+    """Resolve each hostname once, reject mixed/private answers, and retain one IP."""
+
+    def __init__(self) -> None:
+        self._addresses: dict[str, str] = {}
+
+    def pin(self, host: str) -> bool:
+        key = _normalize_host(host)
+        if not key:
+            return False
+        if key in self._addresses:
+            return True
+
+        try:
+            ipaddress.ip_address(key)
+            addresses = [key]
+        except ValueError:
+            try:
+                infos = socket.getaddrinfo(key, None, type=socket.SOCK_STREAM)
+            except OSError:
+                return False
+            addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
+
+        if not addresses or not all(_ip_is_public(address) for address in addresses):
+            return False
+        self._addresses[key] = addresses[0]
+        return True
+
+    def address_for(self, host: str) -> str | None:
+        """Return only an address previously accepted by :meth:`pin`."""
+        return self._addresses.get(_normalize_host(host))
+
+
+class _PinnedNetworkBackend(httpcore.SyncBackend):
+    """Connect httpcore's TCP socket to the pinned IP while preserving TLS SNI."""
+
+    def __init__(self, resolver: _PinnedResolver) -> None:
+        super().__init__()
+        self._resolver = resolver
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.NetworkStream:
+        address = self._resolver.address_for(host)
+        if address is None:
+            raise httpcore.ConnectError(f"refused unpinned host: {host}")
+        return super().connect_tcp(address, port, timeout, local_address, socket_options)
+
+
+class _PinnedTransport(httpx.HTTPTransport):
+    """HTTPX transport whose connection pool cannot perform a second DNS lookup."""
+
+    def __init__(self, resolver: _PinnedResolver) -> None:
+        super().__init__(trust_env=False)
+        self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            ssl_context=httpx.create_ssl_context(trust_env=False),
+            network_backend=_PinnedNetworkBackend(resolver),
+        )
+
+
+class _PinnedClient(httpx.Client):
+    """HTTP client that connects only to addresses pinned by its resolver."""
+
+    def __init__(self, *, timeout: float) -> None:
+        self._resolver = _PinnedResolver()
+        super().__init__(
+            timeout=timeout,
+            follow_redirects=False,
+            headers=BROWSER_HEADERS,
+            transport=_PinnedTransport(self._resolver),
+            trust_env=False,
+        )
+
+    def pin(self, host: str) -> bool:
+        return self._resolver.pin(host)
+
+
+def ssrf_safe_client(*, timeout: float = 12.0) -> httpx.Client:
+    """Return a reusable client that pins every validated hostname to one public IP."""
+    return _PinnedClient(timeout=timeout)
+
+
 def _host_is_public(host: str) -> bool:
     """True only when every address ``host`` resolves to is a public IP.
 
     The SSRF gate: a lead URL (or a redirect it chains to) is attacker-influenced,
     and the poller fetches it server-side, so a link pointing at ``localhost`` or
     an internal/metadata IP must be refused. An IP literal is checked directly; a
-    name is resolved and *all* of its A/AAAA records must be public, so a public
-    hostname that maps to an internal address is still rejected. (A determined
-    attacker could still race DNS between this check and the connect; closing that
-    fully needs connect-by-IP, out of scope for v1's self-host threat model.)
+    name is resolved and *all* of its A/AAAA records must be public. Production
+    requests additionally use :func:`ssrf_safe_client`, whose transport connects to
+    the selected validated IP without resolving the hostname again.
     """
-    host = (host or "").strip().strip("[]")  # tolerate bracketed IPv6 literals
-    if not host:
-        return False
+    return _PinnedResolver().pin(host)
+
+
+def _pin_for_request(client: httpx.Client, host: str) -> bool:
+    """Fail closed when a caller supplies an ordinary client for a DNS hostname."""
+    if isinstance(client, _PinnedClient):
+        return client.pin(host)
+    normalized = _normalize_host(host)
     try:
-        ipaddress.ip_address(host)
-        return _ip_is_public(host)
+        ipaddress.ip_address(normalized)
     except ValueError:
-        pass  # not a literal — resolve it below
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
         return False
-    return bool(infos) and all(_ip_is_public(str(info[4][0])) for info in infos)
+    return _ip_is_public(normalized)
 
 
 def _is_home(url: str) -> bool:
@@ -160,14 +254,12 @@ def probe(
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
         return LinkStatus(url=url, ok=False, error="not an http(s) URL")
-    if not _host_is_public(parts.hostname or ""):
-        return LinkStatus(url=url, ok=False, error="refused non-public address")
 
     owns_client = client is None
-    client = client or httpx.Client(
-        timeout=timeout, follow_redirects=False, headers=BROWSER_HEADERS
-    )
+    client = client or ssrf_safe_client(timeout=timeout)
     try:
+        if not _pin_for_request(client, parts.hostname or ""):
+            return LinkStatus(url=url, ok=False, error="refused non-public or unpinned address")
         current = url
         try:
             for _ in range(_MAX_REDIRECTS + 1):
@@ -181,8 +273,12 @@ def probe(
                 hop = urlsplit(current)
                 if hop.scheme not in ("http", "https"):
                     return LinkStatus(url=url, ok=False, error="redirect to non-http(s) URL")
-                if not _host_is_public(hop.hostname or ""):
-                    return LinkStatus(url=url, ok=False, error="redirect to non-public address")
+                if not _pin_for_request(client, hop.hostname or ""):
+                    return LinkStatus(
+                        url=url,
+                        ok=False,
+                        error="redirect to non-public or unpinned address",
+                    )
             else:
                 return LinkStatus(url=url, ok=False, error="too many redirects")
         except httpx.HTTPError as exc:
