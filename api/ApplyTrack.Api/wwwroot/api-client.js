@@ -24,6 +24,24 @@ export function createApiClient(onUnauthorized) {
     return readResponse(await fetch(path, options));
   }
 
+  api.getConditional = async function getConditional(path, etag = "") {
+    const headers = {};
+    if (etag) headers["If-None-Match"] = etag;
+    const response = await fetch(path, { method: "GET", headers });
+    if (response.status === 304) {
+      return {
+        modified: false,
+        data: null,
+        etag: response.headers.get("ETag") || etag,
+      };
+    }
+    return {
+      modified: true,
+      data: await readResponse(response),
+      etag: response.headers.get("ETag") || "",
+    };
+  };
+
   api.form = async function form(path, body) {
     return readResponse(await fetch(path, { method: "POST", body }));
   };

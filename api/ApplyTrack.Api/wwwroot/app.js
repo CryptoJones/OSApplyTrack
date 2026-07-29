@@ -21,6 +21,7 @@ const statusGroup = (s) => (s === "passed" ? 2 : APPLIED_STATUSES.has(s) ? 1 : 0
 
 const state = {
   apps: [],
+  appsEtag: "",
   stats: { status: {}, lane: {} },
   query: "",
   filterLane: "",
@@ -1259,14 +1260,18 @@ async function loadLlmTab(body, gen = settingsGen) {
 // ---- Boot + refresh -------------------------------------------------------
 
 async function refresh() {
-  const [apps, stats] = await Promise.all([
-    api("GET", "/api/apps"),
-    api("GET", "/api/stats"),
-  ]);
-  state.apps = apps;
+  const list = await api.getConditional("/api/apps", state.appsEtag);
+  if (!list.modified) return false;
+
+  // Stats are derived from the same applications table revision, so an unchanged
+  // list means they are unchanged too. Fetch them only after an ETag miss.
+  const stats = await api("GET", "/api/stats");
+  state.apps = list.data;
   state.stats = stats;
+  state.appsEtag = list.etag;
   renderPipeline();
   renderSidebar();
+  return true;
 }
 
 searchEl.addEventListener("input", () => { state.query = searchEl.value; renderSidebar(); });
@@ -1603,15 +1608,7 @@ async function pollApps() {
   if (state.mode === "edit" || state.mode === "new" || state.mode === "raw") return;
   if (document.hidden) return;
   try {
-    const [apps, stats] = await Promise.all([
-      api("GET", "/api/apps"),
-      api("GET", "/api/stats"),
-    ]);
-    if (JSON.stringify([apps, stats]) === JSON.stringify([state.apps, state.stats])) return;
-    state.apps = apps;
-    state.stats = stats;
-    renderPipeline();
-    renderSidebar();
+    await refresh();
   } catch (_) {}
 }
 setInterval(pollApps, POLL_MS);

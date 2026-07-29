@@ -43,7 +43,13 @@ async function mockApi(page) {
       cover_letters_enabled: true, cover_letter_signature: "", secrets_available: true, has_api_key: false,
       base_url: "", model: "", instance: { base_url: "", model: "", has_api_key: false },
     };
-    else if (path === "/api/apps" && method === "GET") body = [application];
+    else if (path === "/api/apps" && method === "GET") {
+      if (request.headers()["if-none-match"] === '"apps-1"') {
+        await route.fulfill({ status: 304, headers: { ETag: '"apps-1"' } });
+        return;
+      }
+      body = [application];
+    }
     else if (path === "/api/stats") body = { status: { lead: 1 }, lane: { dotnet: 1 } };
     else if (path === `/api/apps/${application.filename}` && method === "GET") body = detail;
     else if (path === "/api/criteria") body = {
@@ -58,7 +64,13 @@ async function mockApi(page) {
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
     else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    const headers = path === "/api/apps" && method === "GET"
+      ? { ETag: '"apps-1"', "Cache-Control": "private, no-cache" }
+      : {};
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      headers, body: JSON.stringify(body),
+    });
   });
 }
 
@@ -99,6 +111,25 @@ test("dashboard, detail, editor, and preferences pass axe", async ({ page }) => 
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(hasHorizontalOverflow).toBe(false);
   await expectNoSeriousViolations(page);
+});
+
+test("unchanged live refresh reuses the ETag without rerendering the list", async ({ page }) => {
+  const originalCard = await page.getByRole("button", { name: /Example Co/ }).elementHandle();
+  let statsRequests = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/stats") statsRequests += 1;
+  });
+  const revalidation = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/apps"
+      && request.headers()["if-none-match"] === '"apps-1"');
+
+  // Returning to a visible tab triggers the same live-refresh path immediately.
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await revalidation;
+  await page.waitForTimeout(50);
+
+  expect(await originalCard.evaluate((element) => element.isConnected)).toBe(true);
+  expect(statsRequests).toBe(0);
 });
 
 test("settings sections expose labeled controls", async ({ page }) => {

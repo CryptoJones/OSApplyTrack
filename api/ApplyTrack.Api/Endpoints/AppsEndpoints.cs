@@ -23,8 +23,23 @@ public static class AppsEndpoints
 
     public static void MapAppsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/apps", async (ApplicationRepo repo) =>
-            Results.Ok(await repo.ListAsync()));
+        app.MapGet("/api/apps", async (HttpContext context, ApplicationRepo repo) =>
+        {
+            var etag = await repo.ListEtagAsync();
+            context.Response.Headers.ETag = etag;
+            context.Response.Headers.CacheControl = "private, no-cache";
+            context.Response.Headers.Vary = "Cookie";
+
+            var validators = context.Request.Headers.IfNoneMatch.ToString()
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (validators.Any(value =>
+                    value == "*" || value == etag || value == $"W/{etag}"))
+                return Results.StatusCode(StatusCodes.Status304NotModified);
+
+            // No validator (backward-compatible client) or a changed revision:
+            // preserve the original bare JSON-array contract exactly.
+            return Results.Ok(await repo.ListAsync());
+        });
 
         app.MapGet("/api/stats", async (ApplicationRepo repo) =>
         {
