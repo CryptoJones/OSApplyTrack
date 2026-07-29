@@ -380,6 +380,10 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   than storing anything in the clear.
 - **Rate limiting.** The magic-link and poll endpoints are per-IP fixed-window
   rate-limited so the always-200 auth surface can't be abused for spam or probing.
+- **Bounded API input.** Ordinary JSON mutations are capped at 1 MiB, application
+  strings/notes have explicit length ceilings, and criteria/résumé collections
+  reject excessive cardinality with a clear `400` instead of growing rows or LLM
+  prompts without limit.
 - **SSRF-hardened link probing.** The link prober refuses to connect to
   private/loopback/link-local/reserved addresses and re-checks every redirect hop,
   so a hostile listing URL can't pivot into your network.

@@ -39,6 +39,7 @@ public sealed class Resume
     /// <summary>Build a normalized Resume from loose JSON, ignoring junk keys (mirrors Criteria.FromJson).</summary>
     public static Resume FromJson(JsonElement data)
     {
+        InputLimits.ValidateResume(data);
         return new Resume
         {
             FullName = GetString(data, "full_name"),

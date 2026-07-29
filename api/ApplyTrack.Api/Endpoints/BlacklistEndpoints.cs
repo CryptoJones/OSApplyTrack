@@ -25,6 +25,7 @@ public static class BlacklistEndpoints
             var company = (payload.Company ?? "").Trim();
             if (company.Length == 0)
                 throw new AppValidationException("company is required");
+            InputLimits.Text("company", company, InputLimits.Company);
             var added = await bl.AddAsync(company);
             var passed = await bl.PassOpenLeadsAsync(company);
             return Results.Ok(new { company, added, passed });

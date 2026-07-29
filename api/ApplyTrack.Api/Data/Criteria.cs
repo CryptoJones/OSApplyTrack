@@ -61,6 +61,7 @@ public sealed class Criteria
     /// <summary>Build a normalized Criteria from loose JSON, ignoring junk keys (heir to from_dict).</summary>
     public static Criteria FromJson(JsonElement data)
     {
+        InputLimits.ValidateCriteria(data);
         var lane = GetString(data, "default_lane", "ai").Trim().ToLowerInvariant();
 
         var score = ScoreDefault;

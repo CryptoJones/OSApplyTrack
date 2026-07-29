@@ -233,8 +233,11 @@ public sealed partial class ApplicationRepo
     public Task<string> UpdateStructuredAsync(string name, AppFields fields, string? expectedVersion) =>
         DoUpdateAsync(name, fields.Normalized(), expectedVersion);
 
-    public Task<string> UpdateRawAsync(string name, string content, string? expectedVersion) =>
-        DoUpdateAsync(name, MarkdownCodec.Parse(content), expectedVersion);
+    public Task<string> UpdateRawAsync(string name, string content, string? expectedVersion)
+    {
+        InputLimits.Text("content", content, InputLimits.RawApplication);
+        return DoUpdateAsync(name, MarkdownCodec.Parse(content).Normalized(), expectedVersion);
+    }
 
     public async Task DeleteAsync(string name)
     {
