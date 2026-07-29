@@ -144,18 +144,12 @@ var migrationTimeout = TimeSpan.FromSeconds(TimeoutConfiguration.PositiveTimeout
     builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
 Migrator.Upgrade(connectionString, migrationTimeout);
 
-// Behind a TLS-terminating reverse proxy (Caddy/nginx/`tailscale serve` — the usual
-// self-host front), honor X-Forwarded-Proto so Request.IsHttps is true and the session
-// cookie keeps its Secure flag. The app is meant to sit behind that proxy, so forwarded
-// headers are accepted from any hop — don't expose Kestrel directly to the internet.
-// Plain-HTTP local/dev sends no such header, so this is a no-op there.
-var forwarded = new ForwardedHeadersOptions
-{
-    ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedFor,
-};
-forwarded.KnownIPNetworks.Clear();
-forwarded.KnownProxies.Clear();
-app.UseForwardedHeaders(forwarded);
+// Honor forwarded client/protocol data only from a known reverse proxy. ASP.NET
+// Core's loopback defaults cover same-host Caddy/nginx/`tailscale serve`; container
+// gateways and remote proxies must be named under ForwardedHeaders:KnownProxies or
+// KnownNetworks. An untrusted direct caller's headers are ignored, so they cannot
+// forge Request.IsHttps or rotate the per-IP rate-limit partition.
+app.UseForwardedHeaders(ForwardedHeadersConfiguration.Create(builder.Configuration));
 
 // Enforce request-body size limits on the two endpoints that accept large uploads,
 // checked on Content-Length before the body is read, so it works under TestServer too.
