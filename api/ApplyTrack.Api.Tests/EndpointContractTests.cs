@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
@@ -99,6 +100,50 @@ public class EndpointContractTests : IAsyncLifetime
         foreach (var key in new[] { "filename", "company", "role", "lane", "status",
                      "contact", "contact_email", "applied", "followup", "score", "link", "snippet" })
             Assert.True(row.TryGetProperty(key, out _), $"missing key: {key}");
+    }
+
+    [Fact]
+    public async Task Apps_list_etag_returns_304_until_the_tenant_list_changes()
+    {
+        await CreateAcme();
+
+        // No validator preserves the original 200 + bare array contract.
+        var first = await _client.GetAsync("/api/apps");
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(JsonValueKind.Array, (await ReadJson(first)).ValueKind);
+        Assert.NotNull(first.Headers.ETag);
+        Assert.Contains("private", first.Headers.CacheControl?.ToString());
+        Assert.Contains("Cookie", first.Headers.Vary);
+        var originalTag = first.Headers.ETag!;
+
+        // Equal per-tenant revision numbers are not interchangeable validators.
+        var (_, otherSid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        using var other = _factory.CreateClient();
+        other.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={otherSid}");
+        await other.PostAsync(
+            "/api/apps",
+            Json("""{"company":"Other Corp","role":"Engineer"}"""));
+        var otherList = await other.GetAsync("/api/apps");
+        Assert.NotEqual(originalTag.Tag, otherList.Headers.ETag?.Tag);
+
+        using var unchangedRequest = new HttpRequestMessage(HttpMethod.Get, "/api/apps");
+        unchangedRequest.Headers.IfNoneMatch.Add(originalTag);
+        var unchanged = await _client.SendAsync(unchangedRequest);
+        Assert.Equal(HttpStatusCode.NotModified, unchanged.StatusCode);
+        Assert.Equal(originalTag.Tag, unchanged.Headers.ETag?.Tag);
+
+        await _client.PutAsync(
+            "/api/apps/acme-corp-engineer.md",
+            Json("""{"company":"Acme Corp","role":"Principal Engineer"}"""));
+
+        using var changedRequest = new HttpRequestMessage(HttpMethod.Get, "/api/apps");
+        changedRequest.Headers.IfNoneMatch.Add(originalTag);
+        var changed = await _client.SendAsync(changedRequest);
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        Assert.NotEqual(originalTag.Tag, changed.Headers.ETag?.Tag);
+        Assert.Equal(
+            "Principal Engineer",
+            (await ReadJson(changed))[0].GetProperty("role").GetString());
     }
 
     [Fact]

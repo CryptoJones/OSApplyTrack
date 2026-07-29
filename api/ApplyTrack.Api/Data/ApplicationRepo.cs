@@ -91,6 +91,21 @@ public sealed partial class ApplicationRepo
     }
 
     /// <summary>
+    /// Monotonic tenant-local revision maintained by the applications table
+    /// trigger. This is the cheap first query behind the list endpoint's ETag:
+    /// unchanged refreshes never scan or serialize the applications themselves.
+    /// </summary>
+    public async Task<string> ListEtagAsync()
+    {
+        var revision = await _conn.QuerySingleAsync<long>(
+            "SELECT applications_revision FROM users WHERE id = @t",
+            new { t = _t });
+        // Include the tenant even though the revision is tenant-local: two signed-in
+        // accounts with revision 3 do not have interchangeable representations.
+        return $"\"apps-v1-{_t:x}-{revision:x}\"";
+    }
+
+    /// <summary>
     /// Every application as a full record, for the account export. Ordered by slug so
     /// the zip is deterministic. Tenant-scoped like every other read.
     /// </summary>

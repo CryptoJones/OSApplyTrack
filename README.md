@@ -255,7 +255,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/apps` | List the tenant's applications. |
+| `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
 | `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
