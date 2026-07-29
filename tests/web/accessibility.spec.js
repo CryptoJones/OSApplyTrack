@@ -194,6 +194,43 @@ test("mobile detail navigation hides only the inactive pane", async ({ page }, t
   await expect(page.getByRole("button", { name: /Example Co/ })).toBeFocused();
 });
 
+test("dark and high-contrast visual modes retain accessible contrast", async ({ page }) => {
+  await page.locator("html").evaluate((root) => { root.dataset.colorMode = "dark"; });
+  await expectNoSeriousViolations(page);
+  await page.locator("html").evaluate((root) => {
+    root.dataset.colorMode = "light";
+    root.dataset.contrast = "high";
+  });
+  await expectNoSeriousViolations(page);
+});
+
+test("narrow mobile forms and final actions stay clear of the action bar", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "Mobile-specific geometry");
+  await page.setViewportSize({ width: 320, height: 760 });
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+  )).toBe(true);
+
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  const deleteButton = page.getByRole("button", { name: "Delete", exact: true });
+  await deleteButton.scrollIntoViewIfNeeded();
+  const actionGeometry = await page.evaluate(() => {
+    const button = document.querySelector('[data-act="delete"]').getBoundingClientRect();
+    const nav = document.querySelector(".mobile-actions").getBoundingClientRect();
+    return { buttonBottom: button.bottom, navTop: nav.top };
+  });
+  expect(actionGeometry.buttonBottom).toBeLessThanOrEqual(actionGeometry.navTop);
+
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const formGeometry = await page.evaluate(() => {
+    const lane = document.querySelector("#f-lane").getBoundingClientRect();
+    const status = document.querySelector("#f-status").getBoundingClientRect();
+    return { laneBottom: lane.bottom, statusTop: status.top, laneLeft: lane.left, statusLeft: status.left };
+  });
+  expect(formGeometry.statusTop).toBeGreaterThan(formGeometry.laneBottom);
+  expect(Math.abs(formGeometry.laneLeft - formGeometry.statusLeft)).toBeLessThan(1);
+});
+
 test("magic-link login is labeled and announced", async ({ page }) => {
   await page.unroute("**/api/**");
   await page.route("**/api/**", async (route) => {

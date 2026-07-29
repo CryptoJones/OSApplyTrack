@@ -85,17 +85,20 @@ function showLogin() {
   overlay.innerHTML = `
     <main class="login-card" aria-labelledby="login-title">
     <form id="login-form">
-      <h1 id="login-title" class="login-mark">ApplyTrack</h1>
+      <div class="login-brand" aria-hidden="true">
+        <span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M7 8.5h18M7 16h11M7 23.5h8" /><path d="m20 21 3 3 5-7" /></svg></span>
+      </div>
+      <h1 id="login-title" class="login-mark"><span>Apply</span><strong>Track</strong></h1>
       <p class="login-sub">Sign in with a one-time magic link.</p>
       ${badLink ? `<p class="login-error">That link was invalid or expired — request a fresh one.</p>` : ""}
-      <p class="login-signup-head">NEW HERE?</p>
+      <p class="login-signup-head">New here?</p>
       <p class="login-signup">Just enter your email — your account is created automatically.</p>
       <label class="field" for="login-email"><span class="field-label">Email address</span>
       <input id="login-email" class="login-input" type="email" required autocomplete="email"
         inputmode="email" placeholder="you@example.com" /></label>
       <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
       <p class="login-note">We email you a link to sign in — check your spam folder if it doesn't arrive. Self-hosting? It's printed to the server logs.</p>
-      <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>
+      <p class="login-note login-footer"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener">Open source on GitHub ↗</a></p>
     </form></main>`;
   document.body.appendChild(overlay);
 
@@ -110,11 +113,14 @@ function showLogin() {
     // Always reports success: the API returns 200 either way (no account enumeration).
     try { await api("POST", "/api/auth/request", { email }); } catch (_) {}
     form.innerHTML = `
-      <h1 class="login-mark">ApplyTrack</h1>
+      <div class="login-brand" aria-hidden="true">
+        <span class="brand-mark"><svg viewBox="0 0 32 32"><path d="M7 8.5h18M7 16h11M7 23.5h8" /><path d="m20 21 3 3 5-7" /></svg></span>
+      </div>
+      <h1 class="login-mark"><span>Apply</span><strong>Track</strong></h1>
       <h2 tabindex="-1" class="login-sub">Check your inbox</h2>
       <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way —
         check your spam folder too. Self-hosting? Look for it in the server logs.</p>
-      <p class="login-note"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">Open source on GitHub ↗</a></p>`;
+      <p class="login-note login-footer"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener">Open source on GitHub ↗</a></p>`;
     form.querySelector("h2").focus();
   });
   overlay.querySelector("#login-email").focus();
@@ -204,7 +210,9 @@ function renderPipeline() {
   });
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
   if (total) parts.push(`<span class="pipe-total"><span class="n">${total}</span>total</span>`);
-  pipelineEl.innerHTML = parts.join("") || `<span>No applications yet</span>`;
+  pipelineEl.innerHTML = `
+    <span class="pipeline-label" aria-hidden="true">Pipeline</span>
+    ${parts.join("") || `<span class="pipeline-empty">No applications yet</span>`}`;
   pipelineEl.querySelectorAll(".pipe-stat[data-status]").forEach((el) => {
     el.addEventListener("click", () => {
       state.filterStatus = state.filterStatus === el.dataset.status ? "" : el.dataset.status;
@@ -257,16 +265,23 @@ function renderSidebar() {
           }</span>`
         : "";
     const selected = a.filename === state.current;
+    const initials = (a.company || "?")
+      .split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
     li.innerHTML = `<button type="button" class="application-card" aria-current="${selected}" data-name="${escapeHtml(a.filename)}">
-      <span class="application-card-header">
-        <div class="ic-title">${escapeHtml(a.company)}</div>
-        ${statusBadge(a.status)}
+      <span class="company-mark" aria-hidden="true">${escapeHtml(initials)}</span>
+      <span class="application-card-body">
+        <span class="application-card-header">
+          <span class="ic-title">${escapeHtml(a.company)}</span>
+          ${statusBadge(a.status)}
+        </span>
+        ${a.role ? `<span class="ic-role">${escapeHtml(a.role)}</span>` : ""}
+        <span class="ic-meta">${lanePill(a.lane)} ${score}
+          ${a.applied ? `<span>Applied ${escapeHtml(a.applied)}</span>` : ""}
+          ${a.followup ? `<span>Follow-up ${escapeHtml(a.followup)}</span>` : ""}</span>
+        ${contactLine}
       </span>
-      <span class="ic-meta">${lanePill(a.lane)} ${score}
-        ${a.applied ? "· applied " + escapeHtml(a.applied) : ""}
-        ${a.followup ? "· follow-up " + escapeHtml(a.followup) : ""}</span>
-      ${a.role ? `<span class="ic-snippet">${escapeHtml(a.role)}</span>` : ""}
-      ${contactLine}</button>`;
+      <span class="card-chevron" aria-hidden="true">›</span>
+      </button>`;
     li.querySelector("button").addEventListener("click", () => openApp(a.filename));
     listEl.appendChild(li);
   });
@@ -287,8 +302,16 @@ function renderEmpty() {
   renderSidebar();
   contentEl.innerHTML = `
     <div class="empty">
+      <div class="empty-illustration" aria-hidden="true">
+        <svg viewBox="0 0 80 80" focusable="false">
+          <rect x="18" y="13" width="44" height="54" rx="8" />
+          <path d="M29 29h22M29 40h15M29 51h19" />
+          <circle cx="59" cy="58" r="12" />
+          <path d="m54 58 3 3 7-8" />
+        </svg>
+      </div>
       <h2 class="empty-title">No application selected</h2>
-      <p>Choose an application from the list or create a new one.</p>
+      <p>Choose an opportunity from the list to review your research and next action.</p>
     </div>`;
 }
 
@@ -310,16 +333,18 @@ async function openApp(name) {
 
 function metaRow(f) {
   const parts = [];
-  parts.push(`<span>${lanePill(f.lane)}</span>`);
-  if (f.location) parts.push(`<span><span class="label">where</span> ${escapeHtml(f.location)}</span>`);
-  if (f.salary) parts.push(`<span><span class="label">comp</span> ${escapeHtml(f.salary)}</span>`);
-  if (f.applied) parts.push(`<span><span class="label">applied</span> ${escapeHtml(f.applied)}</span>`);
-  if (f.followup) parts.push(`<span><span class="label">follow-up</span> ${escapeHtml(f.followup)}</span>`);
-  if (f.contact) parts.push(`<span><span class="label">contact</span> ${escapeHtml(f.contact)}</span>`);
-  if (f.contact_email) parts.push(`<span><span class="label">email</span> <a href="mailto:${escapeHtml(f.contact_email)}">${escapeHtml(f.contact_email)}</a></span>`);
-  if (f.source) parts.push(`<span><span class="label">source</span> ${escapeHtml(f.source)}</span>`);
-  if (f.score) parts.push(`<span class="score-chip">fit ${escapeHtml(f.score)}</span>`);
-  return `<div class="meta-row">${parts.join("")}</div>`;
+  const item = (label, value, extra = "") =>
+    `<div class="meta-item ${extra}"><dt>${label}</dt><dd>${value}</dd></div>`;
+  parts.push(item("Lane", lanePill(f.lane)));
+  if (f.score) parts.push(item("Fit score", `<span class="score-value">${escapeHtml(f.score)}<small>/100</small></span>`, "meta-score"));
+  if (f.location) parts.push(item("Location", escapeHtml(f.location)));
+  if (f.salary) parts.push(item("Compensation", escapeHtml(f.salary)));
+  if (f.applied) parts.push(item("Applied", escapeHtml(f.applied)));
+  if (f.followup) parts.push(item("Follow-up", escapeHtml(f.followup)));
+  if (f.contact) parts.push(item("Contact", escapeHtml(f.contact)));
+  if (f.contact_email) parts.push(item("Email", `<a href="mailto:${escapeHtml(f.contact_email)}">${escapeHtml(f.contact_email)}</a>`, "meta-email"));
+  if (f.source) parts.push(item("Source", `<span class="mono">${escapeHtml(f.source)}</span>`));
+  return `<dl class="meta-grid">${parts.join("")}</dl>`;
 }
 
 function renderView(data) {
@@ -337,10 +362,10 @@ function renderView(data) {
   contentEl.innerHTML = `
     <article class="sheet">
       <header class="view-header">
-        <div>
-          <div class="sheet-eyebrow">${statusBadge(f.status)} · ${escapeHtml(data.filename)}</div>
+        <div class="view-heading">
+          <div class="sheet-eyebrow">${statusBadge(f.status)} <span class="filename mono">${escapeHtml(data.filename)}</span></div>
           <h2 class="sheet-title">${escapeHtml(f.company || stem(data.filename))}</h2>
-          ${f.role ? `<div class="font-body text-lg text-ink-faint">${escapeHtml(f.role)}</div>` : ""}
+          ${f.role ? `<div class="role-title">${escapeHtml(f.role)}</div>` : ""}
         </div>
         <div class="seg" role="tablist" aria-label="Application editor mode">
           <button type="button" role="tab" aria-selected="true" data-act="edit">Form</button>
@@ -348,16 +373,25 @@ function renderView(data) {
         </div>
       </header>
       ${metaRow(f)}
-      <div class="action-row">${applyBtn}${checkBtn}</div>
+      <div class="action-row detail-links">${applyBtn}${checkBtn}</div>
       <div id="link-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
-      <div class="prose-omi mt-5">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
+      <section class="detail-section" aria-labelledby="notes-heading">
+        <div class="section-heading">
+          <span class="section-kicker">Workspace</span>
+          <h3 id="notes-heading">Notes &amp; research</h3>
+        </div>
+        <div class="prose-omi">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
+      </section>
       ${materialSection(data)}
-      <div class="action-row section-divider">
-        <button class="btn btn-primary" data-act="applied">Mark applied</button>
-        <button class="btn btn-ghost" data-act="pass">Pass</button>
-        <button class="btn btn-ghost" data-act="blacklist">Blacklist company</button>
-        <span class="flex-1"></span>
-        <button class="btn btn-danger" data-act="delete">Delete</button>
+      <div class="status-actions section-divider">
+        <div class="workflow-actions">
+          <button class="btn btn-primary" data-act="applied">Mark applied</button>
+          <button class="btn btn-ghost" data-act="pass">Pass</button>
+          <button class="btn btn-ghost" data-act="blacklist">Blacklist company</button>
+        </div>
+        <div class="danger-actions">
+          <button class="btn btn-danger" data-act="delete">Delete</button>
+        </div>
       </div>
     </article>`;
   contentEl.querySelector('[data-act="edit"]').onclick = () => openEdit(data);
@@ -419,15 +453,16 @@ function materialSection(data) {
   if (!state.coverLettersEnabled && !data.material) return "";
   if (!data.material) {
     return `
-      <div class="material-block mt-6 border-t border-rule pt-4">
-        <div class="flex items-center justify-between gap-3">
+      <section class="material-block">
+        <div class="material-header">
           <div>
-            <div class="field-label">Cover letter</div>
+            <div class="section-kicker">AI workspace</div>
+            <h3>Cover letter</h3>
             <p class="field-help">Draft a tailored letter from your résumé via the configured AI.</p>
           </div>
           <button class="btn btn-primary shrink-0" data-act="draft">Generate cover letter</button>
         </div>
-      </div>`;
+      </section>`;
   }
   const html = DOMPurify.sanitize(marked.parse(data.material, { gfm: true, breaks: true }));
   // Regenerate is a drafting affordance — hide it when the engine is off (the server
@@ -437,10 +472,13 @@ function materialSection(data) {
     ? `<button class="btn btn-ghost btn-xs" data-act="draft">Regenerate</button>`
     : "";
   return `
-    <div class="material-block mt-6 border-t border-rule pt-4">
-      <div class="flex items-center justify-between gap-3">
-        <div class="field-label">Cover letter</div>
-        <div class="flex flex-wrap gap-2">
+    <section class="material-block">
+      <div class="material-header">
+        <div>
+          <div class="section-kicker">AI workspace</div>
+          <h3>Cover letter</h3>
+        </div>
+        <div class="material-actions">
           <button class="btn btn-ghost btn-xs" data-act="mat-copy">Copy</button>
           <button class="btn btn-ghost btn-xs" data-act="mat-download">Download .md</button>
           <button class="btn btn-ghost btn-xs" data-act="mat-pdf">Download PDF</button>
@@ -449,7 +487,7 @@ function materialSection(data) {
         </div>
       </div>
       <div class="prose-omi material-body mt-3">${html}</div>
-    </div>`;
+    </section>`;
 }
 
 async function copyText(text, okMsg) {
@@ -1419,13 +1457,21 @@ async function openSettings(tab, focusSelectedTab = false) {
   showDetailPane();
   renderSidebar();
   contentEl.innerHTML = `
-    <h1>Settings</h1>
-    <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
-      ${SETTINGS_TABS.map(([k, label]) =>
-        `<button class="btn ${k === state.settingsTab ? "btn-primary" : "btn-ghost"}"
-           role="tab" aria-selected="${k === state.settingsTab}" data-tab="${k}" type="button">${label}</button>`).join("")}
-    </nav>
-    <div id="settings-body" role="tabpanel" class="mt-4" aria-live="polite"></div>`;
+    <div class="settings-shell">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Workspace preferences</div>
+        <h1>Settings</h1>
+        <p>Shape discovery, drafting, account data, and how ApplyTrack feels to use.</p>
+      </header>
+      <div class="settings-layout">
+        <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
+          ${SETTINGS_TABS.map(([k, label]) =>
+            `<button class="btn ${k === state.settingsTab ? "btn-primary" : "btn-ghost"}"
+               role="tab" aria-selected="${k === state.settingsTab}" data-tab="${k}" type="button">${label}</button>`).join("")}
+        </nav>
+        <div id="settings-body" role="tabpanel" aria-live="polite"></div>
+      </div>
+    </div>`;
   contentEl.querySelectorAll("[data-tab]").forEach((b) => {
     b.onclick = () => openSettings(b.dataset.tab);
   });
