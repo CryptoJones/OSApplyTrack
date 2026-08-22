@@ -74,9 +74,12 @@ telemetry, no SaaS.
   company, role, link, location, salary, source, contacts, applied/follow-up dates,
   a relevance score, and free-form Markdown notes.
 - **It finds work for you.** A Python poller fetches listings from public job
-  boards, scores them against your saved criteria, drops anything from a
-  blacklisted company, dedupes against what you've already seen, and stages the
-  survivors as fresh leads.
+  boards — plus any Greenhouse/Lever board or **custom RSS/Atom feed** you point it
+  at — scores them against your saved criteria, drops anything from a blacklisted
+  company, dedupes against what you've already seen, and stages the survivors as
+  fresh leads.
+- **It shows the right lead first.** Sort the list by fit score, date posted, or
+  company name — on top of the default pipeline order and the lane/status filters.
 - **It drafts your cover letters.** Point it at any OpenAI-compatible LLM — a local
   Ollama/vLLM model (so your résumé never leaves the box, $0 per draft) or a hosted
   provider — and generate a letter per application, tailored from your uploaded
@@ -201,6 +204,12 @@ overwrite-confirm flow — two tabs can't silently clobber each other.
 against the tenant's criteria, drops blacklisted companies, dedupes against the
 `seen` ledger, and inserts the rest as `lead`-status applications.
 
+**Sorting.** The sidebar defaults to pipeline order (still-open roles first, passed
+ones last) and can reorder by **fit score**, **date posted**, or **company name**
+from the *Sort by* control. Sorting is a client-side view over the same list
+payload — it composes with the search box and the lane/status filters, and your
+choice is remembered per browser (never sent to the server).
+
 **Autofill.** When entering a lead by hand, paste the posting link and hit
 **⤓ Autofill**: the server fetches the page (`POST /api/scrape` — SSRF-guarded,
 rate-limited) and fills the still-empty fields from the page's
@@ -271,8 +280,8 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/criteria` | The tenant's discovery criteria (defaults when unset). |
-| `PUT`    | `/api/criteria` | Normalize + store posted criteria (junk dropped, score clamped). |
+| `GET`    | `/api/criteria` | The tenant's discovery criteria (defaults when unset), including `ats_boards` and `rss_feeds`. |
+| `PUT`    | `/api/criteria` | Normalize + store posted criteria (junk dropped, score clamped, non-http(s) feed URLs discarded). |
 | `GET`    | `/api/blacklist` | List blacklisted companies. |
 | `POST`   | `/api/blacklist` | Add a company; flips its open leads to `passed`. |
 | `POST`   | `/api/apps/{name}/blacklist` | Blacklist the company on a given application. |
@@ -313,7 +322,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | --- | --- |
 | `users` | Accounts. A user's `id` **is** its `tenant_id` (tenants are users). |
 | `applications` | The tracked applications. `UNIQUE (tenant_id, name)`; `version` for optimistic locking. |
-| `search_profiles` | Per-tenant discovery criteria the poller reads. |
+| `search_profiles` | Per-tenant discovery criteria the poller reads — keywords, filters, enabled sources, ATS boards, and custom RSS feeds. |
 | `blacklist` | Per-tenant blocked companies. |
 | `magic_tokens` | SHA-256 of issued login tokens, with expiry. Single-use. |
 | `sessions` | Opaque server-side sessions (instant revocation on logout). |
@@ -348,6 +357,25 @@ host cron or a systemd timer? Run the CLI directly and drop the service:
 
 Each accepts `--database-url` (a libpq URL), falling back to `DATABASE_URL` / the
 `POSTGRES_*` env vars.
+
+### Custom RSS feeds
+
+Beyond the built-in sources and the Greenhouse/Lever board followers, **Settings ·
+Criteria** takes any RSS 2.0 or Atom feed URL — a company's careers feed, a niche
+board, a saved search that publishes one. Up to 25 per account. Items are scored
+against the same keywords and minimum fit as every other source, and land with
+`source: auto:rss:<host>`.
+
+The company name is read from the item title where the feed provides one
+(`Company: Role` or `Role at Company`); otherwise it falls back to the feed's own
+title, so a single-company careers feed works without any per-feed configuration.
+
+A feed URL is user-supplied and fetched server-side, so it goes through the same
+SSRF guard as the link prober: http(s) on a default port only, every redirect hop
+re-validated, connections pinned to public addresses, a 2 MB response cap, and
+XXE/entity-expansion-safe parsing (`defusedxml`). A feed that fails is logged and
+skipped — it never aborts the poll. When several tenants follow the same feed, the
+multi-tenant pass fetches it once.
 
 ## Cover letters
 
@@ -411,9 +439,11 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   strings/notes have explicit length ceilings, and criteria/résumé collections
   reject excessive cardinality with a clear `400` instead of growing rows or LLM
   prompts without limit.
-- **SSRF-hardened link probing.** The link prober refuses to connect to
-  private/loopback/link-local/reserved addresses and re-checks every redirect hop,
-  so a hostile listing URL can't pivot into your network.
+- **SSRF-hardened outbound fetches.** Every server-side fetch of a URL a user
+  supplied — the link prober, the Autofill scraper, and custom RSS feeds — refuses
+  to connect to private/loopback/link-local/reserved addresses, re-checks every
+  redirect hop, and caps the response size, so a hostile listing or feed URL can't
+  pivot into your network.
 - **Behind HTTPS.** Front the API with a TLS-terminating reverse proxy (Caddy,
   nginx, or `tailscale serve`). Same-host loopback proxies are trusted by default.
   For a proxy container or remote load balancer, set

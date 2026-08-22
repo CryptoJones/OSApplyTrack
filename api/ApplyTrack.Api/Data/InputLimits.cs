@@ -28,6 +28,8 @@ public static class InputLimits
     public const int ExcludedLocation = 200;
     public const int AtsBoards = 50;
     public const int AtsSlug = 200;
+    public const int RssFeeds = 25;
+    public const int RssFeedUrl = Link;
 
     public const int ResumeExperience = 50;
     public const int ResumeHighlights = 50;
@@ -66,6 +68,7 @@ public static class InputLimits
     {
         Array(data, "keywords", Keywords, Keyword);
         Array(data, "exclude_locations", ExcludedLocations, ExcludedLocation);
+        Array(data, "rss_feeds", RssFeeds, RssFeedUrl);
 
         if (data.ValueKind != JsonValueKind.Object
             || !data.TryGetProperty("ats_boards", out var boards)

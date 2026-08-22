@@ -17,4 +17,9 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#53 — Add hardened production container defaults](https://github.com/CryptoJones/OSApplyTrack/issues/53)
 - [x] [#54 — Paginate or delta-refresh the applications list](https://github.com/CryptoJones/OSApplyTrack/issues/54)
 
+## Discovery and workflow
+
+- [x] [#69 — Allow sorting by fit, date posted, or company name](https://github.com/CryptoJones/OSApplyTrack/issues/69)
+- [x] [#70 — Allow adding custom RSS feeds for job listings](https://github.com/CryptoJones/OSApplyTrack/issues/70)
+
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/

@@ -15,6 +15,9 @@ public sealed record AppSummary
     public string ContactEmail { get; init; } = "";
     public string Applied { get; init; } = "";
     public string Followup { get; init; } = "";
+    // The date the posting entered the tracker (staged by the poller, or created by
+    // hand). The sidebar's "date posted" sort orders on it, so it rides the summary.
+    public string Created { get; init; } = "";
     public string Score { get; init; } = "";
     public string Link { get; init; } = "";
     public string Snippet { get; init; } = "";

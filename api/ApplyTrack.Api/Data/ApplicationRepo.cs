@@ -66,7 +66,7 @@ public sealed partial class ApplicationRepo
         var rows = await _conn.QueryAsync<AppRow>(
             """
             SELECT name, company, role, lane, status, contact, contact_email,
-                   applied, followup, score, link, notes
+                   applied, followup, created, score, link, notes
             FROM applications
             WHERE tenant_id = @t
             ORDER BY array_position(@order, status), lower(company)
@@ -84,6 +84,7 @@ public sealed partial class ApplicationRepo
             ContactEmail = r.ContactEmail,
             Applied = r.Applied,
             Followup = r.Followup,
+            Created = r.Created,
             Score = r.Score,
             Link = r.Link,
             Snippet = Snippet(r.Notes),

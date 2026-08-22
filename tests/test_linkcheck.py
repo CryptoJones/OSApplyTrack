@@ -16,9 +16,11 @@ import httpx
 import pytest
 
 from applytrack.linkcheck import (
+    PublicFetchError,
     _host_is_public,
     _PinnedNetworkBackend,
     _PinnedResolver,
+    fetch_public,
     probe,
 )
 
@@ -167,3 +169,56 @@ def test_injected_ordinary_client_cannot_bypass_pinning_for_a_hostname() -> None
     assert status.ok is False
     assert "unpinned" in status.error
     assert touched is False
+
+
+# -- fetch_public: the same guard, but the body comes back ------------------
+
+
+def test_fetch_public_returns_the_body_of_a_public_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<rss/>", request=request)
+
+    with _client(handler) as client:
+        assert fetch_public("http://1.1.1.1/feed.rss", client=client) == b"<rss/>"
+
+
+def test_fetch_public_refuses_a_private_address_without_touching_the_network() -> None:
+    touched = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal touched
+        touched = True
+        return httpx.Response(200, request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="non-public"):
+        fetch_public("http://169.254.169.254/latest/meta-data", client=client)
+
+    assert touched is False
+
+
+def test_fetch_public_refuses_a_redirect_to_an_internal_address() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "1.1.1.1":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/feed"})
+        return httpx.Response(200, content=b"secret", request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="non-public"):
+        fetch_public("http://1.1.1.1/feed", client=client)
+
+
+def test_fetch_public_rejects_an_error_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="404"):
+        fetch_public("http://1.1.1.1/gone.rss", client=client)
+
+
+def test_fetch_public_enforces_the_size_cap() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 50, request=request)
+
+    # Declared Content-Length is refused before the body is looked at; an undeclared
+    # oversize body is refused after.
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="exceeds"):
+        fetch_public("http://1.1.1.1/huge.rss", client=client, max_bytes=10)

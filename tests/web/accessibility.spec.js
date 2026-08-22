@@ -10,9 +10,37 @@ const application = {
   lane: "dotnet",
   status: "lead",
   location: "Remote",
-  score: "87",
+  score: "62",
+  created: "2026-04-02",
   snippet: "Build accessible software.",
 };
+
+// Two more rows so every sidebar ordering produces a visibly different sequence:
+// fit score, posted date, company name, and the default pipeline order all disagree.
+// Listed in the order the API returns them (status order, then company).
+const applications = [
+  application,
+  {
+    filename: "meridian-labs-platform-engineer.md",
+    company: "Meridian Labs",
+    role: "Platform Engineer",
+    lane: "ai",
+    status: "lead",
+    score: "87",
+    created: "2026-01-05",
+    snippet: "",
+  },
+  {
+    filename: "aurora-systems-developer-advocate.md",
+    company: "Aurora Systems",
+    role: "Developer Advocate",
+    lane: "devrel",
+    status: "applied",
+    score: "",
+    created: "2026-03-01",
+    snippet: "",
+  },
+];
 
 const detail = {
   filename: application.filename,
@@ -48,13 +76,13 @@ async function mockApi(page) {
         await route.fulfill({ status: 304, headers: { ETag: '"apps-1"' } });
         return;
       }
-      body = [application];
+      body = applications;
     }
-    else if (path === "/api/stats") body = { status: { lead: 1 }, lane: { dotnet: 1 } };
+    else if (path === "/api/stats") body = { status: { lead: 2, applied: 1 }, lane: { dotnet: 1, ai: 1, devrel: 1 } };
     else if (path === `/api/apps/${application.filename}` && method === "GET") body = detail;
     else if (path === "/api/criteria") body = {
       keywords: ["engineer"], default_lane: "dotnet", min_fit_score: 55,
-      remote_only: true, exclude_locations: [], sources: {}, ats_boards: [],
+      remote_only: true, exclude_locations: [], sources: {}, ats_boards: [], rss_feeds: [],
     };
     else if (path === "/api/resume") body = {
       full_name: "", location: "", headline: "", summary: "",
@@ -132,6 +160,72 @@ test("unchanged live refresh reuses the ETag without rerendering the list", asyn
   expect(statsRequests).toBe(0);
 });
 
+// The sidebar list order, top to bottom.
+const sidebarCompanies = (page) => page.locator("#app-list .ic-title").allTextContents();
+
+test("the sidebar sorts by fit, date posted, and company name", async ({ page }) => {
+  const sort = page.getByLabel("Sort by");
+
+  // Default: the pipeline order the API returns (still-open roles first).
+  await expect(sort).toHaveValue("pipeline");
+  expect(await sidebarCompanies(page)).toEqual(["Example Co", "Meridian Labs", "Aurora Systems"]);
+
+  await sort.selectOption("score");
+  // An unscored role sinks to the bottom rather than sorting as a zero.
+  expect(await sidebarCompanies(page)).toEqual(["Meridian Labs", "Example Co", "Aurora Systems"]);
+
+  await sort.selectOption("created");
+  expect(await sidebarCompanies(page)).toEqual(["Example Co", "Aurora Systems", "Meridian Labs"]);
+  // Date order is only legible if the date is on the card.
+  await expect(page.locator("#app-list").getByText("Posted 2026-04-02")).toBeVisible();
+
+  await sort.selectOption("company");
+  expect(await sidebarCompanies(page)).toEqual(["Aurora Systems", "Example Co", "Meridian Labs"]);
+
+  await expectNoSeriousViolations(page);
+});
+
+test("the chosen sort survives a reload", async ({ page }) => {
+  await page.getByLabel("Sort by").selectOption("company");
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+  await expect(page.getByLabel("Sort by")).toHaveValue("company");
+  expect(await sidebarCompanies(page)).toEqual(["Aurora Systems", "Example Co", "Meridian Labs"]);
+});
+
+test("sorting and filtering compose", async ({ page }) => {
+  await page.getByLabel("Sort by").selectOption("company");
+  await page.locator("#filter-status").selectOption("lead");
+  expect(await sidebarCompanies(page)).toEqual(["Example Co", "Meridian Labs"]);
+  await expect(page.locator("#app-count")).toHaveText("2 of 3 applications");
+});
+
+test("criteria settings add and remove custom RSS feeds", async ({ page }) => {
+  const saved = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/criteria" && request.method() === "PUT");
+
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Criteria", exact: true }).click();
+  await expect(page.locator("#criteria-feeds")).toContainText("No custom feeds added.");
+
+  // A URL the poller could never fetch is refused before it reaches the server.
+  await page.getByLabel("Feed URL").fill("ftp://example.com/feed");
+  await page.getByRole("button", { name: "+ Add feed" }).click();
+  await expect(page.locator("#toast")).toContainText("http://");
+  await expect(page.locator("#criteria-feeds")).toContainText("No custom feeds added.");
+
+  await page.getByLabel("Feed URL").fill("https://hooli.example/careers.rss");
+  await page.getByRole("button", { name: "+ Add feed" }).click();
+  await expect(page.locator("#criteria-feeds")).toContainText("https://hooli.example/careers.rss");
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "Save criteria" }).click();
+  expect((await saved).postDataJSON().rss_feeds).toEqual(["https://hooli.example/careers.rss"]);
+
+  await page.getByRole("button", { name: /Remove feed/ }).click();
+  await expect(page.locator("#criteria-feeds")).toContainText("No custom feeds added.");
+});
+
 test("settings sections expose labeled controls", async ({ page }) => {
   await openSettings(page);
   for (const tab of ["Criteria", "Résumé", "AI", "Blacklist", "Account"]) {
@@ -157,7 +251,8 @@ test("keyboard navigation and validation retain visible focus", async ({ page })
   await expect(page.getByLabel("Search applications")).toBeFocused();
   await page.keyboard.press("Escape");
   await page.keyboard.press("n");
-  await expect(page.getByLabel(/Company/)).toBeFocused();
+  // Role-qualified: the sort select's label text also contains "Company".
+  await expect(page.getByRole("textbox", { name: /Company/ })).toBeFocused();
   await page.getByRole("button", { name: "Create" }).click();
   await expect(page.locator("#form-errors")).toContainText("Enter a company");
 });
