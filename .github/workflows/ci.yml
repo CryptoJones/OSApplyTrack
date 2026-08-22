@@ -85,3 +85,63 @@ jobs:
         run: pytest -q
       - name: Audit Python packages
         run: pip-audit
+
+  # A red build on main is visible only to whoever happens to open the Actions tab.
+  # The weekly schedule makes that worse: an advisory published after a merge turns
+  # main red with no commit to blame and nobody watching — GHSA-q939-rpr3-3284 sat
+  # unnoticed for five days that way. File an issue instead, once per outage: a
+  # second failure comments on the open issue rather than opening a new one every
+  # Monday. Pull requests are excluded — their author already sees the failing check.
+  notify:
+    name: File an issue when main is broken
+    needs: [web, dotnet, python]
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the CI failure issue
+        env:
+          # Values reach the script through env, never ${{ }} interpolation inside it,
+          # so nothing here can be parsed as shell.
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: CI is failing on main
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          WEB: ${{ needs.web.result }}
+          DOTNET: ${{ needs.dotnet.result }}
+          PYTHON: ${{ needs.python.result }}
+        run: |
+          {
+            echo "The \`ci\` workflow failed on \`main\`."
+            echo
+            echo "**Failed jobs**"
+            if [ "$WEB" = failure ]; then echo "- Web — WCAG checks"; fi
+            if [ "$DOTNET" = failure ]; then echo "- .NET — test + audit"; fi
+            if [ "$PYTHON" = failure ]; then echo "- Python — lint + test + audit"; fi
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Run | $RUN_URL |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| Trigger | \`$TRIGGER\` |"
+            echo
+            echo "If this is the weekly scheduled run and no commit landed since the last"
+            echo "green build, the cause is most likely a **newly published advisory against an"
+            echo "existing dependency** rather than a code change — check the audit steps first."
+          } > body.md
+
+          # Match on the exact title against the live issue list rather than the search
+          # index, which lags behind creation and would let a second run open a duplicate.
+          number=$(gh issue list --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)] | first | .number // empty')
+
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+            echo "Commented on existing issue #$number"
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi
