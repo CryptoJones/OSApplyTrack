@@ -23,6 +23,13 @@ public sealed class Criteria
     public Dictionary<string, bool> Sources { get; set; } = [];
     public List<AtsBoard> AtsBoards { get; set; } = [];
 
+    /// <summary>
+    /// Absolute http(s) URLs of custom RSS/Atom job feeds this tenant follows, on top
+    /// of the built-in sources. Entries are attacker-suppliable and fetched server-side
+    /// by the poller, so the scheme is pinned here and the poller adds the SSRF guard.
+    /// </summary>
+    public List<string> RssFeeds { get; set; } = [];
+
     // Source ids the poller knows how to fetch without per-source configuration.
     public static readonly string[] BuiltinSources =
         ["remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely", "hn_whoishiring"];
@@ -109,7 +116,31 @@ public sealed class Criteria
             ExcludeLocations = CleanList(data, "exclude_locations"),
             Sources = sources,
             AtsBoards = boards,
+            RssFeeds = CleanFeeds(data),
         };
+    }
+
+    /// <summary>
+    /// De-duped (case-insensitive) list of absolute http(s) feed URLs. Anything else —
+    /// a relative path, <c>file://</c>, a non-default port — is dropped rather than
+    /// rejected, matching how junk sources and malformed ATS boards are handled.
+    /// </summary>
+    private static List<string> CleanFeeds(JsonElement data)
+    {
+        var feeds = new List<string>();
+        var seen = new HashSet<string>();
+        foreach (var raw in CleanList(data, "rss_feeds"))
+        {
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                || uri.HostNameType == UriHostNameType.Unknown
+                || uri.Host.Length == 0
+                || !uri.IsDefaultPort)
+                continue;
+            if (seen.Add(uri.AbsoluteUri.ToLowerInvariant()))
+                feeds.Add(uri.AbsoluteUri);
+        }
+        return feeds;
     }
 
     private static string GetString(JsonElement obj, string key, string fallback) =>

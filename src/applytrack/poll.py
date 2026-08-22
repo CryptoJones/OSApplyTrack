@@ -34,6 +34,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from html import unescape
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -46,7 +47,12 @@ import httpx
 import psycopg
 
 from applytrack.criteria import AtsBoard, Criteria
-from applytrack.linkcheck import BROWSER_HEADERS, is_reachable, ssrf_safe_client
+from applytrack.linkcheck import (
+    BROWSER_HEADERS,
+    fetch_public,
+    is_reachable,
+    ssrf_safe_client,
+)
 from applytrack.store import AppFields
 
 logger = logging.getLogger(__name__)
@@ -619,6 +625,194 @@ def fetch_lever(client: httpx.Client, limit: int, slug: str) -> list[Listing]:
     return out
 
 
+# -- fetcher: custom RSS / Atom feeds ---------------------------------------
+#
+# Unlike every fetcher above, the URL here comes from the user (Settings ·
+# Criteria), so it is attacker-influenced: the fetch goes through
+# linkcheck.fetch_public, whose transport pins each hop to a validated public
+# address, and the document is parsed by defusedxml. One feed key is
+# "rss:{url}" — the same key the worker's shared gather routes by.
+
+# A "Company: Role" head longer than this is almost certainly a sentence, not a
+# company name; fall back to the feed's own title instead.
+_MAX_COMPANY_LEN = 80
+
+# What a careers feed tends to wrap its own title in ("Jobs at Hooli", "Hooli
+# Careers"), stripped so the fallback company reads as just the company.
+_FEED_TITLE_HEAD_RE = re.compile(
+    r"^\s*(?:jobs?|careers?|openings?|vacancies|positions?)\s+at\s+", re.I
+)
+_FEED_TITLE_TAIL_RE = re.compile(
+    r"[\s\-–—|:]*\b(?:jobs?|careers?|job\s+board|openings?|vacancies|positions?)\b\s*$", re.I
+)
+_ROLE_AT_COMPANY_RE = re.compile(r"\s+at\s+", re.I)
+
+
+def _local(tag: object) -> str:
+    """Local name of an XML tag, any ``{namespace}`` prefix discarded, lowercased."""
+    return str(tag).rsplit("}", 1)[-1].lower()
+
+
+def _child(node: Element, name: str) -> Element | None:
+    """First *direct* child with the given local name (namespace-agnostic)."""
+    return next((el for el in node if _local(el.tag) == name), None)
+
+
+def _child_text(node: Element, *names: str) -> str:
+    """Text of the first direct child matching any of ``names``, else ``""``.
+
+    Nested markup is flattened (``itertext``) so an Atom ``<content type="xhtml">``
+    yields its prose rather than nothing.
+    """
+    for name in names:
+        el = _child(node, name)
+        if el is not None:
+            text = _WS_RE.sub(" ", "".join(el.itertext())).strip()
+            if text:
+                return text
+    return ""
+
+
+def _entry_link(node: Element) -> str:
+    """The item's URL: an RSS ``<link>`` body, an Atom ``<link href>``, or a permalink guid."""
+    fallback = ""
+    for el in node:
+        if _local(el.tag) != "link":
+            continue
+        href = (el.get("href") or "").strip()
+        if href:
+            # Atom: prefer rel="alternate" (the human page); keep others as backup.
+            if (el.get("rel") or "alternate").strip().lower() == "alternate":
+                return href
+            fallback = fallback or href
+            continue
+        text = (el.text or "").strip()
+        if text:
+            return text
+    if not fallback:
+        guid = _child(node, "guid")
+        text = (guid.text or "").strip() if guid is not None else ""
+        if text.startswith(("http://", "https://")):
+            return text
+    return fallback
+
+
+def _feed_company(feed_title: str) -> str:
+    """Strip the boilerplate off a feed's own title to leave a usable company name."""
+    title = _FEED_TITLE_HEAD_RE.sub("", feed_title or "").strip()
+    return _FEED_TITLE_TAIL_RE.sub("", title).strip(" -–—|:").strip()
+
+
+def _split_company_role(title: str, feed_company: str) -> tuple[str, str]:
+    """Best-effort ``(company, role)`` from one feed item's title.
+
+    Three shapes cover nearly every job feed: ``Company: Role`` (We Work Remotely
+    and friends), ``Role at Company``, and a bare role on a company's own careers
+    feed — where the company is the feed's title. A pair we can't split at all
+    yields an empty company, and the caller drops the listing.
+    """
+    title = _WS_RE.sub(" ", title or "").strip()
+    if not title:
+        return "", ""
+
+    company, sep, role = title.partition(":")
+    company, role = company.strip(), role.strip()
+    if sep and company and role and len(company) <= _MAX_COMPANY_LEN:
+        return company, role
+
+    # First " at " wins: a role prefix almost never contains one, while a company
+    # name sometimes does — so "Staff Engineer at Data at Scale" keeps the company whole.
+    split = _ROLE_AT_COMPANY_RE.search(title)
+    if split is not None:
+        role, company = title[: split.start()].strip(), title[split.end() :].strip()
+        if company and role and len(company) <= _MAX_COMPANY_LEN:
+            return company, role
+
+    return feed_company, title
+
+
+def _feed_body_text(raw: str) -> str:
+    """Flatten a feed item's body to prose.
+
+    Unlike the JSON sources, an RSS/Atom body is *escaped* HTML: the XML parser
+    hands back the markup as text, so the tags are dropped first and the entities
+    decoded after — otherwise every ``&`` and curly quote reaches the note (and the
+    cover-letter prompt) as ``&amp;`` / ``&#8217;``.
+    """
+    return _WS_RE.sub(" ", unescape(_TAG_RE.sub(" ", raw or ""))).strip()
+
+
+def _feed_source(feed_url: str) -> str:
+    """Source id for a custom feed's leads: ``rss:<host>`` (``auto:rss:<host>`` on the entry)."""
+    host = urlsplit(feed_url).netloc.lower().removeprefix("www.")
+    return f"rss:{host}" if host else "rss"
+
+
+def parse_job_feed(raw: bytes, feed_url: str, limit: int) -> list[Listing]:
+    """Map an RSS 2.0 or Atom document onto listings — pure, no network.
+
+    Parsed with defusedxml, so entity expansion and external references are refused;
+    the document comes from a URL the user supplied, not from us. A document we
+    can't parse yields no listings rather than raising, so one malformed feed never
+    aborts a poll.
+    """
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        logger.warning("could not parse feed %s as RSS or Atom", feed_url)
+        return []
+
+    channel = _child(root, "channel")
+    container = root if channel is None else channel
+    feed_company = _feed_company(_child_text(container, "title"))
+    source = _feed_source(feed_url)
+
+    out: list[Listing] = []
+    for node in root.iter():
+        if _local(node.tag) not in ("item", "entry"):
+            continue
+        company, role = _split_company_role(_child_text(node, "title"), feed_company)
+        if not company or not role:
+            continue
+        out.append(
+            Listing(
+                company=company,
+                role=role,
+                link=_entry_link(node),
+                location=_child_text(node, "location", "region"),
+                source=source,
+                description=_feed_body_text(
+                    _child_text(node, "description", "summary", "content", "encoded")
+                ),
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_rss(client: httpx.Client, limit: int, url: str) -> list[Listing]:
+    """Fetch and parse one custom RSS/Atom job feed.
+
+    ``client`` — the shared plain client :func:`_gather` hands every fetcher — is
+    deliberately unused: this URL is user-supplied, so the request must go through
+    :func:`~applytrack.linkcheck.fetch_public`, whose transport connects only to
+    validated public addresses. The built-in sources are hard-coded and can safely
+    share the pooled client.
+    """
+    return parse_job_feed(fetch_public(url), url, limit)
+
+
+def make_rss_fetcher(url: str) -> Fetcher:
+    """Bind one feed URL into a plain :data:`Fetcher`, named ``rss:<url>`` for logs."""
+
+    def _fetch(client: httpx.Client, limit: int) -> list[Listing]:
+        return fetch_rss(client, limit, url)
+
+    _fetch.__name__ = f"rss:{url}"
+    return _fetch
+
+
 SOURCE_FETCHERS: dict[str, Fetcher] = {
     "remotive": fetch_remotive,
     "remoteok": fetch_remoteok,
@@ -653,7 +847,7 @@ def make_ats_fetcher(board: AtsBoard) -> Fetcher | None:
 
 
 def build_fetchers(criteria: Criteria) -> list[Fetcher]:
-    """The fetchers to run for this config: enabled sources + ATS boards."""
+    """The fetchers to run for this config: enabled sources, ATS boards, custom feeds."""
     out: list[Fetcher] = [
         SOURCE_FETCHERS[name]
         for name, on in criteria.sources.items()
@@ -663,6 +857,7 @@ def build_fetchers(criteria: Criteria) -> list[Fetcher]:
         fetcher = make_ats_fetcher(board)
         if fetcher is not None:
             out.append(fetcher)
+    out.extend(make_rss_fetcher(url) for url in criteria.rss_feeds)
     return out
 
 
@@ -730,13 +925,15 @@ def _select_for_profile(
 
     Lets the worker fetch each source once and route the shared buckets per tenant,
     so ``score_and_stage`` stays source-agnostic and a tenant only ever sees roles
-    from the sources/boards it actually enabled."""
+    from the sources/boards/feeds it actually enabled."""
     out: list[Listing] = []
     for name, on in profile.sources.items():
         if on:
             out.extend(gathered.get(name, []))
     for board in profile.ats_boards:
         out.extend(gathered.get(f"{board.provider}:{board.slug}", []))
+    for url in profile.rss_feeds:
+        out.extend(gathered.get(f"rss:{url}", []))
     return out
 
 

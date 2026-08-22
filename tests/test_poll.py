@@ -11,6 +11,7 @@ import psycopg
 import pytest
 
 from applytrack.criteria import AtsBoard, Criteria
+from applytrack.linkcheck import PublicFetchError
 from applytrack.poll import (
     Listing,
     _gather,
@@ -20,11 +21,12 @@ from applytrack.poll import (
     classify,
     fetch_remoteok,
     fetch_remotive,
+    fetch_rss,
     run_poll,
     score_and_stage,
 )
 from applytrack.store import AppFields, filename_for
-from applytrack.worker import drain_requests, run_all_tenants
+from applytrack.worker import _gather_by_source, drain_requests, run_all_tenants
 
 
 class FakeRepo:
@@ -340,6 +342,42 @@ def test_build_fetchers_includes_sources_and_boards() -> None:
     assert len(fetchers) == 3  # two default sources + one ATS board
 
 
+def test_build_fetchers_includes_custom_rss_feeds() -> None:
+    c = Criteria(rss_feeds=["https://hooli.example/careers.rss"])
+    fetchers = build_fetchers(c)
+    assert len(fetchers) == 3  # two default sources + one feed
+    # Named after the feed so a failing one is identifiable in the poll logs.
+    assert fetchers[-1].__name__ == "rss:https://hooli.example/careers.rss"
+
+
+def test_fetch_rss_goes_through_the_ssrf_guard_not_the_shared_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The shared client _gather hands every fetcher is NOT SSRF-safe, so a
+    # user-supplied feed URL must be fetched via linkcheck.fetch_public instead.
+    requested: list[str] = []
+
+    def fake_fetch_public(url: str) -> bytes:
+        requested.append(url)
+        return (
+            b'<?xml version="1.0"?><rss><channel><title>Hooli Jobs</title>'
+            b"<item><title>Backend Engineer</title>"
+            b"<link>https://hooli.example/j/1</link></item></channel></rss>"
+        )
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", fake_fetch_public)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the shared client must not be used for a custom feed")
+
+    shared = httpx.Client(transport=httpx.MockTransport(explode))
+    out = fetch_rss(shared, 40, "https://hooli.example/careers.rss")
+
+    assert requested == ["https://hooli.example/careers.rss"]
+    assert (out[0].company, out[0].role) == ("Hooli", "Backend Engineer")
+    assert out[0].source == "rss:hooli.example"
+
+
 def test_run_poll_dedupes_across_runs_via_seen_ledger() -> None:
     # The seen-key the first run persists blocks a re-ping on the next run, even
     # though FakeRepo's iter_existing still reports no stored application — this is
@@ -401,6 +439,83 @@ def test_run_all_tenants_routes_sources_per_profile() -> None:
     assert [f.company for f in repo_a.added] == ["Acme"]
     assert [f.company for f in repo_b.added] == ["Globex"]
     assert {tid: len(names) for tid, names in results.items()} == {1: 1, 2: 1}
+
+
+def test_run_all_tenants_routes_custom_feeds_per_profile() -> None:
+    # Custom feeds route by "rss:{url}" like a source id, so a feed only reaches the
+    # tenants that follow it — and one shared fetch serves all of them.
+    shared_feed = "https://board.example/feed.rss"
+    repo_a = FakeRepo(
+        profile=Criteria(
+            keywords=["engineer"],
+            sources={"remotive": False, "remoteok": False},
+            rss_feeds=[shared_feed, "https://hooli.example/careers.rss"],
+        )
+    )
+    repo_b = FakeRepo(
+        profile=Criteria(
+            keywords=["engineer"],
+            sources={"remotive": False, "remoteok": False},
+            rss_feeds=[shared_feed],
+        )
+    )
+    repos = {1: repo_a, 2: repo_b}
+    gathered = {
+        f"rss:{shared_feed}": [_lead("Acme", "Backend Engineer", link="https://acme.co/1")],
+        "rss:https://hooli.example/careers.rss": [
+            _lead("Hooli", "Platform Engineer", link="https://hooli.example/2")
+        ],
+    }
+    run_all_tenants(
+        tenant_ids=[1, 2],
+        repo_for=lambda tid: repos[tid],
+        gathered=gathered,
+        verify_links=False,
+    )
+    assert sorted(f.company for f in repo_a.added) == ["Acme", "Hooli"]
+    assert [f.company for f in repo_b.added] == ["Acme"]
+
+
+def test_gather_by_source_fetches_a_shared_feed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_fetch_public(url: str) -> bytes:
+        calls.append(url)
+        return (
+            b'<?xml version="1.0"?><rss><channel><title>Board</title>'
+            b"<item><title>Acme: Backend Engineer</title>"
+            b"<link>https://acme.co/1</link></item></channel></rss>"
+        )
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", fake_fetch_public)
+    feed = "https://board.example/feed.rss"
+    off = {"remotive": False, "remoteok": False}
+    gathered = _gather_by_source(
+        [Criteria(sources=off, rss_feeds=[feed]), Criteria(sources=off, rss_feeds=[feed])],
+        40,
+    )
+
+    assert calls == [feed]  # two tenants, one request
+    assert [item.company for item in gathered[f"rss:{feed}"]] == ["Acme"]
+
+
+def test_gather_by_source_isolates_a_failing_feed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def boom(url: str) -> bytes:
+        raise PublicFetchError("refused non-public or unpinned address")
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", boom)
+    off = {"remotive": False, "remoteok": False}
+    with caplog.at_level(logging.WARNING):
+        gathered = _gather_by_source(
+            [Criteria(sources=off, rss_feeds=["https://evil.example/feed"])], 40
+        )
+
+    assert gathered["rss:https://evil.example/feed"] == []
+    assert any("evil.example" in r.getMessage() for r in caplog.records)
 
 
 def test_run_all_tenants_isolates_per_tenant_failure() -> None:

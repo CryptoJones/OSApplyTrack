@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Text.Json;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using Dapper;
@@ -239,6 +240,7 @@ public class RepoTests(PostgresFixture pg)
             ExcludeLocations = ["India"],
             Sources = Criteria.DefaultSources(),
             AtsBoards = [new AtsBoard("greenhouse", "stripe")],
+            RssFeeds = ["https://hooli.example/careers.rss"],
         };
         await repo.UpsertAsync(edited);
 
@@ -250,6 +252,34 @@ public class RepoTests(PostgresFixture pg)
         Assert.Equal(new[] { "India" }, loaded.ExcludeLocations);
         Assert.Single(loaded.AtsBoards);
         Assert.Equal("stripe", loaded.AtsBoards[0].Slug);
+        Assert.Equal(new[] { "https://hooli.example/careers.rss" }, loaded.RssFeeds);
+    }
+
+    [Fact]
+    public async Task Criteria_keeps_only_absolute_http_rss_feeds()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new CriteriaRepo(conn, t);
+
+        // FromJson is the normalizer both the PUT and the account import run through:
+        // a feed URL is fetched server-side by the poller, so anything that isn't a
+        // plain http(s) URL on a default port is dropped before it is ever stored.
+        using var doc = JsonDocument.Parse(
+            """
+            {"rss_feeds": [
+                "https://hooli.example/careers.rss",
+                "HTTPS://Hooli.example/careers.rss",
+                "file:///etc/passwd",
+                "javascript:alert(1)",
+                "/relative/feed.xml",
+                "http://internal.example:8080/feed"
+            ]}
+            """);
+        await repo.UpsertAsync(Criteria.FromJson(doc.RootElement));
+
+        Assert.Equal(
+            new[] { "https://hooli.example/careers.rss" }, (await repo.GetAsync()).RssFeeds);
     }
 
     [Fact]

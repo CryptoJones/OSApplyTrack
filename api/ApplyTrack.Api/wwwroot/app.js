@@ -19,6 +19,50 @@ const LANE_LABEL = { dotnet: ".NET", devrel: "devrel", ai: "AI" };
 const APPLIED_STATUSES = new Set(["applied", "screen", "onsite", "offer", "rejected"]);
 const statusGroup = (s) => (s === "passed" ? 2 : APPLIED_STATUSES.has(s) ? 1 : 0);
 
+// Sidebar orderings. "pipeline" is the default described above; the other three
+// answer "which of these is worth my next hour?" from a different angle. Each
+// comparator returns 0 for a tie and compareApps() breaks that tie deterministically,
+// so two renders of the same list never shuffle.
+const SORT_KEYS = ["pipeline", "score", "created", "company"];
+const SORT_STORAGE_KEY = "applytrack.sort";
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+// A blank fit score or date sinks to the bottom of its ordering instead of
+// pretending to be zero / the epoch — "unscored" is not "scored badly".
+const fitScore = (a) => {
+  const n = Number.parseInt(a.score, 10);
+  return Number.isFinite(n) ? n : null;
+};
+const descending = (x, y) => (x === y ? 0 : x === null ? 1 : y === null ? -1 : x < y ? 1 : -1);
+
+const SORTS = {
+  pipeline: (a, b) => statusGroup(a.status) - statusGroup(b.status),
+  score: (a, b) => descending(fitScore(a), fitScore(b)),
+  // created is a free-text ISO date (YYYY-MM-DD), so lexical order is date order.
+  created: (a, b) => descending((a.created || "").trim() || null, (b.created || "").trim() || null),
+  company: (a, b) => collator.compare(a.company || "", b.company || ""),
+};
+
+function compareApps(a, b) {
+  const compare = SORTS[state.sort] || SORTS.pipeline;
+  const primary = compare(a, b);
+  // Pipeline order deliberately stops here: within a group the stable sort keeps the
+  // server's status-then-company ordering, which a tiebreak would flatten.
+  if (primary !== 0 || state.sort === "pipeline") return primary;
+  return collator.compare(a.company || "", b.company || "")
+    || collator.compare(a.filename, b.filename);
+}
+
+// Sort choice is a per-browser preference, not account data — the API never sees it.
+function readStoredSort() {
+  try {
+    const saved = localStorage.getItem(SORT_STORAGE_KEY);
+    return SORT_KEYS.includes(saved) ? saved : "pipeline";
+  } catch (_) {
+    return "pipeline";
+  }
+}
+
 const state = {
   apps: [],
   appsEtag: "",
@@ -26,6 +70,7 @@ const state = {
   query: "",
   filterLane: "",
   filterStatus: "",
+  sort: readStoredSort(),
   current: null,
   currentVersion: "",
   mode: "empty", // empty | view | edit | raw | new | settings
@@ -45,6 +90,7 @@ const alertMessageEl = $("#alert-message");
 const confirmDialogEl = $("#confirm-dialog");
 const laneSel = $("#filter-lane");
 const statusSel = $("#filter-status");
+const sortSel = $("#sort-order");
 
 // ---- API ------------------------------------------------------------------
 const api = createApiClient(showLogin);
@@ -237,10 +283,11 @@ function filteredApps() {
       (a.snippet || "").toLowerCase().includes(q)
     );
   });
-  return apps.sort((a, b) => statusGroup(a.status) - statusGroup(b.status));
+  return apps.sort(compareApps);
 }
 
-// First still-open role (not applied, not passed) — where Pass jumps next.
+// First still-open role (not applied, not passed) — where Pass jumps next. Follows
+// the chosen sort, so "next up" means next in the order actually on screen.
 function nextActionable(excludeName) {
   const app = filteredApps().find(
     (a) => a.filename !== excludeName && statusGroup(a.status) === 0);
@@ -258,6 +305,10 @@ function renderSidebar() {
     li.className = "application-list-item";
     li.dataset.name = a.filename;
     const score = a.score ? `<span class="score-chip">fit ${escapeHtml(a.score)}</span>` : "";
+    // The fit chip and the company name make those two orderings self-evident; the
+    // posted date is only worth the space when it's what the list is ordered by.
+    const posted = state.sort === "created" && a.created
+      ? `<span>Posted ${escapeHtml(a.created)}</span>` : "";
     const contactLine =
       a.contact || a.contact_email
         ? `<span class="ic-meta">Contact: ${escapeHtml(a.contact || a.contact_email)}${
@@ -275,7 +326,7 @@ function renderSidebar() {
           ${statusBadge(a.status)}
         </span>
         ${a.role ? `<span class="ic-role">${escapeHtml(a.role)}</span>` : ""}
-        <span class="ic-meta">${lanePill(a.lane)} ${score}
+        <span class="ic-meta">${lanePill(a.lane)} ${score} ${posted}
           ${a.applied ? `<span>Applied ${escapeHtml(a.applied)}</span>` : ""}
           ${a.followup ? `<span>Follow-up ${escapeHtml(a.followup)}</span>` : ""}</span>
         ${contactLine}
@@ -899,9 +950,14 @@ const SOURCE_LABEL = {
   hn_whoishiring: "HN “Who is hiring”",
 };
 const ATS_PROVIDERS = ["greenhouse", "lever"];
+// Mirrors InputLimits.RssFeeds server-side; enforced here too so the add button can
+// say why it refused instead of the save failing later.
+const MAX_RSS_FEEDS = 25;
 
-// Holds the ATS boards being edited (add/remove re-render only that list).
+// Holds the ATS boards and custom feeds being edited (add/remove re-renders only
+// the affected list, so an unsaved keyword box isn't blown away).
 let criteriaBoards = [];
+let criteriaFeeds = [];
 
 function sourceToggles(sources) {
   return SOURCES.map((id) => {
@@ -934,6 +990,30 @@ function renderBoards() {
     btn.onclick = () => {
       criteriaBoards.splice(Number(btn.dataset.removeBoard), 1);
       renderBoards();
+    };
+  });
+}
+
+function feedRows() {
+  if (!criteriaFeeds.length) {
+    return `<div class="board-empty field-help">No custom feeds added.</div>`;
+  }
+  return criteriaFeeds.map((url, i) =>
+    `<div class="board-row">
+      <span class="board-slug mono">${escapeHtml(url)}</span>
+      <button class="btn btn-ghost btn-xs" data-remove-feed="${i}" type="button"
+        aria-label="Remove feed ${escapeHtml(url)}">Remove</button>
+    </div>`).join("");
+}
+
+function renderFeeds() {
+  const el = $("#criteria-feeds");
+  if (!el) return;
+  el.innerHTML = feedRows();
+  el.querySelectorAll("[data-remove-feed]").forEach((btn) => {
+    btn.onclick = () => {
+      criteriaFeeds.splice(Number(btn.dataset.removeFeed), 1);
+      renderFeeds();
     };
   });
 }
@@ -997,6 +1077,21 @@ function criteriaMarkup(c) {
         </div>
       </div>
 
+      <div class="mt-4">
+        <div class="field-label">Custom RSS feeds — follow any job feed the built-in sources miss</div>
+        <p class="field-help">
+          Paste the URL of an RSS or Atom feed (a company careers feed, a niche board,
+          a saved search). Items are scored against the same keywords and minimum fit.
+        </p>
+        <div id="criteria-feeds" class="board-list mt-2"></div>
+        <div class="feed-add mt-2">
+          <label class="sr-only" for="c-feed-url">Feed URL</label>
+          <input id="c-feed-url" class="field-input mono" type="url"
+            placeholder="https://example.com/careers.rss" />
+          <button class="btn btn-ghost" data-act="add-feed" type="button">+ Add feed</button>
+        </div>
+      </div>
+
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
         <button class="btn btn-primary" data-act="save">Save criteria</button>
@@ -1021,6 +1116,7 @@ function gatherCriteria() {
     exclude_locations: exclude,
     sources,
     ats_boards: criteriaBoards.map((b) => ({ provider: b.provider, slug: b.slug })),
+    rss_feeds: criteriaFeeds.slice(),
   };
 }
 
@@ -1038,6 +1134,21 @@ function wireCriteria() {
     $("#c-board-slug").value = "";
     renderBoards();
   };
+  contentEl.querySelector('[data-act="add-feed"]').onclick = () => {
+    const input = $("#c-feed-url");
+    const url = input.value.trim();
+    if (!url) return toast("Paste a feed URL to add it.");
+    // The server drops anything that isn't an absolute http(s) URL, so say so here
+    // rather than letting the entry vanish silently on save.
+    if (!/^https?:\/\//i.test(url)) return toast("A feed URL must start with http:// or https://");
+    if (criteriaFeeds.some((f) => f.toLowerCase() === url.toLowerCase()))
+      return toast("That feed is already in the list.");
+    if (criteriaFeeds.length >= MAX_RSS_FEEDS)
+      return toast(`You can follow at most ${MAX_RSS_FEEDS} custom feeds.`);
+    criteriaFeeds.push(url);
+    input.value = "";
+    renderFeeds();
+  };
   contentEl.querySelector('[data-act="save"]').onclick = async () => {
     try {
       await api("PUT", "/api/criteria", gatherCriteria());
@@ -1053,8 +1164,10 @@ async function loadCriteriaTab(body, gen = settingsGen) {
   const c = await api("GET", "/api/criteria");
   if (settingsSuperseded(gen)) return;
   criteriaBoards = (c.ats_boards || []).map((b) => ({ provider: b.provider, slug: b.slug }));
+  criteriaFeeds = (c.rss_feeds || []).slice();
   body.innerHTML = criteriaMarkup(c);
   renderBoards();
+  renderFeeds();
   wireCriteria();
 }
 
@@ -1318,6 +1431,19 @@ statusSel.addEventListener("change", () => {
   state.filterStatus = statusSel.value;
   renderPipeline();
   renderSidebar();
+});
+sortSel.value = state.sort;
+sortSel.addEventListener("change", () => {
+  state.sort = SORT_KEYS.includes(sortSel.value) ? sortSel.value : "pipeline";
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, state.sort);
+  } catch (_) {
+    // Private mode / storage disabled: the choice just doesn't survive a reload.
+  }
+  renderSidebar();
+  // The list reorders without changing its length, so the count's live region says
+  // nothing — announce the new order instead.
+  announce(`Sorted by ${sortSel.selectedOptions[0].textContent.trim()}.`);
 });
 $("#new-btn").addEventListener("click", openNew);
 

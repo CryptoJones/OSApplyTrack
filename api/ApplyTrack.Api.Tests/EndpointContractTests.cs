@@ -98,8 +98,13 @@ public class EndpointContractTests : IAsyncLifetime
         Assert.Equal(1, list.GetArrayLength());
         var row = list[0];
         foreach (var key in new[] { "filename", "company", "role", "lane", "status",
-                     "contact", "contact_email", "applied", "followup", "score", "link", "snippet" })
+                     "contact", "contact_email", "applied", "followup", "created", "score",
+                     "link", "snippet" })
             Assert.True(row.TryGetProperty(key, out _), $"missing key: {key}");
+
+        // The sidebar's "date posted" ordering sorts on this, so it must be populated
+        // even when the caller never supplied one (the create path fills in today).
+        Assert.False(string.IsNullOrEmpty(row.GetProperty("created").GetString()));
     }
 
     [Fact]
@@ -220,6 +225,29 @@ public class EndpointContractTests : IAsyncLifetime
         Assert.Equal(100, put.GetProperty("min_fit_score").GetInt32()); // clamped
         Assert.Equal("rust", put.GetProperty("keywords")[0].GetString());
         Assert.Equal("dotnet", put.GetProperty("default_lane").GetString());
+    }
+
+    [Fact]
+    public async Task Criteria_round_trips_custom_rss_feeds_and_drops_unusable_urls()
+    {
+        Assert.Equal(
+            JsonValueKind.Array,
+            (await ReadJson(await _client.GetAsync("/api/criteria")))
+                .GetProperty("rss_feeds").ValueKind);
+
+        var put = await ReadJson(await _client.PutAsync("/api/criteria", Json(
+            """
+            {"rss_feeds":["https://hooli.example/careers.rss","file:///etc/passwd","not a url"]}
+            """)));
+        var feeds = put.GetProperty("rss_feeds");
+        Assert.Equal(1, feeds.GetArrayLength());
+        Assert.Equal("https://hooli.example/careers.rss", feeds[0].GetString());
+
+        // The poller reads the stored column, so the GET must agree with the PUT echo.
+        var reloaded = await ReadJson(await _client.GetAsync("/api/criteria"));
+        Assert.Equal(
+            "https://hooli.example/careers.rss",
+            reloaded.GetProperty("rss_feeds")[0].GetString());
     }
 
     [Fact]

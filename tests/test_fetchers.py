@@ -21,6 +21,7 @@ from applytrack.poll import (
     fetch_remoteok,
     fetch_remotive,
     fetch_weworkremotely,
+    parse_job_feed,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -237,3 +238,102 @@ def test_fetch_remotive_scrapes_blob_and_dedupes() -> None:
     assert out[0].role == "ML Engineer"
     assert out[0].location == "Worldwide"
     assert "pytorch" in out[0].description
+
+
+# -- custom RSS / Atom feeds -------------------------------------------------
+
+
+def test_parse_job_feed_splits_company_colon_role() -> None:
+    rss = b"""<?xml version="1.0"?>
+    <rss><channel>
+      <title>Nomad Board</title>
+      <item>
+        <title>Hooli: Senior Platform Engineer</title>
+        <link>https://board.example/jobs/1</link>
+        <location>Remote (EU)</location>
+        <description>&lt;p&gt;Scale &amp;amp; ship&lt;/p&gt;</description>
+      </item>
+    </channel></rss>"""
+
+    out = parse_job_feed(rss, "https://www.board.example/feed.rss", 40)
+    assert len(out) == 1
+    assert out[0].company == "Hooli"
+    assert out[0].role == "Senior Platform Engineer"
+    assert out[0].link == "https://board.example/jobs/1"
+    assert out[0].location == "Remote (EU)"
+    assert out[0].description == "Scale & ship"
+    # www. is stripped so two spellings of one host share a source label.
+    assert out[0].source == "rss:board.example"
+
+
+def test_parse_job_feed_splits_role_at_company() -> None:
+    rss = b"""<?xml version="1.0"?>
+    <rss><channel>
+      <title>Job Feed</title>
+      <item><title>Staff Engineer at Data at Scale</title>
+        <guid isPermaLink="true">https://board.example/jobs/9</guid></item>
+    </channel></rss>"""
+
+    out = parse_job_feed(rss, "https://board.example/feed", 40)
+    # The FIRST " at " wins, so the multi-word company survives intact.
+    assert (out[0].company, out[0].role) == ("Data at Scale", "Staff Engineer")
+    # No <link>, so the permalink guid is the posting URL.
+    assert out[0].link == "https://board.example/jobs/9"
+
+
+def test_parse_job_feed_falls_back_to_the_feed_title_as_company() -> None:
+    rss = b"""<?xml version="1.0"?>
+    <rss><channel>
+      <title>Jobs at Hooli</title>
+      <item><title>Backend Engineer</title><link>https://hooli.example/j/1</link></item>
+    </channel></rss>"""
+
+    out = parse_job_feed(rss, "https://hooli.example/feed", 40)
+    assert (out[0].company, out[0].role) == ("Hooli", "Backend Engineer")
+
+
+def test_parse_job_feed_strips_careers_boilerplate_from_the_feed_title() -> None:
+    rss = b"""<?xml version="1.0"?>
+    <rss><channel>
+      <title>Globex Careers</title>
+      <item><title>SRE</title><link>https://globex.example/j/2</link></item>
+    </channel></rss>"""
+
+    assert parse_job_feed(rss, "https://globex.example/feed", 40)[0].company == "Globex"
+
+
+def test_parse_job_feed_reads_atom_entries() -> None:
+    atom = b"""<?xml version="1.0"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <title>Hooli Jobs</title>
+      <entry>
+        <title>Developer Advocate</title>
+        <link rel="edit" href="https://hooli.example/api/3" />
+        <link rel="alternate" href="https://hooli.example/jobs/3" />
+        <summary type="html">&lt;p&gt;Talk to developers&lt;/p&gt;</summary>
+      </entry>
+    </feed>"""
+
+    out = parse_job_feed(atom, "https://hooli.example/atom", 40)
+    assert len(out) == 1
+    assert (out[0].company, out[0].role) == ("Hooli", "Developer Advocate")
+    # rel="alternate" is the human-facing page, not the API edit link.
+    assert out[0].link == "https://hooli.example/jobs/3"
+    assert out[0].description == "Talk to developers"
+
+
+def test_parse_job_feed_honors_the_limit_and_skips_untitled_items() -> None:
+    items = "".join(
+        f"<item><title>Corp {i}: Engineer</title><link>https://b.example/{i}</link></item>"
+        for i in range(5)
+    )
+    rss = f'<?xml version="1.0"?><rss><channel><title>B</title><item><title></title>' \
+          f"</item>{items}</channel></rss>"
+
+    out = parse_job_feed(rss.encode(), "https://b.example/feed", 3)
+    assert [item.company for item in out] == ["Corp 0", "Corp 1", "Corp 2"]
+
+
+def test_parse_job_feed_returns_nothing_for_a_document_it_cannot_parse() -> None:
+    assert parse_job_feed(b"<html>not a feed", "https://b.example/feed", 40) == []
+    assert parse_job_feed(b"", "https://b.example/feed", 40) == []

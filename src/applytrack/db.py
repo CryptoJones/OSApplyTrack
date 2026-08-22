@@ -44,7 +44,7 @@ _MAX_NAME_ATTEMPTS = 50
 # Column order mirrors search_profiles; the keys match Criteria.from_dict's dict.
 _PROFILE_COLUMNS = (
     "keywords", "default_lane", "min_fit_score", "remote_only",
-    "exclude_locations", "sources", "ats_boards",
+    "exclude_locations", "sources", "ats_boards", "rss_feeds",
 )
 _PROFILE_SQL = f"""
 SELECT {", ".join(_PROFILE_COLUMNS)}

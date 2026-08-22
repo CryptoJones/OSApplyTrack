@@ -43,7 +43,8 @@ public sealed class CriteriaRepo
                 'remote_only', remote_only,
                 'exclude_locations', exclude_locations,
                 'sources', sources,
-                'ats_boards', ats_boards
+                'ats_boards', ats_boards,
+                'rss_feeds', rss_feeds
             )::text
             FROM search_profiles
             WHERE tenant_id = @t
@@ -63,10 +64,11 @@ public sealed class CriteriaRepo
             """
             INSERT INTO search_profiles
                 (tenant_id, keywords, default_lane, min_fit_score, remote_only,
-                 exclude_locations, sources, ats_boards, updated_at)
+                 exclude_locations, sources, ats_boards, rss_feeds, updated_at)
             VALUES
                 (@t, CAST(@keywords AS jsonb), @lane, @score, @remote,
-                 CAST(@exclude AS jsonb), CAST(@sources AS jsonb), CAST(@boards AS jsonb), now())
+                 CAST(@exclude AS jsonb), CAST(@sources AS jsonb), CAST(@boards AS jsonb),
+                 CAST(@feeds AS jsonb), now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 keywords          = EXCLUDED.keywords,
                 default_lane      = EXCLUDED.default_lane,
@@ -75,6 +77,7 @@ public sealed class CriteriaRepo
                 exclude_locations = EXCLUDED.exclude_locations,
                 sources           = EXCLUDED.sources,
                 ats_boards        = EXCLUDED.ats_boards,
+                rss_feeds         = EXCLUDED.rss_feeds,
                 updated_at        = now()
             """,
             new
@@ -87,6 +90,7 @@ public sealed class CriteriaRepo
                 exclude = JsonSerializer.Serialize(c.ExcludeLocations, JsonOpts),
                 sources = JsonSerializer.Serialize(c.Sources, JsonOpts),
                 boards = JsonSerializer.Serialize(c.AtsBoards, JsonOpts),
+                feeds = JsonSerializer.Serialize(c.RssFeeds, JsonOpts),
             },
             tx);
     }

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from applytrack.criteria import (
     DEFAULT_KEYWORDS,
+    MAX_RSS_FEEDS,
     Criteria,
 )
 
@@ -61,6 +62,34 @@ def test_to_dict_round_trips_dict() -> None:
             "exclude_locations": ["India"],
             "sources": {"jobicy": True},
             "ats_boards": [{"provider": "lever", "slug": "netflix"}],
+            "rss_feeds": ["https://hooli.example/careers.rss"],
         }
     )
     assert Criteria.from_dict(original.to_dict()).to_dict() == original.to_dict()
+
+
+def test_from_dict_keeps_only_http_feed_urls() -> None:
+    c = Criteria.from_dict(
+        {
+            "rss_feeds": [
+                "https://hooli.example/jobs.rss",
+                "http://boards.example/atom",
+                "  https://hooli.example/jobs.rss  ",  # dup after strip
+                "file:///etc/passwd",  # non-http scheme dropped
+                "javascript:alert(1)",  # ditto
+                "/relative/feed.xml",  # no host dropped
+                "http://internal.example:8080/feed",  # non-default port dropped
+                "",
+            ]
+        }
+    )
+    assert c.rss_feeds == ["https://hooli.example/jobs.rss", "http://boards.example/atom"]
+
+
+def test_from_dict_caps_the_feed_list() -> None:
+    many = [f"https://feeds.example/{i}.rss" for i in range(MAX_RSS_FEEDS + 10)]
+    assert len(Criteria.from_dict({"rss_feeds": many}).rss_feeds) == MAX_RSS_FEEDS
+
+
+def test_feeds_default_to_empty() -> None:
+    assert Criteria.from_dict({}).rss_feeds == []

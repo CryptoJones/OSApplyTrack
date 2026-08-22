@@ -9,6 +9,7 @@ through :class:`applytrack.db.PollRepo`.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from urllib.parse import urlsplit
 
 LANES = ("dotnet", "devrel", "ai")
 
@@ -47,6 +48,10 @@ DEFAULT_SOURCES: dict[str, bool] = {s: s in ("remotive", "remoteok") for s in BU
 MIN_SCORE_FLOOR = 0
 MIN_SCORE_CEIL = 100
 
+# How many custom feeds one tenant may follow; mirrors InputLimits.RssFeeds on the
+# .NET side, which is what actually rejects an over-long list at the API edge.
+MAX_RSS_FEEDS = 25
+
 
 @dataclass
 class AtsBoard:
@@ -79,6 +84,31 @@ def _clean_list(values: object) -> list[str]:
     return out
 
 
+def _clean_feeds(values: object) -> list[str]:
+    """Keep only absolute http(s) feed URLs, de-duped case-insensitively.
+
+    The URLs are user-supplied and fetched server-side, so anything that isn't a
+    plain http(s) URL on a default port is dropped here rather than handed to the
+    fetcher; :func:`applytrack.linkcheck.fetch_public` is the second gate (it
+    refuses private/link-local addresses at connect time). The .NET
+    ``Criteria.CleanFeeds`` applies the same rules on the write path.
+    """
+    out: list[str] = []
+    for raw in _clean_list(values):  # already stripped and de-duped
+        parts = urlsplit(raw)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            continue
+        try:
+            if parts.port is not None:
+                continue  # explicit port: not a default-port http(s) URL
+        except ValueError:
+            continue  # unparseable port
+        out.append(raw)
+        if len(out) >= MAX_RSS_FEEDS:
+            break
+    return out
+
+
 @dataclass
 class Criteria:
     """Everything the poller needs to decide what to fetch and what to stage."""
@@ -90,6 +120,7 @@ class Criteria:
     exclude_locations: list[str] = field(default_factory=list)
     sources: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_SOURCES))
     ats_boards: list[AtsBoard] = field(default_factory=list)
+    rss_feeds: list[str] = field(default_factory=list)
 
     # -- (de)serialization --------------------------------------------------
 
@@ -131,6 +162,7 @@ class Criteria:
             exclude_locations=_clean_list(data.get("exclude_locations")),
             sources=sources,
             ats_boards=boards,
+            rss_feeds=_clean_feeds(data.get("rss_feeds")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -142,6 +174,7 @@ class Criteria:
             "exclude_locations": list(self.exclude_locations),
             "sources": dict(self.sources),
             "ats_boards": [asdict(b) for b in self.ats_boards],
+            "rss_feeds": list(self.rss_feeds),
         }
 
 

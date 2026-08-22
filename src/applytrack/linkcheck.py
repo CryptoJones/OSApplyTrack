@@ -239,6 +239,86 @@ def _looks_like_index(url: str) -> bool:
     return not any(key in query for key in _JOB_QUERY_KEYS)
 
 
+def _walk(
+    url: str, client: httpx.Client
+) -> tuple[httpx.Response | None, str, str]:
+    """Follow up to :data:`_MAX_REDIRECTS` hops, SSRF-checking every one.
+
+    Returns ``(response, final_url, error)``; ``response`` is ``None`` exactly when
+    ``error`` is non-empty. Redirects are walked by hand rather than by httpx so
+    each hop's host is validated *before* we connect to it — the shared core of
+    :func:`probe` and :func:`fetch_public`.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return None, url, "not an http(s) URL"
+    if not _pin_for_request(client, parts.hostname or ""):
+        return None, url, "refused non-public or unpinned address"
+
+    current = url
+    try:
+        for _ in range(_MAX_REDIRECTS + 1):
+            # follow_redirects=False on the call overrides whatever default the
+            # caller's shared client carries, so the per-hop guard can't be
+            # bypassed by an auto-following client.
+            resp = client.get(current, follow_redirects=False)
+            if not (resp.is_redirect and "location" in resp.headers):
+                return resp, current, ""
+            current = urljoin(current, resp.headers["location"])
+            hop = urlsplit(current)
+            if hop.scheme not in ("http", "https"):
+                return None, current, "redirect to non-http(s) URL"
+            if not _pin_for_request(client, hop.hostname or ""):
+                return None, current, "redirect to non-public or unpinned address"
+        return None, current, "too many redirects"
+    except httpx.HTTPError as exc:
+        return None, current, type(exc).__name__
+
+
+class PublicFetchError(RuntimeError):
+    """A server-side fetch of a user-supplied URL was refused or failed."""
+
+
+# Ceiling on a fetched document. Big enough for any real job feed, small enough
+# that a hostile or runaway URL can't exhaust the poller's memory.
+MAX_FETCH_BYTES = 2 * 1024 * 1024
+
+
+def fetch_public(
+    url: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = 12.0,
+    max_bytes: int = MAX_FETCH_BYTES,
+) -> bytes:
+    """Fetch a user-supplied URL through the SSRF guard and return its body.
+
+    The same per-hop host validation :func:`probe` uses, but the body comes back
+    instead of a verdict — this is how the poller reads a tenant's custom RSS feed,
+    whose URL is attacker-influenced. Raises :class:`PublicFetchError` when the URL
+    is refused, unreachable, answers 4xx/5xx, or exceeds ``max_bytes``.
+    """
+    url = (url or "").strip()
+    owns_client = client is None
+    client = client or ssrf_safe_client(timeout=timeout)
+    try:
+        resp, _, error = _walk(url, client)
+        if resp is None:
+            raise PublicFetchError(error or "fetch failed")
+        if resp.status_code >= 400:
+            raise PublicFetchError(f"HTTP {resp.status_code}")
+        declared = resp.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > max_bytes:
+            raise PublicFetchError(f"response exceeds {max_bytes} bytes")
+        body = resp.content
+        if len(body) > max_bytes:
+            raise PublicFetchError(f"response exceeds {max_bytes} bytes")
+        return body
+    finally:
+        if owns_client:
+            client.close()
+
+
 def probe(
     url: str, *, client: httpx.Client | None = None, timeout: float = 12.0
 ) -> LinkStatus:
@@ -258,32 +338,9 @@ def probe(
     owns_client = client is None
     client = client or ssrf_safe_client(timeout=timeout)
     try:
-        if not _pin_for_request(client, parts.hostname or ""):
-            return LinkStatus(url=url, ok=False, error="refused non-public or unpinned address")
-        current = url
-        try:
-            for _ in range(_MAX_REDIRECTS + 1):
-                # follow_redirects=False on the call overrides whatever default the
-                # caller's shared client carries, so the per-hop guard can't be
-                # bypassed by an auto-following client.
-                resp = client.get(current, follow_redirects=False)
-                if not (resp.is_redirect and "location" in resp.headers):
-                    break
-                current = urljoin(current, resp.headers["location"])
-                hop = urlsplit(current)
-                if hop.scheme not in ("http", "https"):
-                    return LinkStatus(url=url, ok=False, error="redirect to non-http(s) URL")
-                if not _pin_for_request(client, hop.hostname or ""):
-                    return LinkStatus(
-                        url=url,
-                        ok=False,
-                        error="redirect to non-public or unpinned address",
-                    )
-            else:
-                return LinkStatus(url=url, ok=False, error="too many redirects")
-        except httpx.HTTPError as exc:
-            return LinkStatus(url=url, ok=False, error=type(exc).__name__)
-        final_url = current
+        resp, final_url, error = _walk(url, client)
+        if resp is None:
+            return LinkStatus(url=url, ok=False, error=error)
         started_deep = parts.path.strip("/") != ""
         to_home = started_deep and _is_home(final_url)
         generic = not to_home and _looks_like_index(final_url)

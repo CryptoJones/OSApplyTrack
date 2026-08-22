@@ -113,6 +113,8 @@ public class InputLimitTests : IAsyncLifetime
                 .Select(i => $"location-{i}"),
             ats_boards = Enumerable.Range(0, InputLimits.AtsBoards)
                 .Select(i => new { provider = "greenhouse", slug = $"company-{i}" }),
+            rss_feeds = Enumerable.Range(0, InputLimits.RssFeeds)
+                .Select(i => $"https://feeds.example/{i}.rss"),
         }));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -122,10 +124,16 @@ public class InputLimitTests : IAsyncLifetime
     [InlineData("keywords")]
     [InlineData("exclude_locations")]
     [InlineData("ats_boards")]
+    [InlineData("rss_feeds")]
     public async Task Criteria_rejects_over_cardinality_with_detail(string field)
     {
         object payload = field switch
         {
+            "rss_feeds" => new
+            {
+                rss_feeds = Enumerable.Range(0, InputLimits.RssFeeds + 1)
+                    .Select(i => $"https://feeds.example/{i}.rss"),
+            },
             "keywords" => new
             {
                 keywords = Enumerable.Range(0, InputLimits.Keywords + 1)

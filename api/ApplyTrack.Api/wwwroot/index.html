@@ -97,6 +97,15 @@
                 <option value="passed">Passed</option>
               </select>
             </label>
+            <label class="filter-sort" for="sort-order">
+              <span>Sort by</span>
+              <select id="sort-order">
+                <option value="pipeline">Pipeline order</option>
+                <option value="score">Fit score (high to low)</option>
+                <option value="created">Date posted (newest first)</option>
+                <option value="company">Company name (A to Z)</option>
+              </select>
+            </label>
           </div>
         </div>
         <ul id="app-list" class="application-list" aria-label="Matching applications"></ul>

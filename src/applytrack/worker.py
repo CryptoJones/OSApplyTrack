@@ -35,6 +35,7 @@ from applytrack.poll import (
     Listing,
     _select_for_profile,
     make_ats_fetcher,
+    make_rss_fetcher,
     score_and_stage,
 )
 
@@ -93,19 +94,24 @@ def _gather_by_source(
     """Fetch every source enabled by *any* profile once, keyed by source id.
 
     Built-in sources key by name (``"remotive"``); ATS boards key by
-    ``"{provider}:{slug}"`` — the same keys :func:`_select_for_profile` routes by.
-    A failing source yields an empty bucket and is logged at WARNING (rather than
-    aborting the gather or vanishing silently), so a dead/renamed source is visible
-    in the logs instead of looking like an empty market for every tenant.
+    ``"{provider}:{slug}"`` and custom RSS feeds by ``"rss:{url}"`` — the same keys
+    :func:`_select_for_profile` routes by, so two tenants following the same feed
+    cost one request. A failing source yields an empty bucket and is logged at
+    WARNING (rather than aborting the gather or vanishing silently), so a
+    dead/renamed source is visible in the logs instead of looking like an empty
+    market for every tenant.
     """
     builtin: set[str] = set()
     boards: dict[str, AtsBoard] = {}
+    feeds: dict[str, str] = {}
     for profile in profiles:
         for name, on in profile.sources.items():
             if on and name in SOURCE_FETCHERS:
                 builtin.add(name)
         for board in profile.ats_boards:
             boards[f"{board.provider}:{board.slug}"] = board
+        for url in profile.rss_feeds:
+            feeds[f"rss:{url}"] = url
 
     gathered: dict[str, list[Listing]] = {}
     with httpx.Client(timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
@@ -122,6 +128,14 @@ def _gather_by_source(
             try:
                 gathered[key] = fetcher(client, limit)
             except Exception:  # noqa: BLE001 - one bad source must not abort the gather
+                gathered[key] = []
+                logger.warning("poll source %s failed", key, exc_info=True)
+        for key, url in feeds.items():
+            try:
+                # Ignores `client` by design — a user-supplied feed URL is fetched
+                # through the SSRF-guarded transport (see poll.fetch_rss).
+                gathered[key] = make_rss_fetcher(url)(client, limit)
+            except Exception:  # noqa: BLE001 - one bad feed must not abort the gather
                 gathered[key] = []
                 logger.warning("poll source %s failed", key, exc_info=True)
     return gathered
