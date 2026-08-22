@@ -459,7 +459,12 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 - **Dependency CVE watch.** [`.forgejo/workflows/audit.yml`](./.forgejo/workflows/audit.yml)
   runs `dotnet list package --vulnerable --include-transitive` and `pip-audit` on
   every push/PR and weekly, failing the build on a known-vulnerable dependency. Run
-  the same two commands locally any time.
+  the same two commands locally any time. The weekly run is the one that matters:
+  an advisory published *after* a merge turns `main` red with no commit to blame, so
+  [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) files an issue when a
+  scheduled or push-to-`main` build fails — commenting on the open one rather than
+  opening a fresh issue every Monday. Pull requests are excluded; their author
+  already sees the failing check.
 
 ## Your data
 
