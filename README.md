@@ -549,6 +549,26 @@ Llm__BaseUrl=http://localhost:11434/v1 Llm__Model=llama3.1:8b \
 See [Cover letters](#cover-letters) for hosted providers, per-tenant keys, and the
 **Settings · AI** tab — and `.env.example` for the same settings, annotated.
 
+**Regenerating the README screenshots.** The images in this README come from a
+*running* app, not from the mocked Playwright suite, so the UI they show is the real
+one. [`scripts/demo-seed.json`](./scripts/demo-seed.json) is the account they shoot —
+five applications spread across the pipeline. With the API running on
+`localhost:5049`, sign in, then import the seed and capture:
+
+```sh
+# SID = your session cookie (applytrack_session) from the browser or the sessions table
+curl -X POST http://localhost:5049/api/account/import \
+  -H 'Content-Type: application/json' -H "Cookie: applytrack_session=$SID" \
+  --data-binary @scripts/demo-seed.json
+
+APPLYTRACK_SESSION_NAME=applytrack_session APPLYTRACK_SESSION_VALUE="$SID" \
+  npm run screenshots
+```
+
+The import is slug-preserving, so re-running it updates the same five entries rather
+than piling up duplicates. Retake the shots whenever a change lands that is visible
+in the sidebar or on an application sheet.
+
 ## Tests
 
 ```sh

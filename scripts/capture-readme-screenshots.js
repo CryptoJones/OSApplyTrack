@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
+//
+// Regenerate docs/screenshot.png + docs/mobile.png from a *running* app — not from
+// the mocked Playwright suite, whose fixtures are deliberately thin. The account it
+// shoots is `scripts/demo-seed.json`, imported through POST /api/account/import; the
+// companies below must exist in whatever account the session cookie belongs to.
+// See "Regenerating the README screenshots" in README.md for the full recipe.
 import { chromium } from "@playwright/test";
 import path from "node:path";
 
