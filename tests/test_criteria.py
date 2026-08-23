@@ -93,6 +93,3 @@ def test_from_dict_caps_the_feed_list() -> None:
 
 def test_feeds_default_to_empty() -> None:
     assert Criteria.from_dict({}).rss_feeds == []
-
-# CI smoke test — deliberate ruff F401, reverted immediately.
-import json  # noqa-less on purpose
