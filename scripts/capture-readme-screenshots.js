@@ -32,6 +32,16 @@ async function capture({ viewport, deviceScaleFactor, mobile, company, output })
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: new RegExp(company) }).click();
   await page.getByRole("heading", { name: company, exact: true }).waitFor();
+  // Opening an application moves focus to its heading, which leaves a scroll
+  // container part-way down the sheet — on mobile that is #workspace, and a viewport
+  // shot then starts mid-page with the company name cropped off. Reset every scroll
+  // position so the capture is deterministic and framed from the top of the sheet.
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+    document.querySelectorAll("*").forEach((el) => {
+      if (el.scrollTop) el.scrollTop = 0;
+    });
+  });
   await page.screenshot({ path: path.resolve(output), fullPage: false });
   await context.close();
 }
