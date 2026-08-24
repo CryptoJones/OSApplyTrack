@@ -542,9 +542,17 @@ def _fetch_feed_set(
 
     ``retitle`` optionally repairs a board whose title convention the shared
     splitter doesn't recognize.
+
+    A posting cross-listed in several of a board's categories is taken once. The
+    staging ledger would drop the repeat anyway, but only after it had consumed a
+    slot: counting duplicates against a feed's share silently shrinks how much of
+    the board a poll actually covers. Measured on the live feeds when this landed,
+    7 of RemoteFirstJobs' 40 slots were going to postings an earlier category had
+    already supplied.
     """
     per_feed = max(1, limit // len(feeds))
     out: list[Listing] = []
+    taken_urls: set[str] = set()
     for feed in feeds:
         if len(out) >= limit:
             break
@@ -556,11 +564,22 @@ def _fetch_feed_set(
             # only sees (and names) a failure of the whole source.
             logger.warning("source %s: feed %s unreachable", source, feed)
             continue
-        for listing in parse_job_feed(r.content, feed, min(per_feed, limit - len(out))):
+        # Parsed against the whole-run cap, not this feed's share, so duplicates
+        # are skipped over rather than counted against the share.
+        fresh = 0
+        for listing in parse_job_feed(r.content, feed, limit):
+            if fresh >= per_feed or len(out) >= limit:
+                break
+            key = _norm_url(listing.link)
+            if key:
+                if key in taken_urls:
+                    continue
+                taken_urls.add(key)
             listing.source = source
             if retitle is not None:
                 retitle(listing)
             out.append(listing)
+            fresh += 1
     return out
 
 

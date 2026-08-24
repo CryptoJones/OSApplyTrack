@@ -376,7 +376,10 @@ def test_feed_set_splits_the_cap_evenly_so_one_busy_feed_cannot_starve_the_rest(
     def handler(request: httpx.Request) -> httpx.Response:
         if "full-stack" in request.url.path:
             return httpx.Response(200, content=busy)
-        return httpx.Response(200, content=_feed(_item("Acme: Platform Engineer", "https://w/1")))
+        # A distinct posting per category — a shared URL would now be deduped.
+        return httpx.Response(
+            200, content=_feed(_item("Acme: Platform Engineer", f"https://w{request.url.path}"))
+        )
 
     out = fetch_weworkremotely(_client(handler), 40)
     # 5 feeds, cap 40 -> 8 apiece; the busy feed is held to its share, and the
@@ -389,7 +392,9 @@ def test_feed_set_survives_one_dead_category_feed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if "front-end" in request.url.path:
             return httpx.Response(503)
-        return httpx.Response(200, content=_feed(_item("Acme: Engineer", "https://w/1")))
+        return httpx.Response(
+            200, content=_feed(_item("Acme: Engineer", f"https://w{request.url.path}"))
+        )
 
     out = fetch_weworkremotely(_client(handler), 40)
     assert len(out) == 4  # the other four feeds still land
@@ -435,3 +440,38 @@ def test_workanywhere_retitle_leaves_a_dashless_title_alone() -> None:
 
     out = fetch_workanywhere(_client(handler), 40)
     assert (out[0].company, out[0].role) == ("Acme", "Platform Engineer")
+
+
+def test_feed_set_takes_a_cross_listed_posting_once() -> None:
+    """A job in three categories must not spend three feeds' worth of budget."""
+    shared = _item("Acme: Staff Engineer", "https://wwr.test/shared")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Every category carries the same posting plus one of its own.
+        own = _item(f"Hooli: Engineer {request.url.path}", f"https://wwr.test{request.url.path}")
+        return httpx.Response(200, content=_feed(shared + own))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    links = [lst.link for lst in out]
+    assert links.count("https://wwr.test/shared") == 1
+    # 5 feeds: the shared posting once, plus each category's own listing.
+    assert len(out) == 6
+
+
+def test_feed_set_dedup_does_not_shrink_a_feeds_share() -> None:
+    """The duplicate is skipped over, not counted against the feed's slots."""
+    dupe = _item("Acme: Staff Engineer", "https://wwr.test/shared")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/categories/remote-programming-jobs.rss":
+            return httpx.Response(200, content=_feed(dupe))
+        # This feed leads with the already-taken posting, then its own eight.
+        own = "".join(
+            _item(f"Hooli: Engineer {i}", f"https://wwr.test/b{i}") for i in range(8)
+        )
+        return httpx.Response(200, content=_feed(dupe + own))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    # 40 // 5 = 8 per feed. The four later feeds each still deliver a full 8.
+    assert sum(1 for lst in out if lst.company == "Hooli") == 8
+    assert sum(1 for lst in out if lst.link == "https://wwr.test/shared") == 1
