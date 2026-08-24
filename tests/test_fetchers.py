@@ -18,9 +18,11 @@ from applytrack.poll import (
     fetch_hn_whoishiring,
     fetch_jobicy,
     fetch_lever,
+    fetch_remotefirstjobs,
     fetch_remoteok,
     fetch_remotive,
     fetch_weworkremotely,
+    fetch_workanywhere,
     parse_job_feed,
 )
 
@@ -124,8 +126,10 @@ def test_fetch_weworkremotely_parses_rss_title() -> None:
     </channel></rss>"""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # Only the first feed needs data; second returns empty channel.
-        if "programming" in request.url.path:
+        # Only the all-programming feed carries data; the other categories return
+        # an empty channel. Match the exact path -- four of the five WWR feed URLs
+        # contain "programming", so a substring match serves this item four times.
+        if request.url.path == "/categories/remote-programming-jobs.rss":
             return httpx.Response(200, content=rss)
         return httpx.Response(200, content=b"<rss><channel></channel></rss>")
 
@@ -337,3 +341,97 @@ def test_parse_job_feed_honors_the_limit_and_skips_untitled_items() -> None:
 def test_parse_job_feed_returns_nothing_for_a_document_it_cannot_parse() -> None:
     assert parse_job_feed(b"<html>not a feed", "https://b.example/feed", 40) == []
     assert parse_job_feed(b"", "https://b.example/feed", 40) == []
+
+
+def _feed(items: str) -> bytes:
+    return f'<?xml version="1.0"?><rss><channel>{items}</channel></rss>'.encode()
+
+
+def _item(title: str, link: str) -> str:
+    return f"<item><title>{title}</title><link>{link}</link><region>Remote</region></item>"
+
+
+def test_fetch_remotefirstjobs_reads_role_at_company_titles() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("python.rss"):
+            return httpx.Response(
+                200,
+                content=_feed(
+                    _item("Machine Learning Engineer at Talent Inc.", "https://rfj.test/1")
+                ),
+            )
+        return httpx.Response(200, content=_feed(""))
+
+    out = fetch_remotefirstjobs(_client(handler), 40)
+    assert len(out) == 1
+    assert out[0].company == "Talent Inc."
+    assert out[0].role == "Machine Learning Engineer"
+    assert out[0].source == "remotefirstjobs"
+
+
+def test_feed_set_splits_the_cap_evenly_so_one_busy_feed_cannot_starve_the_rest() -> None:
+    """A first-come budget let WWR's ~118-item full-stack feed eat the whole cap."""
+    busy = _feed("".join(_item(f"Hooli: Engineer {i}", f"https://wwr.test/{i}") for i in range(50)))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "full-stack" in request.url.path:
+            return httpx.Response(200, content=busy)
+        return httpx.Response(200, content=_feed(_item("Acme: Platform Engineer", "https://w/1")))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    # 5 feeds, cap 40 -> 8 apiece; the busy feed is held to its share, and the
+    # four one-item feeds still contribute rather than being cut off.
+    assert sum(1 for lst in out if lst.company == "Hooli") == 8
+    assert sum(1 for lst in out if lst.company == "Acme") == 4
+
+
+def test_feed_set_survives_one_dead_category_feed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "front-end" in request.url.path:
+            return httpx.Response(503)
+        return httpx.Response(200, content=_feed(_item("Acme: Engineer", "https://w/1")))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    assert len(out) == 4  # the other four feeds still land
+    assert all(lst.source == "weworkremotely" for lst in out)
+
+
+def test_fetch_workanywhere_recovers_the_employer_from_em_dash_titles() -> None:
+    """Its titles are "Role - Company" with an em dash, which the shared splitter
+    doesn't know; without the retitle hook every lead lands under the feed's own
+    name and keeps the employer buried in the role."""
+    feed = (
+        '<?xml version="1.0"?><rss><channel>'
+        "<title>WorkAnywhere.pro — Developer Remote Jobs</title>"
+        "<item><title>Developer Advocate - AI &amp; Developer Experiences — Snowflake</title>"
+        "<link>https://workanywhere.pro/jobs/1</link></item>"
+        "</channel></rss>"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("developer.xml"):
+            return httpx.Response(200, content=feed)
+        return httpx.Response(200, content=_feed(""))
+
+    out = fetch_workanywhere(_client(handler), 40)
+    assert len(out) == 1
+    assert out[0].company == "Snowflake"
+    # The hyphen inside the role must survive; only the em dash splits.
+    assert out[0].role == "Developer Advocate - AI & Developer Experiences"
+    assert out[0].source == "workanywhere"
+
+
+def test_workanywhere_retitle_leaves_a_dashless_title_alone() -> None:
+    feed = (
+        b'<?xml version="1.0"?><rss><channel><title>WorkAnywhere.pro</title>'
+        b"<item><title>Acme: Platform Engineer</title>"
+        b"<link>https://workanywhere.pro/jobs/2</link></item></channel></rss>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("developer.xml"):
+            return httpx.Response(200, content=feed)
+        return httpx.Response(200, content=_feed(""))
+
+    out = fetch_workanywhere(_client(handler), 40)
+    assert (out[0].company, out[0].role) == ("Acme", "Platform Engineer")

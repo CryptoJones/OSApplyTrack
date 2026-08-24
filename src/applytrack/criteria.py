@@ -20,6 +20,8 @@ BUILTIN_SOURCES = (
     "arbeitnow",
     "jobicy",
     "weworkremotely",
+    "remotefirstjobs",
+    "workanywhere",
     "hn_whoishiring",
 )
 

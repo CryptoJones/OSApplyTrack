@@ -940,13 +940,18 @@ async function deleteApp(name) {
 
 // Built-in source ids + display labels, mirroring applytrack.criteria.
 // BUILTIN_SOURCES. The /api/criteria payload always carries all of them.
-const SOURCES = ["remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely", "hn_whoishiring"];
+const SOURCES = [
+  "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
+  "remotefirstjobs", "workanywhere", "hn_whoishiring",
+];
 const SOURCE_LABEL = {
   remotive: "Remotive",
   remoteok: "RemoteOK",
   arbeitnow: "Arbeitnow",
   jobicy: "Jobicy",
   weworkremotely: "We Work Remotely",
+  remotefirstjobs: "RemoteFirstJobs",
+  workanywhere: "WorkAnywhere.pro",
   hn_whoishiring: "HN “Who is hiring”",
 };
 const ATS_PROVIDERS = ["greenhouse", "lever"];
