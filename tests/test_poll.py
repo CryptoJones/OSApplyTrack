@@ -672,3 +672,55 @@ def test_drain_requests_requeues_tenant_with_active_poll(
 
     assert drain_requests(connection) == {7: []}  # type: ignore[arg-type]
     assert connection.requeued == [7]
+
+
+def test_classify_ignores_a_keyword_buried_mid_word() -> None:
+    """`rag` used to hit storage/leveraging/coverage, staging unrelated roles."""
+    noise = "leveraging our storage coverage, we encourage every average applicant"
+    assert classify("Senior Account Executive", noise, ["rag"]) == (0, [])
+
+
+def test_classify_still_matches_inflected_forms() -> None:
+    """A match may run past the keyword's end -- that is where plurals live."""
+    score, hits = classify(
+        "Frontend Engineer", "works with backend engineers", ["backend engineer"]
+    )
+    assert hits == ["backend engineer"]
+    assert score == 45  # body-only base 40 + 5
+
+    _, hits = classify("Content Role", "experience with prompt engineering", ["prompt engineer"])
+    assert hits == ["prompt engineer"]
+
+
+def test_classify_does_not_let_a_short_keyword_run_into_another_word() -> None:
+    assert classify("Nurse", "first aid training", ["ai"]) == (0, [])
+    score, _ = classify("AI Engineer", "", ["ai"])
+    assert score == 59  # title hit
+
+
+def test_classify_matches_punctuation_leading_keywords() -> None:
+    score, hits = classify("Senior .NET Developer", "", [".net"])
+    assert hits == [".net"]
+    assert score == 59
+    # ...but not a hostname that merely ends in the same characters.
+    assert classify("Support Rep", "email us at example.net", [".net"]) == (0, [])
+
+
+def test_classify_scores_body_only_evidence_below_a_title_hit() -> None:
+    """A generic title whose body name-drops a technology is weaker evidence."""
+    one_body, _ = classify("Software Engineer", "we use llm tooling", ["llm", "rag", "mlops"])
+    assert one_body == 45
+    three_body, _ = classify(
+        "Software Engineer", "llm, rag and mlops work", ["llm", "rag", "mlops"]
+    )
+    assert three_body == 55  # corroboration clears the default floor
+    title, _ = classify("LLM Engineer", "", ["llm"])
+    assert title == 59  # a single title hit still outranks one body mention
+
+
+def test_classify_never_exceeds_one_hundred() -> None:
+    kws = ["ai engineer", "llm", "rag", "mlops", "agentic", "genai", "langchain"]
+    title = " ".join(kws)
+    score, hits = classify(title, "", kws)
+    assert len(hits) == len(kws)
+    assert score == 100  # 50 + 9*7 = 113 before clamping

@@ -34,6 +34,7 @@ import logging
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from html import unescape
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -126,23 +127,58 @@ def _ats_label(slug: str) -> str:
 # -- scoring ----------------------------------------------------------------
 
 
+@lru_cache(maxsize=1024)
+def _keyword_re(keyword: str) -> re.Pattern[str]:
+    """Compile one keyword into a word-aware matcher (cached; keyword sets repeat).
+
+    Plain ``in`` matching made short keywords fire on the middle of unrelated
+    words. ``rag`` was the worst offender by far -- it hit storage,
+    leveraging, coverage, encourage -- and was single-handedly
+    responsible for most borderline scores on the live feeds, pulling in account
+    executives and customer-experience roles on the strength of a benefits blurb.
+
+    So a match may not *begin* mid-word. It may still run past the end, because
+    that is where the useful inflections live: ``backend engineer`` should match
+    "backend engineers" and ``prompt engineer`` should match "prompt engineering".
+    An arbitrary tail is not allowed, or ``ai`` would match "aid" -- only a short
+    set of English suffixes.
+
+    Deliberately not a regex word-boundary anchor on the front: keywords like
+    ``.net`` and ``c#`` start with punctuation, which such an anchor mishandles. The
+    rule is the narrower "not preceded by a letter or digit", which also stops
+    ``.net`` from matching example.net while leaving ".NET" matched.
+    """
+    return re.compile(rf"(?<![a-z0-9]){re.escape(keyword)}(?:e?s|ing|ed)?(?![a-z0-9])")
+
+
 def classify(title: str, description: str, keywords: Iterable[str]) -> tuple[int, list[str]]:
     """Score a role 0-100 against the flat keyword list.
 
-    Returns ``(score, matched_keywords)``; ``([])`` score 0 when nothing matched.
-    Title hits weigh more than body hits, mirroring the original lane scorer:
-    base 50, +9 per keyword in the title, +3 per keyword found only in the body.
+    Returns ``(score, matched_keywords)``; ``(0, [])`` when nothing matched.
+    Keywords match on word starts, not raw substrings -- see :func:`_keyword_re`.
+
+    A hit in the title is the strong signal and scores as it always has: base 50,
+    +9 per title keyword, +3 per keyword found only in the body. A listing with
+    *no* title hit is weaker evidence -- a generic role whose description happens
+    to name a technology -- so it starts from 40 and needs corroboration to clear
+    a typical floor: three body keywords reach 55, one reaches 45. Under the old
+    flat base a single passing mention scored 53, which sat just under the default
+    floor by luck rather than by judgement.
+
+    The result is clamped to 100. It used to be able to exceed it (six title hits
+    scored 104), which contradicted both this docstring and the 0-100 slider the
+    SPA offers for ``min_fit_score``.
     """
     title_l = (title or "").lower()
     text_l = f"{title} {description}".lower()
     kws = [k.lower() for k in keywords if k]
-    hits = [k for k in kws if k in text_l]
+    hits = [k for k in kws if _keyword_re(k).search(text_l)]
     if not hits:
         return 0, []
-    title_hits = sum(1 for k in kws if k in title_l)
+    title_hits = sum(1 for k in kws if _keyword_re(k).search(title_l))
     body_hits = len(hits) - title_hits
-    score = 50 + 9 * title_hits + 3 * body_hits
-    return score, hits
+    score = 50 + 9 * title_hits + 3 * body_hits if title_hits else 40 + 5 * body_hits
+    return min(100, score), hits
 
 
 def _looks_remote(item: Listing) -> bool:
