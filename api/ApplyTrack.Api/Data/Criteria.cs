@@ -32,7 +32,10 @@ public sealed class Criteria
 
     // Source ids the poller knows how to fetch without per-source configuration.
     public static readonly string[] BuiltinSources =
-        ["remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely", "hn_whoishiring"];
+    [
+        "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
+        "remotefirstjobs", "workanywhere", "hn_whoishiring",
+    ];
 
     public static readonly string[] AtsProviders = ["greenhouse", "lever"];
 

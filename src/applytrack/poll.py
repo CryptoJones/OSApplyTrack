@@ -459,49 +459,123 @@ def fetch_jobicy(client: httpx.Client, limit: int) -> list[Listing]:
     return out
 
 
-# We Work Remotely category RSS feeds. Item titles are "Company: Role".
+# -- fetchers: RSS job boards -----------------------------------------------
+#
+# Three boards publish RSS rather than JSON, each splitting its listings across
+# per-stack category feeds. They need no bespoke parsing: :func:`parse_job_feed`
+# (defined with the custom-feed plumbing below) already reads both title
+# conventions these boards use -- "Company: Role" and "Role at Company".
+
+# We Work Remotely category feeds. Item titles are "Company: Role".
 WWR_FEEDS = (
     "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
+    "https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss",
     "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
 )
 
+# RemoteFirstJobs per-stack feeds. Item titles are "Role at Company".
+REMOTEFIRSTJOBS_FEEDS = (
+    "https://remotefirstjobs.com/rss/jobs/ai.rss",
+    "https://remotefirstjobs.com/rss/jobs/python.rss",
+    "https://remotefirstjobs.com/rss/jobs/react.rss",
+    "https://remotefirstjobs.com/rss/jobs/golang.rss",
+    "https://remotefirstjobs.com/rss/jobs/data-science.rss",
+)
 
-def _rss_text(item: Element, tag: str) -> str:
-    el = item.find(tag)
-    return (el.text or "").strip() if el is not None and el.text else ""
+# WorkAnywhere.pro role-family feeds; it aggregates and de-dupes other boards.
+# Item titles are "Role — Company" (em dash) -- see :func:`_retitle_em_dash`.
+#
+# This host is fronted by Vercel and rate-limits harder than the others: hammered
+# a few times in a row it starts answering with an HTTP 429 "Security Checkpoint"
+# JS interstitial instead of the feed, and it 429s a request with no User-Agent
+# outright. The pooled client's BROWSER_HEADERS and the hourly poll cadence both
+# stay well inside that, and a 429 costs a logged WARNING, not a failed run.
+WORKANYWHERE_FEEDS = (
+    "https://workanywhere.pro/rss/developer.xml",
+    "https://workanywhere.pro/rss/engineer.xml",
+    "https://workanywhere.pro/rss/data-ai.xml",
+)
 
 
-def fetch_weworkremotely(client: httpx.Client, limit: int) -> list[Listing]:
+def _retitle_em_dash(listing: Listing) -> None:
+    """Recover ``(role, company)`` from a "Role — Company" title, in place.
+
+    :func:`_split_company_role` knows "Company: Role" and "Role at Company"; a
+    board that uses an em dash instead falls through to its last resort, which
+    attributes every lead to the *feed's* own title and leaves the employer
+    buried in the role. Splitting on the last " — " fixes that, and only that:
+    a role legitimately containing a hyphen ("Developer Advocate - AI &
+    Developer Experiences — Snowflake") keeps it.
+
+    Deliberately *not* folded into the shared splitter. Custom tenant feeds run
+    through the same parser, and "Senior Engineer — Remote" is a common enough
+    title there that a global em-dash rule would invent "Remote" as an employer.
+    """
+    role, sep, company = listing.role.rpartition(" — ")
+    if sep and role.strip() and company.strip():
+        listing.role, listing.company = role.strip(), company.strip()
+
+
+def _fetch_feed_set(
+    client: httpx.Client,
+    feeds: tuple[str, ...],
+    limit: int,
+    source: str,
+    retitle: Callable[[Listing], None] | None = None,
+) -> list[Listing]:
+    """Walk one board's category feeds through the shared feed parser.
+
+    The per-source cap is split *evenly across feeds* rather than consumed
+    first-come. These boards are partitioned by stack and wildly uneven -- WWR's
+    full-stack feed carried ~118 items against front-end's ~4 when this was
+    written -- so a first-come budget lets one busy category swallow the whole cap
+    and starve every later feed, which is exactly the per-stack coverage the feeds
+    exist to provide.
+
+    Two things differ from a tenant's custom feeds. These URLs are hard-coded
+    rather than user-supplied, so they use the pooled client instead of
+    :func:`~applytrack.linkcheck.fetch_public`'s SSRF-guarded transport. And the
+    ``source`` id is fixed, so leads are attributed to the board rather than to
+    :func:`_feed_source`'s per-host ``rss:<host>``.
+
+    ``retitle`` optionally repairs a board whose title convention the shared
+    splitter doesn't recognize.
+    """
+    per_feed = max(1, limit // len(feeds))
     out: list[Listing] = []
-    for feed in WWR_FEEDS:
+    for feed in feeds:
         if len(out) >= limit:
             break
         try:
             r = client.get(feed)
             r.raise_for_status()
-            root = ET.fromstring(r.content)
-        except (httpx.HTTPError, ET.ParseError):
+        except httpx.HTTPError:
+            # One dead category must not cost the board its other feeds; _gather
+            # only sees (and names) a failure of the whole source.
+            logger.warning("source %s: feed %s unreachable", source, feed)
             continue
-        for item in root.iter("item"):
-            title = _rss_text(item, "title")
-            company, _, role = title.partition(":")
-            company, role = company.strip(), role.strip()
-            if not company or not role:
-                continue
-            region = _rss_text(item, "region")
-            out.append(
-                Listing(
-                    company=company,
-                    role=role,
-                    link=_rss_text(item, "link"),
-                    location=region or "Remote",
-                    source="weworkremotely",
-                    description=_strip_html(_rss_text(item, "description")),
-                )
-            )
-            if len(out) >= limit:
-                break
+        for listing in parse_job_feed(r.content, feed, min(per_feed, limit - len(out))):
+            listing.source = source
+            if retitle is not None:
+                retitle(listing)
+            out.append(listing)
     return out
+
+
+def fetch_weworkremotely(client: httpx.Client, limit: int) -> list[Listing]:
+    return _fetch_feed_set(client, WWR_FEEDS, limit, "weworkremotely")
+
+
+def fetch_remotefirstjobs(client: httpx.Client, limit: int) -> list[Listing]:
+    return _fetch_feed_set(client, REMOTEFIRSTJOBS_FEEDS, limit, "remotefirstjobs")
+
+
+def fetch_workanywhere(client: httpx.Client, limit: int) -> list[Listing]:
+    return _fetch_feed_set(
+        client, WORKANYWHERE_FEEDS, limit, "workanywhere", retitle=_retitle_em_dash
+    )
 
 
 # -- fetcher: Hacker News "Who is hiring?" ----------------------------------
@@ -819,6 +893,8 @@ SOURCE_FETCHERS: dict[str, Fetcher] = {
     "arbeitnow": fetch_arbeitnow,
     "jobicy": fetch_jobicy,
     "weworkremotely": fetch_weworkremotely,
+    "remotefirstjobs": fetch_remotefirstjobs,
+    "workanywhere": fetch_workanywhere,
     "hn_whoishiring": fetch_hn_whoishiring,
 }
 
