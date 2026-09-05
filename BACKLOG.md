@@ -30,4 +30,16 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [ ] [#86 — Poller: the keyword suffix allowance re-opens the rag/ml/go false positives](https://github.com/CryptoJones/OSApplyTrack/issues/86)
 - [ ] [#87 — Poller: listings with no link bypass the cross-feed dedupe entirely](https://github.com/CryptoJones/OSApplyTrack/issues/87)
 
+## Agentic auto-apply
+
+An attached model evaluates qualifying leads, drafts the materials, answers the
+screening questions, and parks a finished packet in a review queue. A human always
+clicks Submit. Each step below ships on its own; step 3 delivers most of the value.
+
+- [x] Step 1 — Read the job posting before drafting the letter ([#91](https://github.com/CryptoJones/OSApplyTrack/pull/91))
+- [ ] [#92 — Step 2: the agent reads the posting and forms its own fit verdict](https://github.com/CryptoJones/OSApplyTrack/issues/92)
+- [ ] [#93 — Step 3: prepared packets and the Ready-to-submit queue](https://github.com/CryptoJones/OSApplyTrack/issues/93)
+- [ ] [#94 — Step 4: human-triggered browser submission, dry-run by default](https://github.com/CryptoJones/OSApplyTrack/issues/94)
+- [ ] [#95 — Step 5: Lever, Ashby, and the unknown long tail](https://github.com/CryptoJones/OSApplyTrack/issues/95)
+
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
