@@ -397,6 +397,29 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_lead_whose_link_cannot_be_fetched_still_drafts()
+    {
+        // Drafting predates the posting fetch and must survive it failing: a dead,
+        // paywalled, or (here) blocked-address link is not a reason to refuse a letter
+        // the tenant could get before. 127.0.0.1 is rejected by the fetcher's own SSRF
+        // guard, so this exercises the degradation path without leaving the box.
+        var stub = new StubLlmClient();
+        using var client = await AuthedClientAsync(NewFactory(WithStub(stub)));
+        await client.PutAsync("/api/resume", Json(NonEmptyResume));
+        var name = (await ReadJson(await client.PostAsync("/api/apps",
+            Json("""{"company":"Acme Corp","role":"Engineer","link":"http://127.0.0.1/jobs/1"}"""))))
+            .GetProperty("filename").GetString()!;
+
+        var res = await client.PostAsync($"/api/apps/{name}/draft", null);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(StubLlmClient.DefaultBody, (await ReadJson(res)).GetProperty("material").GetString());
+        // ...and the model was told the posting is missing rather than led to believe
+        // it had read one.
+        Assert.Contains("not available", stub.LastUserPrompt);
+    }
+
+    [Fact]
     public async Task Cover_letters_are_isolated_between_tenants()
     {
         var factory = NewFactory(WithStub(new StubLlmClient()));

@@ -399,6 +399,12 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
   a text-based PDF and stores the extracted résumé text as the model brief. The LLM
   is told these are the *only* facts it may assert, so it can't invent employers or
   metrics.
+- **It reads the posting first.** When the application has a link, the server fetches
+  the job description through the same SSRF-hardened fetcher as **Autofill** and puts
+  it in the prompt, so the letter answers what the role actually asks for instead of
+  guessing from the job title. Best-effort by design: no link, a dead page, or a
+  JS-only posting simply drafts without it, and the model is told the posting was
+  unavailable rather than left to invent requirements.
 - **Your signature is deterministic.** The model is instructed to stop after the
   body paragraphs. The saved signature is appended server-side exactly as entered,
   so drafts do not fall back to placeholders such as “The Candidate.”

@@ -4,6 +4,7 @@
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
+using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ApplyTrack.Api.Endpoints;
@@ -109,6 +110,7 @@ public static class AppsEndpoints
             string name,
             ApplicationRepo apps, ResumeRepo resumes, LlmSettingsRepo llm,
             LlmOptions instance, CoverLetterDrafter drafter, CoverLetterRepo letters,
+            JobPageFetcher fetcher, ILoggerFactory loggers,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -123,8 +125,10 @@ public static class AppsEndpoints
 
             var resume = await resumes.GetAsync();
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
+            var posting = await ReadPostingAsync(
+                rec.Fields.Link, fetcher, loggers.CreateLogger("ApplyTrack.Api.Draft"), ct);
             var body = await drafter.DraftAsync(
-                rec.Fields, resume, cfg, await llm.GetCoverLetterSignatureAsync(), ct);
+                rec.Fields, resume, cfg, await llm.GetCoverLetterSignatureAsync(), posting, ct);
             await letters.UpsertAsync(rec.Name, body, cfg.Model);
             return Results.Ok(new { ok = true, material = body });
         }).RequireRateLimiting("draft");
@@ -138,4 +142,36 @@ public static class AppsEndpoints
 
     private static IResult NotImplemented(string detail) =>
         Results.Json(new { detail }, statusCode: StatusCodes.Status501NotImplemented);
+
+    /// <summary>
+    /// Fetch the job description behind a lead's link so the letter is written against
+    /// what the role actually asks for. Deliberately best-effort: a lead may have no
+    /// link, the page may be dead, paywalled, or JS-only, and none of that is a reason
+    /// to refuse a draft the tenant could get before this existed. Every failure
+    /// degrades to an empty string, which the prompt reports honestly as "not
+    /// available" rather than papering over.
+    /// </summary>
+    private static async Task<string> ReadPostingAsync(
+        string link, JobPageFetcher fetcher, ILogger log, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+            return "";
+        try
+        {
+            var (html, finalUrl) = await fetcher.FetchAsync(link, ct);
+            return JobPostingParser.Parse(html, finalUrl).Description?.Trim() ?? "";
+        }
+        catch (Exception ex) when (ex is ScrapeUnavailableException or AppValidationException)
+        {
+            // Expected, and the tenant's own URL — log the reason, draft without it.
+            log.LogInformation("draft: no posting text for {Link}: {Reason}", link, ex.Message);
+            return "";
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Anything unexpected must still not cost the tenant their draft.
+            log.LogWarning(ex, "draft: unexpected failure fetching {Link}", link);
+            return "";
+        }
+    }
 }
