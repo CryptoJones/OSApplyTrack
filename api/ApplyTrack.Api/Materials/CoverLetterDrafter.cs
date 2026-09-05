@@ -26,14 +26,22 @@ public sealed class CoverLetterDrafter
         ["ai"] = "AI-agent / applied-AI",
     };
 
+    /// <summary>
+    /// Draft the letter. <paramref name="postingText"/> is the job description as
+    /// fetched from <see cref="AppFields.Link"/>; pass it whenever it's available.
+    /// Without it the model only ever sees the poller's 280-character notes snippet
+    /// and a bare URL it cannot open, and writes a letter about a posting it has not
+    /// read. It is optional rather than required because drafting predates the fetch
+    /// and must keep working for hand-entered leads and unreachable pages.
+    /// </summary>
     public async Task<string> DraftAsync(
         AppFields app, Resume resume, EffectiveLlmConfig cfg,
-        string signature = "", CancellationToken ct = default)
+        string signature = "", string postingText = "", CancellationToken ct = default)
     {
         if (resume.IsEmpty)
             throw new AppValidationException("add your résumé in Résumé settings before drafting a cover letter");
 
-        var (system, user) = BuildPrompt(app, resume);
+        var (system, user) = BuildPrompt(app, resume, postingText);
         var body = (await _llm.CompleteAsync(system, user, cfg, ct)).Trim();
 
         // Reject empty/implausible output rather than save a broken letter.
@@ -44,7 +52,14 @@ public sealed class CoverLetterDrafter
             : body;
     }
 
-    private static (string System, string User) BuildPrompt(AppFields app, Resume resume)
+    /// <summary>How much fetched posting text reaches the prompt. Descriptions run long
+    /// (Workday and LinkedIn pages routinely clear 20k characters of boilerplate) and the
+    /// letter only needs the requirements, which sit near the top. Generous enough to
+    /// carry them, small enough to leave room on a modest local context window.</summary>
+    private const int MaxPostingChars = 8000;
+
+    private static (string System, string User) BuildPrompt(
+        AppFields app, Resume resume, string postingText)
     {
         var lane = LaneLead.TryGetValue(app.Lane, out var lead) ? lead : LaneLead["ai"];
         var system =
@@ -55,7 +70,11 @@ public sealed class CoverLetterDrafter
             Hard rules:
             - Use ONLY the facts in the CANDIDATE BRIEF. Do NOT invent employers, titles,
               metrics, or any claim not present there. Do NOT assert facts about the company
-              beyond what is given; you may speak to the role and domain at a general level.
+              beyond what the JOB POSTING states; where no posting text is given, speak to
+              the role and domain at a general level rather than guessing at specifics.
+            - Where the JOB POSTING is present, tie the applicant's strengths to what it
+              actually asks for, in its own vocabulary. Address its stated requirements, not
+              a generic version of the role.
             - Confident, concrete, specific voice. No clichés or filler ("I am excited to",
               "team player", "fast-paced environment", "passionate", "I believe").
             - Lead with the applicant's {lane} strengths and connect them to what THIS role
@@ -77,13 +96,31 @@ public sealed class CoverLetterDrafter
             ROLE: {Or(app.Role, "the open role")}
             LOCATION: {Or(app.Location, "(unspecified)")}
             JOB NOTES: {Or(app.Notes, "(none)")}
-            POSTING: {Or(app.Link, "(none)")}
+            POSTING URL: {Or(app.Link, "(none)")}
+
+            {PostingBlock(postingText)}
 
             CANDIDATE BRIEF (the only facts you may assert about the applicant):
             {resume.ToBrief()}
             """;
 
         return (system, user);
+    }
+
+    /// <summary>The posting section of the prompt. Says plainly when the text is missing,
+    /// so the model treats the absence as a known gap instead of inventing requirements to
+    /// fill it.</summary>
+    private static string PostingBlock(string postingText)
+    {
+        var text = postingText.Trim();
+        if (text.Length == 0)
+            return "JOB POSTING: (not available — the posting text could not be retrieved)";
+        if (text.Length > MaxPostingChars)
+            text = text[..MaxPostingChars].TrimEnd() + "\n[…posting truncated]";
+        return $"""
+            JOB POSTING (what this role actually asks for — draw the connections from here):
+            {text}
+            """;
     }
 
     private static string Or(string value, string fallback) => value.Length > 0 ? value : fallback;

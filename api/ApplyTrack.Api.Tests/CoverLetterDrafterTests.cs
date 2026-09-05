@@ -77,4 +77,48 @@ public class CoverLetterDrafterTests
         await Assert.ThrowsAsync<LlmUnavailableException>(() => new CoverLetterDrafter(stub)
             .DraftAsync(new AppFields { Company = "Acme" }, SampleResume(), Cfg));
     }
+
+    [Fact]
+    public async Task The_fetched_posting_reaches_the_prompt()
+    {
+        var stub = new StubLlmClient();
+
+        await new CoverLetterDrafter(stub).DraftAsync(
+            new AppFields { Company = "Acme", Link = "https://acme.example/jobs/1" },
+            SampleResume(), Cfg, "",
+            "We need someone fluent in Npgsql and Dapper to own our ingest pipeline.");
+
+        Assert.Contains("Npgsql and Dapper", stub.LastUserPrompt);
+        Assert.Contains("own our ingest pipeline", stub.LastUserPrompt);
+    }
+
+    [Fact]
+    public async Task Without_posting_text_the_prompt_says_so_rather_than_implying_it_was_read()
+    {
+        var stub = new StubLlmClient();
+
+        await new CoverLetterDrafter(stub).DraftAsync(
+            new AppFields { Company = "Acme", Link = "https://acme.example/jobs/1" },
+            SampleResume(), Cfg);
+
+        // The URL still goes through — the model just must not be led to believe it
+        // has seen the description when all it has is a link it cannot open.
+        Assert.Contains("https://acme.example/jobs/1", stub.LastUserPrompt);
+        Assert.Contains("not available", stub.LastUserPrompt);
+    }
+
+    [Fact]
+    public async Task A_very_long_posting_is_truncated_so_it_cannot_crowd_out_the_resume()
+    {
+        var stub = new StubLlmClient();
+        // Boilerplate first, the one fact that must survive the cut last.
+        var posting = new string('x', 12_000) + "SENTINEL-TAIL";
+
+        await new CoverLetterDrafter(stub).DraftAsync(
+            new AppFields { Company = "Acme" }, SampleResume(), Cfg, "", posting);
+
+        Assert.Contains("[…posting truncated]", stub.LastUserPrompt);
+        Assert.DoesNotContain("SENTINEL-TAIL", stub.LastUserPrompt);
+        Assert.Contains("Ada Byte", stub.LastUserPrompt);       // résumé survived the cap
+    }
 }
