@@ -56,6 +56,26 @@ public sealed class ResumeRepo
         return Resume.FromJson(doc.RootElement);
     }
 
+    /// <summary>Keep the uploaded PDF bytes alongside the extracted text, so the browser
+    /// can attach the real file at submit time. Only these two columns are touched.</summary>
+    public Task StorePdfAsync(byte[] bytes, string fileName) =>
+        _conn.ExecuteAsync(
+            """
+            INSERT INTO resume_profiles (tenant_id, source_pdf, source_pdf_name, updated_at)
+            VALUES (@t, @bytes, @name, now())
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                source_pdf = EXCLUDED.source_pdf, source_pdf_name = EXCLUDED.source_pdf_name, updated_at = now()
+            """,
+            new { t = _t, bytes, name = fileName });
+
+    /// <summary>The stored PDF, or null when the résumé was never uploaded as a file.</summary>
+    public async Task<(byte[] Bytes, string Name)?> GetPdfAsync()
+    {
+        var row = await _conn.QuerySingleOrDefaultAsync<(byte[]? Bytes, string Name)>(
+            "SELECT source_pdf, source_pdf_name FROM resume_profiles WHERE tenant_id = @t", new { t = _t });
+        return row.Bytes is null ? null : (row.Bytes, row.Name.Length > 0 ? row.Name : "resume.pdf");
+    }
+
     public async Task UpsertAsync(Resume r, IDbTransaction? tx = null)
     {
         await _conn.ExecuteAsync(

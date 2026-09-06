@@ -3,6 +3,7 @@
 
 using System.Net;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -26,11 +27,12 @@ namespace ApplyTrack.Api.Tests;
 [Collection(PostgresCollection.Name)]
 public class AgentWorkerTests(PostgresFixture pg)
 {
-    private const string BotToken = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
-    private static readonly SecretProtector Protector = new("test-master-key");
+    internal const string BotToken = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
+    internal static readonly SecretProtector Protector = new("test-master-key");
 
-    private static AgentWorker NewWorker(
-        StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null)
+    internal static AgentWorker NewWorker(
+        StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
+        BrowserOptions? browser = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), new JobPageFetcher(),
@@ -44,10 +46,12 @@ public class AgentWorkerTests(PostgresFixture pg)
             .AddInMemoryCollection(new Dictionary<string, string?> { ["App:PublicBaseUrl"] = "https://apply.example" })
             .Build();
         var ready = new PacketReadyNotifier(notifier, config, NullLogger<PacketReadyNotifier>.Instance);
+        var browserOptions = browser ?? new BrowserOptions();
         return new AgentWorker(
             connectionString, new AgentOptions { Enabled = true },
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
-            Protector, evaluator, builder, ready, NullLoggerFactory.Instance);
+            Protector, evaluator, builder, ready, browserOptions,
+            new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance);
     }
 
     private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true)

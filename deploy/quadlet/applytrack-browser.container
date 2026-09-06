@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack browser (Playwright server the agent drives)
+Requires=applytrack-proxy.service
+After=applytrack-proxy.service
+
+[Container]
+ContainerName=applytrack-browser
+Image=ghcr.io/cryptojones/osapplytrack-browser:latest
+# Only the internal browser network: no route anywhere but the proxy.
+Network=applytrack-browser.network
+Environment=HTTPS_PROXY=http://applytrack-proxy:3128
+Environment=HTTP_PROXY=http://applytrack-proxy:3128
+SecurityLabelDisable=false
+# Chromium's own sandbox needs user namespaces; Playwright's seccomp profile
+# (docker/browser/seccomp_profile.json in the repo) allows exactly that.
+SeccompProfile=%h/.config/applytrack/seccomp_profile.json
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

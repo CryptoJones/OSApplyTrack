@@ -272,8 +272,12 @@ test("a ready packet lists its answers, blocks submit on review items, and passe
     else if (path === "/api/apps" && method === "GET") body = applications;
     else if (path === "/api/stats") body = { status: { ready: 1, lead: 1, applied: 1 }, lane: {} };
     else if (path === `/api/apps/${application.filename}` && method === "GET") body = readyDetail;
-    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true };
+    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true, browser_available: true };
     else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
+    else if (path.endsWith("/evidence")) body = [
+      { id: 7, kind: "dry_run", url: "https://example.com/jobs/1", confirmation: "", detail: { mapped: ["first_name"] }, has_screenshot: false, created_at: "2026-09-06T12:05:00Z" },
+    ];
+    else if (path.endsWith("/submit") && method === "POST") body = { queued: true, dry_run: true, pending: true };
     else if (path.endsWith("/packet") && method === "PUT") body = { ...readyDetail.packet, version: 4, needs_review: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
@@ -285,6 +289,11 @@ test("a ready packet lists its answers, blocks submit on review items, and passe
   await expect(page.getByLabel("Are you legally authorized to work in the US? *")).toHaveValue("Yes");
   await expect(page.getByText("left blank on purpose")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Fit verdict" })).toBeVisible();
+  // A browser is available: Submit stays disabled while answers need review; the dry
+  // run is always offered; the last dry run shows as evidence.
+  await expect(page.getByRole("button", { name: "Submit application" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Fill in the browser (dry run)" })).toBeEnabled();
+  await expect(page.getByText("Filled (dry run)")).toBeVisible();
   await expectNoSeriousViolations(page);
 
   const saved = page.waitForRequest((request) =>

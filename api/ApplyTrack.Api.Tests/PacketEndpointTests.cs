@@ -154,7 +154,7 @@ public class PacketEndpointTests : IAsyncLifetime
         var blanked = await ReadJson(await client.PutAsync($"/api/apps/{name}/packet",
             Json("""{"answers":{"std:first_name":""}}""")));
         var review = blanked.GetProperty("needs_review");
-        Assert.Equal(["std:first_name"], review.EnumerateArray().Select(r => r.GetProperty("id").GetString()).ToArray());
+        Assert.Equal(["std:first_name"], review.EnumerateArray().Select(r => r.GetProperty("id").GetString() ?? "").ToArray());
         Assert.Equal("Byte", blanked.GetProperty("answers").GetProperty("std:last_name").GetString());
 
         Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/api/apps/{name}/packet")).StatusCode);

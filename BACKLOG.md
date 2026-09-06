@@ -41,7 +41,7 @@ clicks Submit. Each step below ships on its own; step 3 delivers most of the val
 - [x] [#92 — Step 2: the agent reads the posting and forms its own fit verdict](https://github.com/CryptoJones/OSApplyTrack/issues/92)
 - [x] [#93 — Step 3: prepared packets and the Ready-to-submit queue](https://github.com/CryptoJones/OSApplyTrack/issues/93)
 - [x] [#99 — Notify by Telegram (moo) when a packet is ready to submit](https://github.com/CryptoJones/OSApplyTrack/issues/99)
-- [ ] [#94 — Step 4: human-triggered browser submission, dry-run by default](https://github.com/CryptoJones/OSApplyTrack/issues/94)
+- [x] [#94 — Step 4: human-triggered browser submission, dry-run by default](https://github.com/CryptoJones/OSApplyTrack/issues/94)
 - [ ] [#95 — Step 5: Lever, Ashby, and the unknown long tail](https://github.com/CryptoJones/OSApplyTrack/issues/95)
 
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/

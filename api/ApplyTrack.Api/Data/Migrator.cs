@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Text;
 using DbUp;
 using DbUp.Engine;
+using DbUp.ScriptProviders;
+using DbUp.Support;
 using Npgsql;
 
 namespace ApplyTrack.Api.Data;
@@ -52,9 +55,15 @@ public static class Migrator
 
         try
         {
+            var assembly = typeof(Migrator).Assembly;
             var upgrader = DeployChanges.To
                 .PostgresqlDatabase(unpooled)
-                .WithScriptsEmbeddedInAssembly(typeof(Migrator).Assembly)
+                // The versioned scripts, run once each and journaled...
+                .WithScriptsEmbeddedInAssembly(assembly, name => name.EndsWith(".sql") && !name.Contains(".Always."))
+                // ...then Migrations/Always/*.sql on every boot (the agent role's grants),
+                // after them so a table a new migration just created is covered.
+                .WithScripts(new EmbeddedScriptProvider(assembly, name => name.Contains(".Always.") && name.EndsWith(".sql"),
+                    Encoding.UTF8, new SqlScriptOptions { ScriptType = ScriptType.RunAlways, RunGroupOrder = DbUpDefaults.DefaultRunGroupOrder + 1 }))
                 .WithExecutionTimeout(migrationTimeout)
                 .LogToConsole()
                 .Build();
@@ -74,5 +83,46 @@ public static class Migrator
             unlock.CommandTimeout = lockTimeout;
             unlock.ExecuteNonQuery();
         }
+    }
+
+    /// <summary>How many versioned scripts this build carries — what a current schema has journaled.</summary>
+    public static int VersionedScriptCount() =>
+        typeof(Migrator).Assembly.GetManifestResourceNames()
+            .Count(n => n.EndsWith(".sql") && n.Contains(".Migrations.") && !n.Contains(".Always."));
+
+    /// <summary>
+    /// For a container that must NOT migrate — the agent worker running as its
+    /// least-privilege role has no DDL rights — wait until the owner container has
+    /// brought the schema up to this build's script count, then carry on. Throws
+    /// after <paramref name="timeout"/> so a mis-paired image pair fails loudly
+    /// instead of running against a schema it does not understand.
+    /// </summary>
+    public static void WaitUntilCurrent(string connectionString, TimeSpan timeout)
+    {
+        var need = VersionedScriptCount();
+        var deadline = DateTime.UtcNow + timeout;
+        Exception? last = null;
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var conn = new NpgsqlConnection(connectionString);
+                conn.Open();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT count(*) FROM schemaversions";
+                var have = Convert.ToInt32(cmd.ExecuteScalar());
+                if (have >= need)
+                    return;
+                Console.WriteLine($"schema has {have}/{need} migrations; waiting for the API to migrate…");
+            }
+            catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException)
+            {
+                last = ex; // no table yet, no grants yet, DB still starting: all "not yet"
+            }
+            Thread.Sleep(2000);
+        }
+        throw new InvalidOperationException(
+            $"the database schema did not become current within {timeout.TotalSeconds:0}s "
+            + "(is the API container running and migrating?)", last);
     }
 }

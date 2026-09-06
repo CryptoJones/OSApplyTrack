@@ -78,6 +78,8 @@ const state = {
   coverLettersEnabled: true,
   // The agent (Settings · Agent) is opt-in; OFF hides the evaluate affordance.
   agentEnabled: false,
+  // Whether this instance has a browser container to fill and submit forms with.
+  browserAvailable: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -521,12 +523,16 @@ function packetSection(data) {
           <h3 id="packet-heading">Application packet</h3>
         </div>
         <div class="material-actions">
-          ${url ? `<button class="btn btn-primary btn-xs" data-act="copy-open">Copy answers and open the posting</button>` : ""}
+          ${url ? `<button class="btn ${state.browserAvailable ? "btn-ghost" : "btn-primary"} btn-xs" data-act="copy-open">Copy answers and open the posting</button>` : ""}
+          ${url && state.browserAvailable ? `<button class="btn btn-ghost btn-xs" data-act="submit" data-dry="1">Fill in the browser (dry run)</button>` : ""}
+          ${url && state.browserAvailable ? `<button class="btn btn-primary btn-xs" data-act="submit" ${review.length ? "disabled aria-disabled=\"true\"" : ""}>Submit application</button>` : ""}
           ${state.agentEnabled ? `<button class="btn btn-ghost btn-xs" data-act="prepare" data-force="1">Rebuild</button>` : ""}
           <button class="btn btn-ghost btn-xs" data-act="packet-discard">Discard</button>
         </div>
       </div>
       ${alert}
+      <div id="submit-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
+      <div id="evidence"></div>
       <form id="packet-form" class="mt-3">
         <div id="packet-errors" class="error-summary" role="alert" tabindex="-1" hidden></div>
         ${rows}
@@ -584,6 +590,60 @@ function wirePacket(data) {
   if (copyEl) copyEl.onclick = () => copyAnswersAndOpen(data);
   const discardEl = contentEl.querySelector('[data-act="packet-discard"]');
   if (discardEl) discardEl.onclick = () => discardPacket(data.filename);
+  contentEl.querySelectorAll('[data-act="submit"]').forEach((b) => {
+    b.onclick = () => queueSubmit(data.filename, b, b.dataset.dry === "1");
+  });
+  if (data.packet && state.browserAvailable) loadEvidence(data.filename);
+}
+
+// Queue a browser run for the worker: a dry run (fill + screenshot, no click) or
+// the real thing. The worker picks it up within seconds; the sheet shows the result
+// as evidence once it lands, and the moo says so too.
+async function queueSubmit(name, btn, dryRun) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    const r = await api("POST", `/api/apps/${encodeURIComponent(name)}/submit`, { dry_run: dryRun });
+    const out = document.getElementById("submit-status");
+    if (out) out.textContent = r.queued
+      ? (r.dry_run ? "Queued: the browser will fill the form and screenshot it." : "Queued: the browser will submit the application.")
+      : "Already queued — the browser is on it.";
+    toast(r.queued ? (r.dry_run ? "Dry run queued." : "Submission queued.") : "Already queued.");
+    setTimeout(() => loadEvidence(name), 20000);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+// What the browser saw: screenshots and confirmations, newest first.
+async function loadEvidence(name) {
+  const out = document.getElementById("evidence");
+  if (!out) return;
+  let items = [];
+  try {
+    items = await api("GET", `/api/apps/${encodeURIComponent(name)}/evidence`);
+  } catch (_) {
+    return;
+  }
+  if (!Array.isArray(items) || !items.length) { out.innerHTML = ""; return; }
+  const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed" };
+  out.innerHTML = `
+    <h4 class="mt-4">What the browser saw</h4>
+    <ul class="agent-log">${items.map((e) => `
+      <li class="mt-2 text-sm">
+        <span class="link-status ${e.kind === "failed" ? "bad" : "ok"}">${escapeHtml(KIND[e.kind] || e.kind)}</span>
+        <span class="text-ink-faint">· ${escapeHtml(new Date(e.created_at).toLocaleString())}</span>
+        ${e.confirmation ? `<div class="field-help mt-1">“${escapeHtml(e.confirmation)}”</div>` : ""}
+        ${e.detail && e.detail.error ? `<div class="packet-flag mt-1">${escapeHtml(e.detail.error)}</div>` : ""}
+        ${e.has_screenshot ? `<details class="mt-1"><summary class="field-help">Screenshot</summary>
+          <img class="evidence-shot" alt="Screenshot of the application form as the browser left it" loading="lazy"
+            src="/api/apps/${encodeURIComponent(name)}/evidence/${e.id}/screenshot.png" /></details>` : ""}
+      </li>`).join("")}
+    </ul>`;
 }
 
 function collectPacketAnswers() {
@@ -1715,6 +1775,16 @@ function agentMarkup(s, events) {
         <p class="field-help">Off by default. On, the worker judges your best unjudged leads on every pass.</p>
       </div>
 
+      <div class="mt-4">
+        <label class="source-row">
+          <input id="a-dry" type="checkbox"${s.dry_run === false ? "" : " checked"} />
+          <span>Dry run only — fill the form and screenshot it, never click Submit for me</span>
+        </label>
+        <p class="field-help">${s.browser_available
+          ? "A browser container is available. With this on (the default) the agent fills every form and moos you to click Apply; untick it to let <strong>Submit</strong> on a packet actually apply."
+          : "No browser container on this instance: packets are prepared and you apply via <strong>Copy answers and open the posting</strong>."}</p>
+      </div>
+
       <div class="mt-4 agent-grid">
         <div>
           <label class="field-label" for="a-min">Min fit score</label>
@@ -1776,6 +1846,7 @@ function wireAgent() {
   contentEl.querySelector('[data-act="save"]').onclick = async () => {
     const body = {
       enabled: $("#a-enabled").checked,
+      dry_run: $("#a-dry").checked,
       min_fit_score: Number($("#a-min").value),
       max_per_run: Number($("#a-run").value),
       max_per_day: Number($("#a-day").value),
@@ -1806,6 +1877,7 @@ async function loadAgentTab(body, gen = settingsGen) {
   ]);
   if (settingsSuperseded(gen)) return;
   state.agentEnabled = s.enabled === true;
+  state.browserAvailable = s.browser_available === true;
   body.innerHTML = agentMarkup(s, Array.isArray(events) ? events : []);
   wireAgent();
 }
@@ -2349,7 +2421,10 @@ mobileQuery.addEventListener("change", (event) => {
     api("GET", "/api/agent-settings"),
   ]);
   if (llm.status === "fulfilled") state.coverLettersEnabled = llm.value.cover_letters_enabled !== false;
-  if (agent.status === "fulfilled") state.agentEnabled = agent.value.enabled === true;
+  if (agent.status === "fulfilled") {
+    state.agentEnabled = agent.value.enabled === true;
+    state.browserAvailable = agent.value.browser_available === true;
+  }
   try {
     await refresh();
     // A notification's deep link (/#app=<name>) opens that application on load; the

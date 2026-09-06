@@ -49,6 +49,12 @@ jobs:
           - name: poller
             context: .
             dockerfile: Dockerfile.poller
+          - name: browser
+            context: ./docker/browser
+            dockerfile: docker/browser/Dockerfile
+          - name: proxy
+            context: ./docker/proxy
+            dockerfile: docker/proxy/Dockerfile
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4

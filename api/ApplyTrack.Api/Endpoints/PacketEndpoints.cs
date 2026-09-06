@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Notifications;
@@ -49,6 +50,7 @@ public static class PacketEndpoints
             CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications,
             UserRepo users, Auth.TenantContext tenant,
             LeadEvaluator evaluator, PacketBuilder builder, PacketReadyNotifier notifier,
+            BrowserOptions browser, SubmitRequestRepo queue,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -87,7 +89,11 @@ public static class PacketEndpoints
                 resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
             var packet = await builder.BuildAsync(rec, verdict, inputs,
                 new PacketScope(apps, letters, packets, events), ct);
-            await notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
+            // With a browser, the moo waits for the dry-run fill; without one, this is it.
+            if (browser.IsConfigured && rec.Fields.Link.Length > 0)
+                await queue.EnqueueAsync(rec.Name, dryRun: true);
+            else
+                await notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
             return Results.Ok(new { ok = true, packet });
         }).RequireRateLimiting("draft");
 

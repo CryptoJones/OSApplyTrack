@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack egress proxy (the browser's only way out)
+
+[Container]
+ContainerName=applytrack-proxy
+Image=ghcr.io/cryptojones/osapplytrack-proxy:latest
+Network=applytrack-browser.network
+Network=applytrack.network
+DropCapability=ALL
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

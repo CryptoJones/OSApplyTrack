@@ -16,6 +16,11 @@ Environment=ASPNETCORE_URLS=http://+:8080
 # file. Per tenant, the agent is still off until enabled in Settings · Agent.
 Environment=Agent__Enabled=true
 Environment=Agent__IntervalSeconds=300
+# The browser container (applytrack-browser.container); drop both lines to prepare
+# packets without one. The agent joins the internal browser network to reach it.
+Network=applytrack-browser.network
+Environment=Browser__Endpoint=ws://applytrack-browser:3000/
+Environment=Browser__Proxy=http://applytrack-proxy:3128
 
 [Service]
 Restart=always
