@@ -13,6 +13,8 @@ using ApplyTrack.Api.Endpoints;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Middleware;
+using ApplyTrack.Api.Notifications;
+using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.HttpOverrides;
 using Npgsql;
@@ -111,12 +113,42 @@ builder.Services.AddScoped(sp => new AgentSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new AgentEventRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new AgentPacketRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+// Step 3: the packet. Greenhouse's public Job Board API is the one ATS form we can
+// read without a browser or an employer key; host pinned here, no tenant URL.
+builder.Services.AddHttpClient(GreenhouseBoard.ClientName, c =>
+{
+    c.BaseAddress = new Uri("https://boards-api.greenhouse.io/");
+    c.Timeout = TimeSpan.FromSeconds(15);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("OSApplyTrack/1.17 (+https://github.com/CryptoJones/OSApplyTrack)");
+});
+builder.Services.AddSingleton<GreenhouseBoard>();
+builder.Services.AddSingleton<AnswerDrafter>();
+builder.Services.AddSingleton<PacketBuilder>();
+
+// The "moo": per-tenant Telegram notification when a packet is ready to submit. The
+// host is pinned in code (no tenant-controlled URL, so no SSRF guard). RemoveAllLoggers:
+// the factory's default handler logs the request URI, which carries the bot token.
+builder.Services.AddHttpClient(TelegramNotifier.ClientName, c =>
+{
+    c.BaseAddress = new Uri("https://api.telegram.org/");
+    c.Timeout = TimeSpan.FromSeconds(15);
+}).RemoveAllLoggers();
+builder.Services.AddSingleton<INotifier, TelegramNotifier>();
+builder.Services.AddSingleton<PacketReadyNotifier>();
+builder.Services.AddScoped(sp => new NotificationSettingsRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>(),
+    sp.GetRequiredService<ILogger<NotificationSettingsRepo>>()));
+
 if (agentOptions.Enabled)
 {
     var agentConnectionString = connectionString;
     builder.Services.AddSingleton(sp => new AgentWorker(
         agentConnectionString, agentOptions, sp.GetRequiredService<LlmOptions>(),
         sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
+        sp.GetRequiredService<PacketBuilder>(), sp.GetRequiredService<PacketReadyNotifier>(),
         sp.GetRequiredService<ILoggerFactory>()));
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
@@ -152,6 +184,10 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("draft", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(5) }));
+    // A test notification is an outbound message to the tenant's own chat — small budget.
+    options.AddPolicy("notify", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(5) }));
     // Each scrape is an outbound fetch of an arbitrary site — same budget as poll.
     options.AddPolicy("scrape", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
@@ -262,6 +298,8 @@ app.MapAccountEndpoints();
 app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
 app.MapAgentEndpoints();
+app.MapPacketEndpoints();
+app.MapNotificationsEndpoints();
 
 app.Run();
 

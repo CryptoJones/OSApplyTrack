@@ -51,6 +51,11 @@ public sealed class ApiExceptionMiddleware
             // Same shape for a job board the scraper couldn't read.
             await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
         }
+        catch (NotificationFailedException ex)
+        {
+            // And for a notification channel that refused the message.
+            await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
+        }
         catch (Exception ex)
         {
             // Anything not a known domain exception: log the detail server-side, but

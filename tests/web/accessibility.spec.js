@@ -95,6 +95,9 @@ async function mockApi(page) {
       salary_expectation: "", phone: "", worker_running: false,
     };
     else if (path === "/api/agent-events") body = [];
+    else if (path === "/api/notifications") body = {
+      telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
+    };
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
     else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
@@ -234,11 +237,63 @@ test("criteria settings add and remove custom RSS feeds", async ({ page }) => {
 
 test("settings sections expose labeled controls", async ({ page }) => {
   await openSettings(page);
-  for (const tab of ["Criteria", "Résumé", "AI", "Agent", "Blacklist", "Account"]) {
+  for (const tab of ["Criteria", "Résumé", "AI", "Agent", "Notifications", "Blacklist", "Account"]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).not.toBeEmpty();
     await expectNoSeriousViolations(page);
   }
+});
+
+test("a ready packet lists its answers, blocks submit on review items, and passes axe", async ({ page }) => {
+  const readyDetail = {
+    ...detail,
+    fields: { ...detail.fields, status: "ready" },
+    agent_verdict: { detail: { decision: "proceed", confidence: 88, rationale: "Core requirements met.", concerns: ["confirm on-call"] }, created_at: "2026-09-06T12:00:00Z" },
+    packet: {
+      application_name: application.filename, provider: "greenhouse", posting_excerpt: "We build accessible software.",
+      version: 3, model: "stub",
+      questions: [
+        { id: "first_name", label: "First Name", required: true, type: "text", options: [], kind: "standard" },
+        { id: "question_2", label: "Are you legally authorized to work in the US?", required: true, type: "select", options: ["Yes", "No"], kind: "custom" },
+        { id: "question_3", label: "Describe a system you scaled.", required: true, type: "textarea", options: [], kind: "custom" },
+        { id: "resume", label: "Resume/CV", required: true, type: "file", options: [], kind: "standard" },
+        { id: "gender", label: "Gender", required: false, type: "select", options: ["Decline"], kind: "eeo" },
+      ],
+      answers: { first_name: "Ada", question_2: "Yes" },
+      needs_review: [{ id: "question_3", reason: "the model could not answer this from your résumé" }],
+    },
+  };
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    let body = { ok: true };
+    if (path === "/api/auth/me") body = { email: "person@example.com" };
+    else if (path === "/api/apps" && method === "GET") body = applications;
+    else if (path === "/api/stats") body = { status: { ready: 1, lead: 1, applied: 1 }, lane: {} };
+    else if (path === `/api/apps/${application.filename}` && method === "GET") body = readyDetail;
+    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true };
+    else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
+    else if (path.endsWith("/packet") && method === "PUT") body = { ...readyDetail.packet, version: 4, needs_review: [] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /Example Co/ }).first().click();
+  await expect(page.getByRole("heading", { name: "Application packet" })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "need" })).toContainText("Describe a system you scaled.");
+  await expect(page.getByLabel("First Name *")).toHaveValue("Ada");
+  await expect(page.getByLabel("Are you legally authorized to work in the US? *")).toHaveValue("Yes");
+  await expect(page.getByText("left blank on purpose")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fit verdict" })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  const saved = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/packet") && request.method() === "PUT");
+  await page.getByLabel("Describe a system you scaled. *").fill("I scaled the billing service.");
+  await page.getByRole("button", { name: "Save answers" }).click();
+  const req = await saved;
+  expect(new URL(req.url()).searchParams.get("expected_version")).toBe("3");
+  expect(req.postDataJSON().answers.question_3).toBe("I scaled the billing service.");
 });
 
 test("resume settings use PDF upload instead of manual fields", async ({ page }) => {

@@ -124,6 +124,11 @@ async function saveWithConflict(path, body, label) {
 // tell the user to check their mail (self-hosters read the link off the logs).
 function showLogin() {
   if (document.getElementById("login-overlay")) return; // already up
+  // Remember a deep link across the magic-link round trip (the verify redirect lands on /).
+  try {
+    const target = new URLSearchParams(location.hash.slice(1)).get("app");
+    if (target) sessionStorage.setItem("returnTo", target);
+  } catch (_) {}
   const badLink = new URLSearchParams(location.search).get("error") === "invalid_link";
   const overlay = document.createElement("div");
   overlay.id = "login-overlay";
@@ -429,6 +434,7 @@ function renderView(data) {
       <div class="action-row detail-links">${applyBtn}${checkBtn}</div>
       <div id="link-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
       ${verdictSection(data)}
+      ${packetSection(data)}
       <section class="detail-section" aria-labelledby="notes-heading">
         <div class="section-heading">
           <span class="section-kicker">Workspace</span>
@@ -468,6 +474,201 @@ function renderView(data) {
   if (checkEl) checkEl.onclick = () => investigateLink(data.filename, checkEl);
   const verdictEl = contentEl.querySelector('[data-act="verdict"]');
   if (verdictEl) verdictEl.onclick = () => evaluateFit(data.filename, verdictEl);
+  wirePacket(data);
+}
+
+// ---- The packet (Ready-to-submit queue) ---------------------------------------
+// Everything the agent prepared for this application: the form the ATS asks, the
+// drafted answers (every one editable), and what still needs a human. Submission is
+// the human's: "Copy answers and open the posting" works for every ATS.
+
+const PACKET_PROVIDER_LABEL = {
+  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workday: "Workday", unknown: "unknown ATS",
+};
+
+function packetSection(data) {
+  const p = data.packet;
+  const v = data.agent_verdict && data.agent_verdict.detail;
+  if (!p) {
+    if (!state.agentEnabled) return "";
+    return `
+      <section class="material-block" aria-labelledby="packet-heading">
+        <div class="material-header">
+          <div>
+            <div class="section-kicker">Agent</div>
+            <h3 id="packet-heading">Application packet</h3>
+            <p class="field-help">Prepare the answers and the letter; you review and submit.</p>
+          </div>
+          <button class="btn btn-primary shrink-0" data-act="prepare"${v && v.decision === "skip" ? ' data-force="1"' : ""}>${v && v.decision === "skip" ? "Prepare anyway" : "Prepare packet"}</button>
+        </div>
+      </section>`;
+  }
+  const review = p.needs_review || [];
+  const byId = Object.fromEntries((p.questions || []).map((q) => [q.id, q]));
+  const alert = review.length
+    ? `<div class="error-summary" role="alert" tabindex="-1">
+         <strong>${review.length} answer${review.length === 1 ? "" : "s"} need${review.length === 1 ? "s" : ""} you before this can be submitted:</strong>
+         <ul class="verdict-list">${review.map((r) => `<li><a href="#pq-${escapeHtml(cssId(r.id))}">${escapeHtml((byId[r.id] || {}).label || r.id)}</a> — ${escapeHtml(r.reason)}</li>`).join("")}</ul>
+       </div>`
+    : `<p class="mt-2"><span class="link-status ok">Ready to submit</span> <span class="text-sm">· every required answer is drafted; review them, then apply.</span></p>`;
+  const rows = (p.questions || []).map((q) => packetQuestionRow(q, p.answers || {}, review)).join("");
+  const url = safeUrl(data.fields.link);
+  return `
+    <section class="material-block" aria-labelledby="packet-heading">
+      <div class="material-header">
+        <div>
+          <div class="section-kicker">Agent · ${escapeHtml(PACKET_PROVIDER_LABEL[p.provider] || p.provider)}</div>
+          <h3 id="packet-heading">Application packet</h3>
+        </div>
+        <div class="material-actions">
+          ${url ? `<button class="btn btn-primary btn-xs" data-act="copy-open">Copy answers and open the posting</button>` : ""}
+          ${state.agentEnabled ? `<button class="btn btn-ghost btn-xs" data-act="prepare" data-force="1">Rebuild</button>` : ""}
+          <button class="btn btn-ghost btn-xs" data-act="packet-discard">Discard</button>
+        </div>
+      </div>
+      ${alert}
+      <form id="packet-form" class="mt-3">
+        <div id="packet-errors" class="error-summary" role="alert" tabindex="-1" hidden></div>
+        ${rows}
+        <details class="mt-4">
+          <summary class="field-help">The posting text the agent judged (${(p.posting_excerpt || "").length ? "excerpt" : "not available"})</summary>
+          <pre class="packet-excerpt">${escapeHtml(p.posting_excerpt || "(the posting text could not be retrieved — the verdict and answers came from the title, notes and your résumé)")}</pre>
+        </details>
+        <div class="mt-4 flex items-center justify-end gap-2 border-t border-rule pt-4">
+          <button class="btn btn-primary" data-act="packet-save" type="submit">Save answers</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+const cssId = (id) => String(id).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+function packetQuestionRow(q, answers, review) {
+  const id = `pq-${cssId(q.id)}`;
+  const value = answers[q.id] || "";
+  const flagged = review.find((r) => r.id === q.id);
+  const req = q.required ? ' <span aria-hidden="true">*</span>' : "";
+  const help = flagged
+    ? `<span id="${id}-help" class="field-help packet-flag">${escapeHtml(flagged.reason)}</span>`
+    : q.kind === "eeo"
+    ? `<span id="${id}-help" class="field-help">Optional demographic question — left blank on purpose.</span>`
+    : "";
+  let control;
+  if (q.type === "file") {
+    control = `<div id="${id}" class="field-help mono">${q.id.includes("resume") ? "Your résumé PDF — attached when you apply." : "A file you attach when you apply."}</div>`;
+  } else if (q.type === "select" && (q.options || []).length) {
+    control = `<select id="${id}" class="field-input" data-q="${escapeHtml(q.id)}" aria-describedby="${id}-help">
+        <option value=""${value ? "" : " selected"}>— choose —</option>
+        ${q.options.map((o) => `<option value="${escapeHtml(o)}"${o === value ? " selected" : ""}>${escapeHtml(o)}</option>`).join("")}
+      </select>`;
+  } else if (q.type === "textarea" || value.length > 120) {
+    control = `<textarea id="${id}" class="field-input" rows="${Math.min(12, Math.max(3, Math.ceil(value.length / 90)))}" data-q="${escapeHtml(q.id)}" aria-describedby="${id}-help">${escapeHtml(value)}</textarea>`;
+  } else {
+    const hint = (q.options || []).length ? ` placeholder="${escapeHtml(q.options.join(" / "))}"` : "";
+    control = `<input id="${id}" class="field-input" value="${escapeHtml(value)}" data-q="${escapeHtml(q.id)}" aria-describedby="${id}-help"${hint} />`;
+  }
+  return `
+    <div class="mt-3 packet-q${flagged ? " packet-q-flagged" : ""}">
+      <label class="field-label" for="${id}">${escapeHtml(q.label || q.id)}${req}</label>
+      ${control}
+      ${help}
+    </div>`;
+}
+
+function wirePacket(data) {
+  const prepEl = contentEl.querySelector('[data-act="prepare"]');
+  if (prepEl) prepEl.onclick = () => preparePacket(data.filename, prepEl, prepEl.dataset.force === "1");
+  const form = document.getElementById("packet-form");
+  if (form) form.onsubmit = (e) => { e.preventDefault(); savePacket(data); };
+  const copyEl = contentEl.querySelector('[data-act="copy-open"]');
+  if (copyEl) copyEl.onclick = () => copyAnswersAndOpen(data);
+  const discardEl = contentEl.querySelector('[data-act="packet-discard"]');
+  if (discardEl) discardEl.onclick = () => discardPacket(data.filename);
+}
+
+function collectPacketAnswers() {
+  const answers = {};
+  contentEl.querySelectorAll("#packet-form [data-q]").forEach((el) => {
+    answers[el.dataset.q] = el.value.trim();
+  });
+  return answers;
+}
+
+// Prepare (or rebuild) the packet: the agent judges the lead, drafts the letter and
+// the answers, and parks the application in Ready. A model round-trip, like drafting.
+async function preparePacket(name, btn, force) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Preparing… (~1 min)";
+  try {
+    await api("POST", `/api/apps/${encodeURIComponent(name)}/packet/prepare${force ? "?force=true" : ""}`);
+    await refresh();
+    await openApp(name);
+    toast("Packet ready — review the answers.");
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    toast(e.message);
+  }
+}
+
+// Saves through the same expected_version → 409 → overwrite-confirm contract as
+// applications, keyed on the packet's own version.
+async function savePacket(data) {
+  const path = `/api/apps/${encodeURIComponent(data.filename)}/packet`;
+  const body = { answers: collectPacketAnswers() };
+  const versioned = `${path}?expected_version=${encodeURIComponent(data.packet.version)}`;
+  try {
+    let saved;
+    try {
+      saved = await api("PUT", versioned, body);
+    } catch (e) {
+      if (e.status === 409 && await confirmAction({
+        title: "Packet changed",
+        message: "The packet changed since you opened it (the agent may have rebuilt it). Overwrite it with your answers?",
+        confirmLabel: "Overwrite",
+      })) {
+        saved = await api("PUT", path, body);
+      } else {
+        throw e;
+      }
+    }
+    await openApp(data.filename);
+    toast(saved.needs_review && saved.needs_review.length
+      ? `Saved · ${saved.needs_review.length} still need${saved.needs_review.length === 1 ? "s" : ""} you.`
+      : "Saved · ready to submit.");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// The universal path: every answer as "Label: answer" on the clipboard, and the
+// posting in a new tab. Works for every ATS, no browser automation needed.
+async function copyAnswersAndOpen(data) {
+  const p = data.packet;
+  const answers = collectPacketAnswers();
+  const lines = (p.questions || [])
+    .filter((q) => q.type !== "file" && (answers[q.id] || "").length)
+    .map((q) => `${q.label || q.id}:\n${answers[q.id]}`);
+  const url = safeUrl(data.fields.link);
+  await copyText(lines.join("\n\n"), "Answers copied — paste them into the form.");
+  if (url) window.open(url, "_blank", "noopener");
+}
+
+async function discardPacket(name) {
+  if (!await confirmAction({
+    title: "Discard the packet?",
+    message: "The drafted answers are deleted. The application keeps its status; you can prepare again later.",
+    confirmLabel: "Discard",
+  }))
+    return;
+  try {
+    await api("DELETE", `/api/apps/${encodeURIComponent(name)}/packet`);
+    await openApp(name);
+    toast("Packet discarded.");
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 // The agent's verdict on this lead — the accountability affordance. A skip shows
@@ -1609,6 +1810,102 @@ async function loadAgentTab(body, gen = settingsGen) {
   wireAgent();
 }
 
+// ---- Notifications panel ---------------------------------------------------
+// The moo: a Telegram message when the agent has a packet ready for you to submit.
+// Per account — your own bot, your own chat; the token is write-only and encrypted.
+
+function notificationsMarkup(s) {
+  const secretsOff = !s.secrets_available;
+  const tokenNote = secretsOff
+    ? "Set APPLYTRACK_SECRETS_KEY on the server to store a bot token."
+    : s.has_bot_token
+    ? "A token is saved (hidden). Enter a new one to replace it, or tick the box to remove it."
+    : "No token saved.";
+  return `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Notifications · Telegram</div>
+      <h2 class="sheet-title">🐮 Moo me when a packet is ready</h2>
+      <p class="field-help">
+        When the agent has prepared an application and parked it in Ready, it sends one
+        Telegram message with a link straight to it. Create a bot with
+        <span class="mono">@BotFather</span>, send your bot a message, then get your chat id
+        from <span class="mono">https://api.telegram.org/bot&lt;token&gt;/getUpdates</span>.
+      </p>
+
+      <div class="mt-5">
+        <label class="source-row">
+          <input id="n-enabled" type="checkbox"${s.telegram_enabled ? " checked" : ""} />
+          <span>Send a Telegram message when a packet is ready</span>
+        </label>
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label" for="n-chat">Chat id</label>
+        <input id="n-chat" class="field-input mono" value="${escapeHtml(s.telegram_chat_id || "")}" placeholder="123456789 or @channel" autocomplete="off" />
+      </div>
+
+      <div class="mt-4">
+        <label class="field-label" for="n-token">Bot token ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
+        <input id="n-token" type="password" class="field-input mono" autocomplete="off"
+          placeholder="${secretsOff ? "operator hasn't enabled per-tenant secrets" : "leave blank to keep the saved token"}"
+          ${secretsOff ? "disabled" : ""} />
+        <label class="source-row mt-2 ${s.has_bot_token && !secretsOff ? "" : "hidden"}">
+          <input id="n-clear" type="checkbox" /> <span>Remove the saved token</span>
+        </label>
+        <p class="field-help">${escapeHtml(tokenNote)}</p>
+      </div>
+
+      <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-ghost" data-act="test" ${s.has_bot_token ? "" : "disabled"}>Send test message</button>
+        <button class="btn btn-primary" data-act="save">Save notifications</button>
+      </div>
+    </article>`;
+}
+
+function wireNotifications() {
+  contentEl.querySelector('[data-act="cancel"]').onclick = () =>
+    state.current ? openApp(state.current) : renderEmpty();
+  contentEl.querySelector('[data-act="save"]').onclick = async () => {
+    const body = {
+      telegram_enabled: $("#n-enabled").checked,
+      telegram_chat_id: $("#n-chat").value.trim(),
+    };
+    // The token is omitted unless the user typed a new one or asked to clear it.
+    const tokenEl = $("#n-token");
+    const clearEl = $("#n-clear");
+    if (tokenEl && tokenEl.value) body.telegram_bot_token = tokenEl.value.trim();
+    else if (clearEl && clearEl.checked) body.telegram_bot_token = "";
+    try {
+      await api("PUT", "/api/notifications", body);
+      toast("Notification settings saved.");
+      openSettings("notifications");
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+  const testEl = contentEl.querySelector('[data-act="test"]');
+  testEl.onclick = async () => {
+    testEl.disabled = true;
+    try {
+      await api("POST", "/api/notifications/test");
+      toast("🐮 moo sent — check Telegram.");
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      testEl.disabled = false;
+    }
+  };
+}
+
+// Settings · Notifications tab.
+async function loadNotificationsTab(body, gen = settingsGen) {
+  const s = await api("GET", "/api/notifications");
+  if (settingsSuperseded(gen)) return;
+  body.innerHTML = notificationsMarkup(s);
+  wireNotifications();
+}
+
 // ---- Boot + refresh -------------------------------------------------------
 
 async function refresh() {
@@ -1767,6 +2064,7 @@ const SETTINGS_TABS = [
   ["resume", "Résumé"],
   ["ai", "AI"],
   ["agent", "Agent"],
+  ["notifications", "Notifications"],
   ["blacklist", "Blacklist"],
   ["account", "Account"],
 ];
@@ -1821,6 +2119,7 @@ async function openSettings(tab, focusSelectedTab = false) {
     else if (state.settingsTab === "resume") await loadResumeTab(body, gen);
     else if (state.settingsTab === "ai") await loadLlmTab(body, gen);
     else if (state.settingsTab === "agent") await loadAgentTab(body, gen);
+    else if (state.settingsTab === "notifications") await loadNotificationsTab(body, gen);
     else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
     else await loadAccountTab(body);
   } catch (e) {
@@ -2055,7 +2354,19 @@ mobileQuery.addEventListener("change", (event) => {
   } catch (_) {}
   try {
     await refresh();
-    renderEmpty();
+    // A notification's deep link (/#app=<name>) opens that application on load; the
+    // hash keeps the slug out of server logs. Cleared once consumed.
+    let target = "";
+    try {
+      target = new URLSearchParams(location.hash.slice(1)).get("app") || sessionStorage.getItem("returnTo") || "";
+      sessionStorage.removeItem("returnTo");
+    } catch (_) {}
+    if (target && state.apps.some((a) => a.filename === target)) {
+      await openApp(target);
+      history.replaceState(null, "", location.pathname + location.search);
+    } else {
+      renderEmpty();
+    }
   } catch (e) {
     contentEl.innerHTML = `<div class="empty"><div class="empty-title">Couldn't load applications.</div>
       <p class="font-mono text-xs">${escapeHtml(e.message)}</p></div>`;

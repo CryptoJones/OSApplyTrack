@@ -46,6 +46,9 @@ public static class InputLimits
     public const int CoverLetterSignature = 16 * 1024;
 
     public const int AgentAnswer = 512;
+    public const int PacketAnswer = 8 * 1024;
+    public const int TelegramBotToken = 256;
+    public const int TelegramChatId = 64;
 
     public static void ValidateApplication(AppFields fields)
     {
