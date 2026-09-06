@@ -2342,16 +2342,14 @@ mobileQuery.addEventListener("change", (event) => {
   }
   // Whether this tenant wants cover letters decides if the app sheet renders any
   // drafting UI at all; default ON when the lookup fails so nothing is hidden by error.
-  try {
-    const s = await api("GET", "/api/llm-settings");
-    state.coverLettersEnabled = s.cover_letters_enabled !== false;
-  } catch (_) {}
   // Same for the agent, which defaults OFF: nothing agent-shaped renders unless the
-  // tenant switched it on.
-  try {
-    const a = await api("GET", "/api/agent-settings");
-    state.agentEnabled = a.enabled === true;
-  } catch (_) {}
+  // tenant switched it on. Fetched together so the list is not held up by either.
+  const [llm, agent] = await Promise.allSettled([
+    api("GET", "/api/llm-settings"),
+    api("GET", "/api/agent-settings"),
+  ]);
+  if (llm.status === "fulfilled") state.coverLettersEnabled = llm.value.cover_letters_enabled !== false;
+  if (agent.status === "fulfilled") state.agentEnabled = agent.value.enabled === true;
   try {
     await refresh();
     // A notification's deep link (/#app=<name>) opens that application on load; the

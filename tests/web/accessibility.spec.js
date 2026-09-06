@@ -320,6 +320,8 @@ test("keyboard navigation and validation retain visible focus", async ({ page })
 
 test("a populated desktop list scrolls without moving the application shell", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Desktop master-detail layout");
+  // The heading is static; the rows arrive after the boot fetches. Wait for one.
+  await expect(page.locator("#app-list .application-card").first()).toBeVisible();
   await page.evaluate(() => {
     const list = document.querySelector("#app-list");
     const row = list.firstElementChild;

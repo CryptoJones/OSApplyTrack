@@ -17,6 +17,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#53 — Add hardened production container defaults](https://github.com/CryptoJones/OSApplyTrack/issues/53)
 - [x] [#54 — Paginate or delta-refresh the applications list](https://github.com/CryptoJones/OSApplyTrack/issues/54)
 - [x] [#88 — Poller: `_fetch_feed_set` parses up to the whole-run limit on every category feed](https://github.com/CryptoJones/OSApplyTrack/issues/88)
+- [x] [#100 — CI is failing on main](https://github.com/CryptoJones/OSApplyTrack/issues/100) (auto-filed; a boot-order race in the SPA after #98)
 - [x] [#89 — `uv.lock`: exceptiongroup's typing-extensions marker was dropped in the 1.16.1 release commit](https://github.com/CryptoJones/OSApplyTrack/issues/89)
 
 ## Discovery and workflow
