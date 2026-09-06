@@ -706,6 +706,25 @@ def test_classify_matches_punctuation_leading_keywords() -> None:
     assert classify("Support Rep", "email us at example.net", [".net"]) == (0, [])
 
 
+def test_classify_matches_dotnet_inside_a_framework_name() -> None:
+    """The letter before the dot in ASP.NET / VB.NET / ADO.NET is not a word boundary
+    the keyword should care about -- `.net` carries its own."""
+    for title in ("Senior ASP.NET Core Developer", "VB.NET Developer", "ADO.NET Engineer"):
+        score, hits = classify(title, "", [".net"])
+        assert hits == [".net"], title
+        assert score == 59, title
+
+
+def test_classify_denies_inflections_to_short_keywords() -> None:
+    """`rag` is not the stem of "rages"; an acronym has no plural."""
+    assert classify("Customer Experience Lead", "the debate rages on", ["rag"]) == (0, [])
+    assert classify("x", "raged and raging", ["rag"]) == (0, [])
+    assert classify("x", "he mled it", ["ml"]) == (0, [])
+    assert classify("x", "going forward", ["go"]) == (0, [])
+    # The exact acronym still matches.
+    assert classify("x", "RAG pipelines", ["rag"]) == (45, ["rag"])
+
+
 def test_classify_scores_body_only_evidence_below_a_title_hit() -> None:
     """A generic title whose body name-drops a technology is weaker evidence."""
     one_body, _ = classify("Software Engineer", "we use llm tooling", ["llm", "rag", "mlops"])

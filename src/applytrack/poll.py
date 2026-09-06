@@ -143,12 +143,23 @@ def _keyword_re(keyword: str) -> re.Pattern[str]:
     An arbitrary tail is not allowed, or ``ai`` would match "aid" -- only a short
     set of English suffixes.
 
+    The suffix allowance is only granted to keywords of four or more characters.
+    Short acronyms have no inflections of their own, and granting them one just
+    re-opens the mid-word problem from the other side: ``rag`` would match "rages",
+    ``ml`` "mled", ``go`` "going".
+
     Deliberately not a regex word-boundary anchor on the front: keywords like
     ``.net`` and ``c#`` start with punctuation, which such an anchor mishandles. The
-    rule is the narrower "not preceded by a letter or digit", which also stops
-    ``.net`` from matching example.net while leaving ".NET" matched.
+    rule is the narrower "not preceded by a letter or digit". For a
+    punctuation-leading keyword that rule is relaxed to "not preceded by a run of
+    four or more": ``.net`` must still not match example.net, but an unconditional
+    lookbehind also blocked the ``P`` in ASP.NET, the ``B`` in VB.NET and the ``O``
+    in ADO.NET. Those framework prefixes are all short; hostnames' second-level
+    labels almost never are.
     """
-    return re.compile(rf"(?<![a-z0-9]){re.escape(keyword)}(?:e?s|ing|ed)?(?![a-z0-9])")
+    prefix = r"(?<![a-z0-9])" if keyword[:1].isalnum() else r"(?<![a-z0-9]{4})"
+    suffix = r"(?:e?s|ing|ed)?" if len(keyword) >= 4 else ""
+    return re.compile(rf"{prefix}{re.escape(keyword)}{suffix}(?![a-z0-9])")
 
 
 def classify(title: str, description: str, keywords: Iterable[str]) -> tuple[int, list[str]]:
@@ -588,7 +599,7 @@ def _fetch_feed_set(
     """
     per_feed = max(1, limit // len(feeds))
     out: list[Listing] = []
-    taken_urls: set[str] = set()
+    taken: set[str] = set()
     for feed in feeds:
         if len(out) >= limit:
             break
@@ -600,20 +611,23 @@ def _fetch_feed_set(
             # only sees (and names) a failure of the whole source.
             logger.warning("source %s: feed %s unreachable", source, feed)
             continue
-        # Parsed against the whole-run cap, not this feed's share, so duplicates
-        # are skipped over rather than counted against the share.
+        # Parsed past this feed's share by exactly the number of postings an earlier
+        # feed has already taken, so duplicates are skipped over rather than counted
+        # against the share -- without materializing the whole-run cap per feed.
         fresh = 0
-        for listing in parse_job_feed(r.content, feed, limit):
+        for listing in parse_job_feed(r.content, feed, per_feed + len(taken)):
             if fresh >= per_feed or len(out) >= limit:
                 break
-            key = _norm_url(listing.link)
-            if key:
-                if key in taken_urls:
-                    continue
-                taken_urls.add(key)
             listing.source = source
             if retitle is not None:
                 retitle(listing)
+            # The URL is authoritative; a linkless entry falls back to company +
+            # role -- the same rule Seen.has applies once the listing reaches the
+            # ledger. Computed after retitle so the slug sees the split title.
+            key = _norm_url(listing.link) or _norm_slug(listing.company, listing.role)
+            if key in taken:
+                continue
+            taken.add(key)
             out.append(listing)
             fresh += 1
     return out

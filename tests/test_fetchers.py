@@ -11,8 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import httpx
+import pytest
 
 from applytrack.poll import (
+    Listing,
     fetch_arbeitnow,
     fetch_greenhouse,
     fetch_hn_whoishiring,
@@ -348,7 +350,8 @@ def _feed(items: str) -> bytes:
 
 
 def _item(title: str, link: str) -> str:
-    return f"<item><title>{title}</title><link>{link}</link><region>Remote</region></item>"
+    link_el = f"<link>{link}</link>" if link else ""
+    return f"<item><title>{title}</title>{link_el}<region>Remote</region></item>"
 
 
 def test_fetch_remotefirstjobs_reads_role_at_company_titles() -> None:
@@ -456,6 +459,53 @@ def test_feed_set_takes_a_cross_listed_posting_once() -> None:
     assert links.count("https://wwr.test/shared") == 1
     # 5 feeds: the shared posting once, plus each category's own listing.
     assert len(out) == 6
+
+
+def test_feed_set_takes_a_cross_listed_linkless_posting_once() -> None:
+    """No <link> means no URL key; the company + role slug must stand in for it."""
+    shared = _item("Acme: Staff Engineer", "")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        own = _item(f"Hooli: Engineer {request.url.path}", f"https://wwr.test{request.url.path}")
+        return httpx.Response(200, content=_feed(shared + own))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    assert sum(1 for lst in out if lst.company == "Acme") == 1
+    assert len(out) == 6
+
+
+def test_feed_set_parses_only_as_far_as_its_share_plus_known_duplicates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping over duplicates needs headroom for those duplicates -- not for the
+    whole-run cap on every category feed."""
+    from applytrack import poll as poll_mod
+
+    bounds: list[int] = []
+    real = poll_mod.parse_job_feed
+
+    def counting(content: bytes, feed: str, limit: int) -> list[Listing]:
+        bounds.append(limit)
+        return real(content, feed, limit)
+
+    monkeypatch.setattr(poll_mod, "parse_job_feed", counting)
+    dupe = _item("Acme: Staff Engineer", "https://wwr.test/shared")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        own = "".join(
+            _item(f"Hooli: Engineer {request.url.path}{i}", f"https://wwr.test{request.url.path}{i}")
+            for i in range(8)
+        )
+        return httpx.Response(200, content=_feed(dupe + own))
+
+    out = fetch_weworkremotely(_client(handler), 40)
+    # 40 // 5 = 8 per feed. The first feed spends one slot on the shared posting;
+    # every later feed skips it and still fills all 8 of its own.
+    assert sum(1 for lst in out if lst.link == "https://wwr.test/shared") == 1
+    assert sum(1 for lst in out if lst.company == "Hooli") == 7 + 4 * 8
+    # Each feed was parsed to its share plus the postings already taken -- the
+    # exact headroom the skip needs -- rather than to the whole-run cap of 40.
+    assert bounds == [8, 16, 24, 32, 40]
 
 
 def test_feed_set_dedup_does_not_shrink_a_feeds_share() -> None:
