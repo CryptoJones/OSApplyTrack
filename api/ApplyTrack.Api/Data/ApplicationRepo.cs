@@ -133,6 +133,31 @@ public sealed partial class ApplicationRepo
         return row is null ? null : new AppRecord(row.Name, row.ToFields(), row.Version);
     }
 
+    /// <summary>
+    /// Open leads the agent has not judged yet, best keyword score first. The score is
+    /// stored as text (the SPA contract); only all-digit values are comparable, so a
+    /// hand-entered "high" never qualifies. Leads with a verdict on record are excluded
+    /// by an anti-join on the audit trail, so a skip is terminal without touching status.
+    /// </summary>
+    public async Task<IReadOnlyList<AppRecord>> ListAgentCandidatesAsync(int minScore, int limit)
+    {
+        var rows = await _conn.QueryAsync<AppRow>(
+            """
+            SELECT a.*
+            FROM applications a
+            WHERE a.tenant_id = @t AND a.status = 'lead'
+              AND a.score ~ '^[0-9]+$' AND a.score::int >= @minScore
+              AND NOT EXISTS (
+                  SELECT 1 FROM agent_events e
+                  WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
+                    AND e.kind = 'verdict')
+            ORDER BY a.score::int DESC, a.created_at DESC
+            LIMIT @limit
+            """,
+            new { t = _t, minScore, limit = Math.Clamp(limit, 1, 200) });
+        return rows.Select(r => new AppRecord(r.Name, r.ToFields(), r.Version)).ToList();
+    }
+
     public async Task<(Dictionary<string, int> Status, Dictionary<string, int> Lane)> StatsAsync()
     {
         var byStatus = (await _conn.QueryAsync<(string Key, int Count)>(

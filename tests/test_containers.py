@@ -20,7 +20,7 @@ def test_production_database_is_not_published() -> None:
 def test_production_runtimes_drop_privileges_and_write_only_to_tmpfs() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())
 
-    expected_users = {"api": "1654:1654", "poller": "10001:10001"}
+    expected_users = {"api": "1654:1654", "agent": "1654:1654", "poller": "10001:10001"}
     for name, user in expected_users.items():
         service = compose["services"][name]
         assert service["user"] == user
@@ -37,3 +37,12 @@ def test_runtime_images_select_non_root_users() -> None:
 
     assert "\nUSER app\n" in api_runtime
     assert "\nUSER applytrack\n" in poller_runtime
+
+
+def test_production_agent_worker_is_the_api_image_with_no_published_port() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())
+
+    agent = compose["services"]["agent"]
+    assert agent["image"] == compose["services"]["api"]["image"]
+    assert agent["environment"]["Agent__Enabled"] == "true"
+    assert "ports" not in agent

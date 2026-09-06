@@ -48,10 +48,12 @@ public static class AppsEndpoints
             return Results.Ok(new { status, lane });
         });
 
-        app.MapGet("/api/apps/{name}", async (string name, ApplicationRepo repo, CoverLetterRepo letters) =>
+        app.MapGet("/api/apps/{name}", async (
+            string name, ApplicationRepo repo, CoverLetterRepo letters, AgentEventRepo events) =>
         {
             var rec = await repo.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
+            var verdict = await events.LatestVerdictAsync(rec.Name);
             return Results.Ok(new
             {
                 filename = rec.Name,
@@ -59,6 +61,9 @@ public static class AppsEndpoints
                 fields = rec.Fields,
                 version = rec.Version.ToString(),
                 material = await letters.GetBodyAsync(rec.Name) ?? "",
+                // The agent's latest verdict on this lead (additive; null when it has
+                // not looked). The detail is the audit row's JSON plus when it was reached.
+                agent_verdict = verdict is null ? null : new { detail = verdict.Detail, created_at = verdict.CreatedAt },
             });
         });
 

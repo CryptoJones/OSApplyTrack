@@ -59,6 +59,28 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # The agent worker: the same API image with Agent__Enabled=true and no published
+  # port. It judges each tenant's promising leads unattended (Settings · Agent is
+  # off by default per tenant), holding a connection across multi-minute model
+  # calls — which is exactly why it is not run inside the request-serving container.
+  agent:
+    build:
+      context: ./api
+      dockerfile: ApplyTrack.Api/Dockerfile
+    environment:
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:-JanewayDidNothingWrong}"
+      ASPNETCORE_URLS: "http://+:8080"
+      Agent__Enabled: "true"
+      Agent__IntervalSeconds: ${AGENT_INTERVAL:-300}
+      Llm__BaseUrl: ${Llm__BaseUrl:-}
+      Llm__Model: ${Llm__Model:-}
+      Llm__ApiKey: ${Llm__ApiKey:-}
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
   # The Python discovery poller (second runtime). Shares the same Postgres; the .NET
   # API owns the schema (DbUp migrates it on startup), so on a cold boot the poller's
   # first tick may run before migrations land — its loop retries, no action needed.

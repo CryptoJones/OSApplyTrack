@@ -89,6 +89,12 @@ async function mockApi(page) {
       experience: [], skills: [], certifications: [], links: [],
     };
     else if (path === "/api/blacklist") body = [];
+    else if (path === "/api/agent-settings") body = {
+      enabled: false, dry_run: true, min_fit_score: 70, max_per_run: 5, max_per_day: 20,
+      work_authorization: "", needs_sponsorship: false, clearance_ok: false,
+      salary_expectation: "", phone: "", worker_running: false,
+    };
+    else if (path === "/api/agent-events") body = [];
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
     else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
@@ -228,7 +234,7 @@ test("criteria settings add and remove custom RSS feeds", async ({ page }) => {
 
 test("settings sections expose labeled controls", async ({ page }) => {
   await openSettings(page);
-  for (const tab of ["Criteria", "Résumé", "AI", "Blacklist", "Account"]) {
+  for (const tab of ["Criteria", "Résumé", "AI", "Agent", "Blacklist", "Account"]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).not.toBeEmpty();
     await expectNoSeriousViolations(page);

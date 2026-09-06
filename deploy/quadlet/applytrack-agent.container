@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Unit]
+Description=OSApplyTrack agent worker (.NET, same image as the API, no port)
+Requires=applytrack-db.service
+After=applytrack-db.service
+
+[Container]
+ContainerName=applytrack-agent
+Image=ghcr.io/cryptojones/osapplytrack-api:latest
+Network=applytrack.network
+EnvironmentFile=%h/.config/applytrack/applytrack.env
+Environment=ASPNETCORE_URLS=http://+:8080
+# The switch that turns this container into the worker. Everything else (the DB
+# connection string, the LLM endpoint, the secrets key) comes from the shared env
+# file. Per tenant, the agent is still off until enabled in Settings · Agent.
+Environment=Agent__Enabled=true
+Environment=Agent__IntervalSeconds=300
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
