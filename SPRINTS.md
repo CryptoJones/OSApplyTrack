@@ -165,7 +165,14 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   /api/apps/{name}/submit`, `GET …/evidence`, the Submit / dry-run buttons on the
   sheet. Tests drive the real submitter through a real Playwright server at a
   loopback fixture form and assert on the POST it receives.
-- ⬜ Step 5 — Lever, Ashby, and the unknown long tail (#95).
+- ✅ **Step 5 — Lever, Ashby, and the unknown long tail** (#95): `FormDiscoverer`
+  visits a form read-only in the browser container and enumerates its controls by
+  accessible name — Lever and Ashby (one hop past the posting: `/apply`,
+  `/application`) get real questions this way; the same `PacketQuestion` shape
+  Greenhouse's API gives, so the drafter and the submitter need no per-ATS code.
+  The generic adapter (fill by label, refuse to click on an unmapped required
+  field) is behind the per-tenant `long_tail` opt-in (0023). Workday stays
+  manual, permanently: detected, packet prepared, routed to copy-and-open.
 
 ## Backlog / ideas
 

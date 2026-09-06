@@ -67,6 +67,7 @@ public static class AgentEndpoints
         clearance_ok = s.ClearanceOk,
         salary_expectation = s.SalaryExpectation,
         phone = s.Phone,
+        long_tail = s.LongTail,
         // Whether this instance runs a worker at all — so the UI can say "saved, but
         // nothing will happen until the operator starts the agent container".
         worker_running = options.Enabled,

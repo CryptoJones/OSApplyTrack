@@ -26,6 +26,10 @@ public sealed class AgentSettings
     public string SalaryExpectation { get; set; } = "";
     public string Phone { get; set; } = "";
 
+    /// <summary>Let the browser discover and fill forms on ATSs it doesn't know. Off by
+    /// default: a never-seen form is where a wrong guess is likeliest.</summary>
+    public bool LongTail { get; set; }
+
     private const int MaxPerRunCeil = 50;
     private const int MaxPerDayCeil = 500;
 
@@ -45,6 +49,7 @@ public sealed class AgentSettings
         s.ClearanceOk = GetBool(data, "clearance_ok", s.ClearanceOk);
         s.SalaryExpectation = GetString(data, "salary_expectation");
         s.Phone = GetString(data, "phone");
+        s.LongTail = GetBool(data, "long_tail", s.LongTail);
         InputLimits.Text("work_authorization", s.WorkAuthorization, InputLimits.AgentAnswer);
         InputLimits.Text("salary_expectation", s.SalaryExpectation, InputLimits.AgentAnswer);
         InputLimits.Text("phone", s.Phone, InputLimits.AgentAnswer);
@@ -99,7 +104,7 @@ public sealed class AgentSettingsRepo
     private sealed record Row(
         bool Enabled, bool DryRun, int MinFitScore, int MaxPerRun, int MaxPerDay,
         string WorkAuthorization, bool NeedsSponsorship, bool ClearanceOk,
-        string SalaryExpectation, string Phone);
+        string SalaryExpectation, string Phone, bool LongTail);
 
     /// <summary>The stored settings, or the defaults (agent off) when no row exists.</summary>
     public async Task<AgentSettings> GetAsync()
@@ -108,7 +113,8 @@ public sealed class AgentSettingsRepo
             "SELECT enabled, dry_run AS dryrun, min_fit_score AS minfitscore, "
             + "max_per_run AS maxperrun, max_per_day AS maxperday, "
             + "work_authorization AS workauthorization, needs_sponsorship AS needssponsorship, "
-            + "clearance_ok AS clearanceok, salary_expectation AS salaryexpectation, phone "
+            + "clearance_ok AS clearanceok, salary_expectation AS salaryexpectation, phone, "
+            + "long_tail AS longtail "
             + "FROM agent_settings WHERE tenant_id = @t",
             new { t = _t });
         if (row is null)
@@ -119,6 +125,7 @@ public sealed class AgentSettingsRepo
             MaxPerRun = row.MaxPerRun, MaxPerDay = row.MaxPerDay,
             WorkAuthorization = row.WorkAuthorization, NeedsSponsorship = row.NeedsSponsorship,
             ClearanceOk = row.ClearanceOk, SalaryExpectation = row.SalaryExpectation, Phone = row.Phone,
+            LongTail = row.LongTail,
         };
     }
 
@@ -128,10 +135,10 @@ public sealed class AgentSettingsRepo
             INSERT INTO agent_settings (
                 tenant_id, enabled, dry_run, min_fit_score, max_per_run, max_per_day,
                 work_authorization, needs_sponsorship, clearance_ok, salary_expectation, phone,
-                updated_at)
+                long_tail, updated_at)
             VALUES (@t, @Enabled, @DryRun, @MinFitScore, @MaxPerRun, @MaxPerDay,
                 @WorkAuthorization, @NeedsSponsorship, @ClearanceOk, @SalaryExpectation, @Phone,
-                now())
+                @LongTail, now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 enabled            = EXCLUDED.enabled,
                 dry_run            = EXCLUDED.dry_run,
@@ -143,12 +150,14 @@ public sealed class AgentSettingsRepo
                 clearance_ok       = EXCLUDED.clearance_ok,
                 salary_expectation = EXCLUDED.salary_expectation,
                 phone              = EXCLUDED.phone,
+                long_tail          = EXCLUDED.long_tail,
                 updated_at         = now()
             """,
             new
             {
                 t = _t, s.Enabled, s.DryRun, s.MinFitScore, s.MaxPerRun, s.MaxPerDay,
                 s.WorkAuthorization, s.NeedsSponsorship, s.ClearanceOk, s.SalaryExpectation, s.Phone,
+                s.LongTail,
             },
             tx);
 }

@@ -149,6 +149,7 @@ builder.Services.AddScoped(sp => new NotificationSettingsRepo(
 var browserOptions = builder.Configuration.GetSection("Browser").Get<BrowserOptions>() ?? new BrowserOptions();
 builder.Services.AddSingleton(browserOptions);
 builder.Services.AddSingleton<BrowserSubmitter>();
+builder.Services.AddSingleton<FormDiscoverer>();
 builder.Services.AddScoped(sp => new SubmitRequestRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new AgentEvidenceRepo(

@@ -303,10 +303,12 @@ public sealed class AgentWorker : BackgroundService
                     // build is recorded and must not stop the pass.
                     try
                     {
-                        await _packets.BuildAsync(rec, verdict, inputs, scope, ct);
-                        // With a browser, the moo waits for the dry-run fill (the submit
-                        // lane sends it after the screenshot); without one, this is it.
-                        if (_browser.IsConfigured && rec.Fields.Link.Length > 0)
+                        var packet = await _packets.BuildAsync(rec, verdict, inputs, scope, ct);
+                        // With a browser that may drive this ATS, the moo waits for the
+                        // dry-run fill (the submit lane sends it after the screenshot);
+                        // otherwise this is it and the human applies by hand.
+                        if (_browser.IsConfigured && rec.Fields.Link.Length > 0
+                            && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
                             await new SubmitRequestRepo(conn, tenantId).EnqueueAsync(rec.Name, dryRun: true);
                         else
                             await _notifier.NotifyAsync(notifications, scope.Packets, events,

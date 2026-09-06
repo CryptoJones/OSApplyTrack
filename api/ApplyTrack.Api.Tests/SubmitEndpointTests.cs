@@ -44,7 +44,13 @@ public class SubmitEndpointTests : IAsyncLifetime
             b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString);
             b.UseSetting("Llm:BaseUrl", "http://stub/v1");
             b.UseSetting("Llm:Model", "stub-model");
-            if (browser) b.UseSetting("Browser:Endpoint", "ws://browser:3000/");
+            if (browser)
+            {
+                // A browser that isn't there: discovery fails fast and falls back to the
+                // standard form; queueing is what's under test. No DNS pre-flight either.
+                b.UseSetting("Browser:Endpoint", "ws://127.0.0.1:1/");
+                b.UseSetting("Browser:AllowPrivateTargets", "true");
+            }
             b.ConfigureTestServices(s =>
             {
                 s.RemoveAll<ILlmClient>();
@@ -63,10 +69,11 @@ public class SubmitEndpointTests : IAsyncLifetime
     private static async Task<JsonElement> ReadJson(HttpResponseMessage res) =>
         JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
 
+    // A Lever posting: an ATS the browser may drive, so a build queues a dry run.
     private static async Task<string> PreparedLeadAsync(HttpClient client)
     {
         var res = await client.PostAsync("/api/apps",
-            Json("""{"company":"Acme","role":"Engineer","score":"80","link":"https://example.com/jobs/1"}"""));
+            Json("""{"company":"Acme","role":"Engineer","score":"80","link":"https://jobs.lever.co/acme/1234-abcd"}"""));
         var name = (await ReadJson(res)).GetProperty("filename").GetString()!;
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/apps/{name}/packet/prepare", null)).StatusCode);
         return name;
@@ -143,6 +150,32 @@ public class SubmitEndpointTests : IAsyncLifetime
             if (req.TenantId == tenant) return req;
         }
         return null;
+    }
+
+    [Fact]
+    public async Task An_unknown_ats_is_not_auto_queued_and_submit_is_refused_until_the_long_tail_is_on_and_workday_never()
+    {
+        var (client, _) = await ClientAsync();
+        var res = await client.PostAsync("/api/apps",
+            Json("""{"company":"Acme","role":"Engineer","score":"80","link":"https://careers.acme.example/jobs/1"}"""));
+        var name = (await ReadJson(res)).GetProperty("filename").GetString()!;
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/apps/{name}/packet/prepare", null)).StatusCode);
+        Assert.False((await ReadJson(await client.GetAsync($"/api/apps/{name}/submit"))).GetProperty("pending").GetBoolean());
+
+        var refused = await client.PostAsync($"/api/apps/{name}/submit", Json("{}"));
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Contains("long tail", (await ReadJson(refused)).GetProperty("detail").GetString());
+
+        await client.PutAsync("/api/agent-settings", Json("""{"long_tail":true}"""));
+        Assert.Equal(HttpStatusCode.Accepted, (await client.PostAsync($"/api/apps/{name}/submit", Json("{}"))).StatusCode);
+
+        res = await client.PostAsync("/api/apps",
+            Json("""{"company":"Wayne","role":"Engineer","score":"80","link":"https://wayne.wd5.myworkdayjobs.com/en-US/careers/job/1"}"""));
+        var workday = (await ReadJson(res)).GetProperty("filename").GetString()!;
+        await client.PostAsync($"/api/apps/{workday}/packet/prepare", null);
+        var never = await client.PostAsync($"/api/apps/{workday}/submit", Json("{}"));
+        Assert.Equal(HttpStatusCode.BadRequest, never.StatusCode);
+        Assert.Contains("Workday", (await ReadJson(never)).GetProperty("detail").GetString());
     }
 
     [Fact]

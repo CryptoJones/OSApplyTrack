@@ -80,6 +80,8 @@ const state = {
   agentEnabled: false,
   // Whether this instance has a browser container to fill and submit forms with.
   browserAvailable: false,
+  // The tenant lets the browser fill forms on ATSs it doesn't know.
+  longTail: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -515,6 +517,15 @@ function packetSection(data) {
     : `<p class="mt-2"><span class="link-status ok">Ready to submit</span> <span class="text-sm">· every required answer is drafted; review them, then apply.</span></p>`;
   const rows = (p.questions || []).map((q) => packetQuestionRow(q, p.answers || {}, review)).join("");
   const url = safeUrl(data.fields.link);
+  // The browser drives Greenhouse, Lever and Ashby; the long tail only when opted in;
+  // Workday never — applying needs an account with the employer.
+  const browserCan = state.browserAvailable && url && (
+    ["greenhouse", "lever", "ashby"].includes(p.provider) || (p.provider !== "workday" && state.longTail));
+  const manualNote = state.browserAvailable && url && !browserCan
+    ? `<p class="field-help mt-2">${p.provider === "workday"
+        ? "Workday needs an account with the employer, so this one is yours to submit — copy the answers and open the posting."
+        : "The agent doesn't know this ATS. Turn on the long tail in Settings · Agent to let the browser try, or copy the answers and open the posting."}</p>`
+    : "";
   return `
     <section class="material-block" aria-labelledby="packet-heading">
       <div class="material-header">
@@ -523,14 +534,15 @@ function packetSection(data) {
           <h3 id="packet-heading">Application packet</h3>
         </div>
         <div class="material-actions">
-          ${url ? `<button class="btn ${state.browserAvailable ? "btn-ghost" : "btn-primary"} btn-xs" data-act="copy-open">Copy answers and open the posting</button>` : ""}
-          ${url && state.browserAvailable ? `<button class="btn btn-ghost btn-xs" data-act="submit" data-dry="1">Fill in the browser (dry run)</button>` : ""}
-          ${url && state.browserAvailable ? `<button class="btn btn-primary btn-xs" data-act="submit" ${review.length ? "disabled aria-disabled=\"true\"" : ""}>Submit application</button>` : ""}
+          ${url ? `<button class="btn ${browserCan ? "btn-ghost" : "btn-primary"} btn-xs" data-act="copy-open">Copy answers and open the posting</button>` : ""}
+          ${browserCan ? `<button class="btn btn-ghost btn-xs" data-act="submit" data-dry="1">Fill in the browser (dry run)</button>` : ""}
+          ${browserCan ? `<button class="btn btn-primary btn-xs" data-act="submit" ${review.length ? "disabled aria-disabled=\"true\"" : ""}>Submit application</button>` : ""}
           ${state.agentEnabled ? `<button class="btn btn-ghost btn-xs" data-act="prepare" data-force="1">Rebuild</button>` : ""}
           <button class="btn btn-ghost btn-xs" data-act="packet-discard">Discard</button>
         </div>
       </div>
       ${alert}
+      ${manualNote}
       <div id="submit-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
       <div id="evidence"></div>
       <form id="packet-form" class="mt-3">
@@ -1785,6 +1797,14 @@ function agentMarkup(s, events) {
           : "No browser container on this instance: packets are prepared and you apply via <strong>Copy answers and open the posting</strong>."}</p>
       </div>
 
+      <div class="mt-4">
+        <label class="source-row">
+          <input id="a-long" type="checkbox"${s.long_tail ? " checked" : ""} />
+          <span>Let the browser fill forms on ATSs it doesn't know (the long tail)</span>
+        </label>
+        <p class="field-help">Greenhouse, Lever and Ashby forms are understood. Anything else is filled by field label alone, and the agent refuses to click if a required field can't be mapped. Off by default; Workday is always yours to do by hand.</p>
+      </div>
+
       <div class="mt-4 agent-grid">
         <div>
           <label class="field-label" for="a-min">Min fit score</label>
@@ -1847,6 +1867,7 @@ function wireAgent() {
     const body = {
       enabled: $("#a-enabled").checked,
       dry_run: $("#a-dry").checked,
+      long_tail: $("#a-long").checked,
       min_fit_score: Number($("#a-min").value),
       max_per_run: Number($("#a-run").value),
       max_per_day: Number($("#a-day").value),
@@ -1878,6 +1899,7 @@ async function loadAgentTab(body, gen = settingsGen) {
   if (settingsSuperseded(gen)) return;
   state.agentEnabled = s.enabled === true;
   state.browserAvailable = s.browser_available === true;
+  state.longTail = s.long_tail === true;
   body.innerHTML = agentMarkup(s, Array.isArray(events) ? events : []);
   wireAgent();
 }
@@ -2424,6 +2446,7 @@ mobileQuery.addEventListener("change", (event) => {
   if (agent.status === "fulfilled") {
     state.agentEnabled = agent.value.enabled === true;
     state.browserAvailable = agent.value.browser_available === true;
+    state.longTail = agent.value.long_tail === true;
   }
   try {
     await refresh();
