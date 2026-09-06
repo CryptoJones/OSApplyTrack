@@ -121,6 +121,26 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   want to run a model never see or call one. Omitted-means-keep PUT semantics,
   same as `api_key`.
 
+## Agentic auto-apply
+
+- ✅ **Step 1 — the draft reads the posting** (#91): `POST /api/apps/{name}/draft`
+  fetches the job description through the SSRF-hardened fetcher and puts it in the
+  prompt; best-effort, honest "(not available)" when it can't.
+- ✅ **Step 2 — the agent's own fit verdict** (#92): `agent_settings` (off by
+  default, its own 70-point bar, per-pass/per-day caps, standing answers) and
+  `agent_events` (the audit trail, keyed to the user, so a deleted application never
+  erases the record). `StructuredCompleter` gets JSON out of any chat model with one
+  repair prompt and a hard failure after that; `Disqualifiers` veto in code before a
+  token is spent; `FitJudge` judges against the résumé brief. `AgentWorker` is the
+  first `BackgroundService` — a second container from the api image with
+  `Agent__Enabled=true`, its own small pool, per-tenant advisory lock under
+  `applytrack:agent:`, and the migrator now serializes on an advisory lock. Settings ·
+  Agent tab, a Fit-verdict block on the sheet, and `POST /api/apps/{name}/verdict`
+  for judging by hand. Stages nothing.
+- ⬜ Step 3 — prepared packets and the Ready-to-submit queue (#93) + Telegram moo.
+- ⬜ Step 4 — human-triggered browser submission, dry-run by default (#94).
+- ⬜ Step 5 — Lever, Ashby, and the unknown long tail (#95).
+
 ## Backlog / ideas
 
 - ⬜ **`tailscale serve` front-end** — rainy-day: serve over Tailscale instead of a

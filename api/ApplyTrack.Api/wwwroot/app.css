@@ -1075,6 +1075,11 @@ html[data-color-mode="dark"] .pipe-stat[data-status] .n {
 }
 .workflow-actions,
 .danger-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+/* Agent verdict + settings (Settings · Agent, the Fit verdict block on the sheet). */
+.verdict-list { margin: 0.35rem 0 0; padding-left: 1.25rem; list-style: disc; }
+.agent-log { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+@media (max-width: 640px) { .agent-grid { grid-template-columns: 1fr; } }
 .link-status { display: inline-flex; padding: 0.4rem 0.6rem; border-radius: var(--radius); font-weight: 700; }
 .link-status.ok { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
 .link-status.bad { color: var(--danger); background: var(--danger-surface); }

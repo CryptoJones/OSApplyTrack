@@ -5,6 +5,7 @@ using System.Data;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using ApplyTrack.Api;
+using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -96,6 +97,29 @@ builder.Services.AddScoped(sp => new CoverLetterRepo(
 // The editor's Autofill button: server-side fetch of a job-posting URL (SSRF-guarded;
 // its own pinned HttpClient, so not from the factory) + the JobPosting/OG parser.
 builder.Services.AddSingleton<JobPageFetcher>();
+
+// Agentic auto-apply. The per-tenant settings and audit trail are always served (the
+// SPA's Settings · Agent tab and the on-demand verdict endpoint use them); the
+// unattended worker itself is registered only when Agent__Enabled=true — the
+// intended shape is a second container from this image with that set and no port.
+var agentOptions = builder.Configuration.GetSection("Agent").Get<AgentOptions>() ?? new AgentOptions();
+builder.Services.AddSingleton(agentOptions);
+builder.Services.AddSingleton<StructuredCompleter>();
+builder.Services.AddSingleton<FitJudge>();
+builder.Services.AddSingleton<LeadEvaluator>();
+builder.Services.AddScoped(sp => new AgentSettingsRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new AgentEventRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+if (agentOptions.Enabled)
+{
+    var agentConnectionString = connectionString;
+    builder.Services.AddSingleton(sp => new AgentWorker(
+        agentConnectionString, agentOptions, sp.GetRequiredService<LlmOptions>(),
+        sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
+        sp.GetRequiredService<ILoggerFactory>()));
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
+}
 
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
@@ -237,6 +261,7 @@ app.MapAuthEndpoints();
 app.MapAccountEndpoints();
 app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
+app.MapAgentEndpoints();
 
 app.Run();
 

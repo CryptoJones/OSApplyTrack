@@ -37,7 +37,7 @@ chmod 600 ~/.config/applytrack/applytrack.env
 
 # 3. Go
 systemctl --user daemon-reload
-systemctl --user start applytrack-api.service applytrack-poller.service
+systemctl --user start applytrack-api.service applytrack-poller.service applytrack-agent.service
 loginctl enable-linger "$USER"   # keep it running after logout
 ```
 

@@ -62,6 +62,35 @@ services:
     init: true
     restart: unless-stopped
 
+  agent:
+    image: ghcr.io/cryptojones/osapplytrack-api:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
+    environment:
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}"
+      ASPNETCORE_URLS: "http://+:8080"
+      Agent__Enabled: "true"
+      Agent__IntervalSeconds: ${AGENT_INTERVAL:-300}
+      Llm__BaseUrl: ${Llm__BaseUrl:-}
+      Llm__Model: ${Llm__Model:-}
+      Llm__ApiKey: ${Llm__ApiKey:-}
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+    # No published port: this container only talks to Postgres and the model.
+    networks:
+      - database
+      - egress
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "1654:1654"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+
   poller:
     image: ghcr.io/cryptojones/osapplytrack-poller:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
     environment:

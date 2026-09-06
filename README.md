@@ -55,6 +55,7 @@ telemetry, no SaaS.
 - [Data model](#data-model)
 - [The discovery poller](#the-discovery-poller)
 - [Cover letters](#cover-letters)
+- [The agent](#the-agent)
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
 - [Accessibility](#accessibility)
@@ -232,6 +233,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
 | `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
+| `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
@@ -266,7 +268,7 @@ killing the process:
 | --- | --- | --- |
 | `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
-| `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material}`. |
+| `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
 | `PUT`    | `/api/apps/{name}?expected_version=…` | Update structured fields (409 on version mismatch). |
 | `PUT`    | `/api/apps/{name}/raw?expected_version=…` | Replace the full Markdown document. |
@@ -306,6 +308,15 @@ killing the process:
 | `GET`    | `/api/llm-settings` | The tenant's endpoint override, model, reusable `cover_letter_signature`, and the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
 | `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` / `cover_letter_signature` (omit `api_key` or the signature to leave it untouched; blank clears either) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
+
+### Agent
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`). `worker_running` says whether this instance runs a worker at all. |
+| `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. |
+| `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
+| `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
 
 ### Not in v1
 
@@ -415,6 +426,47 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
   action; the result renders inline with copy / download `.md` or PDF / regenerate /
   discard. PDF output is generated server-side from the saved letter. Letters are
   stored per application and are excluded from the export snapshot by design.
+
+## The agent
+
+The agent is the opt-in, step-by-step automation of the application itself. It
+uses the same any-OpenAI-compatible endpoint as cover letters (**Settings · AI**)
+and is **off by default per tenant**: it spends your model budget unattended, so
+it must never switch itself on at a version bump.
+
+**Step 2 (this release) — a fit verdict, nothing staged.** The poller's keyword
+score is a count, not a judgement — it is exactly what mis-scores a `VB.NET` title
+or a benefits blurb that "rages on". So before anything outward-facing can happen,
+the agent re-reads the posting and forms its own verdict, and can **veto** a
+keyword-inflated score:
+
+- **Deterministic disqualifiers first, no tokens spent.** A clearance you can't
+  get, a sponsorship the employer won't give, an excluded location, an on-site role
+  against a remote-only profile — checked in code, and a hallucinating model can
+  never un-veto them.
+- **Then the model**, judging strictly against your résumé brief and your standing
+  eligibility facts. It must answer in JSON; a reply that doesn't parse is
+  re-prompted once with the error, and a second failure is recorded as an error —
+  never as "proceed".
+- **Every verdict is on the record.** `agent_events` is keyed to your account, not
+  the application, so deleting an application never erases what the agent did. A
+  `skip` lands with its reason and shows on the application sheet — a veto is
+  visible, not silent.
+- **Its own bar.** *Min fit score* (default 70) is separate from discovery's (55):
+  "worth showing me" and "worth spending tokens on" are different questions. Plus
+  per-pass and per-day caps.
+- **Evaluate by hand.** Any lead's sheet has **Evaluate fit** once the agent is
+  enabled; it runs the identical judgement the worker would, right now.
+
+**Running it.** The worker is the API image with `Agent__Enabled=true` and no
+published port — the compose files start it as the `agent` service, and
+`deploy/quadlet/applytrack-agent.container` is the systemd unit. It holds a
+database connection across multi-minute model calls, which is why it is a
+separate container with its own small pool rather than a thread in the API. Two
+containers now migrate on boot; the migrator serializes on an advisory lock.
+
+Later steps (see [`BACKLOG.md`](./BACKLOG.md)): prepared application packets and a
+Ready-to-submit queue, then human-triggered browser submission (dry-run by default).
 
 ## Security & hardening
 

@@ -76,6 +76,8 @@ const state = {
   mode: "empty", // empty | view | edit | raw | new | settings
   settingsTab: "accessibility",
   coverLettersEnabled: true,
+  // The agent (Settings · Agent) is opt-in; OFF hides the evaluate affordance.
+  agentEnabled: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -426,6 +428,7 @@ function renderView(data) {
       ${metaRow(f)}
       <div class="action-row detail-links">${applyBtn}${checkBtn}</div>
       <div id="link-status" class="mt-2 text-sm" role="status" aria-live="polite"></div>
+      ${verdictSection(data)}
       <section class="detail-section" aria-labelledby="notes-heading">
         <div class="section-heading">
           <span class="section-kicker">Workspace</span>
@@ -463,6 +466,70 @@ function renderView(data) {
   if (matDiscardEl) matDiscardEl.onclick = () => discardMaterial(data.filename);
   const checkEl = contentEl.querySelector('[data-act="check-link"]');
   if (checkEl) checkEl.onclick = () => investigateLink(data.filename, checkEl);
+  const verdictEl = contentEl.querySelector('[data-act="verdict"]');
+  if (verdictEl) verdictEl.onclick = () => evaluateFit(data.filename, verdictEl);
+}
+
+// The agent's verdict on this lead — the accountability affordance. A skip shows
+// its reason so a veto is visible rather than silent; "Evaluate fit" runs the same
+// judgement the unattended worker would, right now, and only renders when the
+// tenant has switched the agent on.
+function verdictSection(data) {
+  const v = data.agent_verdict && data.agent_verdict.detail;
+  if (!v && !state.agentEnabled) return "";
+  const evalBtn = state.agentEnabled
+    ? `<button class="btn ${v ? "btn-ghost btn-xs" : "btn-primary shrink-0"}" data-act="verdict">${v ? "Re-evaluate" : "Evaluate fit"}</button>`
+    : "";
+  if (!v) {
+    return `
+      <section class="material-block" aria-labelledby="verdict-heading">
+        <div class="material-header">
+          <div>
+            <div class="section-kicker">Agent</div>
+            <h3 id="verdict-heading">Fit verdict</h3>
+            <p class="field-help">The agent hasn't judged this lead yet.</p>
+          </div>
+          ${evalBtn}
+        </div>
+      </section>`;
+  }
+  const proceed = v.decision === "proceed";
+  const concerns = (v.concerns || []).map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+  const disq = (v.disqualifiers || []).map((c) => `<li>${escapeHtml(c)}</li>`).join("");
+  const when = data.agent_verdict.created_at ? new Date(data.agent_verdict.created_at).toLocaleString() : "";
+  return `
+    <section class="material-block" aria-labelledby="verdict-heading">
+      <div class="material-header">
+        <div>
+          <div class="section-kicker">Agent</div>
+          <h3 id="verdict-heading">Fit verdict</h3>
+        </div>
+        <div class="material-actions">${evalBtn}</div>
+      </div>
+      <p class="mt-3">
+        <span class="link-status ${proceed ? "ok" : "bad"}">${proceed ? "Proceed" : "Skip"}</span>
+        <span class="text-sm">· confidence ${escapeHtml(String(v.confidence ?? "?"))}%${v.model_consulted === false ? " · decided without the model" : ""}${when ? ` · ${escapeHtml(when)}` : ""}</span>
+      </p>
+      <p class="mt-2">${escapeHtml(v.rationale || "")}</p>
+      ${disq ? `<p class="mt-2 field-help">Disqualified because:</p><ul class="verdict-list text-sm">${disq}</ul>` : ""}
+      ${concerns ? `<p class="mt-2 field-help">Worth checking:</p><ul class="verdict-list text-sm">${concerns}</ul>` : ""}
+    </section>`;
+}
+
+// Ask the agent to judge this lead now. Like drafting, this is a model round-trip.
+async function evaluateFit(name, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Evaluating…";
+  try {
+    const r = await api("POST", `/api/apps/${encodeURIComponent(name)}/verdict`);
+    await openApp(name);
+    toast(r.verdict && r.verdict.decision === "proceed" ? "Agent says: proceed." : "Agent says: skip.");
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+    toast(e.message);
+  }
 }
 
 // Probe the entry's posting link server-side and show the verdict inline.
@@ -726,7 +793,7 @@ function formMarkup(f, { isNew }) {
         </div>
       </div>
 
-      <div class="mt-4 grid grid-cols-3 gap-4">
+      <div class="mt-4 agent-grid">
         <div>
           <label class="field-label" for="f-applied">Applied</label>
           <input id="f-applied" type="date" class="field-input mono" value="${escapeHtml(f.applied || "")}" />
@@ -1413,6 +1480,135 @@ async function loadLlmTab(body, gen = settingsGen) {
   wireLlm();
 }
 
+// ---- Agent settings panel --------------------------------------------------
+// What the agent may do, and the standing facts it answers forms with. The agent is
+// opt-in and spends the tenant's model budget unattended, so the switch is explicit.
+
+function agentMarkup(s, events) {
+  const rows = (events || []).map((e) => {
+    const d = e.detail || {};
+    const what = e.kind === "verdict"
+      ? `<span class="link-status ${d.decision === "proceed" ? "ok" : "bad"}">${escapeHtml(d.decision || "?")}</span> ${escapeHtml(d.rationale || "")}`
+      : `<span class="link-status bad">${escapeHtml(e.kind)}</span> ${escapeHtml(d.reason || "")}`;
+    const who = e.application_name
+      ? `<button class="btn btn-ghost btn-xs mono" data-open="${escapeHtml(e.application_name)}" type="button">${escapeHtml(e.application_name)}</button>`
+      : "";
+    return `<li class="mt-2 text-sm">${who} ${what}
+      <span class="text-ink-faint">· ${escapeHtml(new Date(e.created_at).toLocaleString())}</span></li>`;
+  }).join("");
+  return `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Agent · auto-apply</div>
+      <h2 class="sheet-title">What the agent may do</h2>
+      <p class="field-help">
+        The agent re-reads each promising posting and forms its own fit verdict, vetoing
+        keyword-inflated scores. It uses the AI endpoint from Settings · AI.
+        ${s.worker_running ? "" : "<strong>No agent worker is running on this instance</strong> — settings save, but nothing happens unattended until the operator starts the agent container. You can still evaluate a lead by hand from its sheet."}
+      </p>
+
+      <div class="mt-5">
+        <label class="source-row">
+          <input id="a-enabled" type="checkbox"${s.enabled ? " checked" : ""} />
+          <span>Enable the agent for this account</span>
+        </label>
+        <p class="field-help">Off by default. On, the worker judges your best unjudged leads on every pass.</p>
+      </div>
+
+      <div class="mt-4 agent-grid">
+        <div>
+          <label class="field-label" for="a-min">Min fit score</label>
+          <input id="a-min" class="field-input mono" type="number" min="0" max="100" value="${escapeHtml(String(s.min_fit_score ?? 70))}" />
+          <p class="field-help">Below this, no tokens are spent.</p>
+        </div>
+        <div>
+          <label class="field-label" for="a-run">Max per pass</label>
+          <input id="a-run" class="field-input mono" type="number" min="1" max="50" value="${escapeHtml(String(s.max_per_run ?? 5))}" />
+        </div>
+        <div>
+          <label class="field-label" for="a-day">Max per day</label>
+          <input id="a-day" class="field-input mono" type="number" min="1" max="500" value="${escapeHtml(String(s.max_per_day ?? 20))}" />
+        </div>
+      </div>
+
+      <h3 class="mt-7">Standing answers</h3>
+      <p class="field-help">Facts the agent states as-is. They never go through the model.</p>
+      <div class="mt-3">
+        <label class="field-label" for="a-auth">Work authorization</label>
+        <input id="a-auth" class="field-input" value="${escapeHtml(s.work_authorization || "")}" placeholder="e.g. US citizen" />
+      </div>
+      <div class="mt-3">
+        <label class="source-row">
+          <input id="a-sponsor" type="checkbox"${s.needs_sponsorship ? " checked" : ""} />
+          <span>I need visa sponsorship</span>
+        </label>
+        <label class="source-row">
+          <input id="a-clearance" type="checkbox"${s.clearance_ok ? " checked" : ""} />
+          <span>I hold, or can obtain, a security clearance</span>
+        </label>
+        <p class="field-help">Postings that require a clearance you can't get, or refuse sponsorship you need, are skipped before the model is consulted.</p>
+      </div>
+      <div class="mt-3 grid grid-cols-2 gap-4">
+        <div>
+          <label class="field-label" for="a-salary">Salary expectation</label>
+          <input id="a-salary" class="field-input" value="${escapeHtml(s.salary_expectation || "")}" placeholder="e.g. $140,000" />
+        </div>
+        <div>
+          <label class="field-label" for="a-phone">Phone</label>
+          <input id="a-phone" class="field-input" value="${escapeHtml(s.phone || "")}" autocomplete="tel" />
+        </div>
+      </div>
+
+      <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-primary" data-act="save">Save agent settings</button>
+      </div>
+
+      <h3 class="mt-8">Agent log</h3>
+      <p class="field-help">Every verdict the agent reached, newest first. A skip is recorded with its reason.</p>
+      <ul id="agent-log" class="agent-log">${rows || '<li class="mt-2 text-sm field-help">Nothing yet.</li>'}</ul>
+    </article>`;
+}
+
+function wireAgent() {
+  contentEl.querySelector('[data-act="cancel"]').onclick = () =>
+    state.current ? openApp(state.current) : renderEmpty();
+  contentEl.querySelector('[data-act="save"]').onclick = async () => {
+    const body = {
+      enabled: $("#a-enabled").checked,
+      min_fit_score: Number($("#a-min").value),
+      max_per_run: Number($("#a-run").value),
+      max_per_day: Number($("#a-day").value),
+      work_authorization: $("#a-auth").value.trim(),
+      needs_sponsorship: $("#a-sponsor").checked,
+      clearance_ok: $("#a-clearance").checked,
+      salary_expectation: $("#a-salary").value.trim(),
+      phone: $("#a-phone").value.trim(),
+    };
+    try {
+      const r = await api("PUT", "/api/agent-settings", body);
+      state.agentEnabled = r.enabled === true;
+      toast("Agent settings saved.");
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+  contentEl.querySelectorAll("[data-open]").forEach((b) => {
+    b.onclick = () => openApp(b.dataset.open);
+  });
+}
+
+// Settings · Agent tab.
+async function loadAgentTab(body, gen = settingsGen) {
+  const [s, events] = await Promise.all([
+    api("GET", "/api/agent-settings"),
+    api("GET", "/api/agent-events?limit=50").catch(() => []),
+  ]);
+  if (settingsSuperseded(gen)) return;
+  state.agentEnabled = s.enabled === true;
+  body.innerHTML = agentMarkup(s, Array.isArray(events) ? events : []);
+  wireAgent();
+}
+
 // ---- Boot + refresh -------------------------------------------------------
 
 async function refresh() {
@@ -1570,6 +1766,7 @@ const SETTINGS_TABS = [
   ["criteria", "Criteria"],
   ["resume", "Résumé"],
   ["ai", "AI"],
+  ["agent", "Agent"],
   ["blacklist", "Blacklist"],
   ["account", "Account"],
 ];
@@ -1623,6 +1820,7 @@ async function openSettings(tab, focusSelectedTab = false) {
     else if (state.settingsTab === "criteria") await loadCriteriaTab(body, gen);
     else if (state.settingsTab === "resume") await loadResumeTab(body, gen);
     else if (state.settingsTab === "ai") await loadLlmTab(body, gen);
+    else if (state.settingsTab === "agent") await loadAgentTab(body, gen);
     else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
     else await loadAccountTab(body);
   } catch (e) {
@@ -1848,6 +2046,12 @@ mobileQuery.addEventListener("change", (event) => {
   try {
     const s = await api("GET", "/api/llm-settings");
     state.coverLettersEnabled = s.cover_letters_enabled !== false;
+  } catch (_) {}
+  // Same for the agent, which defaults OFF: nothing agent-shaped renders unless the
+  // tenant switched it on.
+  try {
+    const a = await api("GET", "/api/agent-settings");
+    state.agentEnabled = a.enabled === true;
   } catch (_) {}
   try {
     await refresh();

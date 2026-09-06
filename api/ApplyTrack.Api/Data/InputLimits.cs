@@ -45,6 +45,8 @@ public static class InputLimits
     public const int LlmApiKey = 8192;
     public const int CoverLetterSignature = 16 * 1024;
 
+    public const int AgentAnswer = 512;
+
     public static void ValidateApplication(AppFields fields)
     {
         Text("company", fields.Company, Company);
