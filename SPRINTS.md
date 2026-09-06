@@ -137,7 +137,18 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   `applytrack:agent:`, and the migrator now serializes on an advisory lock. Settings ·
   Agent tab, a Fit-verdict block on the sheet, and `POST /api/apps/{name}/verdict`
   for judging by hand. Stages nothing.
-- ⬜ Step 3 — prepared packets and the Ready-to-submit queue (#93) + Telegram moo.
+- ✅ **Step 3 — prepared packets and the Ready-to-submit queue** (#93) **+ the moo**
+  (#99): a `proceed` now becomes an `agent_packets` row — the ATS form (Greenhouse's
+  real one via the public Job Board API, the standard set for everyone else), the
+  drafted answers (deterministic ones from your facts, screening ones from the
+  model, anything unanswerable flagged, EEO never touched), the letter — and parks
+  the application in `ready`, the status that was defined but unreachable since
+  the single-user app. The sheet shows the packet with every answer editable
+  (`?expected_version=` 409 flow on the packet's own version), a `role="alert"`
+  summary of what still needs you, and **Copy answers and open the posting** for
+  every ATS. `notification_settings` + `TelegramNotifier`: one 🐮 per packet
+  (`notified_at` claim), Settings · Notifications with a test button, `#app=` deep
+  links. `POST /api/apps/{name}/packet/prepare` does it by hand.
 - ⬜ Step 4 — human-triggered browser submission, dry-run by default (#94).
 - ⬜ Step 5 — Lever, Ashby, and the unknown long tail (#95).
 

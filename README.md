@@ -232,7 +232,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `FORWARDED_HEADERS_KNOWN_PROXY` / `FORWARDED_HEADERS_KNOWN_NETWORK` | _(empty)_ | Source IP or CIDR of a trusted reverse proxy when it is not on loopback. |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
-| `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored LLM API key at rest. Leave unset to disable per-tenant keys — the instance default above is still used. |
+| `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored secrets at rest: their LLM API key and their Telegram bot token. Leave unset to disable both — the instance-default LLM endpoint is still used. |
 | `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
@@ -268,7 +268,7 @@ killing the process:
 | --- | --- | --- |
 | `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
-| `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict}`. |
+| `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict, packet}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
 | `PUT`    | `/api/apps/{name}?expected_version=…` | Update structured fields (409 on version mismatch). |
 | `PUT`    | `/api/apps/{name}/raw?expected_version=…` | Replace the full Markdown document. |
@@ -316,6 +316,13 @@ killing the process:
 | `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`). `worker_running` says whether this instance runs a worker at all. |
 | `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. |
 | `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
+| `GET`    | `/api/apps/{name}/packet` | The prepared packet: `provider`, `questions[]` (`id`, `label`, `required`, `type`, `options`, `kind`), `answers{}`, `needs_review[]` (`id`, `reason`), `posting_excerpt`, `verdict`, `version`. Also rides along as `packet` on `GET /api/apps/{name}`. |
+| `PUT`    | `/api/apps/{name}/packet?expected_version=…` | Save edited `answers{}`; **409** on a version mismatch (the packet's own version). Unknown ids are dropped; the review list is recomputed. |
+| `POST`   | `/api/apps/{name}/packet/prepare?force=` | Judge (reusing a recorded verdict unless `force=true`), and on `proceed` build the packet, draft the letter, park the application in `ready`, and moo → `{ok, packet}`. **400** on a `skip` verdict (with the rationale) or with no LLM endpoint. |
+| `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
+| `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
+| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. |
+| `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
 
 ### Not in v1
@@ -458,6 +465,37 @@ keyword-inflated score:
 - **Evaluate by hand.** Any lead's sheet has **Evaluate fit** once the agent is
   enabled; it runs the identical judgement the worker would, right now.
 
+**Step 3 — the packet and the Ready queue.** A `proceed` verdict becomes a prepared
+packet, and the application moves to **ready** — the queue of things waiting for
+*you* to submit:
+
+- **The form.** Greenhouse publishes its application form without an employer key
+  (`boards-api.greenhouse.io/v1/boards/{board}/jobs/{id}?questions=true`), so a
+  Greenhouse posting gets its real questions, types and options with no browser.
+  Every other ATS gets the standard set (name, email, phone, LinkedIn, résumé,
+  letter) and the copy-and-open path.
+- **The answers.** Name, email, phone, links, work authorization, sponsorship,
+  clearance and salary come straight from your résumé and **Settings · Agent** and
+  never reach the model. The screening questions go to the model in one call,
+  grounded strictly in your résumé brief and the posting; anything it can't answer
+  from those facts is left blank and **flagged for you**, never invented. EEO /
+  demographic questions are never answered at all.
+- **The cover letter** is drafted (if you allow it) and stored as usual.
+- **Review, then apply.** The application sheet shows the packet with every answer
+  editable, an alert listing what still needs you (Submit stays blocked until it's
+  empty), the posting excerpt the agent judged, and **Copy answers and open the
+  posting** — one click puts every answer on your clipboard and opens the job, which
+  works for every ATS and turns a 15-minute application into a 1-minute one.
+- **Prepare by hand** from any lead's sheet, or let the worker do it unattended.
+
+**The moo.** **Settings · Notifications** takes your own Telegram bot token
+(write-only, encrypted with `APPLYTRACK_SECRETS_KEY` like the LLM key) and chat id.
+When a packet lands in ready you get one message — `🐮 moo — Acme · Engineer is
+ready to submit` — with a link that opens that application (`App__PublicBaseUrl`
+must be set for the link). Exactly one per packet, recorded in the agent log; a
+failed send never blocks the packet. **Send test message** checks the wiring first.
+The api container needs outbound HTTPS to `api.telegram.org`.
+
 **Running it.** The worker is the API image with `Agent__Enabled=true` and no
 published port — the compose files start it as the `agent` service, and
 `deploy/quadlet/applytrack-agent.container` is the systemd unit. It holds a
@@ -465,8 +503,8 @@ database connection across multi-minute model calls, which is why it is a
 separate container with its own small pool rather than a thread in the API. Two
 containers now migrate on boot; the migrator serializes on an advisory lock.
 
-Later steps (see [`BACKLOG.md`](./BACKLOG.md)): prepared application packets and a
-Ready-to-submit queue, then human-triggered browser submission (dry-run by default).
+Later steps (see [`BACKLOG.md`](./BACKLOG.md)): human-triggered browser submission
+(dry-run by default), then Lever/Ashby form discovery and the long tail.
 
 ## Security & hardening
 

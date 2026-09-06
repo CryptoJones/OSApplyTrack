@@ -1080,6 +1080,9 @@ html[data-color-mode="dark"] .pipe-stat[data-status] .n {
 .agent-log { margin: 0.5rem 0 0; padding: 0; list-style: none; }
 .agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
 @media (max-width: 640px) { .agent-grid { grid-template-columns: 1fr; } }
+.packet-q-flagged { border-left: 3px solid var(--danger); padding-left: 0.75rem; }
+.packet-flag { color: var(--danger); }
+.packet-excerpt { white-space: pre-wrap; font-size: 0.85rem; max-height: 20rem; overflow: auto; margin-top: 0.5rem; }
 .link-status { display: inline-flex; padding: 0.4rem 0.6rem; border-radius: var(--radius); font-weight: 700; }
 .link-status.ok { color: var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
 .link-status.bad { color: var(--danger); background: var(--danger-surface); }

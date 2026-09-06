@@ -5,6 +5,7 @@ using System.Data;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Notifications;
 using Dapper;
 using Npgsql;
 
@@ -34,12 +35,15 @@ public sealed class AgentWorker : BackgroundService
     private readonly LlmOptions _llmOptions;
     private readonly SecretProtector _protector;
     private readonly LeadEvaluator _evaluator;
+    private readonly PacketBuilder _packets;
+    private readonly PacketReadyNotifier _notifier;
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<AgentWorker> _log;
 
     public AgentWorker(
         string connectionString, AgentOptions options, LlmOptions llmOptions,
-        SecretProtector protector, LeadEvaluator evaluator, ILoggerFactory loggers)
+        SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
+        PacketReadyNotifier notifier, ILoggerFactory loggers)
     {
         var csb = new NpgsqlConnectionStringBuilder(connectionString)
         {
@@ -51,6 +55,8 @@ public sealed class AgentWorker : BackgroundService
         _llmOptions = llmOptions;
         _protector = protector;
         _evaluator = evaluator;
+        _packets = packets;
+        _notifier = notifier;
         _loggers = loggers;
         _log = loggers.CreateLogger<AgentWorker>();
     }
@@ -130,6 +136,14 @@ public sealed class AgentWorker : BackgroundService
 
             var resume = await new ResumeRepo(conn, tenantId).GetAsync();
             var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
+            var (_, _, _, lettersEnabled) = await llmSettings.GetViewAsync();
+            var email = (await new UserRepo(conn).GetAsync(tenantId))?.Email ?? "";
+            var inputs = new PacketInputs(
+                resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
+            var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId),
+                new AgentPacketRepo(conn, tenantId), events);
+            var notifications = new NotificationSettingsRepo(
+                conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
 
             var today = await events.VerdictsSinceAsync(DailyWindow);
             var budget = Math.Min(settings.MaxPerRun, settings.MaxPerDay - today);
@@ -143,8 +157,25 @@ public sealed class AgentWorker : BackgroundService
             foreach (var rec in await apps.ListAgentCandidatesAsync(settings.MinFitScore, budget))
             {
                 ct.ThrowIfCancellationRequested();
-                await _evaluator.EvaluateAsync(rec, resume, criteria, settings, cfg, events, ct);
+                var verdict = await _evaluator.EvaluateAsync(rec, resume, criteria, settings, cfg, events, ct);
                 judged++;
+                if (verdict is { IsProceed: true })
+                {
+                    // Step 3: prepare the packet, park it in `ready`, and moo. A failed
+                    // build is recorded and must not stop the pass.
+                    try
+                    {
+                        await _packets.BuildAsync(rec, verdict, inputs, scope, ct);
+                        await _notifier.NotifyAsync(notifications, scope.Packets, events,
+                            rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _log.LogWarning(ex, "{Name}: packet build failed", rec.Name);
+                        await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                            new { reason = "packet build failed: " + ex.Message, rec.Fields.Company, rec.Fields.Role });
+                    }
+                }
             }
             return judged;
         }

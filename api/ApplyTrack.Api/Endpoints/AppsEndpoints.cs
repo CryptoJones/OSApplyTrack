@@ -49,7 +49,8 @@ public static class AppsEndpoints
         });
 
         app.MapGet("/api/apps/{name}", async (
-            string name, ApplicationRepo repo, CoverLetterRepo letters, AgentEventRepo events) =>
+            string name, ApplicationRepo repo, CoverLetterRepo letters, AgentEventRepo events,
+            AgentPacketRepo packets) =>
         {
             var rec = await repo.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
@@ -64,6 +65,8 @@ public static class AppsEndpoints
                 // The agent's latest verdict on this lead (additive; null when it has
                 // not looked). The detail is the audit row's JSON plus when it was reached.
                 agent_verdict = verdict is null ? null : new { detail = verdict.Detail, created_at = verdict.CreatedAt },
+                // The prepared packet, when the agent has built one (additive; null otherwise).
+                packet = await packets.GetAsync(rec.Name),
             });
         });
 

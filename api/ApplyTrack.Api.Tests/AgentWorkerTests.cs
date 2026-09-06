@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Net;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Materials;
+using ApplyTrack.Api.Notifications;
 using ApplyTrack.Api.Scrape;
 using Dapper;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
@@ -15,35 +20,49 @@ namespace ApplyTrack.Api.Tests;
 /// <summary>
 /// One unattended pass of the worker against the test Postgres: it judges only the
 /// tenants that opted in, only leads over the agent's own bar, at most the per-run
-/// cap, never the same lead twice — and touches nothing but <c>agent_events</c>.
+/// cap, never the same lead twice; a `proceed` becomes a packet in `ready` and one
+/// moo; a `skip` touches nothing but the audit trail.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public class AgentWorkerTests(PostgresFixture pg)
 {
-    private const string ProceedJson =
-        "{\"decision\":\"proceed\",\"confidence\":90,\"rationale\":\"Fits.\",\"concerns\":[]}";
+    private const string BotToken = "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
+    private static readonly SecretProtector Protector = new("test-master-key");
 
-    private static AgentWorker NewWorker(StubLlmClient stub, string connectionString)
+    private static AgentWorker NewWorker(
+        StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), new JobPageFetcher(),
             NullLogger<LeadEvaluator>.Instance);
+        var greenhouse = new GreenhouseBoard(
+            new StubHttpClientFactory(CapturingHandler.Always(HttpStatusCode.NotFound, "{}")),
+            NullLogger<GreenhouseBoard>.Instance);
+        var builder = new PacketBuilder(greenhouse, new AnswerDrafter(new StructuredCompleter(stub)),
+            new CoverLetterDrafter(stub), evaluator, NullLogger<PacketBuilder>.Instance);
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["App:PublicBaseUrl"] = "https://apply.example" })
+            .Build();
+        var ready = new PacketReadyNotifier(notifier, config, NullLogger<PacketReadyNotifier>.Instance);
         return new AgentWorker(
             connectionString, new AgentOptions { Enabled = true },
-            new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
-            new SecretProtector(null), evaluator, NullLoggerFactory.Instance);
+            llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
+            Protector, evaluator, builder, ready, NullLoggerFactory.Instance);
     }
 
-    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, int minScore = 70)
+    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true)
     {
         var conn = new NpgsqlConnection(pg.ConnectionString);
         await conn.OpenAsync();
         var t = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
         await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings
         {
-            Enabled = enabled, MinFitScore = minScore, MaxPerRun = 2, MaxPerDay = 3,
+            Enabled = enabled, MinFitScore = 70, MaxPerRun = 2, MaxPerDay = 3, Phone = "555-0100",
         });
         await new ResumeRepo(conn, t).UpsertAsync(new Resume { FullName = "Ada Byte", Summary = "Ships .NET." });
+        if (telegram)
+            await new NotificationSettingsRepo(conn, t, Protector, NullLogger<NotificationSettingsRepo>.Instance)
+                .UpsertAsync(true, "4242", true, BotToken);
         var apps = new ApplicationRepo(conn, t);
         await apps.CreateAsync(new AppFields { Company = "High", Role = "Engineer", Score = "90" });
         await apps.CreateAsync(new AppFields { Company = "Mid", Role = "Engineer", Score = "75" });
@@ -53,45 +72,98 @@ public class AgentWorkerTests(PostgresFixture pg)
         return (conn, t);
     }
 
-    private static Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>
-        conn.QueryAsync<(string, string)>(
-            "SELECT application_name, kind FROM agent_events WHERE tenant_id = @t ORDER BY id", new { t })
-            .ContinueWith(x => x.Result.ToList());
+    private static async Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>
+        (await conn.QueryAsync<(string, string)>(
+            "SELECT application_name, kind FROM agent_events WHERE tenant_id = @t ORDER BY id", new { t })).ToList();
 
     [Fact]
-    public async Task A_pass_judges_the_best_unjudged_leads_over_the_bar_up_to_the_run_cap()
+    public async Task A_proceed_becomes_a_packet_in_ready_and_exactly_one_moo()
     {
-        var stub = new StubLlmClient((_, _, _) => ProceedJson);
+        var stub = new StubLlmClient(Responders.Agent());
+        var notifier = new CapturingNotifier();
         var (conn, t) = await SeedTenantAsync(enabled: true);
         await using var _ = conn;
-        using var worker = NewWorker(stub, pg.ConnectionString);
+        using var worker = NewWorker(stub, pg.ConnectionString, notifier);
 
         await worker.RunOnceAsync(CancellationToken.None);
 
         // "Low" is under the bar, "Junk" has no comparable score, "Applied" is not a lead,
         // and MaxPerRun = 2 covers exactly High + Mid.
         var events = await EventsAsync(conn, t);
-        Assert.Equal(["high-engineer.md", "mid-engineer.md"], events.Select(e => e.Name).ToArray());
-        Assert.All(events, e => Assert.Equal("verdict", e.Kind));
+        Assert.Equal(["high-engineer.md", "mid-engineer.md"],
+            events.Where(e => e.Kind == "verdict").Select(e => e.Name).ToArray());
+        Assert.Equal(2, events.Count(e => e.Kind == PacketBuilder.PacketEvent));
+        Assert.Equal(2, events.Count(e => e.Kind == PacketReadyNotifier.SentEvent));
 
-        // A second pass finds nothing new: a verdict is terminal.
+        var statuses = await conn.QueryAsync<string>(
+            "SELECT DISTINCT status FROM applications WHERE tenant_id = @t AND company IN ('High','Mid')", new { t });
+        Assert.Equal(["ready"], statuses.ToArray());
+
+        var packet = await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md");
+        Assert.NotNull(packet);
+        Assert.Equal("unknown", packet!.Provider);
+        Assert.Equal("Ada", packet.Answers["std:first_name"]);
+        Assert.Equal("555-0100", packet.Answers["std:phone"]);
+        Assert.Equal(StubLlmClient.DefaultBody, packet.Answers["std:cover_letter"]);
+        Assert.NotNull(packet.NotifiedAt);
+
+        Assert.Equal(2, notifier.Sent.Count);
+        Assert.Equal(BotToken, notifier.Sent[0].BotToken);
+        Assert.Equal("4242", notifier.Sent[0].ChatId);
+        Assert.Contains("🐮 moo — High · Engineer is ready to submit", notifier.Sent[0].Text);
+        Assert.Contains("https://apply.example/#app=high-engineer.md", notifier.Sent[0].Text);
+
+        // A second pass finds nothing new: a verdict is terminal, and no second moo.
         await worker.RunOnceAsync(CancellationToken.None);
-        Assert.Equal(2, (await EventsAsync(conn, t)).Count);
-        Assert.Equal(2, stub.Calls);
+        Assert.Equal(2, (await EventsAsync(conn, t)).Count(e => e.Kind == "verdict"));
+        Assert.Equal(2, notifier.Sent.Count);
+    }
 
-        // Statuses are untouched — this increment stages nothing.
+    [Fact]
+    public async Task A_skip_records_the_veto_and_stages_nothing()
+    {
+        var skip = "{\"decision\":\"skip\",\"confidence\":80,\"rationale\":\"Wrong stack.\",\"concerns\":[]}";
+        var stub = new StubLlmClient(Responders.Agent(verdictJson: skip));
+        var notifier = new CapturingNotifier();
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        using var worker = NewWorker(stub, pg.ConnectionString, notifier);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        var events = await EventsAsync(conn, t);
+        Assert.All(events, e => Assert.Equal("verdict", e.Kind));
+        Assert.Empty(notifier.Sent);
         var statuses = await conn.QueryAsync<string>(
             "SELECT DISTINCT status FROM applications WHERE tenant_id = @t AND company IN ('High','Mid')", new { t });
         Assert.Equal(["lead"], statuses.ToArray());
+        Assert.Null(await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md"));
+    }
+
+    [Fact]
+    public async Task No_telegram_target_means_a_packet_but_no_moo()
+    {
+        var stub = new StubLlmClient(Responders.Agent());
+        var notifier = new CapturingNotifier();
+        var (conn, t) = await SeedTenantAsync(enabled: true, telegram: false);
+        await using var _ = conn;
+        using var worker = NewWorker(stub, pg.ConnectionString, notifier);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Empty(notifier.Sent);
+        var packet = await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md");
+        Assert.NotNull(packet);
+        Assert.Null(packet!.NotifiedAt); // the claim is only taken when there is a target
     }
 
     [Fact]
     public async Task A_tenant_that_has_not_opted_in_is_never_touched()
     {
-        var stub = new StubLlmClient((_, _, _) => ProceedJson);
+        var stub = new StubLlmClient(Responders.Agent());
         var (conn, t) = await SeedTenantAsync(enabled: false);
         await using var _ = conn;
-        using var worker = NewWorker(stub, pg.ConnectionString);
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier());
 
         await worker.RunOnceAsync(CancellationToken.None);
 
@@ -104,12 +176,8 @@ public class AgentWorkerTests(PostgresFixture pg)
     {
         var (conn, t) = await SeedTenantAsync(enabled: true);
         await using var _ = conn;
-        var stub = new StubLlmClient((_, _, _) => ProceedJson);
-        var evaluator = new LeadEvaluator(
-            new FitJudge(new StructuredCompleter(stub)), new JobPageFetcher(), NullLogger<LeadEvaluator>.Instance);
-        using var worker = new AgentWorker(
-            pg.ConnectionString, new AgentOptions { Enabled = true }, new LlmOptions(),
-            new SecretProtector(null), evaluator, NullLoggerFactory.Instance);
+        var stub = new StubLlmClient(Responders.Agent());
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(), new LlmOptions());
 
         await worker.RunOnceAsync(CancellationToken.None);
 
