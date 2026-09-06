@@ -236,3 +236,25 @@ public class GreenhouseBoardTests
     public void Detects_the_other_providers_from_source_then_host(string link, string source, string provider) =>
         Assert.Equal(provider, AtsProvider.Detect(link, source));
 }
+
+public class AtsRoutingTests
+{
+    [Theory]
+    [InlineData("https://jobs.lever.co/acme/1234-abcd", "lever", "https://jobs.lever.co/acme/1234-abcd/apply")]
+    [InlineData("https://jobs.lever.co/acme/1234-abcd/apply", "lever", "https://jobs.lever.co/acme/1234-abcd/apply")]
+    [InlineData("https://jobs.ashbyhq.com/acme/9f8e", "ashby", "https://jobs.ashbyhq.com/acme/9f8e/application")]
+    [InlineData("https://job-boards.greenhouse.io/acme/jobs/1", "greenhouse", "https://job-boards.greenhouse.io/acme/jobs/1")]
+    [InlineData("https://careers.acme.com/x", "unknown", "https://careers.acme.com/x")]
+    public void The_form_is_one_hop_past_a_lever_or_ashby_posting(string link, string provider, string expected) =>
+        Assert.Equal(expected, ApplyTrack.Api.Agent.AtsProvider.ApplyUrl(link, provider));
+
+    [Theory]
+    [InlineData("greenhouse", false, true)]
+    [InlineData("lever", false, true)]
+    [InlineData("ashby", false, true)]
+    [InlineData("workday", true, false)]
+    [InlineData("unknown", false, false)]
+    [InlineData("unknown", true, true)]
+    public void The_browser_drives_known_ats_the_long_tail_only_opted_in_and_workday_never(string provider, bool optIn, bool expected) =>
+        Assert.Equal(expected, ApplyTrack.Api.Agent.AtsProvider.BrowserCanSubmit(provider, optIn));
+}

@@ -89,8 +89,10 @@ public static class PacketEndpoints
                 resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
             var packet = await builder.BuildAsync(rec, verdict, inputs,
                 new PacketScope(apps, letters, packets, events), ct);
-            // With a browser, the moo waits for the dry-run fill; without one, this is it.
-            if (browser.IsConfigured && rec.Fields.Link.Length > 0)
+            // With a browser that may drive this ATS, the moo waits for the dry-run
+            // fill; otherwise this is it.
+            if (browser.IsConfigured && rec.Fields.Link.Length > 0
+                && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
                 await queue.EnqueueAsync(rec.Name, dryRun: true);
             else
                 await notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);

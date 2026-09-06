@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Text.Json;
+using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 
@@ -32,8 +33,13 @@ public static class SubmitEndpoints
             var packet = await packets.GetAsync(rec.Name)
                 ?? throw new AppValidationException("prepare the packet first");
 
-            // Dry run unless the caller says otherwise AND the tenant has turned dry-run off.
             var agent = await settings.GetAsync();
+            if (!AtsProvider.BrowserCanSubmit(packet.Provider, agent.LongTail))
+                throw new AppValidationException(packet.Provider == AtsProvider.Workday
+                    ? "Workday needs an account with the employer — apply via Copy answers and open the posting"
+                    : "this ATS isn't one the agent knows — turn on the long tail in Settings · Agent, or apply via Copy answers and open the posting");
+
+            // Dry run unless the caller says otherwise AND the tenant has turned dry-run off.
             var wantsReal = payload is { ValueKind: JsonValueKind.Object } p
                 && p.TryGetProperty("dry_run", out var d) && d.ValueKind == JsonValueKind.False;
             var dryRun = !wantsReal || agent.DryRun;
@@ -47,9 +53,12 @@ public static class SubmitEndpoints
         }).RequireRateLimiting("draft");
 
         app.MapGet("/api/apps/{name}/submit", async (string name, SubmitRequestRepo queue) =>
-            Results.Ok(await queue.GetAsync(name) is { } r
-                ? new { pending = r.Pending, dry_run = r.DryRun, requested_at = r.RequestedAt, claimed_at = r.ClaimedAt, done_at = r.DoneAt }
-                : null));
+        {
+            var r = await queue.GetAsync(name);
+            return Results.Ok(r is null
+                ? new { pending = false, dry_run = (bool?)null, requested_at = (DateTimeOffset?)null, claimed_at = (DateTimeOffset?)null, done_at = (DateTimeOffset?)null }
+                : new { pending = r.Pending, dry_run = (bool?)r.DryRun, requested_at = (DateTimeOffset?)r.RequestedAt, claimed_at = r.ClaimedAt, done_at = r.DoneAt });
+        });
 
         app.MapGet("/api/apps/{name}/evidence", async (string name, AgentEvidenceRepo evidence) =>
             Results.Ok(await evidence.ListAsync(name)));

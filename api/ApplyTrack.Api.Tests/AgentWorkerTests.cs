@@ -40,13 +40,14 @@ public class AgentWorkerTests(PostgresFixture pg)
         var greenhouse = new GreenhouseBoard(
             new StubHttpClientFactory(CapturingHandler.Always(HttpStatusCode.NotFound, "{}")),
             NullLogger<GreenhouseBoard>.Instance);
+        var browserOptions = browser ?? new BrowserOptions();
         var builder = new PacketBuilder(greenhouse, new AnswerDrafter(new StructuredCompleter(stub)),
-            new CoverLetterDrafter(stub), evaluator, NullLogger<PacketBuilder>.Instance);
+            new CoverLetterDrafter(stub), evaluator, browserOptions,
+            new FormDiscoverer(browserOptions, NullLogger<FormDiscoverer>.Instance), NullLogger<PacketBuilder>.Instance);
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["App:PublicBaseUrl"] = "https://apply.example" })
             .Build();
         var ready = new PacketReadyNotifier(notifier, config, NullLogger<PacketReadyNotifier>.Instance);
-        var browserOptions = browser ?? new BrowserOptions();
         return new AgentWorker(
             connectionString, new AgentOptions { Enabled = true },
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },

@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
@@ -46,16 +47,20 @@ public sealed partial class PacketBuilder
     private readonly AnswerDrafter _answers;
     private readonly CoverLetterDrafter _letters;
     private readonly LeadEvaluator _evaluator;
+    private readonly BrowserOptions _browser;
+    private readonly FormDiscoverer _discoverer;
     private readonly ILogger<PacketBuilder> _log;
 
     public PacketBuilder(
         GreenhouseBoard greenhouse, AnswerDrafter answers, CoverLetterDrafter letters,
-        LeadEvaluator evaluator, ILogger<PacketBuilder> log)
+        LeadEvaluator evaluator, BrowserOptions browser, FormDiscoverer discoverer, ILogger<PacketBuilder> log)
     {
         _greenhouse = greenhouse;
         _answers = answers;
         _letters = letters;
         _evaluator = evaluator;
+        _browser = browser;
+        _discoverer = discoverer;
         _log = log;
     }
 
@@ -77,8 +82,10 @@ public sealed partial class PacketBuilder
         var f = rec.Fields;
         var provider = AtsProvider.Detect(f.Link, f.Source);
 
-        // 1. The form.
-        List<PacketQuestion> questions;
+        // 1. The form. Greenhouse publishes it; Lever, Ashby and (opted in) the long
+        // tail are discovered read-only in the browser; Workday and everyone else get
+        // the standard set and the copy-and-open path.
+        List<PacketQuestion>? questions = null;
         var greenhouseContent = "";
         if (provider == AtsProvider.Greenhouse
             && AtsProvider.TryParseGreenhouse(f.Link, f.Source, out var board, out var jobId)
@@ -87,10 +94,19 @@ public sealed partial class PacketBuilder
             questions = job.Questions;
             greenhouseContent = job.ContentHtml;
         }
-        else
+        else if (_browser.IsConfigured && f.Link.Length > 0 && provider != AtsProvider.Greenhouse
+                 && AtsProvider.BrowserCanSubmit(provider, inputs.Settings.LongTail))
         {
-            questions = StandardQuestions();
+            try
+            {
+                questions = await _discoverer.DiscoverAsync(AtsProvider.ApplyUrl(f.Link, provider), ct);
+            }
+            catch (Exception ex) when (ex is AppValidationException or Microsoft.Playwright.PlaywrightException or TimeoutException)
+            {
+                _log.LogInformation("{Name}: form discovery failed: {Reason}", rec.Name, ex.Message.Split('\n')[0]);
+            }
         }
+        questions ??= StandardQuestions();
 
         // 2. The posting the answers are grounded in — the page, else Greenhouse's copy.
         var excerpt = await _evaluator.ReadPostingAsync(f.Link, ct);

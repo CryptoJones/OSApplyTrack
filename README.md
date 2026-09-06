@@ -326,7 +326,7 @@ killing the process:
 | `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
-| `GET`    | `/api/apps/{name}/submit` | The queued request, if any: `pending`, `dry_run`, timestamps. |
+| `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, timestamps. |
 | `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed`), `url`, `confirmation`, `detail`, `has_screenshot`. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
@@ -534,8 +534,20 @@ contained rather than trusted:
    sandbox in a container, this is what decides how bad a renderer escape is —
    "write rows the agent already writes", not "read every session token".
 
-Lever and Ashby don't publish their form schema, so their packets get the standard
-question set; Workday needs an employer account and stays copy-and-open.
+**Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
+schema. Lever and Ashby forms are **discovered read-only in the browser** — the
+agent visits the form one hop past the posting, enumerates every control by its
+accessible name (field name, type, options, required), never types, never clicks
+— and the result is the same question list Greenhouse's API gives, so the answer
+drafter and the submitter need no per-ATS code. Anything else is the **long tail**:
+a generic adapter that fills by field label and refuses to click if any required
+field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
+doesn't know* in Settings · Agent. **Workday stays manual, permanently** — applying
+needs an account with the employer's tenant, email verification and a multi-step
+wizard — so it is detected, the packet is prepared, and the sheet routes you to
+copy-and-open. That is the honest outcome, not a gap. The agent never guesses on
+EEO/demographic questions, file fields other than the résumé, or any answer the
+model wasn't confident about — those block Submit until you resolve them.
 
 **Running it.** The worker is the API image with `Agent__Enabled=true` and no
 published port — the compose files start it as the `agent` service, and
@@ -543,9 +555,6 @@ published port — the compose files start it as the `agent` service, and
 database connection across multi-minute model calls, which is why it is a
 separate container with its own small pool rather than a thread in the API. Two
 containers now migrate on boot; the migrator serializes on an advisory lock.
-
-Later (see [`BACKLOG.md`](./BACKLOG.md)): Lever/Ashby form discovery and the
-unknown long tail.
 
 ## Security & hardening
 
