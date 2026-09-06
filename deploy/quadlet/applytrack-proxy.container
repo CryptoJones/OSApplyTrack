@@ -9,6 +9,8 @@ Image=ghcr.io/cryptojones/osapplytrack-proxy:latest
 Network=applytrack-browser.network
 Network=applytrack.network
 DropCapability=ALL
+# squid starts as root only to drop to its own user; that needs exactly these.
+AddCapability=SETUID SETGID CHOWN
 NoNewPrivileges=true
 
 [Service]

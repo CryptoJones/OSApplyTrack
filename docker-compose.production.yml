@@ -127,6 +127,11 @@ services:
       - egress
     cap_drop:
       - ALL
+    # squid starts as root only to drop to its own user; that needs exactly these.
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
     security_opt:
       - no-new-privileges:true
     init: true
