@@ -149,7 +149,22 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   every ATS. `notification_settings` + `TelegramNotifier`: one 🐮 per packet
   (`notified_at` claim), Settings · Notifications with a test button, `#app=` deep
   links. `POST /api/apps/{name}/packet/prepare` does it by hand.
-- ⬜ Step 4 — human-triggered browser submission, dry-run by default (#94).
+- ✅ **Step 4 — human-triggered browser submission, dry-run by default** (#94): the
+  only step that touches an employer. `Microsoft.Playwright` in the api, driving a
+  **separate** browser container (`docker/browser`, Playwright's image running
+  `run-server`) over `ws://` — the api/agent images keep their hardened profile.
+  Containment: the scraper's URL/address pre-flight, an `internal: true` browser
+  network whose only exit is a squid forward proxy (`docker/proxy`) that does the
+  DNS and refuses private destinations, route interception, and a least-privilege
+  `applytrack_agent` Postgres role (no DELETE, no sessions/magic_tokens; grants in
+  the RunAlways `Migrations/Always/agent_role.sql`, `Migrations__Mode=wait` for the
+  container that cannot migrate). `submit_requests` (claimed by UPDATE … SKIP
+  LOCKED), `agent_evidence` (screenshot + confirmation), the résumé PDF kept and
+  attached from memory. **Dry run by default:** fill, screenshot, don't click; the
+  moo now says "filled in and ready for you to click Apply". `POST
+  /api/apps/{name}/submit`, `GET …/evidence`, the Submit / dry-run buttons on the
+  sheet. Tests drive the real submitter through a real Playwright server at a
+  loopback fixture form and assert on the POST it receives.
 - ⬜ Step 5 — Lever, Ashby, and the unknown long tail (#95).
 
 ## Backlog / ideas

@@ -76,9 +76,41 @@ services:
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+      App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:-}
+      # The browser container (below). Unset both to prepare packets without one.
+      Browser__Endpoint: ${BROWSER_ENDPOINT:-ws://browser:3000/}
+      Browser__Proxy: ${BROWSER_PROXY:-http://proxy:3128}
+    networks:
+      - default
+      - browser
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The browser the agent drives: Playwright's own image running `run-server`, on
+  # an internal network whose only way out is the proxy. Never in the api image —
+  # Chromium cannot run under the hardened profile the other containers keep.
+  browser:
+    build:
+      context: ./docker/browser
+    init: true
+    security_opt:
+      - seccomp:./docker/browser/seccomp_profile.json
+    environment:
+      HTTPS_PROXY: http://proxy:3128
+      HTTP_PROXY: http://proxy:3128
+    networks:
+      - browser
+    restart: unless-stopped
+
+  # The forward proxy that does the browser's DNS and refuses private destinations.
+  proxy:
+    build:
+      context: ./docker/proxy
+    networks:
+      - browser
+      - default
     restart: unless-stopped
 
   # The Python discovery poller (second runtime). Shares the same Postgres; the .NET
@@ -94,6 +126,13 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+
+networks:
+  default:
+  # No gateway: a container on only this network cannot reach the host, the LAN,
+  # or the internet — the browser's containment boundary.
+  browser:
+    internal: true
 
 volumes:
   pgdata:

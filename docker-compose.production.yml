@@ -11,8 +11,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-applytrack}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
       POSTGRES_DB: ${POSTGRES_DB:-applytrack}
+      # The agent worker's own least-privilege role (no DELETE, no sessions/tokens).
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env.production}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     networks:
       - database
     healthcheck:
@@ -65,7 +68,10 @@ services:
   agent:
     image: ghcr.io/cryptojones/osapplytrack-api:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
     environment:
-      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}"
+      # The restricted role: what decides how bad a renderer escape in the browser
+      # is. It cannot migrate, so it waits for the api container to.
+      ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=applytrack_agent;Password=${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env.production}"
+      Migrations__Mode: wait
       ASPNETCORE_URLS: "http://+:8080"
       Agent__Enabled: "true"
       Agent__IntervalSeconds: ${AGENT_INTERVAL:-300}
@@ -73,10 +79,14 @@ services:
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
-    # No published port: this container only talks to Postgres and the model.
+      App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:?Set APP_PUBLIC_BASE_URL to the public HTTPS origin}
+      Browser__Endpoint: ws://browser:3000/
+      Browser__Proxy: http://proxy:3128
+    # No published port: this container only talks to Postgres, the model, and the browser.
     networks:
       - database
       - egress
+      - browser
     depends_on:
       db:
         condition: service_healthy
@@ -84,6 +94,37 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+
+  # The browser: Playwright's server image, deliberately NOT under the hardened
+  # profile above (Chromium needs an executable temp dir and its sandbox needs
+  # user namespaces). Its containment is the network: `browser` is internal, so the
+  # only thing it can reach is the proxy; plus Playwright's own seccomp profile,
+  # a non-root user, and a fresh context per run holding no credentials.
+  browser:
+    image: ghcr.io/cryptojones/osapplytrack-browser:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
+    environment:
+      HTTPS_PROXY: http://proxy:3128
+      HTTP_PROXY: http://proxy:3128
+    networks:
+      - browser
+    init: true
+    security_opt:
+      - seccomp:./docker/browser/seccomp_profile.json
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # The forward proxy: does the browser's DNS, refuses private destinations.
+  proxy:
+    image: ghcr.io/cryptojones/osapplytrack-proxy:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
+    networks:
+      - browser
+      - egress
     cap_drop:
       - ALL
     security_opt:
@@ -118,6 +159,9 @@ networks:
   database:
     internal: true
   egress:
+  # The browser's world: no gateway, nothing reachable but the proxy.
+  browser:
+    internal: true
 
 volumes:
   pgdata:

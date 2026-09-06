@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Aaron K. Clark
+[Network]
+# Internal: no gateway, so a container on only this network reaches nothing but
+# its peers (the proxy). The browser's containment boundary.
+Internal=true

@@ -28,21 +28,34 @@ public sealed class PacketReadyNotifier
         _log = log;
     }
 
+    /// <summary>Which moment the moo marks.</summary>
+    public enum Moment
+    {
+        /// <summary>The packet is prepared; the human submits (copy-and-open, or no browser).</summary>
+        Ready,
+        /// <summary>The browser filled the form in a dry run; the human clicks Apply.</summary>
+        Filled,
+        /// <summary>The browser submitted and saw a confirmation. Informational, not claimed.</summary>
+        Submitted,
+    }
+
     public async Task NotifyAsync(
         NotificationSettingsRepo settings, AgentPacketRepo packets, AgentEventRepo events,
-        string applicationName, string company, string role, CancellationToken ct)
+        string applicationName, string company, string role, CancellationToken ct,
+        Moment moment = Moment.Ready)
     {
         var target = await settings.GetTargetAsync();
         if (target is null)
             return;
-        if (!await packets.TryClaimNotificationAsync(applicationName))
+        // Ready and Filled share the one claim per packet build; Submitted is always news.
+        if (moment != Moment.Submitted && !await packets.TryClaimNotificationAsync(applicationName))
             return;
 
-        var text = BuildMessage(company, role, DeepLink(_publicBaseUrl, applicationName));
+        var text = BuildMessage(company, role, DeepLink(_publicBaseUrl, applicationName), moment);
         try
         {
             await _notifier.SendAsync(target.BotToken, target.ChatId, text, ct);
-            await events.RecordAsync(SentEvent, applicationName, new { channel = "telegram" });
+            await events.RecordAsync(SentEvent, applicationName, new { channel = "telegram", moment = moment.ToString().ToLowerInvariant() });
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -52,10 +65,16 @@ public sealed class PacketReadyNotifier
     }
 
     /// <summary>The 🐮. Pure, for tests.</summary>
-    public static string BuildMessage(string company, string role, string? link)
+    public static string BuildMessage(string company, string role, string? link, Moment moment = Moment.Ready)
     {
         var who = string.Join(" · ", new[] { company.Trim(), role.Trim() }.Where(s => s.Length > 0));
-        var text = $"🐮 moo — {(who.Length > 0 ? who : "an application")} is ready to submit";
+        var subject = who.Length > 0 ? who : "an application";
+        var text = moment switch
+        {
+            Moment.Filled => $"🐮 moo — {subject} is filled in and ready for you to click Apply",
+            Moment.Submitted => $"✅ {subject} was submitted",
+            _ => $"🐮 moo — {subject} is ready to submit",
+        };
         return link is null ? text : text + "\n" + link;
     }
 

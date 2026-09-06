@@ -49,8 +49,11 @@ public static class MaterialsEndpoints
             using var buffer = new MemoryStream(capacity: (int)Math.Min(file.Length, ResumePdfImporter.MaxPdfBytes));
             await stream.CopyToAsync(buffer);
 
-            var resume = ResumePdfImporter.FromPdf(buffer.ToArray());
+            var bytes = buffer.ToArray();
+            var resume = ResumePdfImporter.FromPdf(bytes);
             await repo.UpsertAsync(resume);
+            // Keep the file too: the browser attaches it to the résumé field at submit.
+            await repo.StorePdfAsync(bytes, Path.GetFileName(file.FileName ?? "") is { Length: > 0 } fn ? fn : "resume.pdf");
             return Results.Ok(resume);
         });
 

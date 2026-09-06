@@ -234,6 +234,8 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
 | `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored secrets at rest: their LLM API key and their Telegram bot token. Leave unset to disable both — the instance-default LLM endpoint is still used. |
 | `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
+| `Browser__Endpoint` / `Browser__Proxy` | _(empty)_ | The Playwright server the agent drives (`ws://browser:3000/`) and the forward proxy it must use (`http://proxy:3128`). Unset = no browser: packets are still prepared and you apply via copy-and-open. Set on the `agent` service; see [The agent](#the-agent), step 4. |
+| `AGENT_DB_PASSWORD` | _(required in production)_ | Creates the least-privilege `applytrack_agent` Postgres role on first init; the `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
@@ -323,6 +325,10 @@ killing the process:
 | `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
 | `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
+| `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
+| `GET`    | `/api/apps/{name}/submit` | The queued request, if any: `pending`, `dry_run`, timestamps. |
+| `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed`), `url`, `confirmation`, `detail`, `has_screenshot`. |
+| `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
 
 ### Not in v1
@@ -496,6 +502,41 @@ must be set for the link). Exactly one per packet, recorded in the agent log; a
 failed send never blocks the packet. **Send test message** checks the wiring first.
 The api container needs outbound HTTPS to `api.telegram.org`.
 
+**Step 4 — the browser fills it in; you click Apply.** With a browser container
+configured, a prepared packet gets a **dry run** automatically: the browser opens
+the posting, fills every mapped answer, attaches your résumé PDF from memory,
+takes a screenshot, and stops. The moo then says *filled in and ready for you to
+click Apply*, the sheet shows the screenshot, and **Submit application** queues
+the real thing — only when nothing is left to review, and only once you have
+untied *Dry run only* in **Settings · Agent** (on by default: you can watch it
+correctly fill thirty real postings without applying to one). A submission is
+recognised by its confirmation text, recorded with a screenshot, marks the
+application **applied**, and moos ✅.
+
+ATS submission APIs are not available to applicants (Greenhouse/Lever/Ashby all
+require an employer key), so browser form-fill is the only general mechanism — and
+it is the component that bypasses every SSRF guard we have, which is why it is
+contained rather than trusted:
+
+1. The same URL + resolved-address pre-flight as the scraper.
+2. **The browser has no route anywhere.** It runs in its own container
+   (`docker/browser`, Playwright's image running `run-server` — the api image
+   stays read-only/noexec, which Chromium cannot run under) on an `internal`
+   network whose only exit is the forward proxy.
+3. **The proxy does the DNS** (`docker/proxy`, squid): with `HTTPS_PROXY` set
+   Chromium emits `CONNECT` and never resolves a name itself, so DNS rebinding is
+   structurally impossible at the browser; the proxy also refuses private,
+   loopback, link-local and CGNAT destinations and non-web ports.
+4. Route interception aborts non-http(s) requests and off-site top-level navigations.
+5. **A least-privilege Postgres role for the agent** (`AGENT_DB_PASSWORD` creates
+   `applytrack_agent`; the API grants it on every boot): no `DELETE` anywhere, no
+   access to `sessions` or `magic_tokens`. Since Chromium runs without its own
+   sandbox in a container, this is what decides how bad a renderer escape is —
+   "write rows the agent already writes", not "read every session token".
+
+Lever and Ashby don't publish their form schema, so their packets get the standard
+question set; Workday needs an employer account and stays copy-and-open.
+
 **Running it.** The worker is the API image with `Agent__Enabled=true` and no
 published port — the compose files start it as the `agent` service, and
 `deploy/quadlet/applytrack-agent.container` is the systemd unit. It holds a
@@ -503,8 +544,8 @@ database connection across multi-minute model calls, which is why it is a
 separate container with its own small pool rather than a thread in the API. Two
 containers now migrate on boot; the migrator serializes on an advisory lock.
 
-Later steps (see [`BACKLOG.md`](./BACKLOG.md)): human-triggered browser submission
-(dry-run by default), then Lever/Ashby form discovery and the long tail.
+Later (see [`BACKLOG.md`](./BACKLOG.md)): Lever/Ashby form discovery and the
+unknown long tail.
 
 ## Security & hardening
 

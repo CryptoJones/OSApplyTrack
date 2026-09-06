@@ -15,6 +15,7 @@
     <PackageReference Include="Dapper" Version="2.1.79" />
     <PackageReference Include="dbup-postgresql" Version="7.0.1" />
     <PackageReference Include="MailKit" Version="4.17.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="PdfPig" Version="0.1.15" />
   </ItemGroup>
@@ -23,6 +24,8 @@
        the assembly and the same runner works locally and in a container. -->
   <ItemGroup>
     <EmbeddedResource Include="Migrations\*.sql" />
+    <!-- Run-always scripts (the agent role's grants), applied after the versioned ones. -->
+    <EmbeddedResource Include="Migrations\Always\*.sql" />
   </ItemGroup>
 
 </Project>

@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 
@@ -19,15 +20,15 @@ public static class AgentEndpoints
 {
     public static void MapAgentEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/agent-settings", async (AgentSettingsRepo repo, AgentOptions options) =>
-            Results.Ok(View(await repo.GetAsync(), options)));
+        app.MapGet("/api/agent-settings", async (AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
+            Results.Ok(View(await repo.GetAsync(), options, browser)));
 
         app.MapPut("/api/agent-settings", async (
-            JsonElement payload, AgentSettingsRepo repo, AgentOptions options) =>
+            JsonElement payload, AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
         {
             var settings = AgentSettings.FromJson(payload);
             await repo.UpsertAsync(settings);
-            return Results.Ok(View(await repo.GetAsync(), options));
+            return Results.Ok(View(await repo.GetAsync(), options, browser));
         });
 
         app.MapGet("/api/agent-events", async (AgentEventRepo repo, int? limit) =>
@@ -54,7 +55,7 @@ public static class AgentEndpoints
         }).RequireRateLimiting("draft");
     }
 
-    private static object View(AgentSettings s, AgentOptions options) => new
+    private static object View(AgentSettings s, AgentOptions options, BrowserOptions browser) => new
     {
         enabled = s.Enabled,
         dry_run = s.DryRun,
@@ -69,5 +70,7 @@ public static class AgentEndpoints
         // Whether this instance runs a worker at all — so the UI can say "saved, but
         // nothing will happen until the operator starts the agent container".
         worker_running = options.Enabled,
+        // Whether this instance has a browser container to fill and submit forms with.
+        browser_available = browser.IsConfigured,
     };
 }

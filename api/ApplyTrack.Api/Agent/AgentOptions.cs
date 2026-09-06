@@ -17,6 +17,9 @@ public sealed class AgentOptions
     /// <summary>Seconds between passes over the enabled tenants.</summary>
     public int IntervalSeconds { get; set; } = 300;
 
+    /// <summary>Seconds between drains of the submit queue (the human's Submit clicks).</summary>
+    public int SubmitPollSeconds { get; set; } = 15;
+
     /// <summary>The worker's own, small connection pool — it holds a connection across
     /// model calls and must not be able to starve the request pool.</summary>
     public int MaxPoolSize { get; set; } = 4;

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.RateLimiting;
 using ApplyTrack.Api;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -142,6 +143,17 @@ builder.Services.AddScoped(sp => new NotificationSettingsRepo(
     sp.GetRequiredService<SecretProtector>(),
     sp.GetRequiredService<ILogger<NotificationSettingsRepo>>()));
 
+// Step 4: the browser. Its own container (see docker/browser), reached over ws://;
+// unset means no browser and the copy-and-open path. The submitter itself is
+// harmless to register everywhere — it refuses to run unless configured.
+var browserOptions = builder.Configuration.GetSection("Browser").Get<BrowserOptions>() ?? new BrowserOptions();
+builder.Services.AddSingleton(browserOptions);
+builder.Services.AddSingleton<BrowserSubmitter>();
+builder.Services.AddScoped(sp => new SubmitRequestRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new AgentEvidenceRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+
 if (agentOptions.Enabled)
 {
     var agentConnectionString = connectionString;
@@ -149,6 +161,7 @@ if (agentOptions.Enabled)
         agentConnectionString, agentOptions, sp.GetRequiredService<LlmOptions>(),
         sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
         sp.GetRequiredService<PacketBuilder>(), sp.GetRequiredService<PacketReadyNotifier>(),
+        browserOptions, sp.GetRequiredService<BrowserSubmitter>(),
         sp.GetRequiredService<ILoggerFactory>()));
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
@@ -202,7 +215,12 @@ var app = builder.Build();
 // migrations; the same timeout applies to every script the run executes.
 var migrationTimeout = TimeSpan.FromSeconds(TimeoutConfiguration.PositiveTimeoutSeconds(
     builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
-Migrator.Upgrade(connectionString, migrationTimeout);
+// Migrations:Mode=wait — for a container whose DB role cannot migrate (the agent
+// worker under its least-privilege role): wait for the owner container to, instead.
+if (string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
+    Migrator.WaitUntilCurrent(connectionString, TimeSpan.FromMinutes(5));
+else
+    Migrator.Upgrade(connectionString, migrationTimeout);
 
 // Honor forwarded client/protocol data only from a known reverse proxy. ASP.NET
 // Core's loopback defaults cover same-host Caddy/nginx/`tailscale serve`; container
@@ -300,6 +318,7 @@ app.MapScrapeEndpoints();
 app.MapAgentEndpoints();
 app.MapPacketEndpoints();
 app.MapNotificationsEndpoints();
+app.MapSubmitEndpoints();
 
 app.Run();
 

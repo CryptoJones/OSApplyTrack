@@ -52,6 +52,13 @@ jobs:
             fi
           done
           exit $fail
+      # The browser submitter test drives a real Playwright server (the Node package
+      # the web job uses) at a loopback fixture form; it skips itself when absent.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci && npx playwright install --with-deps chromium
       - name: Test (xUnit + Testcontainers-Postgres)
         working-directory: api
         run: dotnet test --logger "console;verbosity=normal"
