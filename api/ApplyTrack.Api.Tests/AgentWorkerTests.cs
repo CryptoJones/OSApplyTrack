@@ -191,4 +191,27 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Equal("error", events[0].Kind);
         Assert.Equal(0, stub.Calls);
     }
+
+    [Fact]
+    public async Task A_dropped_submit_request_records_an_error_instead_of_vanishing()
+    {
+        // A dropped submission used to leave no trace anywhere the user can see: the
+        // queue row still reads claimed+done and nothing reaches agent_evidence. That
+        // silence is also the reason an application never got its "applied" flag, so
+        // the drop has to say so.
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("no-such-role.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString,
+            new CapturingNotifier());
+
+        var drained = await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal(1, drained);
+        var reason = await conn.ExecuteScalarAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events"
+            + " WHERE tenant_id = @t AND kind = 'error' AND application_name = 'no-such-role.md'",
+            new { t });
+        Assert.Equal("submit dropped: application missing", reason);
+    }
 }

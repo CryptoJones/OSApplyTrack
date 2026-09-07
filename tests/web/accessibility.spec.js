@@ -60,7 +60,29 @@ const detail = {
   },
 };
 
+// The already-applied row from the list above, plus the detail the sheet renders for it.
+const appliedApp = applications[2];
+const appliedDetail = {
+  filename: appliedApp.filename,
+  raw: "# Aurora Systems\n",
+  version: "1",
+  material: "",
+  fields: {
+    ...appliedApp,
+    link: "https://example.com/jobs/2",
+    salary: "", source: "Example careers", contact: "", contact_email: "",
+    applied: "2026-03-01", followup: "2026-03-08", notes: "Applied already.",
+  },
+};
+
 async function mockApi(page) {
+  // The header's version badge reads /health, which is outside the /api/ prefix.
+  await page.route("**/health", async (route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ status: "ok", version: "9.9.9" }),
+    });
+  });
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -80,6 +102,7 @@ async function mockApi(page) {
     }
     else if (path === "/api/stats") body = { status: { lead: 2, applied: 1 }, lane: { dotnet: 1, ai: 1, devrel: 1 } };
     else if (path === `/api/apps/${application.filename}` && method === "GET") body = detail;
+    else if (path === `/api/apps/${appliedApp.filename}` && method === "GET") body = appliedDetail;
     else if (path === "/api/criteria") body = {
       keywords: ["engineer"], default_lane: "dotnet", min_fit_score: 55,
       remote_only: true, exclude_locations: [], sources: {}, ats_boards: [], rss_feeds: [],
@@ -412,4 +435,26 @@ test("magic-link login is labeled and announced", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "ApplyTrack" })).toBeVisible();
   await expect(page.getByLabel("Email address")).toBeFocused();
   await expectNoSeriousViolations(page);
+});
+
+test("the header shows the running build version", async ({ page }) => {
+  // A version on screen must be one the server confirmed, so the badge stays hidden
+  // until /health answers — never a guess and never an empty chip.
+  const badge = page.locator("#app-version");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText("v9.9.9");
+});
+
+test("Mark applied is disabled once a role is already applied", async ({ page }) => {
+  // Opened from a fresh list each time: on the mobile layout the detail pane replaces
+  // the list, so the second row is not clickable without going back.
+  await page.getByRole("button", { name: /Aurora Systems/ }).click();
+  const done = page.getByRole("button", { name: "Mark applied" });
+  await expect(done).toBeDisabled();
+  await expect(done).toHaveAttribute("title", /Already applied/);
+  await expectNoSeriousViolations(page);
+
+  await page.reload();
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.getByRole("button", { name: "Mark applied" })).toBeEnabled();
 });

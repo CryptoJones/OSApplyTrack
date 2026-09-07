@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Data;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using ApplyTrack.Api;
@@ -287,8 +288,18 @@ app.UseMiddleware<TenantMiddleware>();
 // Enforce the per-route rate-limit policies declared above (RequireRateLimiting).
 app.UseRateLimiter();
 
+// The running build, read from the assembly rather than a hard-coded constant so it can
+// only ever report what is actually deployed. InformationalVersion carries a "+<commit>"
+// suffix on CI builds; the header shows the bare version, so trim it once here.
+var buildVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+buildVersion = buildVersion.Split('+')[0];
+if (buildVersion.Length == 0) buildVersion = "unknown";
+
 // Liveness: cheap and static, so a transient DB blip never trips it into a restart loop.
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+// It also carries the build version. This is the one endpoint the SPA can read before
+// login, which is what lets the header show a version on the sign-in screen too.
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = buildVersion }));
 // Readiness: actually touch Postgres so an orchestrator can gate traffic on a working
 // DB. Deliberately a separate path from liveness — a DB hiccup should drain traffic,
 // not kill the pod. 503 (not an exception) on failure so it reads as "not ready" cleanly.
