@@ -193,6 +193,49 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task A_browser_crash_records_failed_evidence_instead_of_vanishing()
+    {
+        // The regression this locks: the catch in RunSubmitAsync named three exception
+        // types, so anything else escaped to the drain loop's generic handler, which marks
+        // the queue row done and writes NO evidence. On a live instance every submission
+        // died on a Win32Exception out of fork/exec, matched none of the three, and left
+        // no trace — a crashed submission was indistinguishable from one never requested.
+        var stub = new StubLlmClient(Responders.Agent());
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        using (var builder = NewWorker(stub, pg.ConnectionString, new CapturingNotifier()))
+            await builder.RunOnceAsync(CancellationToken.None);
+
+        // A real public posting link, so the run gets PAST url validation (whose
+        // AppValidationException the old filter already caught) and dies on the browser
+        // itself — the part that used to vanish.
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            rec!.Fields with { Link = "https://boards.greenhouse.io/acme/jobs/1" }, null);
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        // A malformed endpoint: the failure is a plain UriFormatException/ArgumentException
+        // from the connect, which is exactly the shape the three-type filter missed.
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(),
+            browser: new BrowserOptions { Endpoint = "::::" });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        var kind = await conn.ExecuteScalarAsync<string>(
+            "SELECT kind FROM agent_evidence WHERE tenant_id = @t"
+            + " AND application_name = 'high-engineer.md' ORDER BY id DESC LIMIT 1", new { t });
+        Assert.Equal("failed", kind);
+        var reason = await conn.ExecuteScalarAsync<string>(
+            "SELECT detail->>'reason' FROM agent_evidence WHERE tenant_id = @t"
+            + " AND application_name = 'high-engineer.md' ORDER BY id DESC LIMIT 1", new { t });
+        // The type-name prefix is emitted only by the widened handler, so this also pins
+        // that the failure went through it. Reproducing the exact Win32Exception from
+        // fork/exec needs a broken node binary and is not unit-testable; the widened catch
+        // is `is not OperationCanceledException`, so type no longer decides visibility.
+        Assert.StartsWith("PlaywrightException: ", reason);
+    }
+
+    [Fact]
     public async Task A_dropped_submit_request_records_an_error_instead_of_vanishing()
     {
         // A dropped submission used to leave no trace anywhere the user can see: the

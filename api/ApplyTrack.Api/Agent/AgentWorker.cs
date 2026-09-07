@@ -8,7 +8,6 @@ using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Notifications;
 using Dapper;
-using Microsoft.Playwright;
 using Npgsql;
 
 namespace ApplyTrack.Api.Agent;
@@ -189,12 +188,26 @@ public sealed class AgentWorker : BackgroundService
         {
             outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct);
         }
-        catch (Exception ex) when (ex is AppValidationException or PlaywrightException or TimeoutException)
+        // Catch EVERYTHING except cancellation. This filter used to name three types --
+        // AppValidationException, PlaywrightException, TimeoutException -- which quietly
+        // assumed the browser only ever fails in ways Playwright itself models. It does
+        // not. On a live instance all 13 submissions died on
+        // System.ComponentModel.Win32Exception (13) -- errno EACCES out of fork/exec,
+        // thrown before Playwright's own driver was even up -- matching none of the three.
+        // Every one escaped to the drain loop's generic handler, which logs and marks the
+        // queue row done WITHOUT writing evidence, so a submission that crashed looked
+        // exactly like one that was never requested. A failure the user cannot see is the
+        // worst outcome available here: it is indistinguishable from success until they
+        // notice the application was never sent. The type name goes into the reason so an
+        // infrastructure crash is still tellable from a validation refusal.
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            var reason = ex is AppValidationException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
             await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
-                new { reason = ex.Message, dry_run = dryRun }, null);
+                new { reason, dry_run = dryRun }, null);
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
-                new { reason = "browser: " + ex.Message, rec.Fields.Company, rec.Fields.Role });
+                new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
+            _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
             return;
         }
 
