@@ -1294,7 +1294,17 @@ const SOURCE_LABEL = {
   workanywhere: "WorkAnywhere.pro",
   hn_whoishiring: "HN “Who is hiring”",
 };
-const ATS_PROVIDERS = ["greenhouse", "lever"];
+const ATS_PROVIDERS = ["greenhouse", "lever", "paylocity"];
+// Paylocity boards are keyed by the company's recruiting GUID, not a name slug, and
+// what a user has to hand is the board URL. Pull the GUID out of whatever is pasted
+// so the field accepts either; Criteria.Normalize does the same server-side.
+const PAYLOCITY_GUID_RE = /[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}/;
+// What the slug box should say, per provider.
+const BOARD_SLUG_HINT = {
+  greenhouse: "company slug (e.g. stripe)",
+  lever: "company slug (e.g. netflix)",
+  paylocity: "board URL or company GUID",
+};
 // Mirrors InputLimits.RssFeeds server-side; enforced here too so the add button can
 // say why it refused instead of the save failing later.
 const MAX_RSS_FEEDS = 25;
@@ -1411,13 +1421,13 @@ function criteriaMarkup(c) {
       </div>
 
       <div class="mt-4">
-        <div class="field-label">ATS boards — follow a company's Greenhouse or Lever board</div>
+        <div class="field-label">ATS boards — follow a company's Greenhouse, Lever, or Paylocity board</div>
         <div id="criteria-boards" class="board-list"></div>
         <div class="board-add mt-2">
           <select id="c-board-provider" class="field-input mono" aria-label="ATS provider">
             ${ATS_PROVIDERS.map((p) => `<option value="${p}">${p}</option>`).join("")}
           </select>
-          <input id="c-board-slug" class="field-input mono" aria-label="Company board slug" placeholder="company slug (e.g. stripe)" />
+          <input id="c-board-slug" class="field-input mono" aria-label="Company board slug" placeholder="${BOARD_SLUG_HINT[ATS_PROVIDERS[0]]}" />
           <button class="btn btn-ghost" data-act="add-board" type="button">+ Add board</button>
         </div>
       </div>
@@ -1468,9 +1478,23 @@ function gatherCriteria() {
 function wireCriteria() {
   contentEl.querySelector('[data-act="cancel"]').onclick = () =>
     state.current ? openApp(state.current) : renderEmpty();
+  const boardProvider = $("#c-board-provider");
+  if (boardProvider) {
+    boardProvider.onchange = () => {
+      const slugInput = $("#c-board-slug");
+      if (slugInput) slugInput.placeholder = BOARD_SLUG_HINT[boardProvider.value] || "company slug";
+    };
+  }
   contentEl.querySelector('[data-act="add-board"]').onclick = () => {
     const provider = $("#c-board-provider").value;
-    const slug = $("#c-board-slug").value.trim();
+    let slug = $("#c-board-slug").value.trim();
+    if (provider === "paylocity") {
+      const guid = PAYLOCITY_GUID_RE.exec(slug);
+      if (!guid) {
+        return toast("Paste the Paylocity board URL, or the company GUID inside it.");
+      }
+      slug = guid[0].toLowerCase();
+    }
     if (!slug) return toast("Enter a company slug to add a board.");
     const dup = criteriaBoards.some(
       (b) => b.provider === provider && b.slug.toLowerCase() === slug.toLowerCase());

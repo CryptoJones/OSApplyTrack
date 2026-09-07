@@ -43,6 +43,24 @@ def test_from_dict_dedupes_and_validates_boards() -> None:
     assert [(b.provider, b.slug) for b in c.ats_boards] == [("greenhouse", "stripe")]
 
 
+def test_from_dict_normalizes_a_paylocity_board_url_to_its_guid() -> None:
+    """Users paste the board URL; only the company GUID is stored (and deduped)."""
+    guid = "021c9a71-0fb7-40fc-ab23-5370c11658d5"
+    c = Criteria.from_dict(
+        {
+            "ats_boards": [
+                {
+                    "provider": "paylocity",
+                    "slug": f"https://recruiting.paylocity.com/recruiting/jobs/All/{guid}/Acme",
+                },
+                {"provider": "paylocity", "slug": guid.upper()},  # same board, dropped
+                {"provider": "paylocity", "slug": "not-a-guid"},  # unusable, dropped
+            ]
+        }
+    )
+    assert [(b.provider, b.slug) for b in c.ats_boards] == [("paylocity", guid)]
+
+
 def test_from_dict_dedupes_keywords_preserving_order() -> None:
     c = Criteria.from_dict({"keywords": ["a", " a ", "B", "b"]})
     assert c.keywords == ["a", "B"]

@@ -8,6 +8,7 @@ through :class:`applytrack.db.PollRepo`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from urllib.parse import urlsplit
 
@@ -25,8 +26,13 @@ BUILTIN_SOURCES = (
     "hn_whoishiring",
 )
 
-# ATS providers the board adder understands (public JSON boards, no auth).
-ATS_PROVIDERS = ("greenhouse", "lever")
+# ATS providers the board adder understands (public boards, no auth).
+ATS_PROVIDERS = ("greenhouse", "lever", "paylocity")
+
+# A Paylocity board is keyed by the company's recruiting GUID rather than a name
+# slug, and users paste the whole board URL. Mirrors AtsBoard.PaylocityGuid on the
+# .NET side, which normalizes the same way on the write path.
+_PAYLOCITY_GUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 # The original per-lane keyword lists, flattened (order-preserving, de-duped) into
 # one flat match list — the default the UI's keyword box starts from.
@@ -66,6 +72,10 @@ class AtsBoard:
     def from_dict(cls, data: dict[str, object]) -> AtsBoard | None:
         provider = str(data.get("provider", "")).strip().lower()
         slug = str(data.get("slug", "")).strip()
+        if provider == "paylocity":
+            # Users paste the board URL; keep only the GUID it contains.
+            found = _PAYLOCITY_GUID_RE.search(slug)
+            slug = found.group(0).lower() if found else ""
         if provider not in ATS_PROVIDERS or not slug:
             return None
         return cls(provider=provider, slug=slug)

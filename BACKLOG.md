@@ -30,6 +30,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#85 — Poller: the `.net` word-boundary guard blocks ASP.NET, VB.NET and ADO.NET titles](https://github.com/CryptoJones/OSApplyTrack/issues/85)
 - [x] [#86 — Poller: the keyword suffix allowance re-opens the rag/ml/go false positives](https://github.com/CryptoJones/OSApplyTrack/issues/86)
 - [x] [#87 — Poller: listings with no link bypass the cross-feed dedupe entirely](https://github.com/CryptoJones/OSApplyTrack/issues/87)
+- [ ] [#106 — Follow a company's Paylocity recruiting board](https://github.com/CryptoJones/OSApplyTrack/issues/106)
 
 ## Agentic auto-apply
 

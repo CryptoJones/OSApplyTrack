@@ -20,12 +20,14 @@ from applytrack.poll import (
     fetch_hn_whoishiring,
     fetch_jobicy,
     fetch_lever,
+    fetch_paylocity,
     fetch_remotefirstjobs,
     fetch_remoteok,
     fetch_remotive,
     fetch_weworkremotely,
     fetch_workanywhere,
     parse_job_feed,
+    paylocity_slug,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -525,3 +527,108 @@ def test_feed_set_dedup_does_not_shrink_a_feeds_share() -> None:
     # 40 // 5 = 8 per feed. The four later feeds each still deliver a full 8.
     assert sum(1 for lst in out if lst.company == "Hooli") == 8
     assert sum(1 for lst in out if lst.link == "https://wwr.test/shared") == 1
+
+
+# -- Paylocity ---------------------------------------------------------------
+#
+# Paylocity ships no JSON API: the board page embeds the whole list in a
+# ``window.pageData = {...}`` assignment. The canned page below is the shape of
+# the real one, trimmed to the fields the fetcher reads.
+
+_PAYLOCITY_GUID = "021c9a71-0fb7-40fc-ab23-5370c11658d5"
+
+
+def _paylocity_page(jobs: str, title: str = "Binary Defense") -> str:
+    return (
+        "<!DOCTYPE html><html><head><script>\n"
+        'window.ATSJobDetailsBaseUrl = \'/Recruiting/Jobs/Details/\';\n'
+        'window.pageData = {"ModuleTitle":"' + title + '","Jobs":[' + jobs + "]};\n"
+        "</script></head><body></body></html>"
+    )
+
+
+def test_fetch_paylocity_parses_embedded_page_data() -> None:
+    job = (
+        '{"JobId":4465411,"JobTitle":"Tier 2 SOC Analyst - REMOTE",'
+        '"LocationName":"Houston, TX","IsRemote":true,"IsInternal":false,'
+        '"Description":"<p>Binary Defense is seeking</p>"}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(_PAYLOCITY_GUID)
+        return httpx.Response(200, text=_paylocity_page(job))
+
+    out = fetch_paylocity(_client(handler), 40, _PAYLOCITY_GUID)
+    assert len(out) == 1
+    assert out[0].company == "Binary Defense"  # from ModuleTitle, not the GUID
+    assert out[0].role == "Tier 2 SOC Analyst - REMOTE"
+    assert out[0].link == "https://recruiting.paylocity.com/Recruiting/Jobs/Details/4465411"
+    assert out[0].source == f"paylocity:{_PAYLOCITY_GUID}"
+    assert out[0].description == "Binary Defense is seeking"
+
+
+def test_fetch_paylocity_marks_remote_and_falls_back_to_structured_location() -> None:
+    """IsRemote is a separate flag from the (often HQ) location -- surface both."""
+    job = (
+        '{"JobId":1,"JobTitle":"Threat Hunter","LocationName":"","IsRemote":true,'
+        '"JobLocation":{"City":"Houston","State":"TX","Country":"USA"}}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_paylocity_page(job))
+
+    out = fetch_paylocity(_client(handler), 40, _PAYLOCITY_GUID)
+    assert out[0].location == "Houston, TX, USA (Remote)"
+
+
+def test_fetch_paylocity_skips_internal_postings() -> None:
+    job = '{"JobId":2,"JobTitle":"Internal Only","IsInternal":true}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_paylocity_page(job))
+
+    assert fetch_paylocity(_client(handler), 40, _PAYLOCITY_GUID) == []
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "<html><body>no page data here</body></html>",
+        "<html><script>window.pageData = not-json;</script></html>",
+        '<html><script>window.pageData = {"Jobs":"nope"};</script></html>',
+    ],
+)
+def test_fetch_paylocity_survives_an_unparseable_page(page: str) -> None:
+    """A redesign or an error page must yield nothing, not raise."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=page)
+
+    assert fetch_paylocity(_client(handler), 40, _PAYLOCITY_GUID) == []
+
+
+def test_fetch_paylocity_refuses_a_non_guid_slug_without_fetching() -> None:
+    """The slug lands in a URL path, so anything but a GUID never leaves the process."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("must not fetch")
+
+    assert fetch_paylocity(_client(handler), 40, "../../etc/passwd") == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (_PAYLOCITY_GUID, _PAYLOCITY_GUID),
+        (
+            "https://recruiting.paylocity.com/recruiting/jobs/All/"
+            f"{_PAYLOCITY_GUID}/Binary-Defense",
+            _PAYLOCITY_GUID,
+        ),
+        (f"  {_PAYLOCITY_GUID.upper()}  ", _PAYLOCITY_GUID),
+        ("stripe", ""),
+        ("", ""),
+    ],
+)
+def test_paylocity_slug_accepts_a_guid_or_a_board_url(raw: str, expected: str) -> None:
+    assert paylocity_slug(raw) == expected

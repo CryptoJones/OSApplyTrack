@@ -75,7 +75,7 @@ telemetry, no SaaS.
   company, role, link, location, salary, source, contacts, applied/follow-up dates,
   a relevance score, and free-form Markdown notes.
 - **It finds work for you.** A Python poller fetches listings from public job
-  boards — plus any Greenhouse/Lever board or **custom RSS/Atom feed** you point it
+  boards — plus any Greenhouse/Lever/Paylocity board or **custom RSS/Atom feed** you point it
   at — scores them against your saved criteria, drops anything from a blacklisted
   company, dedupes against what you've already seen, and stages the survivors as
   fresh leads.
@@ -382,9 +382,29 @@ host cron or a systemd timer? Run the CLI directly and drop the service:
 Each accepts `--database-url` (a libpq URL), falling back to `DATABASE_URL` / the
 `POSTGRES_*` env vars.
 
+### Following a company's ATS board
+
+**Settings · Criteria · ATS boards** follows one company's public job board, with
+no key and no account. Three providers, each addressed by what its board URL
+already contains:
+
+| Provider | What to paste | Where to find it |
+| --- | --- | --- |
+| `greenhouse` | company slug, e.g. `stripe` | `boards.greenhouse.io/`**`stripe`** |
+| `lever` | company slug, e.g. `netflix` | `jobs.lever.co/`**`netflix`** |
+| `paylocity` | the board URL, or the company GUID inside it | `recruiting.paylocity.com/recruiting/jobs/All/`**`<guid>`**`/Acme` |
+
+Paylocity renders its board as a client-side app, so there is no JSON API to
+call — but the page ships the whole job list in a `window.pageData` blob, which
+is what the poller reads. Postings flagged internal-only are skipped, and a role
+the board marks remote is labeled as such even when its location is a
+headquarters address, so the remote-only filter sees it.
+
+Leads land with `source: auto:<provider>:<slug>`.
+
 ### Custom RSS feeds
 
-Beyond the built-in sources and the Greenhouse/Lever board followers, **Settings ·
+Beyond the built-in sources and the ATS board followers, **Settings ·
 Criteria** takes any RSS 2.0 or Atom feed URL — a company's careers feed, a niche
 board, a saved search that publishes one. Up to 25 per account. Items are scored
 against the same keywords and minimum fit as every other source, and land with
