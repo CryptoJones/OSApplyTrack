@@ -159,6 +159,18 @@ p { max-width: 70ch; }
 .wordmark { color: var(--text); font-size: 1.35rem; text-decoration: none; }
 .wordmark strong { color: var(--accent); }
 .header-actions { display: flex; align-items: center; gap: 0.5rem; }
+/* The running build, next to the wordmark. margin-right:auto keeps it hugging the
+   wordmark under the header's space-between, so the actions stay pinned right.
+   --text-muted is the same token the other secondary header text uses, so it carries
+   the same AA contrast in light, dark and forced-colors. */
+.app-version {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
 
 .button,
 .icon-button,

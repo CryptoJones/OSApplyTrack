@@ -164,7 +164,16 @@ public sealed class AgentWorker : BackgroundService
         var packet = await packets.GetAsync(req.ApplicationName);
         if (rec is null || packet is null)
         {
-            _log.LogInformation("{Name}: submit request for a missing application/packet; dropped", req.ApplicationName);
+            // Record it. This used to return silently, which made a dropped submission
+            // indistinguishable from one that never got requested: the queue row still
+            // reads claimed+done, and nothing lands in agent_evidence, so the run leaves
+            // no trace anywhere the user can see. That matters most for the very case
+            // this branch catches — a submission that never happened, and therefore an
+            // "applied" flag that was never set.
+            var reason = rec is null ? "application missing" : "packet missing";
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, req.ApplicationName,
+                new { reason = "submit dropped: " + reason });
+            _log.LogInformation("{Name}: submit request dropped ({Reason})", req.ApplicationName, reason);
             return;
         }
         // The tenant's dry-run switch wins over the request: the agent never submits

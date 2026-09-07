@@ -31,6 +31,10 @@
           <small>Opportunity command center</small>
         </span>
       </a>
+      <!-- Filled from /health on boot. Sits outside the wordmark link so it is read as
+           standalone text, not as part of the "ApplyTrack home" link label. Hidden until
+           it has a value, so a failed probe shows nothing rather than an empty chip. -->
+      <span class="app-version" id="app-version" hidden></span>
       <nav class="header-actions" aria-label="Application actions">
         <button id="poll-btn" class="button button-secondary" type="button">
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

@@ -273,6 +273,19 @@ public class EndpointContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Health_reports_the_running_build_version()
+    {
+        // The SPA header reads this before login, so it must be present, unauthenticated,
+        // and free of the "+<commit>" suffix InformationalVersion carries on CI builds.
+        var body = await ReadJson(await _client.GetAsync("/health"));
+        Assert.Equal("ok", body.GetProperty("status").GetString());
+        var version = body.GetProperty("version").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(version));
+        Assert.DoesNotContain("+", version);
+        Assert.NotEqual("unknown", version);
+    }
+
+    [Fact]
     public async Task Poll_enqueues_a_request_and_answers_count_zero()
     {
         var res = await _client.PostAsync("/api/poll", Json("{}"));

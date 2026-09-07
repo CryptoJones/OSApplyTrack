@@ -412,6 +412,9 @@ function metaRow(f) {
 function renderView(data) {
   const f = data.fields;
   const url = safeUrl(f.link);
+  // Already at or past "applied" — APPLIED_STATUSES covers screen/onsite/offer/rejected
+  // too, where re-marking would drag the row backwards rather than just repeat a no-op.
+  const alreadyApplied = APPLIED_STATUSES.has(f.status);
   const applyBtn =
     url && (f.status === "ready" || f.status === "lead")
       ? `<a class="btn btn-apply" href="${escapeHtml(url)}" target="_blank" rel="noopener">Apply ↗</a>`
@@ -449,7 +452,8 @@ function renderView(data) {
       ${materialSection(data)}
       <div class="status-actions section-divider">
         <div class="workflow-actions">
-          <button class="btn btn-primary" data-act="applied">Mark applied</button>
+          <button class="btn btn-primary" data-act="applied"${alreadyApplied ? ' disabled aria-disabled="true"' : ""}
+            title="${alreadyApplied ? `Already ${escapeHtml(f.status)}` : "Mark this application applied"}">Mark applied</button>
           <button class="btn btn-ghost" data-act="pass">Pass</button>
           <button class="btn btn-ghost" data-act="blacklist">Blacklist company</button>
         </div>
@@ -460,7 +464,10 @@ function renderView(data) {
     </article>`;
   contentEl.querySelector('[data-act="edit"]').onclick = () => openEdit(data);
   contentEl.querySelector('[data-act="raw"]').onclick = () => openRaw(data);
-  contentEl.querySelector('[data-act="applied"]').onclick = () => markStatus(data, "applied");
+  contentEl.querySelector('[data-act="applied"]').onclick = () => {
+    if (alreadyApplied) return;
+    markStatus(data, "applied");
+  };
   contentEl.querySelector('[data-act="pass"]').onclick = () => markStatus(data, "pass");
   contentEl.querySelector('[data-act="blacklist"]').onclick = () => blacklistCompany(data);
   contentEl.querySelector('[data-act="delete"]').onclick = () => deleteApp(data.filename);
@@ -2450,7 +2457,28 @@ mobileQuery.addEventListener("change", (event) => {
   else list.setAttribute("aria-hidden", "true");
 });
 
+// Paint the running build into the header. /health is unauthenticated, so this also
+// works on the sign-in screen. The path is RELATIVE on purpose: the app is served under
+// a path prefix in some deployments (/OSApplyTrack/), where an absolute "/health" would
+// miss the proxy. Any failure leaves the element hidden rather than showing a wrong or
+// empty version, so a version on screen is always a version the server confirmed.
+async function showVersion() {
+  const el = $("#app-version");
+  if (!el) return;
+  try {
+    const res = await fetch("health", { headers: { Accept: "application/json" } });
+    if (!res.ok) return;
+    const version = (await res.json()).version;
+    if (!version || typeof version !== "string") return;
+    el.textContent = `v${version}`;
+    el.hidden = false;
+  } catch (_) {
+    /* offline or blocked: leave the badge hidden */
+  }
+}
+
 (async function boot() {
+  showVersion();
   try {
     // Gate the app on a live session; a 401 here pops the login view (via api())
     // and we stop booting until the user signs in and reloads.
