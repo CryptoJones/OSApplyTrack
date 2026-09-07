@@ -2,11 +2,28 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ApplyTrack.Api.Data;
 
 /// <summary>A company's public ATS board to scan (provider + company slug).</summary>
-public sealed record AtsBoard(string Provider, string Slug);
+public sealed partial record AtsBoard(string Provider, string Slug)
+{
+    /// <summary>
+    /// A Paylocity board is keyed by the company's recruiting GUID, not a name slug,
+    /// and what a user has to hand is the whole board URL
+    /// (<c>.../recruiting/jobs/All/&lt;guid&gt;/Acme</c>). Pull the GUID out of
+    /// whatever was pasted; the poller's <c>paylocity_slug</c> normalizes the same way.
+    /// </summary>
+    public static string PaylocityGuid(string raw)
+    {
+        var m = GuidRe().Match(raw ?? "");
+        return m.Success ? m.Value.ToLowerInvariant() : "";
+    }
+
+    [GeneratedRegex("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")]
+    private static partial Regex GuidRe();
+}
 
 /// <summary>
 /// Per-tenant discovery criteria — C# heir to the Python <c>Criteria</c>. Serializes
@@ -37,7 +54,7 @@ public sealed class Criteria
         "remotefirstjobs", "workanywhere", "hn_whoishiring",
     ];
 
-    public static readonly string[] AtsProviders = ["greenhouse", "lever"];
+    public static readonly string[] AtsProviders = ["greenhouse", "lever", "paylocity"];
 
     private const int ScoreFloor = 0;
     private const int ScoreCeil = 100;
@@ -102,6 +119,7 @@ public sealed class Criteria
                 if (entry.ValueKind != JsonValueKind.Object) continue;
                 var provider = GetString(entry, "provider", "").Trim().ToLowerInvariant();
                 var slug = GetString(entry, "slug", "").Trim();
+                if (provider == "paylocity") slug = AtsBoard.PaylocityGuid(slug);
                 if (!AtsProviders.Contains(provider) || slug.Length == 0) continue;
                 if (seen.Add((provider, slug.ToLowerInvariant())))
                     boards.Add(new AtsBoard(provider, slug));

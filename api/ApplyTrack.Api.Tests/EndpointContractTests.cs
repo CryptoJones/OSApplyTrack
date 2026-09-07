@@ -251,6 +251,28 @@ public class EndpointContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Criteria_stores_a_pasted_Paylocity_board_url_as_its_company_guid()
+    {
+        const string guid = "021c9a71-0fb7-40fc-ab23-5370c11658d5";
+        var put = await ReadJson(await _client.PutAsync("/api/criteria", Json(
+            $$"""
+            {"ats_boards":[
+              {"provider":"paylocity",
+               "slug":"https://recruiting.paylocity.com/recruiting/jobs/All/{{guid}}/Acme"},
+              {"provider":"paylocity","slug":"not-a-guid"}
+            ]}
+            """)));
+        var boards = put.GetProperty("ats_boards");
+        Assert.Equal(1, boards.GetArrayLength());
+        Assert.Equal("paylocity", boards[0].GetProperty("provider").GetString());
+        Assert.Equal(guid, boards[0].GetProperty("slug").GetString());
+
+        // The Python poller reads the stored column, so GET must agree with the echo.
+        var reloaded = await ReadJson(await _client.GetAsync("/api/criteria"));
+        Assert.Equal(guid, reloaded.GetProperty("ats_boards")[0].GetProperty("slug").GetString());
+    }
+
+    [Fact]
     public async Task Poll_enqueues_a_request_and_answers_count_zero()
     {
         var res = await _client.PostAsync("/api/poll", Json("{}"));

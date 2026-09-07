@@ -768,6 +768,102 @@ def fetch_lever(client: httpx.Client, limit: int, slug: str) -> list[Listing]:
     return out
 
 
+# Paylocity renders its public board as a React app, so there is no JSON API to
+# call -- but the server embeds the whole job list in a ``window.pageData = {...}``
+# assignment in the HTML it ships. That blob is the board: parsing it is a plain
+# JSON decode, not HTML scraping, and it carries the same fields the page shows.
+_PAYLOCITY_PAGE_DATA = "window.pageData = "
+
+# A Paylocity board is addressed by the company's recruiting GUID (the long id in
+# the middle of a board URL). Anchored here because the slug is user-supplied and
+# gets interpolated into a URL path -- a GUID cannot traverse or add a query.
+_PAYLOCITY_SLUG_RE = re.compile(r"^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")
+
+
+def paylocity_slug(value: str) -> str:
+    """The company GUID for a Paylocity board, from a raw GUID or a board URL.
+
+    Accepts what a user actually has in hand -- the address bar of a company's
+    Paylocity careers page (``.../recruiting/jobs/All/<guid>/Acme``) -- and
+    returns just the GUID, or ``""`` when there is no GUID to be found.
+    """
+    value = (value or "").strip()
+    if _PAYLOCITY_SLUG_RE.match(value):
+        return value.lower()
+    for part in re.split(r"[/?#]", value):
+        if _PAYLOCITY_SLUG_RE.match(part):
+            return part.lower()
+    return ""
+
+
+def _paylocity_page_data(html: str) -> dict[str, object]:
+    """Pull the ``window.pageData`` object out of a Paylocity board page."""
+    start = html.find(_PAYLOCITY_PAGE_DATA)
+    if start < 0:
+        return {}
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html[start + len(_PAYLOCITY_PAGE_DATA) :])
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _paylocity_location(job: dict[str, object]) -> str:
+    """Prefer the display location; fall back to the structured city/state."""
+    name = str(job.get("LocationName") or "").strip()
+    if not name:
+        loc = job.get("JobLocation")
+        if isinstance(loc, dict):
+            parts = [str(loc.get(k) or "").strip() for k in ("City", "State", "Country")]
+            name = ", ".join(p for p in parts if p)
+    # The board flags remote separately from the (often headquarters) location, so
+    # say so in the location text -- that is what _looks_remote reads.
+    if job.get("IsRemote") and "remote" not in name.lower():
+        name = f"{name} (Remote)".strip() if name else "Remote"
+    return name
+
+
+def fetch_paylocity(client: httpx.Client, limit: int, slug: str) -> list[Listing]:
+    """Scan one company's public Paylocity recruiting board.
+
+    ``slug`` is the company GUID. The host is fixed and the GUID shape is
+    validated, so this can share the pooled client like the other ATS boards.
+    """
+    guid = paylocity_slug(slug)
+    if not guid:
+        return []
+    r = client.get(
+        f"https://recruiting.paylocity.com/recruiting/jobs/All/{guid}",
+        headers=BROWSER_HEADERS,
+    )
+    r.raise_for_status()
+    data = _paylocity_page_data(r.text)
+    jobs = data.get("Jobs")
+    if not isinstance(jobs, list):
+        return []
+    company = str(data.get("ModuleTitle") or "").strip() or _ats_label(guid)
+    out: list[Listing] = []
+    for j in jobs[:limit]:
+        if not isinstance(j, dict) or j.get("IsInternal"):
+            continue
+        job_id = str(j.get("JobId") or "").strip()
+        out.append(
+            Listing(
+                company=company,
+                role=str(j.get("JobTitle", "")).strip(),
+                link=(
+                    f"https://recruiting.paylocity.com/Recruiting/Jobs/Details/{job_id}"
+                    if job_id
+                    else ""
+                ),
+                location=_paylocity_location(j),
+                source=f"paylocity:{guid}",
+                description=_strip_html(str(j.get("Description", ""))),
+            )
+        )
+    return out
+
+
 # -- fetcher: custom RSS / Atom feeds ---------------------------------------
 #
 # Unlike every fetcher above, the URL here comes from the user (Settings ·
@@ -984,6 +1080,11 @@ def make_ats_fetcher(board: AtsBoard) -> Fetcher | None:
 
         def _fetch(client: httpx.Client, limit: int) -> list[Listing]:
             return fetch_lever(client, limit, slug)
+
+    elif board.provider == "paylocity":
+
+        def _fetch(client: httpx.Client, limit: int) -> list[Listing]:
+            return fetch_paylocity(client, limit, slug)
 
     else:
         return None
