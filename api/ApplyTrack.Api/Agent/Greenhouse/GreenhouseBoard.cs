@@ -132,7 +132,22 @@ public sealed partial class GreenhouseBoard
             : StandardFields.Contains(name) ? PacketQuestion.Standard
             : PacketQuestion.Custom;
         if (name.Length == 0) name = "q:" + into.Count;
-        into.Add(new PacketQuestion(name, label, required && !eeo, type, options, kind));
+        // `description` is where Greenhouse puts the qualifiers that decide what a correct
+        // answer is — units, currency, period, "only if X". Ignoring it is how an annual
+        // USD figure ended up in a field asking for gross monthly EUR. It is HTML.
+        into.Add(new PacketQuestion(name, label, required && !eeo, type, options, kind)
+        {
+            Help = StripHtml(Str(q, "description")),
+        });
+    }
+
+    /// <summary>Flatten the description HTML to the sentence a human would read.</summary>
+    private static string StripHtml(string html)
+    {
+        if (html.Length == 0) return "";
+        var text = System.Text.RegularExpressions.Regex.Replace(html, "<[^>]+>", " ");
+        text = System.Net.WebUtility.HtmlDecode(text);
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
     }
 
     private static string Str(JsonElement obj, string key) =>

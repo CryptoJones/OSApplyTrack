@@ -33,7 +33,11 @@ public sealed partial class AnswerDrafter
     private static partial Regex Sponsorship();
     [GeneratedRegex(@"clearance", RegexOptions.IgnoreCase)]
     private static partial Regex Clearance();
-    [GeneratedRegex(@"salary|compensation|pay (?:expectation|range|rate)|desired pay|rate expectation", RegexOptions.IgnoreCase)]
+    // "remuneration" was missing, so the live GR8 Tech field never reached the
+    // deterministic branch at all — it fell through to the model, which answered it from
+    // the brief's saved figure with no units check. Keep this list generous: a salary
+    // question that is NOT recognised skips every guard below.
+    [GeneratedRegex(@"salary|compensation|remunerat|renumerat|pay (?:expectation|range|rate)|desired pay|rate expectation|expected (?:pay|rate)|day rate", RegexOptions.IgnoreCase)]
     private static partial Regex Salary();
     [GeneratedRegex(@"linkedin", RegexOptions.IgnoreCase)]
     private static partial Regex LinkedIn();
@@ -131,7 +135,10 @@ public sealed partial class AnswerDrafter
     public static (string? Answer, string? Reason) Deterministic(PacketQuestion q, AnswerContext ctx)
     {
         var id = q.Id.StartsWith("std:", StringComparison.Ordinal) ? q.Id[4..] : q.Id;
-        var label = q.Label;
+        // Match on the label AND its helper text. The qualifier that decides what a correct
+        // answer is often lives only in the hint ("per month, in EUR"), so matching the
+        // label alone reads half the question.
+        var label = q.FullPrompt;
         var (first, last) = SplitName(ctx.Resume.FullName);
 
         if (id is "first_name" || FirstName().IsMatch(label))
@@ -169,14 +176,64 @@ public sealed partial class AnswerDrafter
                 : (auth, null);
         }
         if (Salary().IsMatch(label))
-            return ctx.Settings.SalaryExpectation.Length > 0 && q.Options.Count == 0
-                ? (ctx.Settings.SalaryExpectation, null)
-                : (null, "salary is yours to state — set an expectation in Settings · Agent");
+        {
+            var saved = ctx.Settings.SalaryExpectation;
+            if (saved.Length == 0 || q.Options.Count > 0)
+                return (null, "salary is yours to state — set an expectation in Settings · Agent");
+            // A saved figure is a bare number with an assumed period and currency. If the
+            // field states its own and they are not demonstrably the same, do NOT guess:
+            // a 12x error reads as a well-formed answer and would sail through the
+            // clean-dry-run check straight into a real submission. Observed live — an
+            // annual USD expectation typed into "remuneration (Gross) per month, in EUR".
+            var wanted = MoneyUnits(label);
+            var have = MoneyUnits(saved);
+            if (wanted.Length > 0 && wanted != have)
+                return (null, $"this field wants {wanted} — your saved expectation "
+                    + (have.Length > 0 ? $"is {have}" : "does not say which")
+                    + ", so state it yourself");
+            return (saved, null);
+        }
         if (HumanOnly().IsMatch(label))
             return (null, "only you can answer this one");
 
         return (null, null);
     }
+
+    /// <summary>
+    /// The period and currency a money string commits to, as a comparable key like
+    /// "monthly EUR" — or "" when it names neither, which means "unknown, do not assume".
+    /// Deliberately conservative: it only reports what the text actually says.
+    /// </summary>
+    public static string MoneyUnits(string text)
+    {
+        var period = MonthlyRe().IsMatch(text) ? "monthly"
+            : HourlyRe().IsMatch(text) ? "hourly"
+            : AnnualRe().IsMatch(text) ? "annual"
+            : "";
+        var currency = text.Contains('€') || EurRe().IsMatch(text) ? "EUR"
+            : text.Contains('£') || GbpRe().IsMatch(text) ? "GBP"
+            : text.Contains('$') || UsdRe().IsMatch(text) ? "USD"
+            : "";
+        return string.Join(' ', new[] { period, currency }.Where(p => p.Length > 0));
+    }
+
+    [GeneratedRegex(@"per month|monthly|/\s*mo\b|\bmonth\b", RegexOptions.IgnoreCase)]
+    private static partial Regex MonthlyRe();
+
+    [GeneratedRegex(@"per hour|hourly|/\s*hr\b|\bhour\b", RegexOptions.IgnoreCase)]
+    private static partial Regex HourlyRe();
+
+    [GeneratedRegex(@"per year|per annum|annual|yearly|/\s*yr\b|\byear\b", RegexOptions.IgnoreCase)]
+    private static partial Regex AnnualRe();
+
+    [GeneratedRegex(@"\bEUR\b|\beuros?\b", RegexOptions.IgnoreCase)]
+    private static partial Regex EurRe();
+
+    [GeneratedRegex(@"\bGBP\b|\bpounds?\b|\bsterling\b", RegexOptions.IgnoreCase)]
+    private static partial Regex GbpRe();
+
+    [GeneratedRegex(@"\bUSD\b|\bdollars?\b", RegexOptions.IgnoreCase)]
+    private static partial Regex UsdRe();
 
     private static (string? Answer, string? Reason) YesNo(PacketQuestion q, bool yes, string fallback)
     {
@@ -224,6 +281,16 @@ public sealed partial class AnswerDrafter
             to null so a human can fill it in. For a question with OPTIONS, the answer
             must be exactly one of the options, verbatim, or null.
 
+            Obey a question's HINT: it carries the qualifiers that decide what a correct
+            answer is — units, currency, period ("per month, in EUR"), or a condition
+            ("only if referred by an employee"). If the hint asks for something the brief
+            cannot supply in the form requested, answer null rather than converting or
+            guessing.
+
+            An OPTIONAL question you have no real answer to must be null. Never fill one
+            with a placeholder like "None", "N/A" or a restatement of the question —
+            leaving it blank is correct and reads better than filler.
+
             Reply with JSON of this exact shape:
             {"answers": [{"id": "<question id>", "answer": "<text>" | null}, ...]}
             """;
@@ -233,6 +300,9 @@ public sealed partial class AnswerDrafter
         {
             sb.Append("- id: ").Append(q.Id).Append(" | ").Append(q.Required ? "required" : "optional")
               .Append(" | ").Append(q.Type).Append(" | ").AppendLine(q.Label);
+            // The hint is where the units, the currency and the "only if…" conditions live.
+            if (q.Help.Length > 0)
+                sb.Append("  HINT: ").AppendLine(q.Help);
             if (q.Options.Count > 0)
                 sb.Append("  OPTIONS: ").AppendLine(string.Join(" / ", q.Options));
         }
