@@ -257,4 +257,65 @@ public class AgentWorkerTests(PostgresFixture pg)
             new { t });
         Assert.Equal("submit dropped: application missing", reason);
     }
+
+    // -- auto-submit promotion -------------------------------------------------
+    //
+    // A clean dry run re-queues itself for real. These lock the NEGATIVE half of that
+    // rule, which is the half that matters: promotion must never fire off a run that
+    // did not actually prove the form works. The positive path needs a live browser and
+    // is covered by BrowserSubmitterTests plus the post-deploy check.
+
+    private static async Task<int> PendingSubmitsAsync(NpgsqlConnection conn, long t) =>
+        await conn.ExecuteScalarAsync<int>(
+            "SELECT count(*) FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL", new { t });
+
+    [Fact]
+    public async Task A_failed_dry_run_is_never_promoted_to_a_real_submission()
+    {
+        // The browser cannot connect, so the run records failed evidence. Nothing about
+        // that proves the form is fillable, so it must not become a real application.
+        var stub = new StubLlmClient(Responders.Agent());
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings
+        {
+            Enabled = true, DryRun = false, MinFitScore = 70, MaxPerRun = 2, MaxPerDay = 3, Phone = "555-0100",
+        });
+        using (var builder = NewWorker(stub, pg.ConnectionString, new CapturingNotifier()))
+            await builder.RunOnceAsync(CancellationToken.None);
+
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            rec!.Fields with { Link = "https://boards.greenhouse.io/acme/jobs/1" }, null);
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(),
+            browser: new BrowserOptions { Endpoint = "ws://127.0.0.1:1/" });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+        var kind = await conn.ExecuteScalarAsync<string>(
+            "SELECT kind FROM agent_evidence WHERE tenant_id = @t ORDER BY id DESC LIMIT 1", new { t });
+        Assert.Equal("failed", kind);
+    }
+
+    [Fact]
+    public async Task A_tenant_still_in_dry_run_mode_is_never_promoted()
+    {
+        // DryRun = true is the opt-out. Even a flawless fill stays a rehearsal.
+        var stub = new StubLlmClient(Responders.Agent());
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        using (var builder = NewWorker(stub, pg.ConnectionString, new CapturingNotifier()))
+            await builder.RunOnceAsync(CancellationToken.None);
+
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(),
+            browser: new BrowserOptions { Endpoint = "ws://127.0.0.1:1/" });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+    }
 }

@@ -133,9 +133,10 @@ public sealed class AgentWorker : BackgroundService
                 req = await SubmitQueue.ClaimNextAsync(conn);
             if (req is null)
                 break;
+            var promote = false;
             try
             {
-                await RunSubmitAsync(req, ct);
+                promote = await RunSubmitAsync(req, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -146,12 +147,27 @@ public sealed class AgentWorker : BackgroundService
                 await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
                 await SubmitQueue.CompleteAsync(conn, req.Id);
             }
+            // Promote AFTER the completion above, never from inside RunSubmitAsync. The queue
+            // is keyed on (tenant, application) and CompleteAsync stamps done_at on that row,
+            // so an enqueue from inside the run would be marked done without ever running.
+            if (promote)
+            {
+                await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
+                if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: false))
+                    _log.LogInformation("{Name}: clean dry run, queued for real submission", req.ApplicationName);
+            }
             done++;
         }
         return done;
     }
 
-    private async Task RunSubmitAsync(SubmitRequest req, CancellationToken ct)
+    /// <summary>
+    /// Run one queued submission. Returns true when this was a DRY run that came back
+    /// completely clean AND the tenant has turned dry-run off, meaning the caller should
+    /// re-queue it for real. A real run always returns false, which is what terminates the
+    /// promotion chain after exactly one hop.
+    /// </summary>
+    private async Task<bool> RunSubmitAsync(SubmitRequest req, CancellationToken ct)
     {
         await using var conn = await _db.OpenConnectionAsync(ct);
         var t = req.TenantId;
@@ -173,7 +189,7 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, req.ApplicationName,
                 new { reason = "submit dropped: " + reason });
             _log.LogInformation("{Name}: submit request dropped ({Reason})", req.ApplicationName, reason);
-            return;
+            return false;
         }
         // The tenant's dry-run switch wins over the request: the agent never submits
         // for an account that has not turned dry-run off.
@@ -208,7 +224,7 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
-            return;
+            return false;
         }
 
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
@@ -243,6 +259,22 @@ public sealed class AgentWorker : BackgroundService
         _log.LogInformation("{Name}: browser {Kind} ({Mapped} mapped, {Unmapped} unmapped){Error}",
             rec.Name, kind, outcome.Mapped.Count, outcome.Unmapped.Count,
             outcome.Error.Length > 0 ? ": " + outcome.Error : "");
+
+        // Promote a clean dry run to a real submission. The dry run IS the safety check the
+        // human click used to be: it proves the form was reachable, every required field was
+        // mapped, and nothing errored. Requiring a person to look at the screenshot only
+        // helps if they actually look — and an application that is never sent is not a safe
+        // outcome, it is a guaranteed miss. Every condition below has to hold:
+        //   - this run was a dry run that came back clean (kind == DryRun)
+        //   - the tenant has explicitly turned dry-run off (settings.DryRun == false)
+        //   - no required field went unmapped
+        //   - the packet has no answers still waiting on the user
+        // The caller re-queues with dryRun:false, and that real run cannot promote again
+        // because its kind will never be DryRun.
+        return kind == AgentEvidenceRepo.Kinds.DryRun
+            && !settings.DryRun
+            && outcome.Unmapped.Count == 0
+            && packet.NeedsReview.Count == 0;
     }
 
     /// <summary>One pass over every enabled tenant. Public so tests can drive it directly.</summary>
