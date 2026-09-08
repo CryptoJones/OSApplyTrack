@@ -114,6 +114,101 @@ public class AnswerDrafterTests
         Assert.Contains("salary", r4);
     }
 
+    // -- money units (issue #120) ---------------------------------------------
+    //
+    // A saved salary is a bare number carrying an assumed period and currency. When a
+    // field states its own and they differ, guessing produces a well-formed wrong answer
+    // that passes every downstream check and gets submitted. Observed live: an annual USD
+    // expectation typed into "remuneration (Gross) per month, in EUR".
+
+    [Fact]
+    public void A_salary_field_that_states_different_units_goes_to_review_not_a_guess()
+    {
+        var ctx = Ctx();   // SalaryExpectation = "$150k" -> annual USD by the $ sign
+        var q = new PacketQuestion("q", "Enter your remuneration expectations",
+            false, PacketQuestion.Text, [], PacketQuestion.Custom)
+        {
+            Help = "Please, provide remuneration (Gross) per month, in EUR for BtoB cooperation",
+        };
+
+        var (answer, reason) = AnswerDrafter.Deterministic(q, ctx);
+
+        Assert.Null(answer);
+        Assert.Contains("monthly EUR", reason);
+    }
+
+    [Fact]
+    public void A_saved_figure_that_does_not_state_its_period_is_not_assumed_to_match()
+    {
+        // "$150k" names a currency but no period. Convention says annual; the code does
+        // not get to rely on convention when the field is explicit and the answer is not.
+        var q = new PacketQuestion("q", "Desired salary", false, PacketQuestion.Text, [], PacketQuestion.Custom)
+        {
+            Help = "Annual, in USD",
+        };
+
+        var (answer, reason) = AnswerDrafter.Deterministic(q, Ctx());
+
+        Assert.Null(answer);
+        // The reason names both sides so the user can see exactly what did not line up.
+        Assert.Contains("wants annual USD", reason);
+        Assert.Contains("is USD", reason);
+    }
+
+    [Fact]
+    public void A_salary_field_whose_units_match_the_saved_figure_still_answers()
+    {
+        var ctx = new AnswerContext(
+            new Resume { FullName = "Ada Byte" },
+            new AgentSettings { SalaryExpectation = "150,000 USD per year" },
+            "ada@example.com", "", "");
+        var q = new PacketQuestion("q", "Desired salary", false, PacketQuestion.Text, [], PacketQuestion.Custom)
+        {
+            Help = "Annual, in USD",
+        };
+
+        var (answer, reason) = AnswerDrafter.Deterministic(q, ctx);
+
+        Assert.Equal("150,000 USD per year", answer);
+        Assert.Null(reason);
+    }
+
+    [Fact]
+    public void A_salary_field_that_states_no_units_is_answered_as_before()
+    {
+        // No stated units means no evidence of a mismatch — do not invent friction.
+        var (answer, reason) = AnswerDrafter.Deterministic(
+            new PacketQuestion("q", "Desired salary", false, PacketQuestion.Text, [], PacketQuestion.Custom),
+            Ctx());
+
+        Assert.Equal("$150k", answer);
+        Assert.Null(reason);
+    }
+
+    [Theory]
+    [InlineData("provide remuneration per month, in EUR", "monthly EUR")]
+    [InlineData("$150k", "USD")]
+    [InlineData("150000 per year USD", "annual USD")]
+    [InlineData("£60 per hour", "hourly GBP")]
+    [InlineData("150000", "")]
+    public void Money_units_reports_only_what_the_text_actually_says(string text, string expected) =>
+        Assert.Equal(expected, AnswerDrafter.MoneyUnits(text));
+
+    [Fact]
+    public void Help_text_joins_the_label_for_matching()
+    {
+        var bare = new PacketQuestion("q", "Desired salary", false, PacketQuestion.Text, [], PacketQuestion.Custom);
+        Assert.Equal("Desired salary", bare.FullPrompt);
+        Assert.Equal("", bare.Help);   // defaulted, so packets stored before 1.22 still load
+
+        var hinted = bare with { };
+        hinted = new PacketQuestion("q", "Desired salary", false, PacketQuestion.Text, [], PacketQuestion.Custom)
+        {
+            Help = "per month",
+        };
+        Assert.Equal("Desired salary (per month)", hinted.FullPrompt);
+    }
+
     [Fact]
     public void Recompute_review_blocks_on_required_blanks_and_clears_answered_ones()
     {

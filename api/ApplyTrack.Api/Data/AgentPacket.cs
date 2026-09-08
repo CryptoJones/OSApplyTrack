@@ -14,6 +14,20 @@ namespace ApplyTrack.Api.Data;
 public sealed record PacketQuestion(
     string Id, string Label, bool Required, string Type, List<string> Options, string Kind)
 {
+    /// <summary>
+    /// The field's helper text, where an ATS puts the qualifiers that change what a
+    /// correct answer even is — "per month, in EUR", "only if referred by an employee".
+    /// Greenhouse returns it as <c>description</c> and it was ignored until 1.22, which is
+    /// how an annual USD figure got typed into a box asking for gross monthly EUR.
+    ///
+    /// Defaulted rather than positional so packets already stored as jsonb still
+    /// deserialize; they simply carry an empty hint.
+    /// </summary>
+    public string Help { get; init; } = "";
+
+    /// <summary>Label and helper text together — what a human actually reads before answering.</summary>
+    public string FullPrompt => Help.Length == 0 ? Label : $"{Label} ({Help})";
+
     public const string Text = "text";
     public const string Textarea = "textarea";
     public const string Select = "select";
