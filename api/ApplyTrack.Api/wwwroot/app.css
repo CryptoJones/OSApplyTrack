@@ -364,6 +364,24 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 .dialog { width: min(32rem, calc(100% - 2rem)); padding: 1.25rem; color: var(--text); background: var(--surface); border: 2px solid var(--border-strong); border-radius: var(--radius); }
 .dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.25rem; }
+/* The beta terms run longer than a confirm prompt, so this one is wider and its body
+   scrolls rather than pushing the accept button off a short screen. */
+.beta-dialog { width: min(40rem, calc(100% - 2rem)); }
+.beta-body { max-height: min(60vh, 30rem); overflow-y: auto; }
+.beta-body p, .beta-body li { line-height: 1.5; }
+.beta-body ul { margin: 0.75rem 0 0; padding-left: 1.25rem; }
+.beta-body li { margin-top: 0.6rem; }
+/* Terms acceptance on the login form. */
+.login-terms { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.9rem; line-height: 1.4; }
+.login-terms input { margin-top: 0.15rem; flex: none; }
+/* A button that reads as a link — keeps the Terms opener keyboard- and screen-reader
+   correct without pretending an in-page dialog trigger is a navigation. */
+.link-button {
+  padding: 0; color: var(--accent); font: inherit; text-decoration: underline;
+  background: none; border: none; cursor: pointer;
+}
+.confirm-phrase { display: block; margin-top: 1rem; }
+.confirm-phrase .field-input { margin-top: 0.35rem; }
 .login-overlay { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; padding: 1rem; background: var(--bg); }
 .login-card { width: min(100%, 30rem); padding: 1.5rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .login-mark { font-size: 1.7rem; }

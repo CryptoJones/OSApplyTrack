@@ -143,6 +143,47 @@
   <div id="alert-message" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
   <div id="toast" class="toast" aria-hidden="true"></div>
 
+  <!-- Public-beta terms. Shown once per session on sign-in, before the app renders.
+       Deliberately has no cancel path: acknowledging is the only way forward, because
+       the point is that nobody uses the service without having seen it. -->
+  <dialog id="beta-dialog" class="dialog beta-dialog"
+          aria-labelledby="beta-title" aria-describedby="beta-body">
+    <h2 id="beta-title">Public beta — please read</h2>
+    <!-- tabindex makes the scroll area reachable by keyboard. axe flags any scrollable
+         region without it, and without it a keyboard user cannot scroll the terms they
+         are being asked to accept. -->
+    <div id="beta-body" class="beta-body" tabindex="0">
+      <p>
+        This is a <strong>public beta environment</strong>. It is run by one person as an
+        open-source project, not as a commercial service.
+      </p>
+      <ul>
+        <li>
+          <strong>No guarantees of confidentiality, availability, or integrity of your
+          data.</strong> It may be lost, exposed, corrupted, or become unavailable without
+          notice.
+        </li>
+        <li>
+          <strong>No routine backups are performed on the database</strong>, and no backup
+          or recovery of your data is guaranteed.
+        </li>
+        <li>
+          <strong>Keeping your own copy is your responsibility.</strong> Use
+          <em>Settings → Account → Export</em> to download your data, and do it regularly.
+        </li>
+        <li>
+          By using this service you agree to <strong>release CryptoJones (Aaron Clark) from
+          any and all liabilities</strong> arising from its use.
+        </li>
+      </ul>
+    </div>
+    <div class="dialog-actions">
+      <button id="beta-accept" class="button button-primary" type="button">
+        I understand and accept
+      </button>
+    </div>
+  </dialog>
+
   <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
     <form method="dialog">
       <h2 id="confirm-title">Confirm action</h2>

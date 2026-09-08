@@ -153,17 +153,38 @@ function showLogin() {
       <label class="field" for="login-email"><span class="field-label">Email address</span>
       <input id="login-email" class="login-input" type="email" required autocomplete="email"
         inputmode="email" placeholder="you@example.com" /></label>
-      <button type="submit" class="btn btn-primary login-btn">Send magic link</button>
+      <label class="login-terms" for="login-terms">
+        <input id="login-terms" type="checkbox" required />
+        <span>I accept the
+          <button type="button" class="link-button" data-act="open-terms">Terms of Service</button></span>
+      </label>
+      <button type="submit" class="btn btn-primary login-btn" disabled>Send magic link</button>
       <p class="login-note">We email you a link to sign in — check your spam folder if it doesn't arrive. Self-hosting? It's printed to the server logs.</p>
       <p class="login-note login-footer"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener">Open source on GitHub ↗</a></p>
     </form></main>`;
   document.body.appendChild(overlay);
 
   const form = overlay.querySelector("#login-form");
+  // Sign-in stays inert until the terms are ticked. The `required` attribute alone would
+  // let the browser block submission with its own bubble; disabling the button makes the
+  // gate visible before they try, which is the point of putting it here.
+  const terms = overlay.querySelector("#login-terms");
+  const submitBtn = form.querySelector(".login-btn");
+  terms.addEventListener("change", () => { submitBtn.disabled = !terms.checked; });
+  overlay.querySelector('[data-act="open-terms"]').onclick = () => {
+    const dialog = $("#beta-dialog");
+    if (!dialog) return;
+    // Opened for reading here, so the accept button just closes it — acceptance is the
+    // checkbox on the form behind it.
+    $("#beta-accept").textContent = "Close";
+    $("#beta-accept").onclick = () => dialog.close();
+    dialog.showModal();
+    $("#beta-accept").focus();
+  };
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = overlay.querySelector("#login-email").value.trim();
-    if (!email) return;
+    if (!email || !terms.checked) return;
     const btn = form.querySelector("button");
     btn.disabled = true;
     btn.textContent = "Sending…";
@@ -215,6 +236,43 @@ function confirmAction({ title, message, confirmLabel = "Confirm" }) {
   confirmDialogEl.showModal();
   return new Promise((resolve) => {
     confirmDialogEl.addEventListener("close", () => resolve(confirmDialogEl.returnValue === "confirm"), { once: true });
+  });
+}
+
+// Like confirmAction, but the user has to type an exact phrase before the button works.
+// For destructive-and-unrecoverable actions, where a reflexive click on "Confirm" is the
+// failure mode the dialog exists to prevent. Comparison is trimmed and case-insensitive:
+// the point is deliberate intent, not a spelling test.
+function confirmByTyping({ title, message, phrase, confirmLabel = "Confirm" }) {
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  const accept = $("#confirm-accept");
+  accept.textContent = confirmLabel;
+  accept.disabled = true;
+
+  const field = document.createElement("label");
+  field.className = "confirm-phrase";
+  field.innerHTML = `<span class="field-label">Type <strong></strong> to confirm</span>
+    <input id="confirm-phrase-input" class="field-input" type="text" autocomplete="off"
+      spellcheck="false" />`;
+  field.querySelector("strong").textContent = phrase;
+  $("#confirm-message").after(field);
+
+  const input = field.querySelector("#confirm-phrase-input");
+  input.addEventListener("input", () => {
+    accept.disabled = input.value.trim().toLowerCase() !== phrase.toLowerCase();
+  });
+
+  confirmDialogEl.returnValue = "cancel";
+  confirmDialogEl.showModal();
+  input.focus();
+  return new Promise((resolve) => {
+    confirmDialogEl.addEventListener("close", () => {
+      const ok = confirmDialogEl.returnValue === "confirm";
+      field.remove();
+      accept.disabled = false;
+      resolve(ok);
+    }, { once: true });
   });
 }
 
@@ -2366,7 +2424,7 @@ async function loadAccountTab(body) {
           Deletes your account and every application, setting, and session with it. Immediate and unrecoverable.
         </p>
         <div class="mt-3">
-          <button class="btn btn-danger" data-act="delete-account" type="button">Delete my account</button>
+          <button class="btn btn-danger" data-act="delete-account" type="button">DELETE MY DATA</button>
         </div>
       </div>
     </article>`;
@@ -2386,10 +2444,14 @@ async function loadAccountTab(body) {
     location.reload();
   };
   act("delete-account").onclick = async () => {
-    if (!await confirmAction({
-      title: "Delete your account?",
-      message: "Every application, setting, cover letter, and session will be deleted immediately. This cannot be undone.",
-      confirmLabel: "Delete my account",
+    // A yes/no confirm is too easy to click through for something unrecoverable, so this
+    // one asks them to type the words. The button stays inert until the text matches.
+    if (!await confirmByTyping({
+      title: "Delete all your data?",
+      message: "Every application, setting, cover letter, and session will be deleted immediately, "
+        + "and you will be signed out. This cannot be undone. Export first if you want a copy.",
+      phrase: "I agree",
+      confirmLabel: "DELETE MY DATA",
     })) return;
     try {
       await api("DELETE", "/api/account");
@@ -2477,6 +2539,43 @@ async function showVersion() {
   }
 }
 
+// The public-beta terms. Shown once per signed-in session, before anything else renders.
+//
+// sessionStorage, not localStorage, is the point: it dies with the tab, so the terms come
+// back every time someone logs on rather than being acknowledged once and forgotten. If
+// storage throws (private mode, blocked site data) the dialog simply shows again, which is
+// the safe direction to fail.
+const BETA_ACK_KEY = "applytrack.beta-ack";
+
+function betaTermsAcknowledged() {
+  try {
+    return sessionStorage.getItem(BETA_ACK_KEY) === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function showBetaTerms() {
+  const dialog = $("#beta-dialog");
+  if (!dialog || betaTermsAcknowledged()) return;
+  // No cancel path and Escape is refused: acknowledging is the only way through, because
+  // the whole purpose is that nobody reaches the app without having seen this.
+  dialog.addEventListener("cancel", (e) => e.preventDefault());
+  dialog.showModal();
+  $("#beta-accept")?.focus();
+  await new Promise((resolve) => {
+    $("#beta-accept").onclick = () => {
+      try {
+        sessionStorage.setItem(BETA_ACK_KEY, "1");
+      } catch (_) {
+        /* storage blocked: they will simply see this again */
+      }
+      dialog.close();
+      resolve();
+    };
+  });
+}
+
 (async function boot() {
   showVersion();
   try {
@@ -2486,6 +2585,8 @@ async function showVersion() {
   } catch (e) {
     if (e.status === 401) return;
   }
+  // Signed in, so the beta terms come before any of their data is fetched or drawn.
+  await showBetaTerms();
   // Whether this tenant wants cover letters decides if the app sheet renders any
   // drafting UI at all; default ON when the lookup fails so nothing is hidden by error.
   // Same for the agent, which defaults OFF: nothing agent-shaped renders unless the

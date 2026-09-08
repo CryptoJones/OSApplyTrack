@@ -146,6 +146,9 @@ async function openSettings(page) {
 test.beforeEach(async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
+  // The public-beta terms gate every signed-in session before the app renders, so every
+  // other test has to get past them first.
+  await page.getByRole("button", { name: "I understand and accept" }).click();
   await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
 });
 
@@ -457,4 +460,86 @@ test("Mark applied is disabled once a role is already applied", async ({ page })
   await page.reload();
   await page.getByRole("button", { name: /Example Co/ }).click();
   await expect(page.getByRole("button", { name: "Mark applied" })).toBeEnabled();
+});
+
+test("the public beta terms gate every session and cannot be dismissed unread", async ({ page }) => {
+  // beforeEach already accepted them, so clear the session marker and reload to see a
+  // fresh sign-in.
+  await page.evaluate(() => sessionStorage.clear());
+  await page.reload();
+
+  const dialog = page.getByRole("dialog", { name: "Public beta — please read" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("No guarantees of confidentiality, availability, or integrity");
+  await expect(dialog).toContainText("No routine backups are performed");
+  await expect(dialog).toContainText("release CryptoJones (Aaron Clark) from any and all liabilities");
+  // None of their data has been fetched or drawn yet — the terms come first.
+  await expect(page.getByRole("button", { name: /Example Co/ })).toHaveCount(0);
+  // Escape is refused: acknowledging is the only way through.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "I understand and accept" }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+
+  // Acknowledged for this session only — a reload in the same tab does not re-prompt.
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Public beta — please read" })).not.toBeVisible();
+});
+
+test("sign-in requires accepting the terms, which are readable from the form", async ({ page }) => {
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/me") {
+      await route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"Sign in required"}' });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+    }
+  });
+  await page.reload();
+
+  const send = page.getByRole("button", { name: "Send magic link" });
+  const accept = page.getByLabel(/I accept the/);
+  await expect(send).toBeDisabled();
+
+  // The terms themselves have to be reachable before you agree to them.
+  await page.getByRole("button", { name: "Terms of Service" }).click();
+  const dialog = page.getByRole("dialog", { name: "Public beta — please read" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("release CryptoJones (Aaron Clark) from any and all liabilities");
+  await expectNoSeriousViolations(page);
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).not.toBeVisible();
+
+  await accept.check();
+  await expect(send).toBeEnabled();
+  await accept.uncheck();
+  await expect(send).toBeDisabled();
+});
+
+test("DELETE MY DATA needs the phrase typed before it will fire", async ({ page }) => {
+  let deleted = false;
+  await page.route("**/api/account", async (route) => {
+    if (route.request().method() === "DELETE") deleted = true;
+    await route.fulfill({ status: 204, body: "" });
+  });
+
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Account" }).click();
+  await page.getByRole("button", { name: "DELETE MY DATA" }).click();
+
+  const confirm = page.getByRole("button", { name: "DELETE MY DATA" }).last();
+  await expect(confirm).toBeDisabled();
+  await expectNoSeriousViolations(page);
+
+  const field = page.getByLabel(/Type .* to confirm/);
+  await field.fill("nope");
+  await expect(confirm).toBeDisabled();
+  await field.fill("I agree");
+  await expect(confirm).toBeEnabled();
+  expect(deleted).toBe(false);
 });

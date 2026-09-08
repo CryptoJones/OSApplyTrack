@@ -11,6 +11,8 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#49 — Restrict forwarded-header trust to configured proxies](https://github.com/CryptoJones/OSApplyTrack/issues/49)
 - [x] [#50 — Add global JSON body caps and per-field/cardinality limits](https://github.com/CryptoJones/OSApplyTrack/issues/50)
 - [x] [#52 — Serialize overlapping tenant poll runs](https://github.com/CryptoJones/OSApplyTrack/issues/52)
+- [ ] [#117 — Encrypt sensitive columns at rest, secure by default for every deploy](https://github.com/CryptoJones/OSApplyTrack/issues/117)
+- [x] [#118 — Public beta terms, acceptance at sign-in, and a typed-confirmation data delete](https://github.com/CryptoJones/OSApplyTrack/issues/118)
 
 ## Operations and scalability
 
