@@ -11,9 +11,10 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// <param name="Filled">The form was reached and the mapped answers were typed in.</param>
 /// <param name="Submitted">Submit was clicked AND a confirmation was recognised.</param>
 /// <param name="Unmapped">Required questions with an answer that no field could be found for — any of these refuses the click.</param>
+/// <param name="Closed">The posting was gone: the page says it is no longer open. The lead expired, it did not fail.</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
-    List<string> Unmapped, List<string> Mapped, string Error);
+    List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false);
 
 /// <summary>
 /// Drives the browser container at a posting: fill every mapped answer, attach the
@@ -27,6 +28,13 @@ public sealed partial class BrowserSubmitter
 {
     [GeneratedRegex(@"thank you|thanks for applying|application (?:has been |was )?(?:submitted|received|sent)|we(?:'ve| have) received your application|successfully (?:submitted|applied)|your application is in", RegexOptions.IgnoreCase)]
     private static partial Regex Confirmation();
+
+    // A closed posting: the apply URL redirects to the board or shows a gone-notice. Matching
+    // any of these means there is no form to fill — the lead expired between discovery and now,
+    // which is an expected outcome, not a failure to fix. Kept specific so an open posting's
+    // prose ("no longer supported", etc.) never trips it.
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed)", RegexOptions.IgnoreCase)]
+    private static partial Regex ClosedPosting();
 
     private readonly BrowserOptions _options;
     private readonly ILogger<BrowserSubmitter> _log;
@@ -51,6 +59,19 @@ public sealed partial class BrowserSubmitter
         byte[]? screenshot = null;
         try
         {
+            // Before filling anything, notice a posting that closed between discovery and now:
+            // Greenhouse and the rest redirect a gone job to the openings board, so every field
+            // comes back "unmapped" and the run looks like a mapping failure when nothing is wrong.
+            // Recognise it, screenshot it, and hand the caller a Closed outcome so the lead is
+            // retired rather than logged as a broken submission.
+            var body = await BodyTextAsync(page);
+            if (ClosedPosting().IsMatch(body))
+            {
+                screenshot = await session.ScreenshotAsync();
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "posting is no longer open", Closed: true);
+            }
+
             foreach (var q in packet.Questions)
             {
                 ct.ThrowIfCancellationRequested();
@@ -122,7 +143,15 @@ public sealed partial class BrowserSubmitter
         }
         if (q.Type is PacketQuestion.Select or PacketQuestion.MultiSelect)
         {
-            // A custom combobox: type the option and confirm it.
+            // A custom combobox (a div/input widget, not a native <select>). This used to type
+            // the answer and return true unconditionally — so an answer that matches no option
+            // (a model that replied "United States, U.S., USA" to a country picker, or "Python"
+            // to a fixed specialisation list) was still counted mapped. The agent then judged a
+            // form with empty required dropdowns "clean" and auto-submitted an invalid
+            // application. When the question offers a fixed option set, the answer MUST be one of
+            // them; otherwise report it unmapped so the run refuses to submit and asks the human.
+            if (q.Options.Count > 0 && !q.Options.Any(o => o.Trim().Equals(answer.Trim(), StringComparison.OrdinalIgnoreCase)))
+                return false;
             await control.ClickAsync();
             await control.FillAsync(answer);
             await page.Keyboard.PressAsync("Enter");
@@ -195,4 +224,11 @@ public sealed partial class BrowserSubmitter
     }
 
     private static string CssEscape(string id) => Regex.Replace(id, @"([^a-zA-Z0-9_-])", "\\$1");
+
+    /// <summary>The page's visible text, or "" if it can't be read — never throws.</summary>
+    private static async Task<string> BodyTextAsync(IPage page)
+    {
+        try { return await page.InnerTextAsync("body"); }
+        catch (PlaywrightException) { return ""; }
+    }
 }

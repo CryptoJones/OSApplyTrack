@@ -227,6 +227,18 @@ public sealed class AgentWorker : BackgroundService
             return false;
         }
 
+        if (outcome.Closed)
+        {
+            // The posting closed between discovery and now — the apply URL redirected to the
+            // board. This is an expired lead, not a submission that failed: retire it the way the
+            // human's Pass button does, record why, and do not leave a misleading dry-run behind.
+            await apps.UpdateStructuredAsync(rec.Name, rec.Fields with { Status = "passed" }, null);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = "posting closed before submission — lead marked passed", rec.Fields.Company, rec.Fields.Role });
+            _log.LogInformation("{Name}: posting closed, marked passed", rec.Name);
+            return false;
+        }
+
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
             : outcome.Filled && dryRun && outcome.Error.Length == 0 ? AgentEvidenceRepo.Kinds.DryRun
             : AgentEvidenceRepo.Kinds.Failed;

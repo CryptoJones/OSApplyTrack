@@ -57,6 +57,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _fixture = builder.Build();
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
+        // A posting that closed between discovery and now: the board's gone-notice, no form.
+        _fixture.MapGet("/jobs/closed", () => Results.Content(
+            "<html><body><h1>Current openings at Acme</h1>"
+            + "<p>The job you are looking for is no longer open.</p></body></html>", "text/html"));
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -90,6 +94,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="question_2">Are you legally authorized to work in the United States?</label>
           <select id="question_2" name="job_application[question_2]"><option value=""></option><option>Yes</option><option>No</option></select>
           <label for="question_3">Describe a system you scaled.</label><textarea id="question_3" name="job_application[question_3]"></textarea>
+          <label for="question_5">Choose your specialization</label><input id="question_5" name="job_application[question_5]" />
           <button id="submit_app" type="submit">Submit Application</button>
         </form>
         </body></html>
@@ -165,6 +170,53 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal(["question_9"], outcome.Unmapped);
         Assert.Contains("could not be mapped", outcome.Error);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_closed_posting_is_reported_closed_and_never_submits()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/closed", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Closed);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("no longer open", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_select_answer_that_matches_no_option_is_unmapped_not_silently_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // question_5 is a custom combobox (a plain input, not a native <select>) with a fixed
+        // option set. The answer matches none of them — the old code typed it and called it
+        // mapped, so the form looked clean. It must now be reported unmapped and refuse the click.
+        var packet = Packet();
+        packet.Questions.Add(new("question_5", "Choose your specialization", true, PacketQuestion.Select,
+            [".NET", "Front End", "DevOps/SRE"], PacketQuestion.Custom));
+        packet.Answers["question_5"] = "United States, U.S., USA";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("question_5", outcome.Unmapped);
+        Assert.DoesNotContain("question_5", outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_select_answer_that_matches_an_option_still_maps()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("question_5", "Choose your specialization", true, PacketQuestion.Select,
+            [".NET", "Front End", "DevOps/SRE"], PacketQuestion.Custom));
+        packet.Answers["question_5"] = ".NET";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.Contains("question_5", outcome.Mapped);
+        Assert.Empty(outcome.Unmapped);
     }
 
     [Fact]
