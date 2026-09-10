@@ -91,6 +91,39 @@ def test_poll_drain_dispatch(
     assert "1 new lead(s) added across 1 queued tenant(s)" in captured.out
 
 
+def test_poll_ats_only_dispatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The freshness fast lane: `applytrack poll --ats-only` fans out over every active
+    # tenant like the plain cron poll, but passes ats_only through so only ATS boards
+    # are gathered.
+    calls: dict[str, object] = {}
+
+    def fake_connect(database_url: str | None) -> FakeConnection:
+        calls["database_url"] = database_url
+        return FakeConnection()
+
+    def fake_run_all_tenants(
+        conn: FakeConnection, *, limit_per_source: int, ats_only: bool = False
+    ) -> dict[int, list[str]]:
+        calls["limit"] = limit_per_source
+        calls["ats_only"] = ats_only
+        assert isinstance(conn, FakeConnection)
+        return {5: ["acme-backend-engineer.md"]}
+
+    monkeypatch.setattr("applytrack.importer.connect", fake_connect)
+    monkeypatch.setattr("applytrack.worker.run_all_tenants", fake_run_all_tenants)
+
+    assert (
+        main(["poll", "--ats-only", "--database-url", "postgresql://db/app", "--limit", "8"])
+        == 0
+    )
+
+    assert calls == {"database_url": "postgresql://db/app", "limit": 8, "ats_only": True}
+    captured = capsys.readouterr()
+    assert "1 new lead(s) added across 1 active tenant(s)" in captured.out
+
+
 def test_import_md_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

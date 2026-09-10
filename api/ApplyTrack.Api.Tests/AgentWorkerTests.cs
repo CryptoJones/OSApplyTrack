@@ -32,10 +32,10 @@ public class AgentWorkerTests(PostgresFixture pg)
 
     internal static AgentWorker NewWorker(
         StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
-        BrowserOptions? browser = null)
+        BrowserOptions? browser = null, JobPageFetcher? fetcher = null)
     {
         var evaluator = new LeadEvaluator(
-            new FitJudge(new StructuredCompleter(stub)), new JobPageFetcher(),
+            new FitJudge(new StructuredCompleter(stub)), fetcher ?? new JobPageFetcher(),
             NullLogger<LeadEvaluator>.Instance);
         var greenhouse = new GreenhouseBoard(
             new StubHttpClientFactory(CapturingHandler.Always(HttpStatusCode.NotFound, "{}")),
@@ -122,6 +122,64 @@ public class AgentWorkerTests(PostgresFixture pg)
         await worker.RunOnceAsync(CancellationToken.None);
         Assert.Equal(2, (await EventsAsync(conn, t)).Count(e => e.Kind == "verdict"));
         Assert.Equal(2, notifier.Sent.Count);
+    }
+
+    [Fact]
+    public async Task A_posting_that_closed_by_judge_time_is_retired_before_any_packet_is_built()
+    {
+        // The latency fix: a proceed verdict on a lead whose apply page already reads
+        // "no longer open" is retired to `passed` by a cheap GET, before the packet build
+        // spends any LLM tokens. A still-open lead in the same pass is unaffected — it
+        // builds its packet as usual, proving the pre-check is gated on the closed signal
+        // (and on the link being present), not on there being a link at all.
+        var stub = new StubLlmClient(Responders.Agent());
+        var notifier = new CapturingNotifier();
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+
+        // Unknown-provider links (not an ATS the packet builder tries to call): the
+        // pre-check still fetches and detects closure on any provider, and the open lead
+        // then builds its packet through the standard-question path.
+        var apps = new ApplicationRepo(conn, t);
+        var high = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            high!.Fields with { Link = "https://careers.example.com/acme/eng" }, null);
+        var mid = await apps.GetAsync("mid-engineer.md");
+        await apps.UpdateStructuredAsync("mid-engineer.md",
+            mid!.Fields with { Link = "https://careers.example.com/globex/eng" }, null);
+
+        // Closed for acme (High), a live form for everyone else (Mid).
+        var handler = new CapturingHandler(req =>
+        {
+            var closed = (req.RequestUri?.AbsolutePath ?? "").Contains("acme");
+            var body = closed
+                ? "<html><body>The job you are looking for is no longer open</body></html>"
+                : "<html><body><form>Apply<input name='email'></form></body></html>";
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "text/html"),
+            };
+        });
+        using var worker = NewWorker(stub, pg.ConnectionString, notifier,
+            fetcher: new JobPageFetcher(handler));
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        // High: retired to passed, no packet, an error row that says why.
+        var highStatus = await conn.ExecuteScalarAsync<string>(
+            "SELECT status FROM applications WHERE tenant_id = @t AND name = 'high-engineer.md'", new { t });
+        Assert.Equal("passed", highStatus);
+        Assert.Null(await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md"));
+        var reason = await conn.ExecuteScalarAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t"
+            + " AND application_name = 'high-engineer.md' AND kind = 'error'", new { t });
+        Assert.Contains("posting closed before packet build", reason);
+
+        // Mid: still open, so it built its packet and moo'd as normal.
+        Assert.NotNull(await new AgentPacketRepo(conn, t).GetAsync("mid-engineer.md"));
+        var midStatus = await conn.ExecuteScalarAsync<string>(
+            "SELECT status FROM applications WHERE tenant_id = @t AND name = 'mid-engineer.md'", new { t });
+        Assert.Equal("ready", midStatus);
     }
 
     [Fact]

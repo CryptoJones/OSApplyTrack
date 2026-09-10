@@ -13,6 +13,7 @@ import pytest
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.linkcheck import PublicFetchError
 from applytrack.poll import (
+    SOURCE_FETCHERS,
     Listing,
     _gather,
     _looks_remote,
@@ -516,6 +517,81 @@ def test_gather_by_source_isolates_a_failing_feed(
 
     assert gathered["rss:https://evil.example/feed"] == []
     assert any("evil.example" in r.getMessage() for r in caplog.records)
+
+
+def test_gather_by_source_ats_only_gathers_boards_not_builtins_or_feeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The freshness fast lane: ats_only skips the built-in aggregators and custom
+    # RSS feeds (whose shared APIs would rate-limit a short cadence) and gathers only
+    # the tenants' per-employer ATS boards.
+    called: list[str] = []
+
+    def board_fetcher(board: AtsBoard):  # type: ignore[no-untyped-def]
+        def _fetch(client: object, limit: int) -> list[Listing]:
+            called.append(f"board:{board.provider}:{board.slug}")
+            return [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]
+
+        return _fetch
+
+    def builtin(client: object, limit: int) -> list[Listing]:
+        called.append("remotive")
+        return [_lead("Nope", "Should not appear")]
+
+    def rss_fetcher(url: str):  # type: ignore[no-untyped-def]
+        def _fetch(client: object, limit: int) -> list[Listing]:
+            called.append(f"rss:{url}")
+            return [_lead("Feed Co", "Should not appear")]
+
+        return _fetch
+
+    monkeypatch.setitem(SOURCE_FETCHERS, "remotive", builtin)
+    monkeypatch.setattr("applytrack.worker.make_ats_fetcher", board_fetcher)
+    monkeypatch.setattr("applytrack.worker.make_rss_fetcher", rss_fetcher)
+
+    profile = Criteria(
+        keywords=["engineer"],
+        sources={"remotive": True},
+        ats_boards=[AtsBoard(provider="greenhouse", slug="acme")],
+        rss_feeds=["https://feed.example/careers.rss"],
+    )
+    gathered = _gather_by_source([profile], 40, ats_only=True)
+
+    assert called == ["board:greenhouse:acme"]  # the builtin and feed were never fetched
+    assert set(gathered) == {"greenhouse:acme"}
+
+
+def test_run_all_tenants_ats_only_stages_only_board_leads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # End to end through run_all_tenants: with ats_only the shared gather is boards-only,
+    # so a tenant that also enables an aggregator still only sees its ATS-board roles.
+    def board_fetcher(board: AtsBoard):  # type: ignore[no-untyped-def]
+        def _fetch(client: object, limit: int) -> list[Listing]:
+            return [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]
+
+        return _fetch
+
+    def builtin(client: object, limit: int) -> list[Listing]:
+        return [_lead("Nope", "Should not appear", link="https://nope.co/2")]
+
+    monkeypatch.setitem(SOURCE_FETCHERS, "remotive", builtin)
+    monkeypatch.setattr("applytrack.worker.make_ats_fetcher", board_fetcher)
+
+    repo = FakeRepo(
+        profile=Criteria(
+            keywords=["engineer"],
+            sources={"remotive": True},
+            ats_boards=[AtsBoard(provider="greenhouse", slug="acme")],
+        )
+    )
+    run_all_tenants(
+        tenant_ids=[1],
+        repo_for=lambda _tid: repo,
+        verify_links=False,
+        ats_only=True,
+    )
+    assert [f.company for f in repo.added] == ["Acme"]
 
 
 def test_run_all_tenants_isolates_per_tenant_failure() -> None:

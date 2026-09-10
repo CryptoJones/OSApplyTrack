@@ -133,27 +133,37 @@ public sealed partial class ApplicationRepo
         return row is null ? null : new AppRecord(row.Name, row.ToFields(), row.Version);
     }
 
+    // Leads discovered inside this window jump the judging queue ahead of the older
+    // backlog. Competitive postings close within hours, so a lead's value decays fast:
+    // when a pass can only judge `budget` candidates, a stale high-score lead that is
+    // probably already dead must not crowd out a fresh one that is still open. Score
+    // still orders within each tier, so a fresh lead never beats a fresh higher-scoring
+    // one — freshness only breaks the tie between the recent and the backlog.
+    private const string FreshWindow = "2 hours";
+
     /// <summary>
-    /// Open leads the agent has not judged yet, best keyword score first. The score is
-    /// stored as text (the SPA contract); only all-digit values are comparable, so a
-    /// hand-entered "high" never qualifies. Leads with a verdict on record are excluded
-    /// by an anti-join on the audit trail, so a skip is terminal without touching status.
+    /// Open leads the agent has not judged yet: freshly discovered leads first, then the
+    /// backlog, best keyword score first within each. The score is stored as text (the SPA
+    /// contract); only all-digit values are comparable, so a hand-entered "high" never
+    /// qualifies. Leads with a verdict on record are excluded by an anti-join on the audit
+    /// trail, so a skip is terminal without touching status.
     /// </summary>
     public async Task<IReadOnlyList<AppRecord>> ListAgentCandidatesAsync(int minScore, int limit)
     {
         var rows = await _conn.QueryAsync<AppRow>(
-            """
-            SELECT a.*
-            FROM applications a
-            WHERE a.tenant_id = @t AND a.status = 'lead'
-              AND a.score ~ '^[0-9]+$' AND a.score::int >= @minScore
-              AND NOT EXISTS (
-                  SELECT 1 FROM agent_events e
-                  WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
-                    AND e.kind = 'verdict')
-            ORDER BY a.score::int DESC, a.created_at DESC
-            LIMIT @limit
-            """,
+            $"""
+             SELECT a.*
+             FROM applications a
+             WHERE a.tenant_id = @t AND a.status = 'lead'
+               AND a.score ~ '^[0-9]+$' AND a.score::int >= @minScore
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_events e
+                   WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
+                     AND e.kind = 'verdict')
+             ORDER BY (a.created_at > now() - interval '{FreshWindow}') DESC,
+                      a.score::int DESC, a.created_at DESC
+             LIMIT @limit
+             """,
             new { t = _t, minScore, limit = Math.Clamp(limit, 1, 200) });
         return rows.Select(r => new AppRecord(r.Name, r.ToFields(), r.Version)).ToList();
     }
