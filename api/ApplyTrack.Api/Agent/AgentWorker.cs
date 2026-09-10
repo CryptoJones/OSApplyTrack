@@ -242,12 +242,17 @@ public sealed class AgentWorker : BackgroundService
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
             : outcome.Filled && dryRun && outcome.Error.Length == 0 ? AgentEvidenceRepo.Kinds.DryRun
             : AgentEvidenceRepo.Kinds.Failed;
+        // Discovery -> now, the headline posting->applied latency. Recorded on the event so
+        // the win is provable per-application (the agent_latency view aggregates the same
+        // timestamps) and logged so it is visible live. A best-effort read: a null age never
+        // blocks the submission.
+        var latency = await DiscoveryAgeSecondsAsync(conn, t, rec.Name);
         await evidence.RecordAsync(rec.Name, kind, outcome.Url, outcome.Confirmation,
             new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error }, outcome.Screenshot);
         await events.RecordAsync(kind, rec.Name, new
         {
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
-            error = outcome.Error, rec.Fields.Company, rec.Fields.Role,
+            error = outcome.Error, latency_seconds = latency, rec.Fields.Company, rec.Fields.Role,
         });
 
         var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
@@ -268,8 +273,9 @@ public sealed class AgentWorker : BackgroundService
             await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
                 PacketReadyNotifier.Moment.Filled);
         }
-        _log.LogInformation("{Name}: browser {Kind} ({Mapped} mapped, {Unmapped} unmapped){Error}",
+        _log.LogInformation("{Name}: browser {Kind} ({Mapped} mapped, {Unmapped} unmapped){Latency}{Error}",
             rec.Name, kind, outcome.Mapped.Count, outcome.Unmapped.Count,
+            latency is { } secs ? $", {secs:0}s since discovery" : "",
             outcome.Error.Length > 0 ? ": " + outcome.Error : "");
 
         // Promote a clean dry run to a real submission. The dry run IS the safety check the
@@ -287,6 +293,23 @@ public sealed class AgentWorker : BackgroundService
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
             && packet.NeedsReview.Count == 0;
+    }
+
+    /// <summary>Seconds between a lead's discovery (<c>applications.created_at</c>) and now,
+    /// or null when the row is gone. Never throws: instrumentation must not fail a submission.</summary>
+    private static async Task<double?> DiscoveryAgeSecondsAsync(NpgsqlConnection conn, long tenantId, string name)
+    {
+        try
+        {
+            return await conn.ExecuteScalarAsync<double?>(
+                "SELECT EXTRACT(EPOCH FROM (now() - created_at))::double precision FROM applications "
+                + "WHERE tenant_id = @t AND name = @n",
+                new { t = tenantId, n = Slug.Normalize(name) });
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>One pass over every enabled tenant. Public so tests can drive it directly.</summary>
@@ -365,6 +388,25 @@ public sealed class AgentWorker : BackgroundService
                 judged++;
                 if (verdict is { IsProceed: true })
                 {
+                    // Cheap liveness pre-check before the packet build. Competitive postings
+                    // close within hours, so a lead can already be dead by the time it is
+                    // judged; a single capped GET of the apply page catches that here, before
+                    // any tokens are spent drafting answers and a cover letter. A closed lead
+                    // is retired exactly the way the browser run and the human's Pass button
+                    // do it — status `passed`, an audit row — and never reaches the builder.
+                    var provider = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
+                    if (await _evaluator.PostingClosedAsync(rec.Fields.Link, provider, ct))
+                    {
+                        await apps.UpdateStructuredAsync(rec.Name, rec.Fields with { Status = "passed" }, null);
+                        await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new
+                        {
+                            reason = "posting closed before packet build — lead marked passed, no LLM spend",
+                            rec.Fields.Company, rec.Fields.Role,
+                        });
+                        _log.LogInformation("{Name}: posting closed at judge time, marked passed", rec.Name);
+                        continue;
+                    }
+
                     // Step 3: prepare the packet, park it in `ready`, and moo. A failed
                     // build is recorded and must not stop the pass.
                     try

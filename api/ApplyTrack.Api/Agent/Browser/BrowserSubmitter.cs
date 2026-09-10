@@ -36,6 +36,14 @@ public sealed partial class BrowserSubmitter
     [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed)", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
 
+    /// <summary>
+    /// True when a page's text reads as a closed/expired posting. The single source for
+    /// closed-posting detection, shared by the browser run (against the rendered body) and
+    /// the agent's cheap liveness pre-check (against the fetched HTML), so both agree on
+    /// what "gone" looks like without a second regex to keep in sync.
+    /// </summary>
+    public static bool IsClosedPosting(string text) => text.Length > 0 && ClosedPosting().IsMatch(text);
+
     private readonly BrowserOptions _options;
     private readonly ILogger<BrowserSubmitter> _log;
 
@@ -65,7 +73,7 @@ public sealed partial class BrowserSubmitter
             // Recognise it, screenshot it, and hand the caller a Closed outcome so the lead is
             // retired rather than logged as a broken submission.
             var body = await BodyTextAsync(page);
-            if (ClosedPosting().IsMatch(body))
+            if (IsClosedPosting(body))
             {
                 screenshot = await session.ScreenshotAsync();
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,

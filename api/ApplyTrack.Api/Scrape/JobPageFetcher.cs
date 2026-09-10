@@ -24,13 +24,23 @@ public sealed class JobPageFetcher
     private readonly HttpClient _http;
 
     public JobPageFetcher()
-    {
-        var handler = new SocketsHttpHandler
+        : this(new SocketsHttpHandler
         {
             AllowAutoRedirect = false, // redirects re-validated by hand below
             AutomaticDecompression = DecompressionMethods.All,
             ConnectCallback = ConnectToPublicAddressOnlyAsync,
-        };
+        })
+    {
+    }
+
+    /// <summary>
+    /// Build a fetcher over a supplied handler. The production path uses the
+    /// parameterless constructor, whose SSRF-guarded handler pins DNS to public
+    /// addresses; this overload lets the test suite drive the same fetch/redirect/cap
+    /// logic against a scripted handler with no network. Public for that reason.
+    /// </summary>
+    public JobPageFetcher(HttpMessageHandler handler)
+    {
         _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
         // Some boards refuse the default HttpClient UA; identify as a browser-compatible
         // bot with a pointer back to the project.

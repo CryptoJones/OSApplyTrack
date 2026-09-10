@@ -330,6 +330,74 @@ public class RepoTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task ListAgentCandidates_puts_fresh_leads_before_the_stale_backlog()
+    {
+        // Freshness-aware ordering: a lead discovered inside the fresh window is judged
+        // before the older backlog, so a stale high-score lead that is probably already
+        // closed can't crowd out a newer one that is still open. Score still orders within
+        // each tier — freshness only breaks the tie between the recent and the backlog.
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var apps = new ApplicationRepo(conn, t);
+
+        async Task Seed(string company, string score, string? backdate = null)
+        {
+            var name = await apps.CreateAsync(new AppFields
+            {
+                Company = company, Role = "Engineer", Status = "lead", Score = score,
+            });
+            if (backdate is not null)
+                await conn.ExecuteAsync(
+                    $"UPDATE applications SET created_at = now() - interval '{backdate}' "
+                    + "WHERE tenant_id = @t AND name = @n", new { t, n = name });
+        }
+
+        await Seed("Stale High", "90", backdate: "3 hours");
+        await Seed("Stale Higher", "95", backdate: "5 hours");
+        await Seed("Fresh Low", "70");
+        await Seed("Fresh Mid", "75");
+
+        var candidates = await apps.ListAgentCandidatesAsync(minScore: 60, limit: 10);
+
+        // Fresh tier first (by score within it), then the backlog (by score within it).
+        Assert.Equal(
+            ["Fresh Mid", "Fresh Low", "Stale Higher", "Stale High"],
+            candidates.Select(c => c.Fields.Company).ToArray());
+    }
+
+    [Fact]
+    public async Task AgentLatency_view_reports_the_discovery_to_submit_timeline()
+    {
+        // Instrumentation: the agent_latency view joins the first verdict/dry-run/submit
+        // timestamp to each application's discovery time and reports the second-deltas, so
+        // posting->applied latency is measurable per application and any regression is visible.
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var apps = new ApplicationRepo(conn, t);
+        var name = await apps.CreateAsync(new AppFields { Company = "Timeline Co", Role = "Engineer", Status = "lead" });
+        // Discovery 100s ago; verdict 40s ago; a submission 10s ago.
+        await conn.ExecuteAsync(
+            "UPDATE applications SET created_at = now() - interval '100 seconds' WHERE tenant_id = @t AND name = @n",
+            new { t, n = name });
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_events (tenant_id, application_name, kind, detail, created_at) "
+            + "VALUES (@t, @n, 'verdict', '{}'::jsonb, now() - interval '40 seconds')", new { t, n = name });
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_evidence (tenant_id, application_name, kind, created_at) "
+            + "VALUES (@t, @n, 'submitted', now() - interval '10 seconds')", new { t, n = name });
+
+        var row = await conn.QuerySingleAsync<(double? Verdict, double? Submitted)>(
+            "SELECT discovery_to_verdict_seconds, discovery_to_submitted_seconds "
+            + "FROM agent_latency WHERE tenant_id = @t AND application_name = @n", new { t, n = name });
+
+        Assert.NotNull(row.Verdict);
+        Assert.NotNull(row.Submitted);
+        // ~60s to verdict (100-40), ~90s to submit (100-10); wide bands absorb clock jitter.
+        Assert.InRange(row.Verdict!.Value, 50, 70);
+        Assert.InRange(row.Submitted!.Value, 80, 100);
+    }
+
+    [Fact]
     public async Task Resume_round_trips_and_defaults_to_empty_when_absent()
     {
         await using var conn = await OpenAsync();

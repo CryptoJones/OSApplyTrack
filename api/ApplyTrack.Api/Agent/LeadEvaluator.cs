@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Scrape;
@@ -55,6 +56,43 @@ public sealed class LeadEvaluator
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = ex.Message, rec.Fields.Company, rec.Fields.Role });
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Cheap liveness pre-check: is the posting already closed at judge time? A GET of the
+    /// provider's apply page (a single 10s-capped fetch, no browser, no model) matched against
+    /// the same closed-posting detector the browser run uses. This runs before the packet build
+    /// so no LLM tokens are spent drafting answers and a cover letter for a dead lead — the
+    /// browser-side detection in <see cref="BrowserSubmitter"/> already retires closures, but
+    /// only after the expensive work is done.
+    ///
+    /// Only a clear "no longer open" signal counts as closed. A fetch that fails, times out, or
+    /// answers non-HTML returns <c>false</c>: a transient error must never retire a live lead —
+    /// the browser run remains the authority when this can't tell.
+    /// </summary>
+    public async Task<bool> PostingClosedAsync(string link, string provider, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+            return false;
+        var applyUrl = AtsProvider.ApplyUrl(link, provider);
+        try
+        {
+            var (html, _) = await _fetcher.FetchAsync(applyUrl, ct);
+            if (!BrowserSubmitter.IsClosedPosting(html))
+                return false;
+            _log.LogInformation("liveness: {Link} is closed before packet build", link);
+            return true;
+        }
+        catch (Exception ex) when (ex is ScrapeUnavailableException or AppValidationException)
+        {
+            _log.LogInformation("liveness: no read of {Link}: {Reason}", applyUrl, ex.Message);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "liveness: unexpected failure fetching {Link}", applyUrl);
+            return false;
         }
     }
 

@@ -46,7 +46,14 @@ def _poll(args: argparse.Namespace) -> int:
             return 0
         if args.tenant is None:
             # Cron mode: fan out across every active tenant, fetching sources once.
-            _print_multi(run_all_tenants(conn, limit_per_source=args.limit), "active tenant(s)")
+            # --ats-only is the freshness fast lane: only the tenants' ATS boards, so it
+            # can run far more often than the full poll without touching aggregator limits.
+            _print_multi(
+                run_all_tenants(
+                    conn, limit_per_source=args.limit, ats_only=args.ats_only
+                ),
+                "active tenant(s)",
+            )
             return 0
         repo = PollRepo(conn, args.tenant)
         profile = repo.load_profile()
@@ -82,6 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     p_poll.add_argument(
         "--drain", action="store_true",
         help="service the on-demand poll queue (poll_requests) — run on a fast cron")
+    p_poll.add_argument(
+        "--ats-only", action="store_true",
+        help="poll only the tenants' ATS boards (Greenhouse/Lever/Ashby) — the "
+             "freshness fast lane; run on a shorter cadence than the full poll")
     p_poll.add_argument("--limit", type=int, default=40, help="max results per source to scan")
     p_poll.add_argument(
         "--database-url", default=None,

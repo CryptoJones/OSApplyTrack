@@ -89,7 +89,7 @@ def _release_tenant_poll_lock(conn: psycopg.Connection, tenant_id: int) -> None:
 
 
 def _gather_by_source(
-    profiles: Iterable[Criteria], limit: int
+    profiles: Iterable[Criteria], limit: int, *, ats_only: bool = False
 ) -> dict[str, list[Listing]]:
     """Fetch every source enabled by *any* profile once, keyed by source id.
 
@@ -100,6 +100,12 @@ def _gather_by_source(
     WARNING (rather than aborting the gather or vanishing silently), so a
     dead/renamed source is visible in the logs instead of looking like an empty
     market for every tenant.
+
+    ``ats_only`` gathers *only* the tenants' ATS boards (Greenhouse/Lever/Ashby and
+    the like), skipping the built-in aggregators and custom RSS feeds. It is the
+    freshness fast lane: ATS boards close fastest, and hitting only the per-employer
+    board APIs on a short cadence does not touch the shared aggregators' rate limits,
+    so this can run far more often than the full hourly poll.
     """
     builtin: set[str] = set()
     boards: dict[str, AtsBoard] = {}
@@ -112,6 +118,9 @@ def _gather_by_source(
             boards[f"{board.provider}:{board.slug}"] = board
         for url in profile.rss_feeds:
             feeds[f"rss:{url}"] = url
+    if ats_only:
+        builtin.clear()
+        feeds.clear()
 
     gathered: dict[str, list[Listing]] = {}
     with httpx.Client(timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
@@ -150,6 +159,7 @@ def run_all_tenants(
     gathered: dict[str, list[Listing]] | None = None,
     verify_links: bool = True,
     locked_tenant_ids: set[int] | None = None,
+    ats_only: bool = False,
 ) -> dict[int, list[str]]:
     """Poll every active tenant, returning ``{tenant_id: [staged slug names]}``.
 
@@ -167,6 +177,10 @@ def run_all_tenants(
 
     Per-tenant failures are isolated: a tenant whose poll raises is recorded with
     an empty result and the run continues.
+
+    ``ats_only`` restricts the shared gather to the tenants' ATS boards — the
+    freshness fast lane (see :func:`_gather_by_source`). It is ignored when a
+    ready-made ``gathered`` is supplied.
     """
     if repo_for is None:
         if conn is None:
@@ -223,7 +237,9 @@ def run_all_tenants(
                 logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
 
         if gathered is None:
-            gathered = _gather_by_source(profiles.values(), limit_per_source)
+            gathered = _gather_by_source(
+                profiles.values(), limit_per_source, ats_only=ats_only
+            )
 
         for tid in pollable_tenant_ids:
             if tid not in repos:
