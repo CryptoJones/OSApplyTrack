@@ -23,7 +23,7 @@ wheels = [
 
 [[package]]
 name = "applytrack-poller"
-version = "1.25.3"
+version = "1.25.4"
 source = { editable = "." }
 dependencies = [
     { name = "defusedxml" },
