@@ -131,8 +131,19 @@ public sealed partial class BrowserSubmitter
             var m = Confirmation().Match(text);
             screenshot = await session.ScreenshotAsync();
             if (!m.Success)
+            {
+                // A challenge thrown up BY the click is the common case, not the rare one: the
+                // form looks clean right up to Submit and only then demands "click the object
+                // that does not fit the column pattern". Checking only before the click filed
+                // nine of these as mystery failures to retry forever, when every one of them
+                // was a form asking for a person.
+                if (await HasCaptchaAsync(page))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "a captcha appeared on Submit — finish it with Copy answers and open",
+                        Captcha: true);
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                     "Submit was clicked but no confirmation text was recognised — check the screenshot");
+            }
             var start = Math.Max(0, m.Index - 80);
             var snippet = text.Substring(start, Math.Min(text.Length - start, 240)).Trim();
             return new SubmitOutcome(true, true, page.Url, snippet, screenshot, unmapped, mapped, "");
@@ -448,8 +459,13 @@ public sealed partial class BrowserSubmitter
                     const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                     return r.width > 40 && r.height > 40 && s.visibility !== 'hidden' && s.display !== 'none';
                   };
+                  // Named vendors, plus any element that says "captcha" in its src, class or id —
+                  // the challenge that actually blocked us was an image grid from none of the
+                  // three. Attributes only, never page text, so a form that merely mentions the
+                  // word does not trip it.
                   const sel = 'iframe[src*="recaptcha/api2/anchor"], iframe[src*="hcaptcha.com/captcha"],'
-                            + 'iframe[src*="challenges.cloudflare.com"], .h-captcha, .cf-turnstile';
+                            + 'iframe[src*="challenges.cloudflare.com"], .h-captcha, .cf-turnstile,'
+                            + '[id*="captcha" i], [class*="captcha" i], iframe[src*="captcha" i]';
                   return [...document.querySelectorAll(sel)].some(shown);
                 }
                 """);

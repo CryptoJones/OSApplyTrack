@@ -63,6 +63,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Greenhouse's shape: the uploader rejects the file, but the form offers to take the
         // résumé as text instead.
         _fixture.MapGet("/jobs/manual", () => Results.Content(ManualResumeHtml, "text/html"));
+        // A challenge that only appears once Submit is clicked.
+        _fixture.MapGet("/jobs/captcha-on-submit", () => Results.Content(CaptchaOnSubmitHtml, "text/html"));
         // A form guarded by an interactive captcha.
         _fixture.MapGet("/jobs/captcha", () => Results.Content(CaptchaFormHtml, "text/html"));
         // The invisible reCAPTCHA v3 badge, which must NOT count as a captcha.
@@ -177,6 +179,24 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             err.textContent = '';
             // The widget renders its box after the click, not synchronously with it.
             setTimeout(() => { document.getElementById('resume_text').style.display = 'block'; }, 700);
+          });
+        </script>
+        </body></html>
+        """;
+
+    // The challenge that actually blocked nine real submissions: nothing on the page until
+    // Submit is clicked, and only then an image-grid puzzle from no named vendor.
+    private const string CaptchaOnSubmitHtml = """
+        <html><body><form id="f" method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <button id="submit_app" type="button">Submit Application</button>
+        </form>
+        <div id="challenge" class="captcha-overlay" style="display:none;width:400px;height:300px">
+          Click the object that does not fit the column pattern
+        </div>
+        <script>
+          document.getElementById('submit_app').addEventListener('click', () => {
+            document.getElementById('challenge').style.display = 'block';
           });
         </script>
         </body></html>
@@ -458,6 +478,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         };
 
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/captcha", packet, null, dryRun: false);
+
+        Assert.True(outcome.Captcha);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("captcha", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_captcha_raised_by_the_submit_click_is_reported_not_retried()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/captcha-on-submit", packet, null, dryRun: false);
 
         Assert.True(outcome.Captcha);
         Assert.False(outcome.Submitted);

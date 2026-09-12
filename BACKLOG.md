@@ -59,7 +59,7 @@ clicks Submit. Each step below ships on its own; step 3 delivers most of the val
 - [x] [#135 — Résumé counted as attached when the board's uploader rejected it](https://github.com/CryptoJones/OSApplyTrack/issues/135)
 - [x] [#138 — Résumé attach check races the uploader](https://github.com/CryptoJones/OSApplyTrack/issues/138)
 - [x] [#140 — Take the résumé as text when a board refuses the file](https://github.com/CryptoJones/OSApplyTrack/issues/140)
-- [ ] [#151 — GitLab's Greenhouse form resets after Submit; invisible reCAPTCHA likely rejects the container browser](https://github.com/CryptoJones/OSApplyTrack/issues/151)
+- [x] [#151 — GitLab's Greenhouse form resets after Submit; invisible reCAPTCHA likely rejects the container browser](https://github.com/CryptoJones/OSApplyTrack/issues/151)
 - [ ] [#124 — Reduce posting→applied latency so the agent reaches postings before they close](https://github.com/CryptoJones/OSApplyTrack/issues/124)
 - [x] [#129 — Agent abandons a run when the form has a radio group or checkbox](https://github.com/CryptoJones/OSApplyTrack/issues/129) (fix in [#128](https://github.com/CryptoJones/OSApplyTrack/pull/128))
 
