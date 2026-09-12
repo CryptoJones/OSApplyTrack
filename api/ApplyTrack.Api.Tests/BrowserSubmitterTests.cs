@@ -145,17 +145,32 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <span>Resume/CV</span>
           <input id="resume" name="resume" type="file" />
           <button type="button" id="manual">Enter manually</button>
+          <button type="button" id="remove" style="display:none">Remove</button>
           <p id="resume_error"></p>
           <textarea id="resume_text" name="resume_text" style="display:none"></textarea>
           <button id="submit_app" type="submit">Submit Application</button>
         </form>
         <script>
-          document.getElementById('resume').addEventListener('change', () => {
-            document.getElementById('resume_error').textContent =
-              "Cannot read properties of undefined (reading 'uploadFile')";
+          const file = document.getElementById('resume');
+          const manual = document.getElementById('manual');
+          const remove = document.getElementById('remove');
+          const err = document.getElementById('resume_error');
+          file.addEventListener('change', () => {
+            if (file.files.length === 0) return;
+            // Holding a file, the widget shows it and a Remove control INSTEAD of its
+            // Attach and Enter manually buttons — and its uploader then errors.
+            manual.style.display = 'none';
+            remove.style.display = 'inline';
+            err.textContent = "Cannot read properties of undefined (reading 'uploadFile')";
           });
-          document.getElementById('manual').addEventListener('click', () => {
-            document.getElementById('resume_error').textContent = '';
+          remove.addEventListener('click', () => {
+            file.value = '';
+            err.textContent = '';
+            remove.style.display = 'none';
+            manual.style.display = 'inline';
+          });
+          manual.addEventListener('click', () => {
+            err.textContent = '';
             document.getElementById('resume_text').style.display = 'block';
           });
         </script>

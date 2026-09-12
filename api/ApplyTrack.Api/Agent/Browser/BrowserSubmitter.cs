@@ -301,7 +301,36 @@ public sealed partial class BrowserSubmitter
         // The file would not go. Boards that refuse it almost always offer to take the résumé
         // as text instead, right beside the Attach control — so use their own escape hatch
         // rather than giving up on the posting.
+        await ClearStagedResumeAsync(page);
         return await EnterResumeManuallyAsync(page, resumeText);
+    }
+
+    /// <summary>
+    /// Take the rejected file back out of the uploader. It matters: an uploader that is holding
+    /// a file shows that file and a remove control <b>instead of</b> its Attach and Enter
+    /// manually buttons, so leaving the failed upload staged hides the very escape hatch we
+    /// need next. Best effort — a board with nothing to clear is left exactly as it was.
+    /// </summary>
+    private static async Task ClearStagedResumeAsync(IPage page)
+    {
+        try
+        {
+            var remove = page.GetByRole(AriaRole.Button,
+                new() { NameRegex = new Regex(@"remove|delete|clear|discard|^\s*[x×✕✖]\s*$", RegexOptions.IgnoreCase) }).First;
+            if (await remove.CountAsync() > 0 && await remove.IsVisibleAsync())
+            {
+                await remove.ClickAsync();
+                await page.WaitForTimeoutAsync(500);
+            }
+            // Whatever the widget did with its own list, the input itself must let go too.
+            foreach (var input in await page.Locator("input[type=file]").AllAsync())
+            {
+                try { await input.SetInputFilesAsync(Array.Empty<FilePayload>()); }
+                catch (PlaywrightException) { /* not all inputs accept being emptied */ }
+            }
+            await page.WaitForTimeoutAsync(300);
+        }
+        catch (PlaywrightException) { /* nothing to clear */ }
     }
 
     /// <summary>
