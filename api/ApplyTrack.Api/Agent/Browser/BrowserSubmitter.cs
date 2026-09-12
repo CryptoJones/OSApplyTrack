@@ -327,18 +327,24 @@ public sealed partial class BrowserSubmitter
                 new() { NameRegex = new Regex(@"remove|discard|delete", RegexOptions.IgnoreCase) }).First;
             if (await remove.CountAsync() > 0 && await remove.IsVisibleAsync())
             {
-                await remove.ClickAsync();
+                await remove.ClickAsync(new() { Timeout = 5_000 });
                 await page.WaitForTimeoutAsync(500);
             }
             // Whatever the widget did with its own list, the input itself must let go too.
+            // Short timeout and a catch for both failure shapes: an input the form keeps hidden
+            // never becomes actionable, and Playwright reports that as System.TimeoutException,
+            // which is NOT a PlaywrightException — so catching only the latter let a 20s timeout
+            // escape and take the whole submission down with it.
             foreach (var input in await page.Locator("input[type=file]").AllAsync())
             {
-                try { await input.SetInputFilesAsync(Array.Empty<FilePayload>()); }
+                try { await input.SetInputFilesAsync(Array.Empty<FilePayload>(), new() { Timeout = 2_000 }); }
                 catch (PlaywrightException) { /* not all inputs accept being emptied */ }
+                catch (TimeoutException) { /* nor is every one of them actionable */ }
             }
             await page.WaitForTimeoutAsync(300);
         }
         catch (PlaywrightException) { /* nothing to clear */ }
+        catch (TimeoutException) { /* nothing to clear */ }
     }
 
     /// <summary>The page's single file input, or null when there is none or more than one.</summary>
@@ -383,10 +389,11 @@ public sealed partial class BrowserSubmitter
                 if (await box.CountAsync() == 0) return false;
             }
 
-            await box.FillAsync(resumeText);
+            await box.FillAsync(resumeText, new() { Timeout = 10_000 });
             return (await box.InputValueAsync()).Length > 0;
         }
         catch (PlaywrightException) { return false; }
+        catch (TimeoutException) { return false; }
     }
 
     /// <summary>
