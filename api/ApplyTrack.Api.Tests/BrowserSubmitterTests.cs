@@ -60,6 +60,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A board whose own uploader rejects the files it was handed — Greenhouse's live
         // failure, reproduced: the input accepts them, the uploader then errors, nothing uploads.
         _fixture.MapGet("/jobs/uploader", () => Results.Content(BrokenUploaderHtml, "text/html"));
+        // Greenhouse's shape: the uploader rejects the file, but the form offers to take the
+        // résumé as text instead.
+        _fixture.MapGet("/jobs/manual", () => Results.Content(ManualResumeHtml, "text/html"));
         // A form guarded by an interactive captcha.
         _fixture.MapGet("/jobs/captcha", () => Results.Content(CaptchaFormHtml, "text/html"));
         // The invisible reCAPTCHA v3 badge, which must NOT count as a captcha.
@@ -127,6 +130,33 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           document.getElementById('resume').addEventListener('change', () => {
             document.getElementById('resume_error').textContent =
               "Cannot read properties of undefined (reading 'uploadFile')";
+          });
+        </script>
+        </body></html>
+        """;
+
+    // The uploader errors on a file, exactly as Greenhouse's does, and Enter manually reveals
+    // a textarea that takes the résumé text instead.
+    private const string ManualResumeHtml = """
+        <html><head><meta charset="utf-8"></head><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <span>Resume/CV</span>
+          <input id="resume" name="resume" type="file" />
+          <button type="button" id="manual">Enter manually</button>
+          <p id="resume_error"></p>
+          <textarea id="resume_text" name="resume_text" style="display:none"></textarea>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          document.getElementById('resume').addEventListener('change', () => {
+            document.getElementById('resume_error').textContent =
+              "Cannot read properties of undefined (reading 'uploadFile')";
+          });
+          document.getElementById('manual').addEventListener('click', () => {
+            document.getElementById('resume_error').textContent = '';
+            document.getElementById('resume_text').style.display = 'block';
           });
         </script>
         </body></html>
@@ -362,6 +392,37 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("resume", outcome.Mapped);
         var post = Assert.Single(_posts);
         Assert.Equal($"resume.pdf:{Pdf.Length}", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task A_board_that_refuses_the_file_takes_the_resume_as_text()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Greenhouse's shape: the uploader throws on the file, so the run falls back to the
+        // form's own Enter manually box — and the application goes through with the résumé on it.
+        const string text = "Aaron K. Clark — Senior Backend Engineer. 15 years of .NET.";
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/manual", OnePlusResumePacket(), (Pdf, "resume.pdf"), dryRun: false,
+            resumeText: text);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("resume", outcome.Mapped);
+        Assert.Empty(outcome.Unmapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal(text, post["resume_text"]);
+    }
+
+    [SkippableFact]
+    public async Task Without_resume_text_a_board_that_refuses_the_file_still_refuses_the_click()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // No text to fall back on, so the honest refusal from #135 still stands.
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/manual", OnePlusResumePacket(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("resume", outcome.Unmapped);
+        Assert.Empty(_posts);
     }
 
     [SkippableFact]

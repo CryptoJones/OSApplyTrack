@@ -55,9 +55,11 @@ public sealed partial class BrowserSubmitter
         _log = log;
     }
 
+    /// <param name="resumeText">The résumé as text, for boards whose uploader will not take the
+    /// file — their own "Enter manually" box accepts it. Empty disables that fallback.</param>
     public async Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string resumeText = "")
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -91,7 +93,7 @@ public sealed partial class BrowserSubmitter
                 {
                     if (q.Id.Contains("resume", StringComparison.OrdinalIgnoreCase) && resumePdf is { } pdf)
                     {
-                        if (await AttachResumeAsync(page, q, pdf)) mapped.Add(q.Id);
+                        if (await AttachResumeAsync(page, q, pdf, resumeText)) mapped.Add(q.Id);
                         else if (q.Required) unmapped.Add(q.Id);
                     }
                     else if (q.Required)
@@ -273,7 +275,8 @@ public sealed partial class BrowserSubmitter
     /// one returns false, which puts a required résumé in <c>unmapped</c> and refuses the
     /// click. Better a refused submission than an application sent with no résumé on it.
     /// </summary>
-    private static async Task<bool> AttachResumeAsync(IPage page, PacketQuestion q, (byte[] Bytes, string Name) pdf)
+    private static async Task<bool> AttachResumeAsync(
+        IPage page, PacketQuestion q, (byte[] Bytes, string Name) pdf, string resumeText)
     {
         var payload = new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes };
         var id = Unprefixed(q.Id);
@@ -295,7 +298,41 @@ public sealed partial class BrowserSubmitter
             }
             catch (PlaywrightException) { /* try the next */ }
         }
-        return false;
+        // The file would not go. Boards that refuse it almost always offer to take the résumé
+        // as text instead, right beside the Attach control — so use their own escape hatch
+        // rather than giving up on the posting.
+        return await EnterResumeManuallyAsync(page, resumeText);
+    }
+
+    /// <summary>
+    /// The board's own "Enter manually" box: click it and paste the résumé text. This is the
+    /// path that works where the uploader will not take a file, and it needs no file chooser —
+    /// which matters, because a chooser cannot be driven over the remote browser connection.
+    /// </summary>
+    private static async Task<bool> EnterResumeManuallyAsync(IPage page, string resumeText)
+    {
+        if (string.IsNullOrWhiteSpace(resumeText)) return false;
+        var manually = new Regex(@"enter manually|paste|type it|enter text|manual", RegexOptions.IgnoreCase);
+        try
+        {
+            var trigger = page.GetByRole(AriaRole.Button, new() { NameRegex = manually }).First;
+            if (await trigger.CountAsync() == 0 || !await trigger.IsVisibleAsync())
+            {
+                trigger = page.GetByRole(AriaRole.Link, new() { NameRegex = manually }).First;
+                if (await trigger.CountAsync() == 0 || !await trigger.IsVisibleAsync()) return false;
+            }
+            await trigger.ClickAsync();
+
+            // The box it reveals: the résumé one by name, else the first empty visible textarea.
+            var box = page.Locator("textarea[name*='resume' i], textarea[id*='resume' i]").First;
+            if (await box.CountAsync() == 0 || !await box.IsVisibleAsync())
+                box = page.Locator("textarea:visible").First;
+            if (await box.CountAsync() == 0) return false;
+
+            await box.FillAsync(resumeText);
+            return (await box.InputValueAsync()).Length > 0;
+        }
+        catch (PlaywrightException) { return false; }
     }
 
     /// <summary>
@@ -305,19 +342,30 @@ public sealed partial class BrowserSubmitter
     /// </summary>
     private static async Task<bool> ResumeTookAsync(IPage page, string fileName)
     {
+        // Poll rather than sleep once. The input reports its file immediately while the board's
+        // uploader is still working, so a single early look says "attached" and a later one says
+        // "error" — which is exactly how a dry run came back clean and the real run that followed
+        // it refused. Wait for whichever lands first, and treat neither as failure.
         try
         {
-            await page.WaitForTimeoutAsync(1200);
-            return await page.EvaluateAsync<bool>("""
-                name => {
-                  const text = document.body.innerText || '';
-                  if (/cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i.test(text))
-                    return false;
-                  const inputs = [...document.querySelectorAll('input[type=file]')];
-                  if (inputs.some(i => i.files && i.files.length > 0)) return true;
-                  return text.includes(name);
-                }
-                """, fileName);
+            for (var i = 0; i < 10; i++)
+            {
+                await page.WaitForTimeoutAsync(500);
+                var verdict = await page.EvaluateAsync<string>("""
+                    name => {
+                      const text = document.body.innerText || '';
+                      if (/cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i.test(text))
+                        return 'error';
+                      const inputs = [...document.querySelectorAll('input[type=file]')];
+                      if (inputs.some(i => i.files && i.files.length > 0)) return 'attached';
+                      return text.includes(name) ? 'attached' : 'pending';
+                    }
+                    """, fileName);
+                if (verdict == "error") return false;
+                // Only trust "attached" once the uploader has had a chance to disagree.
+                if (verdict == "attached" && i >= 2) return true;
+            }
+            return false;
         }
         catch (PlaywrightException) { return false; }
     }
