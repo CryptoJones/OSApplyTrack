@@ -43,9 +43,10 @@ public static class SubmitEndpoints
             var wantsReal = payload is { ValueKind: JsonValueKind.Object } p
                 && p.TryGetProperty("dry_run", out var d) && d.ValueKind == JsonValueKind.False;
             var dryRun = !wantsReal || agent.DryRun;
-            if (!dryRun && packet.NeedsReview.Count > 0)
+            var blocking = packet.BlockingReview().Count();
+            if (!dryRun && blocking > 0)
                 throw new AppValidationException(
-                    $"{packet.NeedsReview.Count} answer(s) still need you before this can be submitted");
+                    $"{blocking} required answer(s) still need you before this can be submitted");
 
             var queued = await queue.EnqueueAsync(rec.Name, dryRun);
             return Results.Json(new { queued, dry_run = dryRun, pending = true },

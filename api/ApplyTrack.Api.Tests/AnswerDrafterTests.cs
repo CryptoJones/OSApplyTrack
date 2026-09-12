@@ -232,4 +232,40 @@ public class AnswerDrafterTests
         packet.RecomputeReview();
         Assert.Empty(packet.NeedsReview);
     }
+
+    [Fact]
+    public void Only_required_questions_block_a_submission()
+    {
+        var packet = new AgentPacket
+        {
+            Questions =
+            [
+                new("required_q", "Why this role?", true, PacketQuestion.Text, [], PacketQuestion.Custom),
+                new("optional_q", "Anything else?", false, PacketQuestion.Textarea, [], PacketQuestion.Custom),
+            ],
+            NeedsReview =
+            [
+                new("optional_q", "the model could not answer this from your résumé"),
+            ],
+        };
+
+        // An optional question the model declined is on the review list for the human to
+        // see, but it must not park the application — the form itself does not want it.
+        Assert.Empty(packet.BlockingReview());
+
+        packet.NeedsReview.Add(new("required_q", "required, and no answer yet"));
+        Assert.Equal(["required_q"], packet.BlockingReview().Select(r => r.Id).ToArray());
+    }
+
+    [Fact]
+    public void A_review_item_whose_question_vanished_still_blocks()
+    {
+        var packet = new AgentPacket
+        {
+            Questions = [new("kept", "Kept", false, PacketQuestion.Text, [], PacketQuestion.Custom)],
+            NeedsReview = [new("gone", "asked on a form we no longer have")],
+        };
+
+        Assert.Equal(["gone"], packet.BlockingReview().Select(r => r.Id).ToArray());
+    }
 }
