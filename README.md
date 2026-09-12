@@ -738,8 +738,11 @@ in the sidebar or on an application sheet.
 ## Tests
 
 ```sh
-# .NET — xUnit + Testcontainers (needs a running Docker daemon)
+# .NET — xUnit + Testcontainers (needs a Docker-API-compatible runtime)
 cd api && dotnet test
+
+# Local Podman / podman-machine
+./scripts/test-dotnet-podman.sh
 
 # Python — pytest (offline; no DB/network), plus lint + types
 pytest
@@ -755,6 +758,9 @@ npm run test:web
 The .NET suite drives the live HTTP stack with `WebApplicationFactory` against a
 throwaway Postgres (Testcontainers), including the auth spine and cross-tenant
 isolation. The Python suite is fully offline (fakes for the DB and HTTP transport).
+Testcontainers reads its runtime from `DOCKER_HOST` / `DOCKER_CONTEXT`; the Podman
+wrapper discovers the active Podman socket and disables Ryuk for rootless Podman.
+Set `PODMAN_SOCKET=/path/to/podman.sock` if your socket lives somewhere custom.
 
 ## Project layout
 

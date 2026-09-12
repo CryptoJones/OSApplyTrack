@@ -57,6 +57,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _fixture = builder.Build();
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
+        // A board whose own uploader rejects the files it was handed — Greenhouse's live
+        // failure, reproduced: the input accepts them, the uploader then errors, nothing uploads.
+        _fixture.MapGet("/jobs/uploader", () => Results.Content(BrokenUploaderHtml, "text/html"));
+        // A form guarded by an interactive captcha.
+        _fixture.MapGet("/jobs/captcha", () => Results.Content(CaptchaFormHtml, "text/html"));
+        // The invisible reCAPTCHA v3 badge, which must NOT count as a captcha.
+        _fixture.MapGet("/jobs/badge", () => Results.Content(BadgeFormHtml, "text/html"));
         // A posting that closed between discovery and now: the board's gone-notice, no form.
         _fixture.MapGet("/jobs/closed", () => Results.Content(
             "<html><body><h1>Current openings at Acme</h1>"
@@ -105,6 +112,57 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </form>
         </body></html>
         """;
+
+    // The input takes the files; the board's own uploader then errors and nothing is uploaded.
+    private const string BrokenUploaderHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" />
+          <p id="resume_error"></p>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          document.getElementById('resume').addEventListener('change', () => {
+            document.getElementById('resume_error').textContent =
+              "Cannot read properties of undefined (reading 'uploadFile')";
+          });
+        </script>
+        </body></html>
+        """;
+
+    private const string CaptchaFormHtml = """
+        <html><body><form method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <iframe title="reCAPTCHA" src="https://www.google.com/recaptcha/api2/anchor?k=x"
+                  style="width:300px;height:74px;border:0"></iframe>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form></body></html>
+        """;
+
+    // reCAPTCHA v3 rides along invisibly on a great many boards and never blocks a submission.
+    private const string BadgeFormHtml = """
+        <html><body><form method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <div class="grecaptcha-badge" style="width:256px;height:60px">
+            <iframe src="https://www.google.com/recaptcha/api2/anchor?k=v3" style="width:256px;height:60px"></iframe>
+          </div>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form></body></html>
+        """;
+
+    private static AgentPacket OnePlusResumePacket() => new()
+    {
+        ApplicationName = "acme-senior-engineer.md",
+        Provider = "greenhouse",
+        Questions =
+        [
+            new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("resume", "Resume/CV", true, PacketQuestion.File, [], PacketQuestion.Standard),
+        ],
+        Answers = new() { ["first_name"] = "Ada" },
+    };
 
     private static AgentPacket Packet() => new()
     {
@@ -277,6 +335,71 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Submitted);
         Assert.Contains("job_application[question_6]", outcome.Unmapped);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task An_upload_the_board_rejects_is_unmapped_and_refuses_the_click()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The live failure: Playwright hands over the bytes fine, the board's uploader errors,
+        // nothing uploads — and the old code called that mapped and clicked Submit anyway.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/uploader", OnePlusResumePacket(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("resume", outcome.Unmapped);
+        Assert.DoesNotContain("resume", outcome.Mapped);
+        Assert.Contains("could not be mapped", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_working_upload_still_counts_as_mapped()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", OnePlusResumePacket(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("resume", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal($"resume.pdf:{Pdf.Length}", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task An_interactive_captcha_stops_the_run_before_the_click()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/captcha", packet, null, dryRun: false);
+
+        Assert.True(outcome.Captcha);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("captcha", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task The_invisible_recaptcha_badge_is_not_treated_as_a_captcha()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/badge", packet, null, dryRun: false);
+
+        Assert.False(outcome.Captcha);
+        Assert.True(outcome.Submitted, outcome.Error);
     }
 
     [Fact]

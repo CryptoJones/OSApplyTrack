@@ -239,6 +239,22 @@ public sealed class AgentWorker : BackgroundService
             return false;
         }
 
+        if (outcome.Captcha)
+        {
+            // A captcha is not a defect to retry and not something to solve: the form is asking
+            // for a person. Park the packet in the ready queue with the answers already drafted,
+            // tell the human it is theirs, and stop spending runs on it.
+            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, outcome.Url, "",
+                new { captcha = true, outcome.Mapped, outcome.Unmapped, error = outcome.Error }, outcome.Screenshot);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new
+            {
+                reason = "captcha on the form — prepared for Copy answers and open",
+                captcha = true, rec.Fields.Company, rec.Fields.Role,
+            });
+            _log.LogInformation("{Name}: captcha on the form, left for the human", rec.Name);
+            return false;
+        }
+
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
             : outcome.Filled && dryRun && outcome.Error.Length == 0 ? AgentEvidenceRepo.Kinds.DryRun
             : AgentEvidenceRepo.Kinds.Failed;
