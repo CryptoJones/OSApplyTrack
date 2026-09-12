@@ -141,6 +141,12 @@ public sealed partial class BrowserSubmitter
     /// ATS field name — and set it. False when nothing visible matched.</summary>
     private static async Task<bool> FillAsync(IPage page, PacketQuestion q, string answer)
     {
+        // Radio groups and checkboxes are set, never typed into — Playwright refuses to
+        // fill() them ("Input of type \"radio\" cannot be filled"), and discovery hands
+        // both to us as Select, so this has to come before the combobox path below.
+        if (await SetChoiceAsync(page, q, answer) is { } choice)
+            return choice;
+
         var control = await LocateAsync(page, q);
         if (control is null) return false;
         var tag = (await control.EvaluateAsync<string>("el => el.tagName")).ToLowerInvariant();
@@ -169,9 +175,66 @@ public sealed partial class BrowserSubmitter
         return true;
     }
 
+    /// <summary>
+    /// Set a radio group or a checkbox: check the member whose value or label matches
+    /// the answer. Null when the question is not one of those — the caller carries on
+    /// with the text/select paths. False when it is one and nothing matched, so a
+    /// required question still lands in <c>unmapped</c> rather than passing silently.
+    /// </summary>
+    private static async Task<bool?> SetChoiceAsync(IPage page, PacketQuestion q, string answer)
+    {
+        var id = Unprefixed(q.Id);
+        var radios = page.Locator($"input[type=radio][name='{id}']");
+        int count;
+        try { count = await radios.CountAsync(); }
+        catch (PlaywrightException) { return null; }
+        if (count > 0)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var radio = radios.Nth(i);
+                try
+                {
+                    if (!Same(await radio.GetAttributeAsync("value") ?? "", answer)
+                        && !Same(await ChoiceLabelAsync(radio), answer))
+                        continue;
+                    await radio.CheckAsync();
+                    return true;
+                }
+                catch (PlaywrightException) { /* try the next member */ }
+            }
+            return false;
+        }
+
+        var box = page.Locator($"input[type=checkbox]#{CssEscape(id)}, input[type=checkbox][name='{id}']").First;
+        try
+        {
+            if (await box.CountAsync() == 0) return null;
+            await box.SetCheckedAsync(Affirmative(answer));
+            return true;
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>The visible text tied to one radio/checkbox — its own label, or the one wrapping it.</summary>
+    private static Task<string> ChoiceLabelAsync(ILocator choice) => choice.EvaluateAsync<string>("""
+        el => (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText)
+              || el.closest('label')?.innerText || ''
+        """);
+
+    private static bool Same(string a, string b) =>
+        a.Trim().Length > 0 && string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool Affirmative(string answer) =>
+        answer.Trim() is not ("" or "0") && !answer.Trim().StartsWith("n", StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(answer.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+
+    private static string Unprefixed(string id) =>
+        id.StartsWith("std:", StringComparison.Ordinal) ? id[4..] : id;
+
     private static async Task<ILocator?> LocateAsync(IPage page, PacketQuestion q)
     {
-        var id = q.Id.StartsWith("std:", StringComparison.Ordinal) ? q.Id[4..] : q.Id;
+        var id = Unprefixed(q.Id);
         var candidates = new List<ILocator>();
         if (q.Label.Length > 0)
             candidates.Add(page.GetByLabel(q.Label, new() { Exact = false }).First);
@@ -193,7 +256,7 @@ public sealed partial class BrowserSubmitter
 
     private static async Task<bool> AttachResumeAsync(IPage page, PacketQuestion q, (byte[] Bytes, string Name) pdf)
     {
-        var id = q.Id.StartsWith("std:", StringComparison.Ordinal) ? q.Id[4..] : q.Id;
+        var id = Unprefixed(q.Id);
         var candidates = new[]
         {
             page.Locator($"input[type=file]#{CssEscape(id)}").First,

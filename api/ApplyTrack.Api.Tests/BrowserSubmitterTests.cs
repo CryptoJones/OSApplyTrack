@@ -95,6 +95,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <select id="question_2" name="job_application[question_2]"><option value=""></option><option>Yes</option><option>No</option></select>
           <label for="question_3">Describe a system you scaled.</label><textarea id="question_3" name="job_application[question_3]"></textarea>
           <label for="question_5">Choose your specialization</label><input id="question_5" name="job_application[question_5]" />
+          <fieldset><legend>Do you require visa sponsorship?</legend>
+            <label for="q6_yes">Yes</label><input id="q6_yes" type="radio" name="job_application[question_6]" value="Yes" />
+            <label for="q6_no">No</label><input id="q6_no" type="radio" name="job_application[question_6]" value="No" />
+          </fieldset>
+          <label for="question_7">I accept the privacy policy</label>
+          <input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />
           <button id="submit_app" type="submit">Submit Application</button>
         </form>
         </body></html>
@@ -217,6 +223,60 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.Contains("question_5", outcome.Mapped);
         Assert.Empty(outcome.Unmapped);
+    }
+
+    [SkippableFact]
+    public async Task A_radio_group_is_checked_not_filled_and_reaches_the_post()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Discovery hands a radio group over as a Select keyed by the group name. The old
+        // code typed into it, which Playwright refuses outright ("Input of type \"radio\"
+        // cannot be filled") — the exception abandoned the whole run, mapped fields and all.
+        var packet = Packet();
+        packet.Questions.Add(new("job_application[question_6]", "Do you require visa sponsorship?", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["job_application[question_6]"] = "No";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("job_application[question_6]", outcome.Mapped);
+        Assert.Empty(outcome.Unmapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal("No", post["job_application[question_6]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_checkbox_is_set_from_the_answers_polarity()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("job_application[question_7]", "I accept the privacy policy", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["job_application[question_7]"] = "Yes";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("job_application[question_7]", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal("accepted", post["job_application[question_7]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_radio_answer_matching_no_member_is_unmapped_not_silently_skipped()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("job_application[question_6]", "Do you require visa sponsorship?", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["job_application[question_6]"] = "Prefer not to say";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("job_application[question_6]", outcome.Unmapped);
+        Assert.Empty(_posts);
     }
 
     [Fact]
