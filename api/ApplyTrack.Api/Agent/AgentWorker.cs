@@ -198,11 +198,14 @@ public sealed class AgentWorker : BackgroundService
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
 
-        var pdf = await new ResumeRepo(conn, t).GetPdfAsync();
+        var resumes = new ResumeRepo(conn, t);
+        var pdf = await resumes.GetPdfAsync();
+        // The same résumé as text, for a board whose uploader will not take the file.
+        var resumeText = (await resumes.GetAsync()).Summary;
         SubmitOutcome outcome;
         try
         {
-            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct);
+            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText);
         }
         // Catch EVERYTHING except cancellation. This filter used to name three types --
         // AppValidationException, PlaywrightException, TimeoutException -- which quietly
