@@ -280,15 +280,20 @@ public sealed partial class BrowserSubmitter
     {
         var payload = new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes };
         var id = Unprefixed(q.Id);
-        var candidates = new[]
+        var candidates = new ILocator?[]
         {
             page.Locator($"input[type=file]#{CssEscape(id)}").First,
             page.Locator($"input[type=file][name*='{id}']").First,
-            page.Locator("input[type=file][name*='resume'], input[type=file][id*='resume']").First,
-            page.Locator("input[type=file]").First,
+            page.Locator("input[type=file][name*='resume' i], input[type=file][id*='resume' i]").First,
+            // Only when the form has exactly one file input can "the file input" mean the
+            // résumé's. A form with two means the second is the cover letter, and blindly
+            // taking the first-or-any is how a résumé ended up attached as GitLab's cover
+            // letter — visible in the evidence screenshot as "resume.pdf" under Cover Letter.
+            await OnlyFileInputAsync(page),
         };
         foreach (var c in candidates)
         {
+            if (c is null) continue;
             try
             {
                 if (await c.CountAsync() == 0) continue;
@@ -336,6 +341,17 @@ public sealed partial class BrowserSubmitter
         catch (PlaywrightException) { /* nothing to clear */ }
     }
 
+    /// <summary>The page's single file input, or null when there is none or more than one.</summary>
+    private static async Task<ILocator?> OnlyFileInputAsync(IPage page)
+    {
+        try
+        {
+            var all = page.Locator("input[type=file]");
+            return await all.CountAsync() == 1 ? all.First : null;
+        }
+        catch (PlaywrightException) { return null; }
+    }
+
     /// <summary>
     /// The board's own "Enter manually" box: click it and paste the résumé text. This is the
     /// path that works where the uploader will not take a file, and it needs no file chooser —
@@ -355,11 +371,17 @@ public sealed partial class BrowserSubmitter
             }
             await trigger.ClickAsync();
 
-            // The box it reveals: the résumé one by name, else the first empty visible textarea.
+            // Wait for the box rather than looking for it straight away: the widget renders it
+            // after the click, and checking immediately finds nothing and gives up on a board
+            // that was about to work. (On GitLab's form it is textarea#resume_text, which
+            // carries no name attribute — so match on id as well.)
             var box = page.Locator("textarea[name*='resume' i], textarea[id*='resume' i]").First;
-            if (await box.CountAsync() == 0 || !await box.IsVisibleAsync())
+            try { await box.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 8_000 }); }
+            catch (TimeoutException)
+            {
                 box = page.Locator("textarea:visible").First;
-            if (await box.CountAsync() == 0) return false;
+                if (await box.CountAsync() == 0) return false;
+            }
 
             await box.FillAsync(resumeText);
             return (await box.InputValueAsync()).Length > 0;

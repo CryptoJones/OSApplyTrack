@@ -151,6 +151,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" id="remove" style="display:none" aria-label="Remove file"></button>
           <p id="resume_error"></p>
           <textarea id="resume_text" name="resume_text" style="display:none"></textarea>
+          <label for="cover">Cover Letter</label><input id="cover" name="cover_letter" type="file" />
           <button id="submit_app" type="submit">Submit Application</button>
         </form>
         <script>
@@ -174,7 +175,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           });
           manual.addEventListener('click', () => {
             err.textContent = '';
-            document.getElementById('resume_text').style.display = 'block';
+            // The widget renders its box after the click, not synchronously with it.
+            setTimeout(() => { document.getElementById('resume_text').style.display = 'block'; }, 700);
           });
         </script>
         </body></html>
