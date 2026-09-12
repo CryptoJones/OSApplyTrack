@@ -315,8 +315,11 @@ public sealed partial class BrowserSubmitter
     {
         try
         {
+            // Not a bare "clear": a form's country selector carries a "Clear search" button, and
+            // on GitLab's Greenhouse form that one sorts first and swallowed the click while the
+            // rejected résumé stayed exactly where it was. The real control is "Remove file".
             var remove = page.GetByRole(AriaRole.Button,
-                new() { NameRegex = new Regex(@"remove|delete|clear|discard|^\s*[x×✕✖]\s*$", RegexOptions.IgnoreCase) }).First;
+                new() { NameRegex = new Regex(@"remove|discard|delete", RegexOptions.IgnoreCase) }).First;
             if (await remove.CountAsync() > 0 && await remove.IsVisibleAsync())
             {
                 await remove.ClickAsync();

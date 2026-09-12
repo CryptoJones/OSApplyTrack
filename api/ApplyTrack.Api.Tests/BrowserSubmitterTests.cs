@@ -142,10 +142,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <h1>Senior Engineer</h1>
         <form method="post" action="/apply" enctype="multipart/form-data">
           <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <!-- The country selector's own button, which sorts before the uploader's and must
+               not swallow the click — this is what happened on GitLab's form. -->
+          <button type="button" aria-label="Clear search"></button>
           <span>Resume/CV</span>
           <input id="resume" name="resume" type="file" />
           <button type="button" id="manual">Enter manually</button>
-          <button type="button" id="remove" style="display:none">Remove</button>
+          <button type="button" id="remove" style="display:none" aria-label="Remove file"></button>
           <p id="resume_error"></p>
           <textarea id="resume_text" name="resume_text" style="display:none"></textarea>
           <button id="submit_app" type="submit">Submit Application</button>
