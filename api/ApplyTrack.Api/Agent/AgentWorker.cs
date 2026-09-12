@@ -195,7 +195,7 @@ public sealed class AgentWorker : BackgroundService
         // for an account that has not turned dry-run off.
         var settings = await new AgentSettingsRepo(conn, t).GetAsync();
         var dryRun = req.DryRun || settings.DryRun;
-        if (!dryRun && packet.NeedsReview.Count > 0)
+        if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
 
         var pdf = await new ResumeRepo(conn, t).GetPdfAsync();
@@ -286,13 +286,14 @@ public sealed class AgentWorker : BackgroundService
         //   - this run was a dry run that came back clean (kind == DryRun)
         //   - the tenant has explicitly turned dry-run off (settings.DryRun == false)
         //   - no required field went unmapped
-        //   - the packet has no answers still waiting on the user
+        //   - no REQUIRED question is still waiting on the user (an optional one the model
+        //     declined is left blank on purpose and must not park the packet forever)
         // The caller re-queues with dryRun:false, and that real run cannot promote again
         // because its kind will never be DryRun.
         return kind == AgentEvidenceRepo.Kinds.DryRun
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
-            && packet.NeedsReview.Count == 0;
+            && !packet.BlockingReview().Any();
     }
 
     /// <summary>Seconds between a lead's discovery (<c>applications.created_at</c>) and now,

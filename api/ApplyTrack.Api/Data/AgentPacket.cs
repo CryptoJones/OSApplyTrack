@@ -79,6 +79,20 @@ public sealed class AgentPacket
         }
         NeedsReview = kept;
     }
+
+    /// <summary>
+    /// The review items that must block a submission: the ones whose question the form
+    /// actually requires. An optional question the model declined to answer is left
+    /// blank on purpose (that is what the form allows), so it belongs on the review list
+    /// for the human to see but must never hold the application back — a packet parked
+    /// forever over an optional "tell us more" box is a guaranteed miss, not a safe
+    /// outcome. A review item whose question is gone is treated as blocking.
+    /// </summary>
+    public IEnumerable<ReviewItem> BlockingReview()
+    {
+        var optional = Questions.Where(q => !q.Required).Select(q => q.Id).ToHashSet();
+        return NeedsReview.Where(r => !optional.Contains(r.Id));
+    }
 }
 
 /// <summary>
