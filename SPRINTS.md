@@ -176,5 +176,38 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
 
 ## Backlog / ideas
 
+- ✅ **Security: keep instance LLM API keys bound to trusted endpoints** (issue #47) — tenant
+  `base_url` overrides currently inherit the instance `Llm__ApiKey` when the
+  tenant does not store its own key. Change `EffectiveLlmConfig.Resolve` so an
+  instance key is used only with the instance URL, or explicitly bind keys to an
+  allowlisted origin. Also SSRF-check tenant LLM `base_url` before sending résumé
+  data to it.
+- ⬜ **Security: cap LLM response bodies** (issue #48) — `OpenAiCompatibleLlmClient` reads
+  success/error bodies as full strings. Switch to `ResponseHeadersRead`, enforce
+  a content-length ceiling, and stream with a hard byte cap before JSON parsing or
+  error-detail logging.
+- ⬜ **Security: restrict forwarded-header trust** (issue #49) — `UseForwardedHeaders` accepts
+  `X-Forwarded-For` / `X-Forwarded-Proto` from any hop so direct Kestrel exposure
+  can spoof rate-limit partitions and HTTPS detection. Add configured
+  `KnownProxies` / `KnownIPNetworks` or an explicit reverse-proxy mode.
+- ⬜ **Security/stability: add API request and field limits** (issue #50) — only scrape/import
+  have body limits today. Add global JSON body caps plus per-field/per-list
+  ceilings for applications, criteria keywords/excludes/ATS boards, résumé
+  sections, links, and highlights.
+- ⬜ **Security: make Python link-check SSRF guard connect by validated IP** (issue #51) — the
+  poller checks DNS answers before `httpx` connects by hostname, leaving a DNS
+  rebinding TOCTOU window. Port the API scraper's connect-by-validated-IP pattern
+  to `applytrack.linkcheck`.
+- ⬜ **Scalability/stability: serialize tenant poll runs** (issue #52) — the fast drain loop
+  and full poll loop can overlap for the same tenant. Add a per-tenant
+  `pg_try_advisory_lock` or poll lease so one tenant/source set is processed only
+  once at a time across containers.
+- ⬜ **Deployment hardening: split dev compose from production defaults** (issue #53) —
+  Compose publishes Postgres on the host and runtime images do not set non-root
+  users. Add a hardened profile/compose file or docs with non-root containers,
+  no DB host port, `cap_drop`, and read-only filesystem where practical.
+- ⬜ **Scalability: paginate/delta-refresh applications** (issue #54) — `/api/apps` and the SPA
+  refresh path load every application and rerender the full sidebar. Add
+  pagination/search or updated-since/ETag-style deltas before team-scale usage.
 - ⬜ **`tailscale serve` front-end** — rainy-day: serve over Tailscale instead of a
   self-signed TLS + reverse proxy (see the `plan.md` appendix).

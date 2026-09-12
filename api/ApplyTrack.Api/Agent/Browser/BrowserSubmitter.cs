@@ -12,9 +12,11 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// <param name="Submitted">Submit was clicked AND a confirmation was recognised.</param>
 /// <param name="Unmapped">Required questions with an answer that no field could be found for — any of these refuses the click.</param>
 /// <param name="Closed">The posting was gone: the page says it is no longer open. The lead expired, it did not fail.</param>
+/// <param name="Captcha">The form guards submit with an interactive captcha. Not a defect to retry and not
+/// something to solve — the posting has to be finished by hand with Copy answers and open.</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
-    List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false);
+    List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false);
 
 /// <summary>
 /// Drives the browser container at a posting: fill every mapped answer, attach the
@@ -103,6 +105,12 @@ public sealed partial class BrowserSubmitter
             }
 
             screenshot = await session.ScreenshotAsync();
+            // Reported on a dry run too: the dry run's whole job is to find out whether this
+            // posting can be finished unattended, and with a captcha in the way the answer is no.
+            if (await HasCaptchaAsync(page))
+                return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                    "this form is guarded by a captcha — finish it with Copy answers and open",
+                    Captcha: true);
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
             if (unmapped.Count > 0)
@@ -254,8 +262,20 @@ public sealed partial class BrowserSubmitter
         return null;
     }
 
+    /// <summary>
+    /// Attach the résumé and <b>prove it took</b>. Handing the bytes to a file input is not
+    /// the same as the board accepting them: Greenhouse's current form takes the files, its
+    /// own uploader then throws
+    /// <c>Cannot read properties of undefined (reading 'uploadFile')</c>, and nothing is
+    /// uploaded — while Playwright reported success, so the run went on to click Submit into
+    /// a validation wall it could not see, and the packet looked clean the whole way. Every
+    /// attach is now confirmed against the page before it counts as mapped; an unconfirmed
+    /// one returns false, which puts a required résumé in <c>unmapped</c> and refuses the
+    /// click. Better a refused submission than an application sent with no résumé on it.
+    /// </summary>
     private static async Task<bool> AttachResumeAsync(IPage page, PacketQuestion q, (byte[] Bytes, string Name) pdf)
     {
+        var payload = new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes };
         var id = Unprefixed(q.Id);
         var candidates = new[]
         {
@@ -270,12 +290,62 @@ public sealed partial class BrowserSubmitter
             {
                 if (await c.CountAsync() == 0) continue;
                 // Never touches disk: the bytes go straight into the input.
-                await c.SetInputFilesAsync(new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes });
-                return true;
+                await c.SetInputFilesAsync(payload);
+                if (await ResumeTookAsync(page, pdf.Name)) return true;
             }
             catch (PlaywrightException) { /* try the next */ }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Did the attachment actually register? True when a file input holds the file or the page
+    /// now names it, and no uploader error is on screen. The uploader is asynchronous, so give
+    /// it a moment before deciding.
+    /// </summary>
+    private static async Task<bool> ResumeTookAsync(IPage page, string fileName)
+    {
+        try
+        {
+            await page.WaitForTimeoutAsync(1200);
+            return await page.EvaluateAsync<bool>("""
+                name => {
+                  const text = document.body.innerText || '';
+                  if (/cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i.test(text))
+                    return false;
+                  const inputs = [...document.querySelectorAll('input[type=file]')];
+                  if (inputs.some(i => i.files && i.files.length > 0)) return true;
+                  return text.includes(name);
+                }
+                """, fileName);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>
+    /// An interactive captcha standing between the filled form and Submit. Deliberately narrow:
+    /// the invisible reCAPTCHA v3 badge rides along on a great many boards and never stops a
+    /// submission, so anything inside <c>.grecaptcha-badge</c> must NOT count — only a challenge
+    /// a person has to touch (the v2 checkbox, hCaptcha, Turnstile).
+    /// </summary>
+    private static async Task<bool> HasCaptchaAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => {
+                  const shown = el => {
+                    if (!el || el.closest('.grecaptcha-badge')) return false;
+                    const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 40 && r.height > 40 && s.visibility !== 'hidden' && s.display !== 'none';
+                  };
+                  const sel = 'iframe[src*="recaptcha/api2/anchor"], iframe[src*="hcaptcha.com/captcha"],'
+                            + 'iframe[src*="challenges.cloudflare.com"], .h-captcha, .cf-turnstile';
+                  return [...document.querySelectorAll(sel)].some(shown);
+                }
+                """);
+        }
+        catch (PlaywrightException) { return false; }
     }
 
     private static async Task<ILocator?> FindSubmitAsync(IPage page)
