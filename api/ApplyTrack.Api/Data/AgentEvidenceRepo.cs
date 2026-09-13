@@ -29,10 +29,13 @@ public sealed class AgentEvidenceRepo
     private readonly IDbConnection _conn;
     private readonly long _t;
 
-    public AgentEvidenceRepo(IDbConnection conn, long tenantId)
+    private readonly Crypto.SecretProtector _protector;
+
+    public AgentEvidenceRepo(IDbConnection conn, long tenantId, Crypto.SecretProtector protector)
     {
         _conn = conn;
         _t = tenantId;
+        _protector = protector;
     }
 
     public Task<long> RecordAsync(
@@ -44,7 +47,9 @@ public sealed class AgentEvidenceRepo
             new
             {
                 t = _t, n = Slug.Normalize(appName), kind, url, confirmation,
-                detail = JsonSerializer.Serialize(detail, Json), screenshot,
+                detail = JsonSerializer.Serialize(detail, Json),
+                // A screenshot of a filled application form is the form: sealed at rest.
+                screenshot = screenshot is null ? null : _protector.ProtectBytes(screenshot),
             },
             tx);
 
@@ -63,8 +68,11 @@ public sealed class AgentEvidenceRepo
             new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)))).ToList();
     }
 
-    public Task<byte[]?> ScreenshotAsync(string appName, long id) =>
-        _conn.QuerySingleOrDefaultAsync<byte[]?>(
+    public async Task<byte[]?> ScreenshotAsync(string appName, long id)
+    {
+        var bytes = await _conn.QuerySingleOrDefaultAsync<byte[]?>(
             "SELECT screenshot FROM agent_evidence WHERE tenant_id = @t AND application_name = @n AND id = @id",
             new { t = _t, n = Slug.Normalize(appName), id });
+        return bytes is null ? null : Crypto.SecretProtector.IsProtected(bytes) ? _protector.UnprotectBytes(bytes) : bytes;
+    }
 }

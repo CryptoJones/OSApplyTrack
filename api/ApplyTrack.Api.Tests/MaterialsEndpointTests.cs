@@ -212,12 +212,12 @@ public class MaterialsEndpointTests : IAsyncLifetime
     // ---- LLM settings ------------------------------------------------------
 
     [Fact]
-    public async Task Llm_settings_default_view_reports_no_key_and_no_secrets_support()
+    public async Task Llm_settings_default_view_reports_no_key_and_secrets_support()
     {
         var v = await ReadJson(await _client.GetAsync("/api/llm-settings"));
         Assert.Equal("", v.GetProperty("base_url").GetString());
         Assert.False(v.GetProperty("has_api_key").GetBoolean());
-        Assert.False(v.GetProperty("secrets_available").GetBoolean()); // default factory sets no master key
+        Assert.True(v.GetProperty("secrets_available").GetBoolean()); // encryption at rest is always on
         Assert.True(v.TryGetProperty("instance", out _));
         Assert.False(v.TryGetProperty("api_key", out _)); // the key is never part of the view
     }
@@ -265,12 +265,21 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Llm_settings_refuses_a_key_when_no_master_secret_is_configured()
+    public async Task Llm_settings_stores_a_key_under_the_generated_key_when_no_master_secret_is_configured()
     {
-        var res = await _client.PutAsync("/api/llm-settings",
+        // No operator key at all: the app generated one into a key file, so a tenant's own
+        // API key is accepted — there is no "unavailable" state to run into any more.
+        var keyFile = Path.Combine(Path.GetTempPath(), "applytrack-llm-" + Guid.NewGuid().ToString("N"), "secrets.key");
+        using var client = await AuthedClientAsync(NewFactory(b =>
+        {
+            b.UseSetting("Secrets:Key", "");
+            b.UseSetting("Secrets:KeyFile", keyFile);
+        }));
+        var res = await client.PutAsync("/api/llm-settings",
             Json("""{"base_url":"https://api.openai.com/v1","model":"gpt-4o-mini","api_key":"sk-live-123"}"""));
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        Assert.Contains("API key", (await ReadJson(res)).GetProperty("detail").GetString());
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True((await ReadJson(res)).GetProperty("has_api_key").GetBoolean());
+        Assert.True(File.Exists(keyFile));
     }
 
     [Fact]

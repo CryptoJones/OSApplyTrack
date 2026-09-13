@@ -12,5 +12,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app .
 EXPOSE 8080
+# Where a generated encryption key lives when APPLYTRACK_SECRETS_KEY is unset; a
+# named volume mounted here inherits this ownership so the app user can write it.
+RUN mkdir -p /var/lib/applytrack && chown app:app /var/lib/applytrack
 USER app
 ENTRYPOINT ["dotnet", "ApplyTrack.Api.dll"]

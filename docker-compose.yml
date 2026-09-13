@@ -35,6 +35,10 @@ services:
       Llm__BaseUrl: ${Llm__BaseUrl:-}
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
+      # Encryption at rest is always on. Leave this unset and the api generates a key on
+      # first run into the `secrets` volume below (shared with the agent, which must
+      # decrypt the same rows); set it to manage the key yourself. Back the key up with
+      # the database — losing it loses the résumé, letters, packets and screenshots.
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
       # Email / magic-link delivery (all optional; see .env.example). With Email__Host
       # unset, login links are logged to the console instead of sent — no email config
@@ -54,6 +58,8 @@ services:
     # rather than silently winning — relocate by setting API_PORT in .env.
     ports:
       - "${API_PORT:-8080}:8080"
+    volumes:
+      - secrets:/var/lib/applytrack
     depends_on:
       db:
         condition: service_healthy
@@ -80,6 +86,8 @@ services:
       # The browser container (below). Unset both to prepare packets without one.
       Browser__Endpoint: ${BROWSER_ENDPOINT:-ws://browser:3000/}
       Browser__Proxy: ${BROWSER_PROXY:-http://proxy:3128}
+    volumes:
+      - secrets:/var/lib/applytrack
     networks:
       - default
       - browser
@@ -136,3 +144,5 @@ networks:
 
 volumes:
   pgdata:
+  # The generated encryption key, when APPLYTRACK_SECRETS_KEY is unset. Back it up.
+  secrets:

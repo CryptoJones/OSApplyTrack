@@ -17,19 +17,24 @@ public sealed class CoverLetterRepo
     private readonly IDbConnection _conn;
     private readonly long _t;
 
-    public CoverLetterRepo(IDbConnection conn, long tenantId)
+    private readonly Crypto.SecretProtector _protector;
+
+    public CoverLetterRepo(IDbConnection conn, long tenantId, Crypto.SecretProtector protector)
     {
         _conn = conn;
         _t = tenantId;
+        _protector = protector;
     }
 
-    /// <summary>The drafted letter body for an app, or null when none has been generated.</summary>
-    public Task<string?> GetBodyAsync(string appName)
+    /// <summary>The drafted letter body for an app, or null when none has been generated.
+    /// Sealed at rest; a body an older release stored in the clear is read as is.</summary>
+    public async Task<string?> GetBodyAsync(string appName)
     {
         var n = Slug.Normalize(appName);
-        return _conn.QuerySingleOrDefaultAsync<string?>(
+        var body = await _conn.QuerySingleOrDefaultAsync<string?>(
             "SELECT body FROM cover_letters WHERE tenant_id = @t AND application_name = @n",
             new { t = _t, n });
+        return body is null ? null : Crypto.SecretProtector.IsProtected(body) ? _protector.Unprotect(body) : body;
     }
 
     public async Task UpsertAsync(string appName, string body, string model, IDbTransaction? tx = null)
@@ -44,7 +49,7 @@ public sealed class CoverLetterRepo
                 model      = EXCLUDED.model,
                 updated_at = now()
             """,
-            new { t = _t, n, body, model },
+            new { t = _t, n, body = _protector.Protect(body), model },
             tx);
     }
 

@@ -185,7 +185,7 @@ public class SubmitEndpointTests : IAsyncLifetime
         var name = await PreparedLeadAsync(client);
         await using var conn = new NpgsqlConnection(_pg.ConnectionString);
         await conn.OpenAsync();
-        var repo = new AgentEvidenceRepo(conn, tenant);
+        var repo = new AgentEvidenceRepo(conn, tenant, TestAuth.Protector);
         var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 1, 2, 3 };
         var id = await repo.RecordAsync(name, AgentEvidenceRepo.Kinds.DryRun, "https://example.com/jobs/1", "",
             new { mapped = 5 }, png);
@@ -212,7 +212,7 @@ public class SubmitEndpointTests : IAsyncLifetime
         var (client, tenant) = await ClientAsync();
         await using var conn = new NpgsqlConnection(_pg.ConnectionString);
         await conn.OpenAsync();
-        var resumes = new ResumeRepo(conn, tenant);
+        var resumes = new ResumeRepo(conn, tenant, TestAuth.Protector);
         Assert.Null(await resumes.GetPdfAsync());
         await resumes.StorePdfAsync([1, 2, 3], "ada.pdf");
         var pdf = await resumes.GetPdfAsync();

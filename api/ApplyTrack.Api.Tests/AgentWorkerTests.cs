@@ -64,7 +64,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         {
             Enabled = enabled, MinFitScore = 70, MaxPerRun = 2, MaxPerDay = 3, Phone = "555-0100",
         });
-        await new ResumeRepo(conn, t).UpsertAsync(new Resume { FullName = "Ada Byte", Summary = "Ships .NET." });
+        await new ResumeRepo(conn, t, Protector).UpsertAsync(new Resume { FullName = "Ada Byte", Summary = "Ships .NET." });
         if (telegram)
             await new NotificationSettingsRepo(conn, t, Protector, NullLogger<NotificationSettingsRepo>.Instance)
                 .UpsertAsync(true, "4242", true, BotToken);
@@ -104,7 +104,7 @@ public class AgentWorkerTests(PostgresFixture pg)
             "SELECT DISTINCT status FROM applications WHERE tenant_id = @t AND company IN ('High','Mid')", new { t });
         Assert.Equal(["ready"], statuses.ToArray());
 
-        var packet = await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md");
+        var packet = await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md");
         Assert.NotNull(packet);
         Assert.Equal("unknown", packet!.Provider);
         Assert.Equal("Ada", packet.Answers["std:first_name"]);
@@ -169,14 +169,14 @@ public class AgentWorkerTests(PostgresFixture pg)
         var highStatus = await conn.ExecuteScalarAsync<string>(
             "SELECT status FROM applications WHERE tenant_id = @t AND name = 'high-engineer.md'", new { t });
         Assert.Equal("passed", highStatus);
-        Assert.Null(await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md"));
+        Assert.Null(await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md"));
         var reason = await conn.ExecuteScalarAsync<string>(
             "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t"
             + " AND application_name = 'high-engineer.md' AND kind = 'error'", new { t });
         Assert.Contains("posting closed before packet build", reason);
 
         // Mid: still open, so it built its packet and moo'd as normal.
-        Assert.NotNull(await new AgentPacketRepo(conn, t).GetAsync("mid-engineer.md"));
+        Assert.NotNull(await new AgentPacketRepo(conn, t, Protector).GetAsync("mid-engineer.md"));
         var midStatus = await conn.ExecuteScalarAsync<string>(
             "SELECT status FROM applications WHERE tenant_id = @t AND name = 'mid-engineer.md'", new { t });
         Assert.Equal("ready", midStatus);
@@ -200,7 +200,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         var statuses = await conn.QueryAsync<string>(
             "SELECT DISTINCT status FROM applications WHERE tenant_id = @t AND company IN ('High','Mid')", new { t });
         Assert.Equal(["lead"], statuses.ToArray());
-        Assert.Null(await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md"));
+        Assert.Null(await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md"));
     }
 
     [Fact]
@@ -215,7 +215,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         await worker.RunOnceAsync(CancellationToken.None);
 
         Assert.Empty(notifier.Sent);
-        var packet = await new AgentPacketRepo(conn, t).GetAsync("high-engineer.md");
+        var packet = await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md");
         Assert.NotNull(packet);
         Assert.Null(packet!.NotifiedAt); // the claim is only taken when there is a target
     }

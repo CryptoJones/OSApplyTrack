@@ -10,6 +10,7 @@ ContainerName=applytrack-api
 Image=ghcr.io/cryptojones/osapplytrack-api:latest
 Network=applytrack.network
 EnvironmentFile=%h/.config/applytrack/applytrack.env
+Volume=applytrack-secrets.volume:/var/lib/applytrack
 Environment=ASPNETCORE_URLS=http://+:8080
 # 0.0.0.0 so the LAN can reach it; Postgres stays on the container network.
 # Relocating? Change the HOST side only (the container side stays 8080) and

@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Crypto;
 using Dapper;
 using Npgsql;
 
@@ -16,6 +17,18 @@ namespace ApplyTrack.Api.Tests;
 /// </summary>
 internal static class TestAuth
 {
+    /// <summary>The master key every test host and repo uses, so rows written by one are
+    /// readable by another. Hosts opt out with <c>Secrets:Key</c> = "" plus a key file.</summary>
+    internal static readonly SecretProtector Protector = new(MasterKey);
+    internal const string MasterKey = "test-master-key";
+
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void ConfigureSecretsForTheSuite()
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("APPLYTRACK_SECRETS_KEY")))
+            Environment.SetEnvironmentVariable("APPLYTRACK_SECRETS_KEY", MasterKey);
+    }
+
     /// <summary>Inserts a fresh user and a live session for it; returns the tenant id and session id.</summary>
     public static async Task<(long TenantId, string Sid)> SeedSessionAsync(
         string connectionString, string? email = null)

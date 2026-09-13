@@ -84,19 +84,23 @@ else
 // them, and a tenant's own API key is encrypted at rest with the operator's master key.
 var llmOptions = builder.Configuration.GetSection("Llm").Get<LlmOptions>() ?? new LlmOptions();
 builder.Services.AddSingleton(llmOptions);
-builder.Services.AddSingleton(new SecretProtector(
-    builder.Configuration["Secrets:Key"] ?? builder.Configuration["APPLYTRACK_SECRETS_KEY"]));
+// Encryption at rest is on for every deploy: the operator's key, else one generated and
+// kept in a key file on first run. Refuses to start with neither — see SecretKeySource.
+var secretKey = SecretKeySource.Resolve(builder.Configuration);
+builder.Services.AddSingleton(new SecretProtector(secretKey.Key, secretKey.Previous));
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<ILlmClient, OpenAiCompatibleLlmClient>();
 builder.Services.AddSingleton<CoverLetterDrafter>();
 builder.Services.AddScoped(sp => new ResumeRepo(
-    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 builder.Services.AddScoped(sp => new LlmSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>(),
     sp.GetRequiredService<ILogger<LlmSettingsRepo>>()));
 builder.Services.AddScoped(sp => new CoverLetterRepo(
-    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 
 // The editor's Autofill button: server-side fetch of a job-posting URL (SSRF-guarded;
 // its own pinned HttpClient, so not from the factory) + the JobPosting/OG parser.
@@ -116,7 +120,8 @@ builder.Services.AddScoped(sp => new AgentSettingsRepo(
 builder.Services.AddScoped(sp => new AgentEventRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new AgentPacketRepo(
-    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 // Step 3: the packet. Greenhouse's public Job Board API is the one ATS form we can
 // read without a browser or an employer key; host pinned here, no tenant URL.
 builder.Services.AddHttpClient(GreenhouseBoard.ClientName, c =>
@@ -154,7 +159,8 @@ builder.Services.AddSingleton<FormDiscoverer>();
 builder.Services.AddScoped(sp => new SubmitRequestRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new AgentEvidenceRepo(
-    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 
 if (agentOptions.Enabled)
 {
@@ -219,10 +225,17 @@ var migrationTimeout = TimeSpan.FromSeconds(TimeoutConfiguration.PositiveTimeout
     builder.Configuration["MigrationTimeoutSeconds"], defaultValue: 60));
 // Migrations:Mode=wait — for a container whose DB role cannot migrate (the agent
 // worker under its least-privilege role): wait for the owner container to, instead.
+app.Logger.LogInformation("secrets key: {Source}", secretKey.Source);
 if (string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
     Migrator.WaitUntilCurrent(connectionString, TimeSpan.FromMinutes(5));
 else
+{
     Migrator.Upgrade(connectionString, migrationTimeout);
+    // Seal what an older release stored in the clear, and finish any key rotation. Only
+    // the migrating container: the agent's least-privilege role has no business rewriting
+    // résumés, and the sweep is idempotent so one runner is enough.
+    await AtRestEncryptor.SweepAsync(connectionString, app.Services.GetRequiredService<SecretProtector>(), app.Logger);
+}
 
 // Honor forwarded client/protocol data only from a known reverse proxy. ASP.NET
 // Core's loopback defaults cover same-host Caddy/nginx/`tailscale serve`; container
