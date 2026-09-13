@@ -70,6 +70,63 @@ public class AnswerDrafterTests
         Assert.Equal(expected, AnswerDrafter.CountryFromLocation(location));
 
     [Fact]
+    public void A_middle_initial_is_not_part_of_the_last_name()
+    {
+        // "Aaron K. Clark" went out as first "Aaron", last "K. Clark" (#200).
+        Assert.Equal(("Aaron", "Clark"), AnswerDrafter.SplitName("Aaron K. Clark"));
+        Assert.Equal(("Aaron", "Clark"), AnswerDrafter.SplitName("Aaron K Clark"));
+        Assert.Equal(("Ada", "Byte"), AnswerDrafter.SplitName("Ada Byte"));
+        Assert.Equal(("Mary", "Ann Smith"), AnswerDrafter.SplitName("Mary Ann Smith"));   // anyone's guess: the person pins it
+        Assert.Equal(("Aaron", "Clark Jr."), AnswerDrafter.SplitName("Aaron K. Clark Jr."));
+        Assert.Equal(("Cher", ""), AnswerDrafter.SplitName("Cher"));
+        Assert.Equal(("Aaron", "K."), AnswerDrafter.SplitName("Aaron K."));               // nothing else to call a last name
+        Assert.Equal(("", ""), AnswerDrafter.SplitName("  "));
+
+        var last = new PacketQuestion("last_name", "Last Name", true, PacketQuestion.Text, [], PacketQuestion.Standard);
+        var ctx = Ctx() with { Resume = new Resume { FullName = "Aaron K. Clark" } };
+        Assert.Equal(("Clark", null), AnswerDrafter.Deterministic(last, ctx));
+    }
+
+    [Fact]
+    public async Task A_pinned_name_beats_the_resume_on_every_form_whatever_the_field_is_called()
+    {
+        var first = new PacketQuestion("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard);
+        var byId = new PacketQuestion("last_name", "Last Name", true, PacketQuestion.Text, [], PacketQuestion.Standard);
+        var byLabel = new PacketQuestion("q_2", "Surname", true, PacketQuestion.Text, [], PacketQuestion.Custom);
+        Assert.Equal("first_name", AnswerDrafter.NameField(first));
+        Assert.Equal("last_name", AnswerDrafter.NameField(byId));
+        Assert.Equal("last_name", AnswerDrafter.NameField(byLabel));
+        Assert.Null(AnswerDrafter.NameField(new PacketQuestion("q_3", "Company name", true, PacketQuestion.Text, [], PacketQuestion.Custom)));
+        // One key per name field, however the form labelled it.
+        Assert.Equal(AnswerBankRepo.FirstNameKey, AnswerBankRepo.KeyFor(first));
+        Assert.Equal(AnswerBankRepo.LastNameKey, AnswerBankRepo.KeyFor(byId));
+        Assert.Equal(AnswerBankRepo.LastNameKey, AnswerBankRepo.KeyFor(byLabel));
+
+        var stub = new StubLlmClient((_, _, _) => "{\"answers\":[]}");
+        var pinned = new Dictionary<string, string> { [AnswerBankRepo.LastNameKey] = "Clark-Byte" };
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub))
+            .DraftAsync([first, byId, byLabel], Ctx(), Cfg, pinned: pinned);
+        Assert.Equal("Ada", answers["first_name"]);
+        Assert.Equal("Clark-Byte", answers["last_name"]);
+        Assert.Equal("Clark-Byte", answers["q_2"]);
+        Assert.Empty(review);
+        Assert.Equal(0, stub.Calls);
+
+        // A built packet is brought up to date with the pinned name, not the résumé's split.
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme.md", Questions = [first, byId],
+            Answers = new Dictionary<string, string> { ["first_name"] = "Ada", ["last_name"] = "K. Byte" },
+        };
+        Assert.True(PacketBuilder.RefreshStandardAnswers(packet, Ctx(), pinned));
+        Assert.Equal("Clark-Byte", packet.Answers["last_name"]);
+        Assert.False(PacketBuilder.RefreshStandardAnswers(packet, Ctx(), pinned));
+        // Without a pin the profile rules, as before.
+        Assert.True(PacketBuilder.RefreshStandardAnswers(packet, Ctx()));
+        Assert.Equal("Byte", packet.Answers["last_name"]);
+    }
+
+    [Fact]
     public void Country_and_city_are_deterministic_and_the_standing_country_wins()
     {
         // Greenhouse's synthetic country question, and a discovered form's "Country*" combobox.

@@ -403,7 +403,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
   .app-header { padding-top: max(0.6rem, env(safe-area-inset-top)); }
   .header-actions { display: none; }
   .pipeline { padding-inline: 0.75rem; }
-  .workspace { display: block; }
+  /* The shell is a fixed-height, overflow-hidden column; on a phone the workspace is a
+     plain block inside it, so nothing between the shell and the list was a scroll
+     container: the list was clipped and a swipe fell through to a document that cannot
+     scroll, which Safari reads as pull-to-refresh (#201). The workspace scrolls, and the
+     bounce at either end stays inside it. */
+  .workspace { display: block; overflow-y: auto; overscroll-behavior-y: contain; }
   .list-pane { min-height: calc(100vh - 8rem); border-right: 0; }
   .content-pane { display: none; padding: 1rem; }
   body.m-detail .list-pane { display: none; }

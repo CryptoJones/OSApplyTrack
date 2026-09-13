@@ -569,6 +569,30 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task The_packets_provider_is_re_read_from_the_link_at_fill_time()
+    {
+        // A packet built before its board was taught kept saying "unknown", so the browser
+        // was driven at the posting page instead of the form, and found none (#203).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            rec!.Fields with { Link = "https://jobs.workable.com/view/jiiC71GdyakPxmZCnY85MJ/senior-engineer-at-acme" }, null);
+        var packets = new AgentPacketRepo(conn, t, Protector);
+        Assert.Equal("unknown", (await packets.GetAsync("high-engineer.md"))!.Provider);
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(FakeSubmitter.Clean(link)));
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Single(fake.Runs);
+        Assert.Equal("workable", (await packets.GetAsync("high-engineer.md"))!.Provider);
+    }
+
+    [Fact]
     public async Task A_dry_run_that_stopped_on_required_questions_moos_what_still_needs_the_person()
     {
         var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);

@@ -243,6 +243,16 @@ public sealed class AgentPacketRepo
     }
 
     /// <summary>Claim the one notification this packet gets. True exactly once per build.</summary>
+    /// <summary>
+    /// The ATS the packet's link belongs to, as detected now. A packet built before its
+    /// board was taught keeps saying "unknown" otherwise, and the UI and the submit gate
+    /// read the packet (#203).
+    /// </summary>
+    public async Task UpdateProviderAsync(string appName, string provider) =>
+        await _conn.ExecuteAsync(
+            "UPDATE agent_packets SET provider = @p WHERE tenant_id = @t AND application_name = @n",
+            new { t = _t, n = Slug.Normalize(appName), p = provider });
+
     public async Task<bool> TryClaimNotificationAsync(string appName)
     {
         var affected = await _conn.ExecuteAsync(

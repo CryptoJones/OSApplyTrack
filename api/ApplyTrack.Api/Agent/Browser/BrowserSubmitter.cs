@@ -51,7 +51,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     // prose ("no longer supported", etc.) never trips it.
     // "Page not found" is what Greenhouse serves for a posting that has been taken down
     // outright (Cresteo and Varicent on 2026-09-13): no gone-notice, no form, a 404 page.
-    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed|not available anymore)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
 
     /// <summary>
@@ -99,12 +99,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // comes back "unmapped" and the run looks like a mapping failure when nothing is wrong.
             // Recognise it, screenshot it, and hand the caller a Closed outcome so the lead is
             // retired rather than logged as a broken submission.
+            // A 404 or 410 from the posting itself is the same verdict, whatever the page
+            // says: Workable answers a taken-down job with a 410 (#203).
             var body = await BodyTextAsync(page.MainFrame);
-            if (IsClosedPosting(body))
+            if (session.Status is 404 or 410 || IsClosedPosting(body))
             {
                 screenshot = await session.ScreenshotAsync();
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
-                    "posting is no longer open", Closed: true);
+                    session.Status is 404 or 410 ? $"posting is gone (HTTP {session.Status})" : "posting is no longer open",
+                    Closed: true);
             }
 
             // Let the form finish arriving before typing into it. Greenhouse's form fetches a
@@ -113,6 +116,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // been typed. Bounded: a page that never goes idle is filled anyway.
             try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
             catch (TimeoutException) { /* analytics beacons and the like; carry on */ }
+            // A consent banner that arrived with the form, or after the page went idle, would
+            // sit over every field and make the first fill time out (#202).
+            await BrowserSession.DismissConsentAsync(page);
             // Then find the form — which is not always in the page. Comeet's "Apply for this job"
             // loads it into a cross-origin iframe; Ashby fetches it after the page has gone idle
             // ("Fetching application form" was the whole of one dry run's screenshot). Every

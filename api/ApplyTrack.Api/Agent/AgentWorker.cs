@@ -343,6 +343,15 @@ public sealed class AgentWorker : BackgroundService
             _log.LogInformation("{Name}: submit request dropped (packet missing)", req.ApplicationName);
             return false;
         }
+        // The provider is a fact of the link, not of the packet: one built before its board
+        // was taught (#180) still says "unknown", and would be driven at the posting page
+        // instead of its form. Read it from the link every run, and keep the packet honest (#203).
+        var detected = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
+        if (packet.Provider != detected)
+        {
+            packet.Provider = detected;
+            await packets.UpdateProviderAsync(rec.Name, detected);
+        }
         // The tenant's dry-run switch wins over the request: the agent never submits
         // for an account that has not turned dry-run off.
         var dryRun = req.DryRun || settings.DryRun;
@@ -360,7 +369,9 @@ public sealed class AgentWorker : BackgroundService
         // NOW, not as it was when the packet was built. When the account email changed, all
         // 35 built packets had to be patched by hand (#189).
         var email = (await new UserRepo(conn).GetAsync(t))?.Email ?? "";
-        if (PacketBuilder.RefreshStandardAnswers(packet, new AnswerContext(resume, settings, email, coverLetter, packet.PostingExcerpt)))
+        // ...except where the person has pinned one in the answer bank (#200).
+        var pinned = await new AnswerBankRepo(conn, t, _protector).PinnedAsync();
+        if (PacketBuilder.RefreshStandardAnswers(packet, new AnswerContext(resume, settings, email, coverLetter, packet.PostingExcerpt), pinned))
         {
             packet = await packets.UpdateAnswersAsync(rec.Name, packet.Answers, null);
             _log.LogInformation("{Name}: standard answers refreshed from the profile", rec.Name);

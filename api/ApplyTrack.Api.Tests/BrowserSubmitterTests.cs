@@ -135,6 +135,16 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/search-first", () => Results.Content(SearchFirstHtml, "text/html"));
         // A posting whose Apply button never becomes clickable (Fuse Energy).
         _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
+        // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
+        // Apply link is there, but nothing gets clicked through the overlay (#202).
+        _fixture.MapGet("/jobs/consent", () => Results.Content(ConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
+        // The same banner, over the form itself.
+        _fixture.MapGet("/jobs/consent-form", () => Results.Content(ConsentHtml.Replace("BODY", FormHtml), "text/html"));
+        // Workable's answer for a job taken down: HTTP 410 and a page that says so (#203).
+        _fixture.MapGet("/jobs/gone-410", () => Results.Content(
+            "<html><head><title>This job is not available anymore</title></head><body>"
+            + "<h1>This job is not available anymore</h1><p>Browse other jobs.</p></body></html>",
+            "text/html", statusCode: 410));
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
@@ -602,6 +612,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <p>A posting page with no form on it.</p>
         <a href="/jobs/1">Apply now</a>
         </body></html>
+        """;
+
+    // A fixed, full-screen consent overlay with a "Manage" and an "Accept all" button; the
+    // page underneath is BODY. Accepting removes the overlay, as the real managers do.
+    private const string ConsentHtml = """
+        <html><body>
+        <div id="cookie-notice" role="dialog" aria-label="Cookie Consent"
+             style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:flex-end">
+          <div style="background:#fff;width:100%;padding:24px">
+            <p>We use cookies to make this site work.</p>
+            <button type="button" onclick="alert('manage')">Manage preferences</button>
+            <button type="button" onclick="document.getElementById('cookie-notice').remove()">Accept all</button>
+          </div>
+        </div>
+        BODY
+        </body></html>
+        """;
+
+    private const string ConsentPostingBody = """
+        <h1>Senior Engineer</h1>
+        <p>A posting page with no form on it, under a cookie banner.</p>
+        <a href="/jobs/1">Apply now</a>
         """;
 
     private const string StuckApplyHtml = """
@@ -1432,6 +1464,41 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Filled);
         Assert.Contains("no application form was found", outcome.Error);
         Assert.Contains("the Apply button did not respond within 5 s", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_cookie_banner_over_apply_is_dismissed_and_the_form_behind_it_is_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Zoho Recruit and Workable put an "Accept all" over the posting; the Apply click
+        // timed out behind it and the run said "no application form was found" (#202).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_cookie_banner_over_the_form_itself_is_dismissed_before_filling()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent-form", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada", post["job_application[first_name]"]);
+        Assert.Equal("Byte", post["job_application[last_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_posting_answering_410_is_reported_gone_not_formless()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Five of one day's "no application form was found" runs were Workable 410s (#203).
+        Assert.True(BrowserSubmitter.IsClosedPosting("This job is not available anymore"));
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/gone-410", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Closed);
+        Assert.Contains("HTTP 410", outcome.Error);
+        Assert.False(outcome.Filled);
         Assert.Empty(_posts);
     }
 

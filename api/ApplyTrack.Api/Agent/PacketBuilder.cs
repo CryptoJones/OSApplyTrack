@@ -176,17 +176,21 @@ public sealed partial class PacketBuilder
     /// country, the letter — up to date with the profile as it is now. A packet froze
     /// these at build time, so when the account email changed every built packet had to be
     /// patched by hand (#189). Only questions the drafter answers deterministically move;
-    /// a screening answer, the model's or the person's, is never touched. True when
-    /// anything changed, so the caller can persist it.
+    /// a screening answer, the model's or the person's, is never touched. A standard
+    /// field the person has pinned in the answer bank — a last name, say (#200) — takes
+    /// the pinned answer, not the profile's. True when anything changed, so the caller
+    /// can persist it.
     /// </summary>
-    public static bool RefreshStandardAnswers(AgentPacket packet, AnswerContext ctx)
+    public static bool RefreshStandardAnswers(AgentPacket packet, AnswerContext ctx, IReadOnlyDictionary<string, string>? pinned = null)
     {
         var changed = false;
         foreach (var q in packet.Questions)
         {
             if (q.Kind != PacketQuestion.Standard || q.Type == PacketQuestion.File)
                 continue;
-            var (answer, _) = AnswerDrafter.Deterministic(q, ctx);
+            var (answer, _) = pinned is not null && pinned.TryGetValue(AnswerBankRepo.KeyFor(q), out var mine) && mine.Length > 0
+                ? AnswerDrafter.FitToOptions(q, mine)
+                : AnswerDrafter.Deterministic(q, ctx);
             if (answer is null)
                 continue;
             if (packet.Answers.TryGetValue(q.Id, out var current) && current == answer)
