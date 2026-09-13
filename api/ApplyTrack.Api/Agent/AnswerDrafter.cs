@@ -57,6 +57,11 @@ public sealed partial class AnswerDrafter
     private static partial Regex FullName();
     [GeneratedRegex(@"how did you hear|\breferr|\bstart date|available to start|notice period|\bearliest", RegexOptions.IgnoreCase)]
     private static partial Regex HumanOnly();
+    // Anchored: "…in the posting location?" is a sponsorship question, not a location one.
+    [GeneratedRegex(@"^location\b|\(city\)|^city\b|current location|where (?:are you|do you) (?:based|located|live)", RegexOptions.IgnoreCase)]
+    private static partial Regex LocationRe();
+    [GeneratedRegex(@"^country\b|country of residence|(?:which|what) country", RegexOptions.IgnoreCase)]
+    private static partial Regex CountryRe();
 
     private sealed record ModelAnswer(string? Id, string? Answer);
     private sealed record ModelReply(List<ModelAnswer>? Answers);
@@ -159,8 +164,10 @@ public sealed partial class AnswerDrafter
             return Link(ctx.Resume, "github") is { } gh ? (gh, null) : (null, "no GitHub link in your résumé");
         if (id is "website" || Website().IsMatch(label))
             return FirstLink(ctx.Resume) is { } site ? (site, null) : (null, "no website link in your résumé");
-        if (id is "location")
+        if (id is "location" || LocationRe().IsMatch(q.Label))
             return ctx.Resume.Location.Length > 0 ? (ctx.Resume.Location, null) : (null, "add a location in Résumé settings");
+        if (id is "country" || CountryRe().IsMatch(q.Label))
+            return Country(ctx) is { Length: > 0 } country ? (country, null) : (null, "add your country in Settings · Agent");
 
         if (Sponsorship().IsMatch(label))
             return YesNo(q, ctx.Settings.NeedsSponsorship, "Settings · Agent says whether you need sponsorship");
@@ -234,6 +241,54 @@ public sealed partial class AnswerDrafter
 
     [GeneratedRegex(@"\bUSD\b|\bdollars?\b", RegexOptions.IgnoreCase)]
     private static partial Regex UsdRe();
+
+    /// <summary>The standing country from Settings · Agent, else what the résumé's location
+    /// line implies. Public for tests.</summary>
+    public static string Country(AnswerContext ctx) =>
+        ctx.Settings.Country.Length > 0 ? ctx.Settings.Country : CountryFromLocation(ctx.Resume.Location);
+
+    private static readonly HashSet<string> UsStates = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA",
+        "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+        "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "PR",
+        "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida",
+        "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine",
+        "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska",
+        "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio",
+        "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas",
+        "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming", "Puerto Rico",
+    };
+
+    private static readonly Dictionary<string, string> CountryNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["US"] = "United States", ["USA"] = "United States", ["U.S."] = "United States", ["U.S.A."] = "United States",
+        ["United States"] = "United States", ["United States of America"] = "United States",
+        ["UK"] = "United Kingdom", ["U.K."] = "United Kingdom", ["United Kingdom"] = "United Kingdom",
+        ["England"] = "United Kingdom", ["Scotland"] = "United Kingdom", ["Wales"] = "United Kingdom",
+        ["Canada"] = "Canada", ["CA"] = "Canada",
+    };
+
+    /// <summary>
+    /// "Omaha, NE" → "United States"; "Berlin, Germany" → "Germany"; "Remote" → "". Only the
+    /// last comma-separated part is read, and a US state (name or postal code) means the US.
+    /// A bare "CA" is ambiguous (California, Canada) and reads as the state, since that is
+    /// how a US résumé writes it. Conservative on purpose: "" means "ask the human".
+    /// </summary>
+    public static string CountryFromLocation(string location)
+    {
+        var parts = location.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0) return "";
+        var last = parts[^1].Trim().TrimEnd('.').Trim();
+        // "Lincoln, NE 68508" — drop a trailing postal code.
+        last = Regex.Replace(last, @"\s+\d[\d-]*$", "");
+        if (last.Length == 0) return "";
+        if (UsStates.Contains(last)) return "United States";
+        if (CountryNames.TryGetValue(last, out var name)) return name;
+        if (parts.Length >= 2 && last.Length >= 4 && last.All(c => char.IsLetter(c) || c == ' ' || c == '\''))
+            return last;
+        return "";
+    }
 
     private static (string? Answer, string? Reason) YesNo(PacketQuestion q, bool yes, string fallback)
     {

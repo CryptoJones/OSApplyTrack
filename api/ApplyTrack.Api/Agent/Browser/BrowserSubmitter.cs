@@ -10,7 +10,9 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// <summary>What one browser run produced.</summary>
 /// <param name="Filled">The form was reached and the mapped answers were typed in.</param>
 /// <param name="Submitted">Submit was clicked AND a confirmation was recognised.</param>
-/// <param name="Unmapped">Required questions with an answer that no field could be found for — any of these refuses the click.</param>
+/// <param name="Unmapped">Required questions with an answer that no field could be found for, plus any
+/// field the rendered form itself still marks required-and-empty after the fill (a country picker the
+/// packet never knew about, a combobox whose value did not commit) — any of these refuses the click.</param>
 /// <param name="Closed">The posting was gone: the page says it is no longer open. The lead expired, it did not fail.</param>
 /// <param name="Captcha">The form guards submit with an interactive captcha. Not a defect to retry and not
 /// something to solve — the posting has to be finished by hand with Copy answers and open.</param>
@@ -84,6 +86,13 @@ public sealed partial class BrowserSubmitter
                     "posting is no longer open", Closed: true);
             }
 
+            // Let the form finish arriving before typing into it. Greenhouse's form fetches a
+            // candidate profile after it renders and writes the name fields from the (empty)
+            // reply when it lands — which, mid-fill, emptied first and last name that had just
+            // been typed. Bounded: a page that never goes idle is filled anyway.
+            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
+            catch (TimeoutException) { /* analytics beacons and the like; carry on */ }
+
             foreach (var q in packet.Questions)
             {
                 ct.ThrowIfCancellationRequested();
@@ -106,6 +115,31 @@ public sealed partial class BrowserSubmitter
                 else if (q.Required) unmapped.Add(q.Id);
             }
 
+            // Anything the page emptied behind our back gets one more go before it is judged.
+            foreach (var (key, label) in await RequiredEmptyAsync(page))
+            {
+                var q = FindQuestion(packet, key, label);
+                if (q is null || !mapped.Contains(q.Id) || q.Type == PacketQuestion.File
+                    || !packet.Answers.TryGetValue(q.Id, out var again) || string.IsNullOrWhiteSpace(again))
+                    continue;
+                await FillAsync(page, q, again);
+            }
+
+            // Now ask the FORM what is still missing, not just the packet. The packet is the ATS
+            // API's idea of the form and the two drift: Greenhouse's rendered form carries a
+            // required Country picker its Job Board API never mentions, its city field is an
+            // autocomplete that only counts once a suggestion is chosen, and its custom selects
+            // are react-select widgets that look filled after typing and are not. Every one of
+            // those produced "9 mapped, 0 unmapped", a clean dry run, an automatic promotion,
+            // and a Submit click into a wall of client-side validation with no POST ever sent.
+            // Anything the page still marks required-and-empty is unmapped, whatever we thought.
+            foreach (var (key, label) in await RequiredEmptyAsync(page))
+            {
+                var id = FindQuestion(packet, key, label)?.Id ?? key;
+                mapped.Remove(id);
+                if (!unmapped.Contains(id)) unmapped.Add(id);
+            }
+
             screenshot = await session.ScreenshotAsync();
             // Reported on a dry run too: the dry run's whole job is to find out whether this
             // posting can be finished unattended, and with a captcha in the way the answer is no.
@@ -113,6 +147,12 @@ public sealed partial class BrowserSubmitter
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                     "this form is guarded by a captcha — finish it with Copy answers and open",
                     Captcha: true);
+            // A form with fields on it and not one of them filled is not "clean", it is a packet
+            // that describes some other form. Seen in production: zero mapped, zero unmapped,
+            // and a run that would have clicked Submit on an empty application.
+            if (mapped.Count == 0 && await HasFillableControlsAsync(page))
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "nothing on this form could be filled — the packet's questions match none of its fields");
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
             if (unmapped.Count > 0)
@@ -141,6 +181,15 @@ public sealed partial class BrowserSubmitter
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "a captcha appeared on Submit — finish it with Copy answers and open",
                         Captcha: true);
+                // The form's own validation messages are the diagnosis; without them every
+                // refused click reads as the same mystery and gets the same wrong theory.
+                var complaints = await ValidationErrorsAsync(page);
+                if (complaints.Count > 0)
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "the form rejected the submission: " + string.Join("; ", complaints));
+                if (await FormResetAsync(page, packet, mapped))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "Submit was clicked and the form reset itself with no confirmation — check the screenshot");
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                     "Submit was clicked but no confirmation text was recognised — check the screenshot");
             }
@@ -157,6 +206,12 @@ public sealed partial class BrowserSubmitter
             return new SubmitOutcome(mapped.Count > 0, false, page.Url, "", screenshot, unmapped, mapped, why);
         }
     }
+
+    /// <summary>The packet question a rendered field belongs to — by field id/name, else by label.</summary>
+    private static PacketQuestion? FindQuestion(AgentPacket packet, string key, string label) =>
+        packet.Questions.FirstOrDefault(x => Unprefixed(x.Id).Equals(key, StringComparison.OrdinalIgnoreCase))
+        ?? (label.Length == 0 ? null
+            : packet.Questions.FirstOrDefault(x => x.Label.Trim().TrimEnd('*').Trim().Equals(label, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>Find the control for a question — by accessible name first, then by the
     /// ATS field name — and set it. False when nothing visible matched.</summary>
@@ -176,24 +231,268 @@ public sealed partial class BrowserSubmitter
             try { await control.SelectOptionAsync(new SelectOptionValue { Label = answer }); return true; }
             catch (PlaywrightException) { return false; }
         }
-        if (q.Type is PacketQuestion.Select or PacketQuestion.MultiSelect)
-        {
-            // A custom combobox (a div/input widget, not a native <select>). This used to type
-            // the answer and return true unconditionally — so an answer that matches no option
-            // (a model that replied "United States, U.S., USA" to a country picker, or "Python"
-            // to a fixed specialisation list) was still counted mapped. The agent then judged a
-            // form with empty required dropdowns "clean" and auto-submitted an invalid
-            // application. When the question offers a fixed option set, the answer MUST be one of
-            // them; otherwise report it unmapped so the run refuses to submit and asks the human.
-            if (q.Options.Count > 0 && !q.Options.Any(o => o.Trim().Equals(answer.Trim(), StringComparison.OrdinalIgnoreCase)))
-                return false;
-            await control.ClickAsync();
-            await control.FillAsync(answer);
-            await page.Keyboard.PressAsync("Enter");
-            return true;
-        }
+        // A custom combobox — react-select and its kin — whether the packet calls the question
+        // a select or (as discovery does for a combobox <input>) plain text. Judged by what the
+        // control IS, not by what the packet says it is.
+        if (q.Type is PacketQuestion.Select or PacketQuestion.MultiSelect || await IsComboboxAsync(control))
+            return await ChooseAsync(page, control, q, answer);
         await control.FillAsync(answer);
         return true;
+    }
+
+    /// <summary>
+    /// Drive a custom combobox the way a person does and <b>prove the value committed</b>:
+    /// open it, type, wait for the widget's options, click the one that matches, then read the
+    /// widget's own selected-value state. This used to type the answer, press Enter and
+    /// return true unconditionally — react-select keeps whatever was typed as search text,
+    /// commits nothing, and the form's validation then said "Select a country" to a run that
+    /// had reported the field mapped. A question with a fixed option set only accepts an
+    /// answer that is one of them; an open autocomplete (a city picker fed by a geocoder)
+    /// takes the first suggestion for what was typed, which is what the human would click.
+    /// </summary>
+    private static async Task<bool> ChooseAsync(IPage page, ILocator control, PacketQuestion q, string answer)
+    {
+        var fixedSet = q.Options.Count > 0;
+        if (fixedSet && !q.Options.Any(o => Same(o, answer)))
+            return false;
+        var combobox = await IsComboboxAsync(control);
+        await control.ClickAsync();
+        try { await control.FillAsync(answer); }
+        catch (PlaywrightException) { await page.Keyboard.TypeAsync(answer); } // a div-based widget: type at it
+        ILocator? pick = null;
+        if (combobox)
+        {
+            for (var i = 0; i < 12 && pick is null; i++)
+            {
+                await page.WaitForTimeoutAsync(250);
+                pick = await BestOptionAsync(page, control, answer, fixedSet);
+            }
+            // No menu ever showed: commit whatever is under the caret. Only on a combobox —
+            // Enter in a plain text input submits the form it sits in.
+            if (pick is null)
+                await page.Keyboard.PressAsync("Enter");
+        }
+        if (pick is not null)
+            await pick.ClickAsync();
+        await page.WaitForTimeoutAsync(300);
+        return await CommittedAsync(control, answer);
+    }
+
+    /// <summary>The option to click for an answer, or null while the menu has nothing usable:
+    /// an exact match, else the shortest option that starts with the answer, else one that
+    /// contains it, else (open autocompletes only) the first suggestion.</summary>
+    private static async Task<ILocator?> BestOptionAsync(IPage page, ILocator control, string answer, bool fixedSet)
+    {
+        // Prefer the listbox the control says it owns; otherwise any option that is on screen.
+        var owned = await control.GetAttributeAsync("aria-controls");
+        var options = !string.IsNullOrWhiteSpace(owned)
+            ? page.Locator($"#{CssEscape(owned)} [role=option]:visible")
+            : page.Locator("[role=option]:visible");
+        IReadOnlyList<string> texts;
+        try { texts = await options.AllInnerTextsAsync(); }
+        catch (PlaywrightException) { return null; }
+        if (texts.Count == 0) return null;
+        var want = answer.Trim();
+        var norm = texts.Select(t => t.Replace('\n', ' ').Trim()).ToList();
+        var i = norm.FindIndex(t => t.Equals(want, StringComparison.OrdinalIgnoreCase));
+        if (i < 0)
+        {
+            var starts = norm.Select((t, n) => (t, n))
+                .Where(x => x.t.StartsWith(want, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.t.Length).ToList();
+            if (starts.Count > 0) i = starts[0].n;
+        }
+        if (i < 0) i = norm.FindIndex(t => t.Contains(want, StringComparison.OrdinalIgnoreCase));
+        if (i < 0 && !fixedSet) i = 0;
+        return i < 0 ? null : options.Nth(i);
+    }
+
+    private static async Task<bool> IsComboboxAsync(ILocator control)
+    {
+        try
+        {
+            return await control.EvaluateAsync<bool>("""
+                el => el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete') === 'list'
+                      || el.getAttribute('aria-haspopup') === 'listbox'
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>
+    /// Did the widget take the value? Read what it renders, in order of certainty: the hidden
+    /// <c>required</c> input react-select keeps beside the visible one (its value is the
+    /// committed option), a selected-value element, a plain input that kept its text, or a
+    /// whole line of the widget's text equal to the choice.
+    /// </summary>
+    private static async Task<bool> CommittedAsync(ILocator control, string chosen)
+    {
+        try
+        {
+            return await control.EvaluateAsync<bool>("""
+                (el, chosen) => {
+                  let root = el;
+                  for (let i = 0; i < 6 && root.parentElement; i++) {
+                    root = root.parentElement;
+                    const hidden = [...root.querySelectorAll('input[required]')].find(h => h !== el && !h.getAttribute('role'));
+                    if (hidden) return (hidden.value || '').trim().length > 0;
+                    const sv = root.querySelector('[class*="single-value"], [class*="multi-value"]');
+                    if (sv) return (sv.innerText || '').trim().length > 0;
+                  }
+                  if ((el.value || '').trim().length > 0) return true;
+                  const want = chosen.trim().toLowerCase();
+                  return (root.innerText || '').split('\n').map(s => s.trim().toLowerCase())
+                    .some(l => l.length > 0 && (l === want || l.startsWith(want)));
+                }
+                """, chosen);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>
+    /// What the rendered form still marks required-and-empty, as (key, label) pairs — the
+    /// control's id or name, and its accessible label. Native controls report their own
+    /// value; a combobox reports through the hidden required input or selected-value element
+    /// its widget keeps, and a widget that exposes neither is taken at its input's word.
+    /// </summary>
+    private static async Task<List<(string Key, string Label)>> RequiredEmptyAsync(IPage page)
+    {
+        try
+        {
+            var raw = await page.EvaluateAsync<System.Text.Json.JsonElement>(RequiredEmptyScript);
+            var list = new List<(string, string)>();
+            foreach (var item in raw.EnumerateArray())
+                list.Add((item.GetProperty("key").GetString() ?? "", item.GetProperty("label").GetString() ?? ""));
+            return list;
+        }
+        catch (PlaywrightException) { return []; }
+    }
+
+    private const string RequiredEmptyScript = """
+        () => {
+          const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+          const labelFor = el => {
+            if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+            const by = el.getAttribute('aria-labelledby');
+            if (by) { const t = by.split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
+            if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
+            const wrap = el.closest('label'); if (wrap) return wrap.innerText;
+            const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
+            return el.getAttribute('placeholder') || '';
+          };
+          const out = []; const seen = new Set();
+          const add = (key, label) => {
+            label = (label || '').replace(/\*\s*$/, '').trim();
+            key = (key || label).trim();
+            if (!key || seen.has(key)) return;
+            seen.add(key); out.push({ key, label });
+          };
+          const comboFilled = cb => {
+            let root = cb;
+            for (let i = 0; i < 6 && root.parentElement; i++) {
+              root = root.parentElement;
+              const hidden = [...root.querySelectorAll('input[required]')].find(h => h !== cb && !h.getAttribute('role'));
+              if (hidden) return (hidden.value || '').trim().length > 0;
+              const sv = root.querySelector('[class*="single-value"], [class*="multi-value"]');
+              if (sv) return (sv.innerText || '').trim().length > 0;
+            }
+            return (cb.value || '').trim().length > 0;
+          };
+          for (const el of document.querySelectorAll('input, select, textarea')) {
+            const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
+            if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled) continue;
+            if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
+            const combo = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete') === 'list';
+            if (combo) {
+              if (!visible(el) || comboFilled(el)) continue;
+              add(el.id || el.getAttribute('name'), labelFor(el)); continue;
+            }
+            if (!el.id && !el.getAttribute('name')) {
+              // react-select's hidden required input: the combobox beside it is the one to name.
+              const owner = el.parentElement?.querySelector('[role=combobox]');
+              if (!owner || (el.value || '').trim().length > 0) continue;
+              add(owner.id || owner.getAttribute('name'), labelFor(owner)); continue;
+            }
+            if (!visible(el)) continue;
+            let empty;
+            if (type === 'checkbox') empty = !el.checked;
+            else if (type === 'radio') {
+              const name = el.getAttribute('name') || '';
+              empty = ![...document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)].some(r => r.checked);
+            }
+            else empty = (el.value || '').trim().length === 0;
+            if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
+          }
+          return out;
+        }
+        """;
+
+    /// <summary>Does the page have anything a person could type into or pick from?</summary>
+    private static async Task<bool> HasFillableControlsAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => [...document.querySelectorAll('input, select, textarea')].some(el => {
+                  const type = (el.getAttribute('type') || 'text').toLowerCase();
+                  if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled) return false;
+                  const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                })
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>
+    /// The validation messages the form is showing: alerts, the descriptions of invalid
+    /// controls, and error-styled helper text. Short leaf text only — never a wrapper that
+    /// contains a control — so what comes back reads like "Select a country", not the form.
+    /// </summary>
+    private static async Task<List<string>> ValidationErrorsAsync(IPage page)
+    {
+        try
+        {
+            var raw = await page.EvaluateAsync<string[]>("""
+                () => {
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  const texts = new Set();
+                  const sel = '[role=alert], [aria-invalid=true], [class*="error" i], [class*="invalid" i], [id$="-error"], [id$="_error"]';
+                  for (const el of document.querySelectorAll(sel)) {
+                    if (!shown(el) || el.tagName === 'LABEL') continue;
+                    let t = (el.innerText || '').trim();
+                    if (el.matches('input, select, textarea'))
+                      t = (el.getAttribute('aria-describedby') || '').split(/\s+/)
+                            .map(i => document.getElementById(i)?.innerText || '').join(' ').trim();
+                    else if (el.querySelector('input, select, textarea, button')) continue;
+                    t = t.replace(/\s+/g, ' ');
+                    if (t.length > 0 && t.length <= 160) texts.add(t);
+                  }
+                  return [...texts].slice(0, 12);
+                }
+                """);
+            return raw.ToList();
+        }
+        catch (PlaywrightException) { return []; }
+    }
+
+    /// <summary>After the click, is a text field we filled empty again? A form that re-mounts
+    /// itself instead of submitting looks exactly like this.</summary>
+    private static async Task<bool> FormResetAsync(IPage page, AgentPacket packet, List<string> mapped)
+    {
+        foreach (var q in packet.Questions.Where(q => q.Type == PacketQuestion.Text && mapped.Contains(q.Id)))
+        {
+            try
+            {
+                var control = await LocateAsync(page, q);
+                if (control is null) continue;
+                return (await control.InputValueAsync()).Trim().Length == 0;
+            }
+            catch (PlaywrightException) { return false; }
+        }
+        return false;
     }
 
     /// <summary>
@@ -260,6 +559,7 @@ public sealed partial class BrowserSubmitter
         if (q.Label.Length > 0)
             candidates.Add(page.GetByLabel(q.Label, new() { Exact = false }).First);
         candidates.Add(page.Locator($"#{CssEscape(id)}").First);
+        candidates.Add(page.Locator($"[id$='-{id}']").First);
         candidates.Add(page.Locator($"[name='{id}']").First);
         candidates.Add(page.Locator($"[name$='[{id}]']").First);
         candidates.Add(page.Locator($"[name*='{id}']").First);

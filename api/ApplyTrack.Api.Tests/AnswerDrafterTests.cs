@@ -52,6 +52,45 @@ public class AnswerDrafterTests
         Assert.DoesNotContain("Gender", stub.LastUserPrompt);
     }
 
+    [Theory]
+    [InlineData("Omaha, NE", "United States")]
+    [InlineData("Lincoln, Nebraska", "United States")]
+    [InlineData("Lincoln, NE 68508", "United States")]
+    [InlineData("Austin, TX, USA", "United States")]
+    [InlineData("Toronto, Canada", "Canada")]
+    [InlineData("London, UK", "United Kingdom")]
+    [InlineData("Berlin, Germany", "Germany")]
+    [InlineData("Remote", "")]
+    [InlineData("Omaha", "")]
+    [InlineData("", "")]
+    public void Country_is_read_off_the_resume_location_conservatively(string location, string expected) =>
+        Assert.Equal(expected, AnswerDrafter.CountryFromLocation(location));
+
+    [Fact]
+    public void Country_and_city_are_deterministic_and_the_standing_country_wins()
+    {
+        // Greenhouse's synthetic country question, and a discovered form's "Country*" combobox.
+        var byId = new PacketQuestion("country", "Country", false, PacketQuestion.Select, [], PacketQuestion.Standard);
+        var byLabel = new PacketQuestion("q7", "Country of residence", true, PacketQuestion.Text, [], PacketQuestion.Custom);
+        Assert.Equal(("United States", null), AnswerDrafter.Deterministic(byId, Ctx()));   // inferred from "Lincoln, NE"
+        Assert.Equal(("United States", null), AnswerDrafter.Deterministic(byLabel, Ctx()));
+
+        var ctx = Ctx() with { Settings = new AgentSettings { Country = "Canada" } };
+        Assert.Equal(("Canada", null), AnswerDrafter.Deterministic(byId, ctx));
+
+        var nowhere = Ctx() with { Resume = new Resume { FullName = "Ada Byte", Location = "Remote" } };
+        var (answer, reason) = AnswerDrafter.Deterministic(byId, nowhere);
+        Assert.Null(answer);
+        Assert.Contains("country", reason);
+
+        // The city autocomplete is labelled "Location (City)" on the form; a sponsorship
+        // question that merely mentions "the posting location" is not a location question.
+        var city = new PacketQuestion("candidate-location", "Location (City)", true, PacketQuestion.Text, [], PacketQuestion.Standard);
+        Assert.Equal(("Lincoln, NE", null), AnswerDrafter.Deterministic(city, Ctx()));
+        var sponsorship = new PacketQuestion("q8", "Do you need sponsorship now or in the future to accept this job in the posting location?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom);
+        Assert.Equal(("No", null), AnswerDrafter.Deterministic(sponsorship, Ctx()));
+    }
+
     [Fact]
     public async Task What_the_model_cannot_answer_is_flagged_not_invented()
     {

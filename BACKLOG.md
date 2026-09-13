@@ -43,8 +43,9 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 ## Agentic auto-apply
 
 An attached model evaluates qualifying leads, drafts the materials, answers the
-screening questions, and parks a finished packet in a review queue. A human always
-clicks Submit. Each step below ships on its own; step 3 delivers most of the value.
+screening questions, and prepares a packet. With dry-run-only disabled, the worker
+automatically promotes a clean browser dry run to a real submission. Required
+review items and unsupported forms still need human attention.
 
 - [x] Step 1 — Read the job posting before drafting the letter ([#91](https://github.com/CryptoJones/OSApplyTrack/pull/91))
 - [x] [#92 — Step 2: the agent reads the posting and forms its own fit verdict](https://github.com/CryptoJones/OSApplyTrack/issues/92)
@@ -55,12 +56,36 @@ clicks Submit. Each step below ships on its own; step 3 delivers most of the val
 - [x] [#133 — Optional review items permanently block a packet from being submitted](https://github.com/CryptoJones/OSApplyTrack/issues/133) (fix in [#132](https://github.com/CryptoJones/OSApplyTrack/pull/132))
 - [x] [#135 — Résumé counted as attached when the board rejected it; captcha forms burn runs](https://github.com/CryptoJones/OSApplyTrack/issues/135) (fix in [#136](https://github.com/CryptoJones/OSApplyTrack/pull/136))
 - [x] [#138 — Résumé attach check races the uploader: dry run says mapped, the real run says unmapped](https://github.com/CryptoJones/OSApplyTrack/issues/138)
-- [x] [#140 — Take the résumé as text when a board refuses the file](https://github.com/CryptoJones/OSApplyTrack/issues/140)
-- [x] [#135 — Résumé counted as attached when the board's uploader rejected it](https://github.com/CryptoJones/OSApplyTrack/issues/135)
-- [x] [#138 — Résumé attach check races the uploader](https://github.com/CryptoJones/OSApplyTrack/issues/138)
-- [x] [#140 — Take the résumé as text when a board refuses the file](https://github.com/CryptoJones/OSApplyTrack/issues/140)
-- [x] [#151 — GitLab's Greenhouse form resets after Submit; invisible reCAPTCHA likely rejects the container browser](https://github.com/CryptoJones/OSApplyTrack/issues/151)
-- [ ] [#124 — Reduce posting→applied latency so the agent reaches postings before they close](https://github.com/CryptoJones/OSApplyTrack/issues/124)
+- [x] [#151 — Greenhouse submit blocked by unfilled required fields (country, location, react-select questions) — not reCAPTCHA](https://github.com/CryptoJones/OSApplyTrack/issues/151) (fixed in 1.26.0)
+- [x] [#124 — Reduce posting→applied latency so the agent reaches postings before they close](https://github.com/CryptoJones/OSApplyTrack/issues/124)
 - [x] [#129 — Agent abandons a run when the form has a radio group or checkbox](https://github.com/CryptoJones/OSApplyTrack/issues/129) (fix in [#128](https://github.com/CryptoJones/OSApplyTrack/pull/128))
+
+## Production audit — 2026-09-12
+
+Pluto's API and agent ran release **v1.25.5**, revision `4a7f926`, at audit time.
+Tenant 1 has the agent **enabled** and **dry_run=false**. Production evidence then
+held **102 dry runs, 26 failures, and zero confirmed submissions**.
+
+The cause, reproduced live against a Greenhouse form with every non-GET request
+aborted: client-side validation blocked Submit and no application POST was ever
+made. Three gaps, all closed in **1.26.0** (#151):
+
+1. Greenhouse's rendered form requires a **Country** picker its Job Board API never
+   lists. The packet now carries a `country` question (answered from the new
+   Settings · Agent **Country** field, else inferred from the résumé's location).
+2. Country, city and the custom questions are **react-select** comboboxes. Typing
+   and pressing Enter committed nothing. The submitter now opens the widget, picks
+   the matching option, and **verifies the committed value** before counting a field
+   mapped.
+3. The run trusted the packet's idea of the form. It now reads the **rendered form's
+   own required-and-empty state** before any click (a dry run that leaves one is not
+   clean and is not promoted), refuses a form where **nothing** mapped, and after a
+   refused click reports the form's **own validation messages** instead of "no
+   confirmation text was recognised".
+
+Verified against the live Aperia posting from the issue with the application POST
+aborted at the browser: all twelve fields mapped, zero unmapped, Submit clicked,
+no validation wall. Creatio separately reports an interactive captcha and remains a
+manual handoff.
 
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/

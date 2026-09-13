@@ -315,7 +315,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`). `worker_running` says whether this instance runs a worker at all. |
+| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether this instance runs a worker at all. |
 | `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. |
 | `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
 | `GET`    | `/api/apps/{name}/packet` | The prepared packet: `provider`, `questions[]` (`id`, `label`, `required`, `type`, `options`, `kind`), `answers{}`, `needs_review[]` (`id`, `reason`), `posting_excerpt`, `verdict`, `version`. Also rides along as `packet` on `GET /api/apps/{name}`. |

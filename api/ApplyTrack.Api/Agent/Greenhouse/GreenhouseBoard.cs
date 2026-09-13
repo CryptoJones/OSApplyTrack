@@ -34,7 +34,7 @@ public sealed partial class GreenhouseBoard
 
     // Greenhouse's standard field names — everything else is a screening question.
     private static readonly HashSet<string> StandardFields =
-        ["first_name", "last_name", "email", "phone", "resume", "cover_letter", "location", "linkedin_profile", "website"];
+        ["first_name", "last_name", "email", "phone", "resume", "cover_letter", "location", "country", "linkedin_profile", "website"];
 
     private readonly IHttpClientFactory _factory;
     private readonly ILogger<GreenhouseBoard> _log;
@@ -89,6 +89,17 @@ public sealed partial class GreenhouseBoard
                 if (block.TryGetProperty("questions", out var cq) && cq.ValueKind == JsonValueKind.Array)
                     foreach (var q in cq.EnumerateArray())
                         AddQuestion(questions, q, eeo: true);
+        // The rendered form asks for more than the API admits: a job with location questions
+        // renders a required Country picker that appears nowhere in the document. Carry it in
+        // the packet so there is an answer to give it at submit time — optional here, because
+        // whether THIS form renders one is only known in the browser, and the submitter's
+        // check of the rendered form is what refuses the click if it does and stays empty.
+        var at = questions.FindIndex(q => q.Id == "location");
+        if (at >= 0 && !questions.Any(q => q.Id == "country"))
+            questions.Insert(at, new PacketQuestion("country", "Country", false, PacketQuestion.Select, [], PacketQuestion.Standard)
+            {
+                Help = "Country of residence; the form's own list is matched at submit time",
+            });
         return new GreenhouseJob(Str(root, "title"), Str(root, "content"), questions);
     }
 
