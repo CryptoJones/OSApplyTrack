@@ -42,13 +42,15 @@ public sealed class AgentWorker : BackgroundService
     private readonly BrowserSubmitter _submitter;
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<AgentWorker> _log;
+    private readonly ISecurityCodeSource? _codes;
 
     public AgentWorker(
         string connectionString, AgentOptions options, LlmOptions llmOptions,
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
         PacketReadyNotifier notifier, BrowserOptions browser, BrowserSubmitter submitter,
-        ILoggerFactory loggers)
+        ILoggerFactory loggers, ISecurityCodeSource? codes = null)
     {
+        _codes = codes;
         var csb = new NpgsqlConnectionStringBuilder(connectionString)
         {
             MaxPoolSize = Math.Max(1, options.MaxPoolSize),
@@ -206,24 +208,55 @@ public sealed class AgentWorker : BackgroundService
         var coverLetter = await new CoverLetterRepo(conn, t, _protector).GetBodyAsync(rec.Name) ?? "";
         var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
         // Phase two of a real click: the board emailed the candidate a security code. Record
-        // it, moo, and wait — polling the queue row the human's paste lands on — for up to
-        // eight minutes, holding the browser session the code is good for.
+        // it, and wait — up to eight minutes, holding the browser session the code is good
+        // for — reading the candidate's own mailbox for the mail when one is configured, and
+        // polling the queue row a human's paste lands on either way. The moo goes out only
+        // when there is no mailbox to read: with one, the human never needs to know.
         async Task<string?> AwaitSecurityCodeAsync(string recipient, CancellationToken token)
         {
+            var since = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var mailbox = _codes is null ? null
+                : await new MailboxSettingsRepo(conn, t, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
             await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.AwaitingCode, rec.Fields.Link, "",
-                new { recipient, dry_run = false }, null);
+                new { recipient, dry_run = false, mailbox = mailbox is not null }, null);
             await events.RecordAsync(AgentEvidenceRepo.Kinds.AwaitingCode, rec.Name,
-                new { recipient, rec.Fields.Company, rec.Fields.Role });
-            await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
-                PacketReadyNotifier.Moment.Code, recipient);
-            _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}", rec.Name, recipient);
+                new { recipient, mailbox = mailbox is not null, rec.Fields.Company, rec.Fields.Role });
+            if (mailbox is null)
+                await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
+                    PacketReadyNotifier.Moment.Code, recipient);
+            _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}{How}", rec.Name, recipient,
+                mailbox is null ? "" : "; reading the mailbox for it");
             var deadline = DateTime.UtcNow.AddMinutes(8);
+            var tick = 0;
             while (DateTime.UtcNow < deadline && !token.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(5), token);
-                await using var poll = await _db.OpenConnectionAsync(token);
-                var code = await SubmitQueue.SecurityCodeAsync(poll, req.Id);
-                if (code.Length > 0) return code;
+                await using (var poll = await _db.OpenConnectionAsync(token))
+                {
+                    var pasted = await SubmitQueue.SecurityCodeAsync(poll, req.Id);
+                    if (pasted.Length > 0) return pasted;
+                }
+                if (mailbox is not null && tick++ % 3 == 0)
+                {
+                    try
+                    {
+                        var code = await _codes!.FindCodeAsync(mailbox, recipient, rec.Fields.Company, since, token);
+                        if (code is not null)
+                        {
+                            _log.LogInformation("{Name}: security code read from the mailbox", rec.Name);
+                            return code;
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // A mailbox that will not open must not end the run: the human can still paste.
+                        _log.LogWarning("{Name}: mailbox read failed: {Reason}", rec.Name, ex.Message);
+                        await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new { reason = "mailbox: " + ex.Message });
+                        await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
+                            PacketReadyNotifier.Moment.Code, recipient);
+                        mailbox = null;
+                    }
+                }
             }
             return null;
         }

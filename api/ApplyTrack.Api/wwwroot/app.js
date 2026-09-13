@@ -2067,8 +2067,47 @@ function notificationsMarkup(s) {
         <p class="field-help">${escapeHtml(tokenNote)}</p>
       </div>
 
+      <h3 class="mt-8">Mailbox · security codes</h3>
+      <p class="field-help">
+        Greenhouse answers the agent's Submit with a security code sent to <em>your</em> email
+        and asks for it on the form. With your mailbox here (IMAP, read-only) the parked run
+        reads the code itself and finishes without you. For Gmail: host
+        <span class="mono">imap.gmail.com</span>, port <span class="mono">993</span>, your
+        address, and an <strong>App Password</strong> (Google Account → Security → 2-Step
+        Verification → App passwords), not your login password.
+      </p>
+      <div class="mt-3">
+        <label class="source-row">
+          <input id="m-enabled" type="checkbox"${s.mailbox_enabled ? " checked" : ""} />
+          <span>Read security codes from my mailbox</span>
+        </label>
+      </div>
+      <div class="mt-3 grid grid-cols-2 gap-4">
+        <div>
+          <label class="field-label" for="m-host">IMAP host</label>
+          <input id="m-host" class="field-input mono" value="${escapeHtml(s.mailbox_host || "")}" placeholder="imap.gmail.com" autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="m-port">Port</label>
+          <input id="m-port" class="field-input mono" type="number" min="1" max="65535" value="${escapeHtml(String(s.mailbox_port || 993))}" />
+        </div>
+        <div>
+          <label class="field-label" for="m-user">Username</label>
+          <input id="m-user" class="field-input mono" value="${escapeHtml(s.mailbox_username || "")}" placeholder="you@gmail.com" autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="m-pass">App password ${secretsOff ? "— unavailable on this instance" : "— write-only"}</label>
+          <input id="m-pass" type="password" class="field-input mono" autocomplete="off"
+            placeholder="${s.has_mailbox_password ? "leave blank to keep the saved password" : "not saved yet"}" ${secretsOff ? "disabled" : ""} />
+          <label class="source-row mt-2 ${s.has_mailbox_password && !secretsOff ? "" : "hidden"}">
+            <input id="m-clear" type="checkbox" /> <span>Remove the saved password</span>
+          </label>
+        </div>
+      </div>
+
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-ghost" data-act="mailbox-test" ${s.has_mailbox_password ? "" : "disabled"}>Test mailbox</button>
         <button class="btn btn-ghost" data-act="test" ${s.has_bot_token ? "" : "disabled"}>Send test message</button>
         <button class="btn btn-primary" data-act="save">Save notifications</button>
       </div>
@@ -2088,12 +2127,32 @@ function wireNotifications() {
     const clearEl = $("#n-clear");
     if (tokenEl && tokenEl.value) body.telegram_bot_token = tokenEl.value.trim();
     else if (clearEl && clearEl.checked) body.telegram_bot_token = "";
+    body.mailbox_enabled = $("#m-enabled").checked;
+    body.mailbox_host = $("#m-host").value.trim();
+    body.mailbox_port = Number($("#m-port").value) || 993;
+    body.mailbox_username = $("#m-user").value.trim();
+    const passEl = $("#m-pass");
+    const passClear = $("#m-clear");
+    if (passEl && passEl.value) body.mailbox_password = passEl.value.trim();
+    else if (passClear && passClear.checked) body.mailbox_password = "";
     try {
       await api("PUT", "/api/notifications", body);
       toast("Notification settings saved.");
       openSettings("notifications");
     } catch (e) {
       toast(e.message);
+    }
+  };
+  const mailboxTestEl = contentEl.querySelector('[data-act="mailbox-test"]');
+  mailboxTestEl.onclick = async () => {
+    mailboxTestEl.disabled = true;
+    try {
+      const r = await api("POST", "/api/notifications/mailbox/test");
+      toast(`Mailbox opened — ${r.messages} message${r.messages === 1 ? "" : "s"} in the inbox.`);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      mailboxTestEl.disabled = false;
     }
   };
   const testEl = contentEl.querySelector('[data-act="test"]');

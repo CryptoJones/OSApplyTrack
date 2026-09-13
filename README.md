@@ -325,8 +325,9 @@ killing the process:
 | `POST`   | `/api/apps/{name}/packet/prepare?force=` | Judge (reusing a recorded verdict unless `force=true`), and on `proceed` build the packet, draft the letter, park the application in `ready`, and moo → `{ok, packet}`. **400** on a `skip` verdict (with the rationale) or with no LLM endpoint. |
 | `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
 | `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
-| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. |
+| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. | Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from.
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
+| `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, timestamps. |
 | `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed`), `url`, `confirmation`, `detail`, `has_screenshot`. |
