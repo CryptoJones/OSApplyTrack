@@ -57,10 +57,11 @@ public sealed partial class AnswerDrafter
     private static partial Regex FullName();
     [GeneratedRegex(@"how did you hear|\breferr|\bstart date|available to start|notice period|\bearliest", RegexOptions.IgnoreCase)]
     private static partial Regex HumanOnly();
-    // Anchored: "…in the posting location?" is a sponsorship question, not a location one.
-    [GeneratedRegex(@"^location\b|\(city\)|^city\b|current location|where (?:are you|do you) (?:based|located|live)", RegexOptions.IgnoreCase)]
+    // Anchored, and checked AFTER the eligibility rules: "…to remain in your current
+    // location?" is a sponsorship question that once got a city typed into it.
+    [GeneratedRegex(@"^(?:current )?location\b|\(city\)|^city\b|^(?:what is )?your (?:current )?location\b|where (?:are you|do you) (?:based|located|live)", RegexOptions.IgnoreCase)]
     private static partial Regex LocationRe();
-    [GeneratedRegex(@"^country\b|country of residence|(?:which|what) country", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^country\b|country of residence|(?:which|what) country|(?:choose|select|enter) (?:your )?(?:current )?(?:location |residence |home )?country\b", RegexOptions.IgnoreCase)]
     private static partial Regex CountryRe();
 
     private sealed record ModelAnswer(string? Id, string? Answer);
@@ -164,17 +165,32 @@ public sealed partial class AnswerDrafter
             return Link(ctx.Resume, "github") is { } gh ? (gh, null) : (null, "no GitHub link in your résumé");
         if (id is "website" || Website().IsMatch(label))
             return FirstLink(ctx.Resume) is { } site ? (site, null) : (null, "no website link in your résumé");
+        // A question that asks about authorization AND sponsorship in one breath, with fixed
+        // options ("No, I require support now" / "Yes, and I will not need sponsorship"), is
+        // not a yes/no: the option's polarity is not the answer's. The model gets it, with
+        // the eligibility brief; a bare yes/no pick put "No, I require support now" on a
+        // citizen's application.
+        var combined = Sponsorship().IsMatch(label) && Authorization().IsMatch(label) && q.Options.Count > 0;
+        if (combined)
+            return (null, null);
+        if (Sponsorship().IsMatch(label))
+            return YesNo(q, ctx.Settings.NeedsSponsorship, "Settings · Agent says whether you need sponsorship");
+        if (Clearance().IsMatch(label))
+            return YesNo(q, ctx.Settings.ClearanceOk, "Settings · Agent says whether you hold a clearance");
         // "Minden, Nebraska (Remote)" is how a résumé says it; "Minden, Nebraska" is what a
         // form's city autocomplete can geocode. The suffix is for the reader, not the form.
         if (id is "location" || LocationRe().IsMatch(q.Label))
             return StripLocationSuffix(ctx.Resume.Location) is { Length: > 0 } loc ? (loc, null) : (null, "add a location in Résumé settings");
         if (id is "country" || CountryRe().IsMatch(q.Label))
-            return Country(ctx) is { Length: > 0 } country ? (country, null) : (null, "add your country in Settings · Agent");
-
-        if (Sponsorship().IsMatch(label))
-            return YesNo(q, ctx.Settings.NeedsSponsorship, "Settings · Agent says whether you need sponsorship");
-        if (Clearance().IsMatch(label))
-            return YesNo(q, ctx.Settings.ClearanceOk, "Settings · Agent says whether you hold a clearance");
+        {
+            var country = Country(ctx);
+            if (country.Length == 0) return (null, "add your country in Settings · Agent");
+            // A fixed list spells it its own way: "United States of America", "United
+            // States, U.S., USA". The answer must be one of the options, verbatim.
+            if (q.Options.Count == 0) return (country, null);
+            return PickCountryOption(q.Options, country) is { } option ? (option, null)
+                : (null, "pick the country option yourself — none reads as " + country);
+        }
         if (Authorization().IsMatch(label))
         {
             var auth = ctx.Settings.WorkAuthorization;
@@ -248,6 +264,21 @@ public sealed partial class AnswerDrafter
     /// line implies. Public for tests.</summary>
     public static string Country(AnswerContext ctx) =>
         ctx.Settings.Country.Length > 0 ? ctx.Settings.Country : CountryFromLocation(ctx.Resume.Location);
+
+    /// <summary>The option in a fixed country list that means <paramref name="country"/>: the
+    /// same name, a known alias ("USA", "United States of America"), or a comma-joined option
+    /// one of whose parts is either. Public for tests.</summary>
+    public static string? PickCountryOption(IReadOnlyList<string> options, string country)
+    {
+        static string Norm(string s) => Regex.Replace(s.Trim().ToLowerInvariant(), @"\s+", " ");
+        var want = Norm(country);
+        var aliases = CountryNames.Where(kv => Norm(kv.Value) == want).Select(kv => Norm(kv.Key)).Append(want)
+            .ToHashSet(StringComparer.Ordinal);
+        return options.FirstOrDefault(o => Norm(o) == want)
+            ?? options.FirstOrDefault(o => aliases.Contains(Norm(o)))
+            ?? options.FirstOrDefault(o => o.Split(',').Select(Norm).Any(aliases.Contains))
+            ?? options.FirstOrDefault(o => Norm(o).StartsWith(want + " of ", StringComparison.Ordinal));
+    }
 
     private static readonly HashSet<string> UsStates = new(StringComparer.OrdinalIgnoreCase)
     {
