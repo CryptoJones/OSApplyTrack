@@ -73,3 +73,44 @@ internal static class Responders
             : system.Contains("screening questions") ? answersJson
             : verdictJson;
 }
+
+/// <summary>A browser that never opens: the worker's <see cref="ApplyTrack.Api.Agent.Browser.IBrowserSubmitter"/>
+/// seam scripted per run, so the parked-on-code path and the queue's promotion rules run
+/// against the test Postgres without Playwright (#192).</summary>
+internal sealed class FakeSubmitter(
+    Func<string, ApplyTrack.Api.Data.AgentPacket, bool, Func<string, CancellationToken, Task<string?>>?, CancellationToken,
+        Task<ApplyTrack.Api.Agent.Browser.SubmitOutcome>> run) : ApplyTrack.Api.Agent.Browser.IBrowserSubmitter
+{
+    public List<(string Link, bool DryRun, Dictionary<string, string> Answers)> Runs { get; } = [];
+
+    public Task<ApplyTrack.Api.Agent.Browser.SubmitOutcome> RunAsync(
+        string link, ApplyTrack.Api.Data.AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
+        CancellationToken ct = default, string resumeText = "", string coverLetter = "",
+        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null)
+    {
+        lock (Runs) Runs.Add((link, dryRun, new Dictionary<string, string>(packet.Answers)));
+        return run(link, packet, dryRun, awaitSecurityCode, ct);
+    }
+
+    /// <summary>A dry run that filled everything: the promotion bar.</summary>
+    public static ApplyTrack.Api.Agent.Browser.SubmitOutcome Clean(string link) =>
+        new(true, false, link, "", null, [], ["std:first_name", "std:email"], "");
+
+    /// <summary>A real run the board confirmed.</summary>
+    public static ApplyTrack.Api.Agent.Browser.SubmitOutcome Submitted(string link) =>
+        new(true, true, link, "Thank you for applying!", null, [], ["std:first_name", "std:email"], "");
+}
+
+/// <summary>A mailbox that answers (or fails) on cue, standing in for IMAP.</summary>
+internal sealed class FakeCodeSource(Func<string?> find) : ISecurityCodeSource
+{
+    public int Calls { get; private set; }
+
+    public Task<string?> FindCodeAsync(ApplyTrack.Api.Data.MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct)
+    {
+        Calls++;
+        return Task.FromResult(find());
+    }
+
+    public Task<int> TestAsync(ApplyTrack.Api.Data.MailboxTarget target, CancellationToken ct) => Task.FromResult(0);
+}

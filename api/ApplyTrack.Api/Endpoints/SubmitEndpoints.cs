@@ -19,6 +19,14 @@ public static class SubmitEndpoints
     public const string NoBrowser =
         "no browser is available on this instance — no agent worker with one has checked in; use Copy answers and open the posting";
 
+    /// <summary>Why the browser will not drive this provider's form, for the person.</summary>
+    public static string CannotDrive(string provider) => provider switch
+    {
+        AtsProvider.Workday => "Workday needs an account with the employer — apply via Copy answers and open the posting",
+        AtsProvider.Aggregator => "this link is a job aggregator's listing, not the employer's form — open the posting, follow its Apply to the employer, and use Copy answers there",
+        _ => "this ATS isn't one the agent knows — turn on the long tail in Settings · Agent, or apply via Copy answers and open the posting",
+    };
+
     public static void MapSubmitEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/apps/{name}/submit", async (
@@ -42,9 +50,7 @@ public static class SubmitEndpoints
 
             var agent = await settings.GetAsync();
             if (!AtsProvider.BrowserCanSubmit(packet.Provider, agent.LongTail))
-                throw new AppValidationException(packet.Provider == AtsProvider.Workday
-                    ? "Workday needs an account with the employer — apply via Copy answers and open the posting"
-                    : "this ATS isn't one the agent knows — turn on the long tail in Settings · Agent, or apply via Copy answers and open the posting");
+                throw new AppValidationException(CannotDrive(packet.Provider));
 
             // Dry run unless the caller says otherwise AND the tenant has turned dry-run off.
             var wantsReal = payload is { ValueKind: JsonValueKind.Object } p
@@ -78,8 +84,8 @@ public static class SubmitEndpoints
         {
             var r = await queue.GetAsync(name);
             return Results.Ok(r is null
-                ? new { pending = false, dry_run = (bool?)null, requested_at = (DateTimeOffset?)null, claimed_at = (DateTimeOffset?)null, done_at = (DateTimeOffset?)null }
-                : new { pending = r.Pending, dry_run = (bool?)r.DryRun, requested_at = (DateTimeOffset?)r.RequestedAt, claimed_at = r.ClaimedAt, done_at = r.DoneAt });
+                ? new { pending = false, dry_run = (bool?)null, prepare = (bool?)null, requested_at = (DateTimeOffset?)null, claimed_at = (DateTimeOffset?)null, done_at = (DateTimeOffset?)null }
+                : new { pending = r.Pending, dry_run = (bool?)r.DryRun, prepare = (bool?)r.Prepare, requested_at = (DateTimeOffset?)r.RequestedAt, claimed_at = r.ClaimedAt, done_at = r.DoneAt });
         });
 
         app.MapGet("/api/apps/{name}/evidence", async (string name, AgentEvidenceRepo evidence) =>

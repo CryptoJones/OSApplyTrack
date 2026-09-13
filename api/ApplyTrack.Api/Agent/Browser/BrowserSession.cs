@@ -20,17 +20,29 @@ namespace ApplyTrack.Api.Agent.Browser;
 public sealed partial class BrowserSession : IAsyncDisposable
 {
     private static readonly string[] AtsSuffixes =
-        ["greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "myworkdaysite.com"];
+    [
+        "greenhouse.io", "lever.co", "ashbyhq.com", "myworkdayjobs.com", "myworkdaysite.com",
+        "workable.com", "breezy.hr", "smartrecruiters.com", "join.com",
+    ];
+
+    [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested)", RegexOptions.IgnoreCase)]
+    private static partial Regex ApplyTrigger();
 
     private readonly IPlaywright _playwright;
     private readonly IBrowser _browser;
     private readonly IBrowserContext _context;
     private readonly List<string> _refused = [];
 
-    public IPage Page { get; }
+    /// <summary>The page the form is on. Usually the one opened at the link; the popup an
+    /// Apply link opened in a new tab when there was one.</summary>
+    public IPage Page { get; private set; }
 
     /// <summary>Hosts a top-level navigation was refused for — for the error message.</summary>
     public IReadOnlyList<string> Refused { get { lock (_refused) return _refused.ToList(); } }
+
+    /// <summary>What happened while looking for the form behind an Apply button, when that
+    /// did not end with a form — the reason a "no form found" outcome can name (#180).</summary>
+    public string RevealNote { get; private set; } = "";
 
     private BrowserSession(IPlaywright playwright, IBrowser browser, IBrowserContext context, IPage page)
     {
@@ -90,8 +102,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
             // Top-level navigations stay on the posting's site (redirects to the ATS
             // that hosts its form are fine); sub-resources are left alone so the form
-            // can load its scripts and styles.
-            if (req.IsNavigationRequest && req.Frame == page.MainFrame && !HostAllowed(u.Host, allowedHost))
+            // can load its scripts and styles. Any top-level frame in the context — the
+            // tab an Apply link opens is held to the same rule as the first page.
+            if (req.IsNavigationRequest && req.Frame.ParentFrame is null && !HostAllowed(u.Host, allowedHost))
             {
                 lock (session._refused) session._refused.Add(u.Host);
                 await route.AbortAsync();
@@ -100,7 +113,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             await route.ContinueAsync();
         });
         await page.GotoAsync(target.AbsoluteUri, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await RevealFormAsync(page);
+        await session.RevealFormAsync();
         return session;
     }
 
@@ -198,18 +211,113 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
     }
 
-    /// <summary>Some boards hide the form behind an "Apply" button; press it when no field is visible yet.</summary>
-    private static async Task RevealFormAsync(IPage page)
+    /// <summary>
+    /// Does the page show something that reads as an <i>application</i> form — a file or
+    /// email input, a textarea, or at least two text boxes — rather than merely a control?
+    /// A posting page's job-search box is one text input, and taking it for the form is
+    /// how Workable's job finder was never asked to reveal its real one (#180).
+    /// </summary>
+    private static async Task<bool> ApplicationFormVisibleAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (await frame.EvaluateAsync<bool>("""
+                    () => {
+                      const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                      let texts = 0;
+                      for (const el of document.querySelectorAll('input, textarea, select')) {
+                        const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
+                        if (type === 'file') return true;
+                        if (!shown(el)) continue;
+                        if (type === 'email' || el.tagName === 'TEXTAREA') return true;
+                        if (type === 'text' || type === 'tel' || type === 'url' || type === 'select') texts++;
+                        if (texts >= 2) return true;
+                      }
+                      return false;
+                    }
+                    """)) return true;
+            }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return false;
+    }
+
+    private static async Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (true)
+        {
+            if (await ApplicationFormVisibleAsync(page)) return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            await page.WaitForTimeoutAsync(500);
+        }
+    }
+
+    /// <summary>
+    /// Some boards hide the form behind an Apply button or link; press it when no
+    /// application form is on screen yet. The click is bounded (5 s) and every way it can
+    /// fail to produce a form is written to <see cref="RevealNote"/>, so the run reports
+    /// "the Apply button did not respond" rather than a Playwright timeout. A link that
+    /// opens the form in a new tab (Workable, SmartRecruiters) hands that tab over as
+    /// <see cref="Page"/>; the route guard already holds it to the same site.
+    /// </summary>
+    private async Task RevealFormAsync()
     {
         // A moment for a form that renders itself after load, before deciding it is hidden.
-        if (await WaitForFieldAsync(page, 3_000)) return;
-        var apply = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply", RegexOptions.IgnoreCase) }).First;
-        if (!await apply.IsVisibleAsync())
-            apply = page.GetByRole(AriaRole.Link, new() { NameRegex = new Regex(@"^apply", RegexOptions.IgnoreCase) }).First;
-        if (await apply.IsVisibleAsync())
+        if (await WaitForApplicationFormAsync(Page, 3_000)) return;
+        ILocator? apply = null;
+        foreach (var candidate in new[]
+                 {
+                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).First,
+                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).First,
+                 })
         {
-            await apply.ClickAsync();
-            await WaitForFieldAsync(page, 10_000); // judged below by what maps
+            try { if (await candidate.IsVisibleAsync()) { apply = candidate; break; } }
+            catch (PlaywrightException) { /* next */ }
+        }
+        if (apply is null)
+        {
+            RevealNote = await AnyFieldVisibleAsync(Page) ? "" : "no Apply button or link on the page";
+            return;
+        }
+
+        var popup = new TaskCompletionSource<IPage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnPage(object? _, IPage p) => popup.TrySetResult(p);
+        _context.Page += OnPage;
+        try
+        {
+            await apply.ClickAsync(new() { Timeout = 5_000 });
+        }
+        catch (TimeoutException)
+        {
+            _context.Page -= OnPage;
+            RevealNote = "the Apply button did not respond within 5 s";
+            return;
+        }
+        catch (PlaywrightException ex)
+        {
+            _context.Page -= OnPage;
+            RevealNote = "clicking Apply failed: " + ex.Message.Split('\n')[0];
+            return;
+        }
+        var opened = await Task.WhenAny(popup.Task, Task.Delay(1_500));
+        _context.Page -= OnPage;
+        if (opened == popup.Task)
+        {
+            Page = popup.Task.Result;
+            try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
+            catch (TimeoutException) { /* judged by what renders */ }
+            catch (PlaywrightException) { /* ditto */ }
+        }
+        if (!await WaitForFieldAsync(Page, 10_000))
+        {
+            var refused = Refused;
+            RevealNote = refused.Count > 0
+                ? $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
+                : "Apply was clicked but no form appeared within 10 s";
         }
     }
 

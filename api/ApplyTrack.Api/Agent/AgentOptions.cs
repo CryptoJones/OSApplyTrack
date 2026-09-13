@@ -20,6 +20,16 @@ public sealed class AgentOptions
     /// <summary>Seconds between drains of the submit queue (the human's Submit clicks).</summary>
     public int SubmitPollSeconds { get; set; } = 15;
 
+    /// <summary>Seconds between heartbeats (<c>agent_workers.seen_at</c>). Its own timer,
+    /// independent of both lanes, so a worker without a browser is not read as absent for
+    /// two minutes out of every five (#184). Must stay well inside
+    /// <see cref="Data.AgentWorkerRegistry.Freshness"/>.</summary>
+    public int HeartbeatSeconds { get; set; } = 30;
+
+    /// <summary>How long a real run stays parked on the board's emailed security code before
+    /// giving up — the code's own validity is about ten minutes. Short in tests.</summary>
+    public int SecurityCodeWaitSeconds { get; set; } = 480;
+
     /// <summary>The worker's own, small connection pool — it holds a connection across
     /// model calls and must not be able to starve the request pool.</summary>
     public int MaxPoolSize { get; set; } = 4;

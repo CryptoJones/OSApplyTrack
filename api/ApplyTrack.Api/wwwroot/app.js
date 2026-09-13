@@ -82,6 +82,8 @@ const state = {
   browserAvailable: false,
   // The tenant lets the browser fill forms on ATSs it doesn't know.
   longTail: false,
+  // The Ready lane's multi-select: filenames ticked while the status filter is Ready.
+  selected: new Set(),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -363,16 +365,92 @@ function nextActionable(excludeName) {
   return app ? app.filename : null;
 }
 
+// The Ready lane is the one place work is done in bulk: prepare / submit / pass the
+// ticked packets, or submit every one whose last dry run was clean, in one request.
+const bulkBarEl = $("#bulk-bar");
+const bulkMode = () => state.filterStatus === "ready";
+
+function renderBulkBar(visible) {
+  if (!bulkBarEl) return;
+  if (!bulkMode()) {
+    bulkBarEl.hidden = true;
+    bulkBarEl.innerHTML = "";
+    return;
+  }
+  // Selection only ever names rows on screen.
+  const shown = new Set(visible.map((a) => a.filename));
+  [...state.selected].forEach((n) => { if (!shown.has(n)) state.selected.delete(n); });
+  const n = state.selected.size;
+  const canQueue = state.browserAvailable && state.agentEnabled;
+  bulkBarEl.hidden = false;
+  bulkBarEl.innerHTML = `
+    <span class="bulk-count" aria-live="polite">${n} selected</span>
+    <button class="btn btn-ghost btn-xs" type="button" data-bulk="all">Select all</button>
+    <button class="btn btn-ghost btn-xs" type="button" data-bulk="none"${n ? "" : " disabled"}>Clear</button>
+    ${canQueue ? `<button class="btn btn-ghost btn-xs" type="button" data-bulk="prepare"${n ? "" : " disabled"}>Prepare selected</button>` : ""}
+    ${canQueue ? `<button class="btn btn-primary btn-xs" type="button" data-bulk="submit"${n ? "" : " disabled"}>Submit selected</button>` : ""}
+    <button class="btn btn-ghost btn-xs" type="button" data-bulk="pass"${n ? "" : " disabled"}>Pass selected</button>
+    ${canQueue ? `<button class="btn btn-ghost btn-xs" type="button" data-bulk="submit-clean">Submit all clean</button>` : ""}`;
+  bulkBarEl.querySelectorAll("[data-bulk]").forEach((b) => {
+    b.onclick = () => {
+      const act = b.dataset.bulk;
+      if (act === "all") { visible.forEach((a) => state.selected.add(a.filename)); renderSidebar(); }
+      else if (act === "none") { state.selected.clear(); renderSidebar(); }
+      else runBulk(act);
+    };
+  });
+}
+
+async function runBulk(act) {
+  const names = [...state.selected];
+  const body = act === "submit-clean"
+    ? { action: "submit", all_clean: true }
+    : { action: act, names };
+  const count = act === "submit-clean" ? "every clean" : String(names.length);
+  const verbs = {
+    prepare: ["Prepare", "rebuild the packet and fill the form for"],
+    submit: ["Submit", "queue the browser to apply for"],
+    "submit-clean": ["Submit all clean", "queue a real submission for every Ready packet whose last dry run was clean —"],
+    pass: ["Pass", "mark passed"],
+  };
+  const [label, verb] = verbs[act];
+  if (act !== "prepare" && !await confirmAction({
+    title: `${label}?`,
+    message: `This will ${verb} ${count} application${count === "1" ? "" : "s"}.`,
+    confirmLabel: label,
+  }))
+    return;
+  try {
+    const r = await api("POST", "/api/ready/actions", body);
+    const done = (r.done || []).length;
+    const skipped = r.skipped || [];
+    const what = act === "pass" ? "passed" : r.dry_run ? "queued for a dry run" : act === "prepare" ? "queued to prepare" : "queued to submit";
+    toast(`${done} ${what}${skipped.length ? ` · ${skipped.length} skipped: ${skipped.slice(0, 3).map((s) => `${stem(s.name)} (${s.reason})`).join("; ")}${skipped.length > 3 ? "…" : ""}` : "."}`);
+    announce(`${done} ${what}, ${skipped.length} skipped.`);
+    state.selected.clear();
+    await refresh();
+    renderSidebar();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 function renderSidebar() {
   const apps = filteredApps();
   listEl.innerHTML = "";
   if (apps.length === 0) {
     listEl.innerHTML = `<li class="empty-result">No applications match the current filters.</li>`;
   }
+  renderBulkBar(apps);
   apps.forEach((a, i) => {
     const li = document.createElement("li");
     li.className = "application-list-item";
     li.dataset.name = a.filename;
+    const select = bulkMode()
+      ? `<label class="card-select"><input type="checkbox" data-select="${escapeHtml(a.filename)}"${state.selected.has(a.filename) ? " checked" : ""}
+           aria-label="Select ${escapeHtml(a.company)}${a.role ? ` · ${escapeHtml(a.role)}` : ""}" /></label>`
+      : "";
+    if (select) li.classList.add("selectable");
     const score = a.score ? `<span class="score-chip">fit ${escapeHtml(a.score)}</span>` : "";
     // The fit chip and the company name make those two orderings self-evident; the
     // posted date is only worth the space when it's what the list is ordered by.
@@ -387,7 +465,7 @@ function renderSidebar() {
     const selected = a.filename === state.current;
     const initials = (a.company || "?")
       .split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
-    li.innerHTML = `<button type="button" class="application-card" aria-current="${selected}" data-name="${escapeHtml(a.filename)}">
+    li.innerHTML = `${select}<button type="button" class="application-card" aria-current="${selected}" data-name="${escapeHtml(a.filename)}">
       <span class="company-mark" aria-hidden="true">${escapeHtml(initials)}</span>
       <span class="application-card-body">
         <span class="application-card-header">
@@ -403,6 +481,11 @@ function renderSidebar() {
       <span class="card-chevron" aria-hidden="true">›</span>
       </button>`;
     li.querySelector("button").addEventListener("click", () => openApp(a.filename));
+    const box = li.querySelector("[data-select]");
+    if (box) box.addEventListener("change", () => {
+      if (box.checked) state.selected.add(a.filename); else state.selected.delete(a.filename);
+      renderBulkBar(apps);
+    });
     listEl.appendChild(li);
   });
   const total = state.apps.length;
@@ -552,8 +635,14 @@ function renderView(data) {
 // the human's: "Copy answers and open the posting" works for every ATS.
 
 const PACKET_PROVIDER_LABEL = {
-  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workday: "Workday", unknown: "unknown ATS",
+  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workday: "Workday", workable: "Workable",
+  breezy: "Breezy", smartrecruiters: "SmartRecruiters", join: "join.com", aggregator: "job aggregator listing",
+  unknown: "unknown ATS",
 };
+// The ATSs the browser drives without the long-tail opt-in (mirrors AtsProvider.BrowserCanSubmit).
+const BROWSER_PROVIDERS = ["greenhouse", "lever", "ashby", "workable", "breezy", "smartrecruiters", "join"];
+// Never driven: Workday needs an employer account; an aggregator's listing has no form on it.
+const MANUAL_PROVIDERS = ["workday", "aggregator"];
 
 function packetSection(data) {
   const p = data.packet;
@@ -585,10 +674,12 @@ function packetSection(data) {
   // The browser drives Greenhouse, Lever and Ashby; the long tail only when opted in;
   // Workday never — applying needs an account with the employer.
   const browserCan = state.browserAvailable && url && (
-    ["greenhouse", "lever", "ashby"].includes(p.provider) || (p.provider !== "workday" && state.longTail));
-  const manualNote = state.browserAvailable && url && !browserCan
+    BROWSER_PROVIDERS.includes(p.provider) || (!MANUAL_PROVIDERS.includes(p.provider) && state.longTail));
+  const manualNote = url && (p.provider === "aggregator" || (state.browserAvailable && !browserCan))
     ? `<p class="field-help mt-2">${p.provider === "workday"
         ? "Workday needs an account with the employer, so this one is yours to submit — copy the answers and open the posting."
+        : p.provider === "aggregator"
+        ? "This link is a job aggregator's listing, not the employer's form, so the agent never runs the browser at it. Open the posting, follow its Apply to the employer, and paste the answers there."
         : "The agent doesn't know this ATS. Turn on the long tail in Settings · Agent to let the browser try, or copy the answers and open the posting."}</p>`
     : "";
   return `
@@ -708,6 +799,13 @@ async function loadEvidence(name) {
   }
   if (!Array.isArray(items) || !items.length) { out.innerHTML = ""; return; }
   const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed", awaiting_code: "Waiting for your security code" };
+  // A dry run either proved the form can be finished unattended or stopped on questions
+  // only the person can answer; the label says which, and names them (#190).
+  const kindLabel = (e) => {
+    if (e.kind !== "dry_run") return KIND[e.kind] || e.kind;
+    const needs = (e.detail && e.detail.needs_you) || [];
+    return needs.length ? `Filled (dry run) · ${needs.length} need${needs.length === 1 ? "s" : ""} you` : "Filled (dry run) · clean";
+  };
   // The run is parked on the board's security-code prompt: the code it emailed goes here.
   const parked = items[0].kind === "awaiting_code" ? items[0] : null;
   out.innerHTML = `
@@ -722,9 +820,11 @@ async function loadEvidence(name) {
     </form>` : ""}
     <ul class="agent-log">${items.map((e) => `
       <li class="mt-2 text-sm">
-        <span class="link-status ${e.kind === "failed" ? "bad" : "ok"}">${escapeHtml(KIND[e.kind] || e.kind)}</span>
+        <span class="link-status ${e.kind === "failed" ? "bad" : "ok"}">${escapeHtml(kindLabel(e))}</span>
         <span class="text-ink-faint">· ${escapeHtml(new Date(e.created_at).toLocaleString())}</span>
         ${e.confirmation ? `<div class="field-help mt-1">“${escapeHtml(e.confirmation)}”</div>` : ""}
+        ${e.kind === "dry_run" && e.detail && (e.detail.needs_you || []).length
+          ? `<ul class="evidence-needs field-help">${e.detail.needs_you.map((q) => `<li>${escapeHtml(q)}</li>`).join("")}</ul>` : ""}
         ${e.detail && e.detail.error ? `<div class="packet-flag mt-1">${escapeHtml(e.detail.error)}</div>` : ""}
         ${e.has_screenshot ? `<details class="mt-1"><summary class="field-help">Screenshot</summary>
           <img class="evidence-shot" alt="Screenshot of the application form as the browser left it" loading="lazy"
@@ -760,10 +860,21 @@ async function preparePacket(name, btn, force) {
   btn.disabled = true;
   btn.textContent = "Preparing… (~1 min)";
   try {
-    await api("POST", `/api/apps/${encodeURIComponent(name)}/packet/prepare${force ? "?force=true" : ""}`);
+    const r = await api("POST", `/api/apps/${encodeURIComponent(name)}/packet/prepare${force ? "?force=true" : ""}`);
     await refresh();
     await openApp(name);
-    toast("Packet ready — review the answers.");
+    // Handed to the worker (the browser is there, not here): the packet lands in a minute
+    // or two with the real form discovered, then the dry run and the moo follow.
+    if (r && r.pending) {
+      const out = document.getElementById("submit-status");
+      if (out) out.textContent = r.queued
+        ? "Queued: the worker is rebuilding the packet where the browser is, then filling the form."
+        : "Already queued — the worker is on it.";
+      toast(r.queued ? "Prepare queued — the worker will rebuild the packet and fill the form." : "Already queued.");
+      setTimeout(() => { if (state.current === name) openApp(name); }, 45000);
+    } else {
+      toast("Packet ready — review the answers.");
+    }
   } catch (e) {
     btn.disabled = false;
     btn.textContent = label;
@@ -1889,6 +2000,7 @@ function agentMarkup(s, events) {
         keyword-inflated scores. It uses the AI endpoint from Settings · AI.
         ${s.worker_running ? "" : "<strong>No agent worker is running on this instance</strong> — settings save, but nothing happens unattended until the operator starts the agent container. You can still evaluate a lead by hand from its sheet."}
       </p>
+      <p class="field-help" id="worker-seen">${workerSeenLine(s)}</p>
 
       <div class="mt-5">
         ${s.allowed === false ? `<p class="packet-flag mb-2">Auto-apply isn't enabled for this account. The operator of this instance adds accounts to its allowlist; until then the standing answers below still save and you can evaluate a lead by hand from its sheet.</p>` : ""}
@@ -1953,7 +2065,19 @@ function agentMarkup(s, events) {
       <div class="mt-3 grid grid-cols-2 gap-4">
         <div>
           <label class="field-label" for="a-salary">Salary expectation</label>
-          <input id="a-salary" class="field-input" value="${escapeHtml(s.salary_expectation || "")}" placeholder="e.g. $140,000" />
+          <input id="a-salary" class="field-input" value="${escapeHtml(s.salary_expectation || "")}" placeholder="e.g. 140000" inputmode="decimal" />
+          <p class="field-help">One plain figure. With a period and a currency stated, a form asking per month or per hour in the same currency gets it converted; one asking in another currency is still yours to answer.</p>
+        </div>
+        <div>
+          <label class="field-label" for="a-salary-period">Salary period</label>
+          <select id="a-salary-period" class="field-input">
+            <option value=""${s.salary_period ? "" : " selected"}>— as the figure says —</option>
+            <option value="annual"${s.salary_period === "annual" ? " selected" : ""}>per year</option>
+            <option value="monthly"${s.salary_period === "monthly" ? " selected" : ""}>per month</option>
+            <option value="hourly"${s.salary_period === "hourly" ? " selected" : ""}>per hour</option>
+          </select>
+          <label class="field-label mt-3" for="a-salary-currency">Salary currency</label>
+          <input id="a-salary-currency" class="field-input mono" value="${escapeHtml(s.salary_currency || "")}" placeholder="USD" maxlength="8" autocapitalize="characters" />
         </div>
         <div>
           <label class="field-label" for="a-phone">Phone</label>
@@ -1992,13 +2116,17 @@ function wireAgent() {
       needs_sponsorship: $("#a-sponsor").checked,
       clearance_ok: $("#a-clearance").checked,
       salary_expectation: $("#a-salary").value.trim(),
+      salary_period: $("#a-salary-period").value,
+      salary_currency: $("#a-salary-currency").value.trim().toUpperCase(),
       phone: $("#a-phone").value.trim(),
       country: $("#a-country").value.trim(),
     };
     try {
       const r = await api("PUT", "/api/agent-settings", body);
       state.agentEnabled = r.enabled === true;
-      toast("Agent settings saved.");
+      // Flipping dry-run off queues every Ready packet whose dry run was clean (#185).
+      const n = (r.requeued || []).length;
+      toast(n ? `Agent settings saved · ${n} clean dry run${n === 1 ? "" : "s"} queued for real submission.` : "Agent settings saved.");
     } catch (e) {
       toast(e.message);
     }
@@ -2006,6 +2134,16 @@ function wireAgent() {
   contentEl.querySelectorAll("[data-open]").forEach((b) => {
     b.onclick = () => openApp(b.dataset.open);
   });
+}
+
+// "Worker last seen 12 minutes ago" — a wedged worker is visible, not merely absent (#184).
+function workerSeenLine(s) {
+  if (!s.worker_last_seen) return s.worker_running ? "" : "No worker has ever checked in.";
+  const seen = new Date(s.worker_last_seen);
+  const mins = Math.max(0, Math.round((Date.now() - seen.getTime()) / 60000));
+  const ago = mins < 1 ? "just now" : mins < 60 ? `${mins} minute${mins === 1 ? "" : "s"} ago` : `${Math.round(mins / 60)} hour${Math.round(mins / 60) === 1 ? "" : "s"} ago`;
+  const stale = mins >= 3;
+  return `Worker last seen ${ago} (${escapeHtml(seen.toLocaleString())})${stale ? " — <strong>silent for longer than its heartbeat allows; it may be wedged.</strong>" : "."}`;
 }
 
 // Settings · Agent tab.
@@ -2202,6 +2340,7 @@ function answersMarkup(entries) {
       ${answerControl(e, i)}
       <div class="mt-2 flex flex-wrap gap-2">
         <button class="btn btn-primary btn-xs" type="button" data-ans-save="${escapeHtml(e.key)}" aria-label="Save your answer to ${escapeHtml(e.label)}">Save as my answer</button>
+        ${e.source === "human" ? `<button class="btn btn-ghost btn-xs" type="button" data-ans-apply="${escapeHtml(e.key)}" aria-label="Apply your answer to ${escapeHtml(e.label)} to every Ready packet">Apply to Ready packets</button>` : ""}
         ${e.source === "human" ? `<button class="btn btn-ghost btn-xs" type="button" data-ans-reset="${escapeHtml(e.key)}" aria-label="Let the agent answer ${escapeHtml(e.label)} again">Let the agent answer</button>` : ""}
         <button class="btn btn-ghost btn-xs" type="button" data-ans-forget="${escapeHtml(e.key)}" aria-label="Forget ${escapeHtml(e.label)}">Forget</button>
       </div>
@@ -2213,7 +2352,8 @@ function answersMarkup(entries) {
       <p class="field-help">
         Every screening question the agent has met, as the form asked it, with the answer it
         gave. Change one and <strong>Save as my answer</strong>: from then on the agent uses your
-        words on every form that asks the same question, no model involved. Name, email and
+        words on every form that asks the same question, no model involved — and
+        <strong>Apply to Ready packets</strong> writes it into the packets already built. Name, email and
         the résumé come from your profile and are not listed; salary, work authorization and
         phone defaults live in Settings · Agent and show up here as the forms ask for them.
       </p>
@@ -2235,6 +2375,21 @@ function wireAnswers(body, gen) {
         await reload();
       } catch (e) {
         toast(e.message);
+      }
+    };
+  });
+  // Write the saved answer into every Ready packet that asks this question — no model,
+  // no rebuild (#189).
+  body.querySelectorAll("[data-ans-apply]").forEach((btn) => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const r = await api("POST", `/api/answers/${encodeURIComponent(btn.dataset.ansApply)}/apply`);
+        toast(r.updated ? `Updated ${r.updated} Ready packet${r.updated === 1 ? "" : "s"}.` : "No Ready packet asks this question with a different answer.");
+      } catch (e) {
+        toast(e.message);
+      } finally {
+        btn.disabled = false;
       }
     };
   });

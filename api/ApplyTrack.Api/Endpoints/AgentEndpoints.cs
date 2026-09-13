@@ -4,6 +4,7 @@
 using System.Data;
 using System.Text.Json;
 using ApplyTrack.Api.Agent;
+using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 
@@ -22,11 +23,11 @@ public static class AgentEndpoints
     {
         app.MapGet("/api/agent-settings", async (
             AgentSettingsRepo repo, AgentOptions options, BrowserAvailability browser, IDbConnection conn) =>
-            Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, await repo.IsAllowedAsync())));
+            Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, await repo.IsAllowedAsync(), [])));
 
         app.MapPut("/api/agent-settings", async (
             JsonElement payload, AgentSettingsRepo repo, AgentOptions options, BrowserAvailability browser,
-            IDbConnection conn) =>
+            IDbConnection conn, Auth.TenantContext tenant, SecretProtector protector) =>
         {
             var settings = AgentSettings.FromJson(payload);
             var allowed = await repo.IsAllowedAsync();
@@ -34,8 +35,15 @@ public static class AgentEndpoints
             // itself is the operator's to grant.
             if (settings.Enabled && !allowed)
                 throw new AppForbiddenException(NotAllowed);
+            var before = await repo.GetAsync();
             await repo.UpsertAsync(settings);
-            return Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, allowed));
+            // Flipping dry-run OFF is the moment every packet that already proved itself in
+            // a dry run should go: queue the real click for each of them now, rather than
+            // leaving them in Ready until something else revisits them (#185).
+            var requeued = new List<string>();
+            if (before.DryRun && !settings.DryRun && allowed && await browser.IsAvailableAsync())
+                requeued = await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false);
+            return Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, allowed, requeued));
         });
 
         app.MapGet("/api/agent-events", async (AgentEventRepo repo, int? limit) =>
@@ -66,7 +74,8 @@ public static class AgentEndpoints
         "auto-apply isn't enabled for this account — the operator adds accounts to the allowlist";
 
     private static async Task<object> ViewAsync(
-        AgentSettings s, AgentOptions options, BrowserAvailability browser, IDbConnection conn, bool allowed) => new
+        AgentSettings s, AgentOptions options, BrowserAvailability browser, IDbConnection conn, bool allowed,
+        List<string> requeued) => new
     {
         // Whether the operator has allowed this account to use auto-apply at all.
         allowed,
@@ -79,6 +88,8 @@ public static class AgentEndpoints
         needs_sponsorship = s.NeedsSponsorship,
         clearance_ok = s.ClearanceOk,
         salary_expectation = s.SalaryExpectation,
+        salary_period = s.SalaryPeriod,
+        salary_currency = s.SalaryCurrency,
         phone = s.Phone,
         country = s.Country,
         long_tail = s.LongTail,
@@ -86,7 +97,12 @@ public static class AgentEndpoints
         // separate agent container that has checked in (agent_workers) — so the UI can
         // say "saved, but nothing will happen until the operator starts the agent".
         worker_running = options.Enabled || await AgentWorkerRegistry.WorkerSeenAsync(conn),
+        // When the last heartbeat landed, fresh or stale, so a wedged worker reads as
+        // "last seen 40 minutes ago" rather than as never having existed (#184).
+        worker_last_seen = await AgentWorkerRegistry.LastSeenAsync(conn),
         // Whether a browser can fill and submit forms: here, or on that worker.
         browser_available = await browser.IsAvailableAsync(),
+        // The Ready packets this save queued for real submission (a dry-run flip; #185).
+        requeued,
     };
 }

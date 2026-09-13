@@ -73,8 +73,17 @@ public sealed class PacketReadyNotifier
     {
         var who = string.Join(" · ", new[] { company.Trim(), role.Trim() }.Where(s => s.Length > 0));
         var subject = who.Length > 0 ? who : "an application";
+        // For Filled, the detail is what still needs the person: the required questions the
+        // agent could not answer or map, comma-separated. A dry run that stopped on two of
+        // them used to moo the same "ready for you to click Apply" as a clean one, so the
+        // person opened the packet not knowing whether it was a click or a form to finish (#190).
+        // Semicolon-separated: a question's label may itself carry a comma.
+        var needs = moment == Moment.Filled && detail.Length > 0
+            ? detail.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) : [];
         var text = moment switch
         {
+            Moment.Filled when needs.Length > 0 =>
+                $"🐮 moo — {subject} is filled in — {needs.Length} question{(needs.Length == 1 ? "" : "s")} need{(needs.Length == 1 ? "s" : "")} you: {string.Join(", ", needs)}",
             Moment.Filled => $"🐮 moo — {subject} is filled in and ready for you to click Apply",
             Moment.Submitted => $"✅ {subject} was submitted",
             Moment.Code => $"🔐 {subject}: the board emailed a security code to {(detail.Length > 0 ? detail : "you")} — reply here with the code (or paste it in the app) within a few minutes to finish",

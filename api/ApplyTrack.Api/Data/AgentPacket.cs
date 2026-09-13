@@ -138,6 +138,24 @@ public sealed class AgentPacketRepo
         return row is null ? null : ToPacket(row);
     }
 
+    /// <summary>Every packet whose application is still parked in <c>ready</c> — the Ready
+    /// lane as the bulk actions and "Apply to Ready packets" see it (#186, #189).</summary>
+    public async Task<IReadOnlyList<AgentPacket>> ListReadyAsync()
+    {
+        // The packet columns qualified with p.: applications carries its own version and
+        // updated_at, and an unqualified name would be ambiguous in the join.
+        var qualified = string.Join(", ", Columns.Split(", ").Select(c => "p." + c));
+        var rows = await _conn.QueryAsync<Row>(
+            $"""
+             SELECT {qualified} FROM agent_packets p
+             JOIN applications a ON a.tenant_id = p.tenant_id AND a.name = p.application_name
+             WHERE p.tenant_id = @t AND a.status = 'ready'
+             ORDER BY p.application_name
+             """,
+            new { t = _t });
+        return rows.Select(ToPacket).ToList();
+    }
+
     /// <summary>Store a freshly built packet. A rebuild bumps the version and clears the
     /// notification claim, so a genuinely new packet earns a new notification.</summary>
     public Task UpsertAsync(AgentPacket p, IDbTransaction? tx = null) =>

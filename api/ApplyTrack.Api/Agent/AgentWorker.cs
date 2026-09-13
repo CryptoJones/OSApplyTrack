@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Data;
+using System.Text.Json;
 using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
@@ -39,7 +40,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly PacketBuilder _packets;
     private readonly PacketReadyNotifier _notifier;
     private readonly BrowserOptions _browser;
-    private readonly BrowserSubmitter _submitter;
+    private readonly IBrowserSubmitter _submitter;
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<AgentWorker> _log;
     private readonly ISecurityCodeSource? _codes;
@@ -50,7 +51,7 @@ public sealed class AgentWorker : BackgroundService
     public AgentWorker(
         string connectionString, AgentOptions options, LlmOptions llmOptions,
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
-        PacketReadyNotifier notifier, BrowserOptions browser, BrowserSubmitter submitter,
+        PacketReadyNotifier notifier, BrowserOptions browser, IBrowserSubmitter submitter,
         ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null)
     {
         _codes = codes;
@@ -76,12 +77,17 @@ public sealed class AgentWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var interval = TimeSpan.FromSeconds(Math.Max(15, _options.IntervalSeconds));
-        _log.LogInformation("agent worker started; pass every {Interval}, submit queue every {Submit}s",
-            interval, _options.SubmitPollSeconds);
+        _log.LogInformation("agent worker started; pass every {Interval}, submit queue every {Submit}s, heartbeat every {Beat}s",
+            interval, _options.SubmitPollSeconds, _options.HeartbeatSeconds);
         await HeartbeatAsync(stoppingToken);
-        // Two cadences: the slow judging pass, and a fast lane draining the human's
-        // Submit clicks so a click never waits for the next pass.
-        await Task.WhenAll(PassLoopAsync(interval, stoppingToken), SubmitLoopAsync(stoppingToken));
+        // Three cadences: the slow judging pass, a fast lane draining the human's Submit
+        // clicks so a click never waits for the next pass, and the heartbeat on a timer of
+        // its own — tied to neither lane, so a worker without a browser (no submit lane)
+        // is not read as absent for two minutes out of every five (#184).
+        await Task.WhenAll(
+            PassLoopAsync(interval, stoppingToken),
+            SubmitLoopAsync(stoppingToken),
+            HeartbeatLoopAsync(stoppingToken));
     }
 
     private async Task PassLoopAsync(TimeSpan interval, CancellationToken stoppingToken)
@@ -127,6 +133,20 @@ public sealed class AgentWorker : BackgroundService
             }
         }
         while (await timer.WaitForNextTickAsync(stoppingToken));
+    }
+
+    private async Task HeartbeatLoopAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(5, _options.HeartbeatSeconds)));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+                await HeartbeatAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // shutting down
+        }
     }
 
     /// <summary>
@@ -189,6 +209,82 @@ public sealed class AgentWorker : BackgroundService
         return done;
     }
 
+    /// <summary>Everything a packet build for one tenant draws on, loaded once per tenant or per prepare.</summary>
+    private sealed record TenantWork(
+        AgentSettings Settings, EffectiveLlmConfig Cfg, Resume Resume, string Email,
+        PacketInputs Inputs, PacketScope Scope, NotificationSettingsRepo Notifications);
+
+    private async Task<TenantWork> LoadTenantWorkAsync(NpgsqlConnection conn, long tenantId, AgentSettings settings)
+    {
+        var apps = new ApplicationRepo(conn, tenantId);
+        var events = new AgentEventRepo(conn, tenantId);
+        var llmSettings = new LlmSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<LlmSettingsRepo>());
+        var cfg = EffectiveLlmConfig.Resolve(_llmOptions, await llmSettings.GetOverrideAsync());
+        var resume = await new ResumeRepo(conn, tenantId, _protector).GetAsync();
+        var (_, _, _, lettersEnabled) = await llmSettings.GetViewAsync();
+        var email = (await new UserRepo(conn).GetAsync(tenantId))?.Email ?? "";
+        var inputs = new PacketInputs(
+            resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
+        var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId, _protector),
+            new AgentPacketRepo(conn, tenantId, _protector), events, new AnswerBankRepo(conn, tenantId, _protector));
+        var notifications = new NotificationSettingsRepo(
+            conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
+        return new TenantWork(settings, cfg, resume, email, inputs, scope, notifications);
+    }
+
+    /// <summary>A verdict as the audit row recorded it, or null when there is none.</summary>
+    private static Verdict? RecordedVerdict(AgentEvent? recorded)
+    {
+        if (recorded is null || !recorded.Detail.TryGetProperty("decision", out var d))
+            return null;
+        return new Verdict(
+            d.GetString() ?? Verdict.Skip,
+            recorded.Detail.TryGetProperty("confidence", out var c) && c.TryGetInt32(out var ci) ? ci : 0,
+            recorded.Detail.TryGetProperty("rationale", out var r) ? r.GetString() ?? "" : "",
+            [], [], recorded.Detail.TryGetProperty("model_consulted", out var m) && m.ValueKind == JsonValueKind.True);
+    }
+
+    /// <summary>
+    /// The human's Prepare, drained where the browser is (#183): judge (reusing the
+    /// recorded verdict — the person asked for this packet, so a recorded skip does not
+    /// stop it), build with form discovery, park in Ready. Returns the fresh record, or
+    /// null after recording why it could not be built.
+    /// </summary>
+    private async Task<(AppRecord Rec, AgentPacket Packet)?> PrepareAsync(
+        NpgsqlConnection conn, long tenantId, AppRecord rec, AgentSettings settings, CancellationToken ct)
+    {
+        var events = new AgentEventRepo(conn, tenantId);
+        var work = await LoadTenantWorkAsync(conn, tenantId, settings);
+        if (!work.Cfg.IsConfigured)
+        {
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = "prepare failed: no LLM endpoint configured (Settings · AI or the instance default)", rec.Fields.Company, rec.Fields.Role });
+            return null;
+        }
+        var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
+        var verdict = RecordedVerdict(await events.LatestVerdictAsync(rec.Name))
+            ?? await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
+        if (verdict is null)
+        {
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = "prepare failed: the model did not reach a verdict", rec.Fields.Company, rec.Fields.Role });
+            return null;
+        }
+        try
+        {
+            var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
+            var fresh = await work.Scope.Apps.GetAsync(rec.Name) ?? rec;
+            return (fresh, packet);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogWarning(ex, "{Name}: packet build failed", rec.Name);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = "packet build failed: " + ex.Message, rec.Fields.Company, rec.Fields.Role });
+            return null;
+        }
+    }
+
     /// <summary>
     /// Run one queued submission. Returns true when this was a DRY run that came back
     /// completely clean AND the tenant has turned dry-run off, meaning the caller should
@@ -204,8 +300,7 @@ public sealed class AgentWorker : BackgroundService
         var events = new AgentEventRepo(conn, t);
         var evidence = new AgentEvidenceRepo(conn, t, _protector);
         var rec = await apps.GetAsync(req.ApplicationName);
-        var packet = await packets.GetAsync(req.ApplicationName);
-        if (rec is null || packet is null)
+        if (rec is null)
         {
             // Record it. This used to return silently, which made a dropped submission
             // indistinguishable from one that never got requested: the queue row still
@@ -213,26 +308,63 @@ public sealed class AgentWorker : BackgroundService
             // no trace anywhere the user can see. That matters most for the very case
             // this branch catches — a submission that never happened, and therefore an
             // "applied" flag that was never set.
-            var reason = rec is null ? "application missing" : "packet missing";
             await events.RecordAsync(AgentEventRepo.Kinds.Error, req.ApplicationName,
-                new { reason = "submit dropped: " + reason });
-            _log.LogInformation("{Name}: submit request dropped ({Reason})", req.ApplicationName, reason);
+                new { reason = "submit dropped: application missing" });
+            _log.LogInformation("{Name}: submit request dropped (application missing)", req.ApplicationName);
+            return false;
+        }
+        var settings = await new AgentSettingsRepo(conn, t).GetAsync();
+        var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
+
+        AgentPacket? packet;
+        if (req.Prepare)
+        {
+            // Rebuild first, here, where discovery can see the real form. A packet whose
+            // ATS the browser cannot drive is still prepared — and then it is the human's,
+            // by copy-and-open, exactly as the pass would have left it.
+            var prepared = await PrepareAsync(conn, t, rec, settings, ct);
+            if (prepared is null)
+                return false;
+            (rec, packet) = prepared.Value;
+            if (rec.Fields.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
+            {
+                await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
+                return false;
+            }
+        }
+        else
+        {
+            packet = await packets.GetAsync(req.ApplicationName);
+        }
+        if (packet is null)
+        {
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, req.ApplicationName,
+                new { reason = "submit dropped: packet missing" });
+            _log.LogInformation("{Name}: submit request dropped (packet missing)", req.ApplicationName);
             return false;
         }
         // The tenant's dry-run switch wins over the request: the agent never submits
         // for an account that has not turned dry-run off.
-        var settings = await new AgentSettingsRepo(conn, t).GetAsync();
         var dryRun = req.DryRun || settings.DryRun;
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
 
         var resumes = new ResumeRepo(conn, t, _protector);
+        var resume = await resumes.GetAsync();
         var pdf = await resumes.GetPdfAsync();
         // The same résumé as text, for a board whose uploader will not take the file.
-        var resumeText = (await resumes.GetAsync()).Summary;
+        var resumeText = resume.Summary;
         // The drafted letter, for a form whose cover letter is a required file field.
         var coverLetter = await new CoverLetterRepo(conn, t, _protector).GetBodyAsync(rec.Name) ?? "";
-        var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
+        // The standard fields — name, email, phone, links — come from the profile as it is
+        // NOW, not as it was when the packet was built. When the account email changed, all
+        // 35 built packets had to be patched by hand (#189).
+        var email = (await new UserRepo(conn).GetAsync(t))?.Email ?? "";
+        if (PacketBuilder.RefreshStandardAnswers(packet, new AnswerContext(resume, settings, email, coverLetter, packet.PostingExcerpt)))
+        {
+            packet = await packets.UpdateAnswersAsync(rec.Name, packet.Answers, null);
+            _log.LogInformation("{Name}: standard answers refreshed from the profile", rec.Name);
+        }
         // Phase two of a real click: the board emailed the candidate a security code. Record
         // it, and wait — up to eight minutes, holding the browser session the code is good
         // for — reading the candidate's own mailbox for the mail when one is configured, and
@@ -263,14 +395,16 @@ public sealed class AgentWorker : BackgroundService
                 await MooAndListenAsync();
             _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}{How}", rec.Name, recipient,
                 mailbox is not null ? "; reading the mailbox for it" : replies is not null ? "; mooed, reading Telegram replies for it" : "; mooed");
-            var deadline = DateTime.UtcNow.AddMinutes(8);
+            var wait = Math.Max(1, _options.SecurityCodeWaitSeconds);
+            var deadline = DateTime.UtcNow.AddSeconds(wait);
+            var poll = TimeSpan.FromSeconds(Math.Min(5, wait));
             var tick = 0;
             while (DateTime.UtcNow < deadline && !token.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromSeconds(5), token);
-                await using (var poll = await _db.OpenConnectionAsync(token))
+                await Task.Delay(poll, token);
+                await using (var pollConn = await _db.OpenConnectionAsync(token))
                 {
-                    var pasted = await SubmitQueue.SecurityCodeAsync(poll, req.Id);
+                    var pasted = await SubmitQueue.SecurityCodeAsync(pollConn, req.Id);
                     if (pasted.Length > 0) return pasted;
                 }
                 if (replies is not null)
@@ -377,13 +511,19 @@ public sealed class AgentWorker : BackgroundService
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
             : outcome.Filled && dryRun && outcome.Error.Length == 0 ? AgentEvidenceRepo.Kinds.DryRun
             : AgentEvidenceRepo.Kinds.Failed;
+        // What still needs the person after this fill: the required questions nobody could
+        // answer, and the required fields no answer could be typed into — by label, since
+        // that is what the person will be looking for on the form (#190).
+        var labels = packet.Questions.ToDictionary(q => q.Id, q => q.Label.Length > 0 ? q.Label : q.Id);
+        var needsYou = packet.BlockingReview().Select(r => r.Id).Concat(outcome.Unmapped)
+            .Distinct().Select(id => labels.GetValueOrDefault(id, id)).ToList();
         // Discovery -> now, the headline posting->applied latency. Recorded on the event so
         // the win is provable per-application (the agent_latency view aggregates the same
         // timestamps) and logged so it is visible live. A best-effort read: a null age never
         // blocks the submission.
         var latency = await DiscoveryAgeSecondsAsync(conn, t, rec.Name);
         await evidence.RecordAsync(rec.Name, kind, outcome.Url, outcome.Confirmation,
-            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error }, outcome.Screenshot);
+            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou }, outcome.Screenshot);
         await events.RecordAsync(kind, rec.Name, new
         {
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
@@ -405,7 +545,7 @@ public sealed class AgentWorker : BackgroundService
         else if (kind == AgentEvidenceRepo.Kinds.DryRun)
         {
             await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
-                PacketReadyNotifier.Moment.Filled);
+                PacketReadyNotifier.Moment.Filled, string.Join("; ", needsYou));
         }
         _log.LogInformation("{Name}: browser {Kind} ({Mapped} mapped, {Unmapped} unmapped){Latency}{Error}",
             rec.Name, kind, outcome.Mapped.Count, outcome.Unmapped.Count,
@@ -423,7 +563,8 @@ public sealed class AgentWorker : BackgroundService
         //   - no REQUIRED question is still waiting on the user (an optional one the model
         //     declined is left blank on purpose and must not park the packet forever)
         // The caller re-queues with dryRun:false, and that real run cannot promote again
-        // because its kind will never be DryRun.
+        // because its kind will never be DryRun. A packet filled while the switch was still
+        // on is picked up later by ReadyPromoter — on the flip, or on the next pass (#185).
         return kind == AgentEvidenceRepo.Kinds.DryRun
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
@@ -489,27 +630,29 @@ public sealed class AgentWorker : BackgroundService
             if (!settings.Enabled)
                 return 0;
             var events = new AgentEventRepo(conn, tenantId);
-            var apps = new ApplicationRepo(conn, tenantId);
-            var llmSettings = new LlmSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<LlmSettingsRepo>());
-            var cfg = EffectiveLlmConfig.Resolve(_llmOptions, await llmSettings.GetOverrideAsync());
-            if (!cfg.IsConfigured)
+
+            // Ready packets that proved themselves in a dry run while the switch was still
+            // on: with dry-run off now and a browser here, queue the real click. This is
+            // the pass's half of #185 — the save that flips the switch does the same at
+            // once, but a flip the api never saw (or saw with no browser fresh) lands here.
+            if (_browser.IsConfigured && !settings.DryRun)
+            {
+                var promoted = await ReadyPromoter.PromoteCleanAsync(conn, tenantId, _protector, settings.LongTail, dryRun: false);
+                if (promoted.Count > 0)
+                    _log.LogInformation("tenant {TenantId}: {Count} clean dry run(s) queued for real submission: {Names}",
+                        tenantId, promoted.Count, string.Join(", ", promoted));
+            }
+
+            var work = await LoadTenantWorkAsync(conn, tenantId, settings);
+            if (!work.Cfg.IsConfigured)
             {
                 _log.LogWarning("tenant {TenantId}: agent enabled but no LLM endpoint configured", tenantId);
                 await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
                     new { reason = "no LLM endpoint configured (Settings · AI or the instance default)" });
                 return 0;
             }
-
-            var resume = await new ResumeRepo(conn, tenantId, _protector).GetAsync();
+            var apps = work.Scope.Apps;
             var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
-            var (_, _, _, lettersEnabled) = await llmSettings.GetViewAsync();
-            var email = (await new UserRepo(conn).GetAsync(tenantId))?.Email ?? "";
-            var inputs = new PacketInputs(
-                resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
-            var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId, _protector),
-                new AgentPacketRepo(conn, tenantId, _protector), events, new AnswerBankRepo(conn, tenantId, _protector));
-            var notifications = new NotificationSettingsRepo(
-                conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
 
             var today = await events.VerdictsSinceAsync(DailyWindow);
             var budget = Math.Min(settings.MaxPerRun, settings.MaxPerDay - today);
@@ -523,7 +666,7 @@ public sealed class AgentWorker : BackgroundService
             foreach (var rec in await apps.ListAgentCandidatesAsync(settings.MinFitScore, budget))
             {
                 ct.ThrowIfCancellationRequested();
-                var verdict = await _evaluator.EvaluateAsync(rec, resume, criteria, settings, cfg, events, ct);
+                var verdict = await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
                 judged++;
                 if (verdict is { IsProceed: true })
                 {
@@ -550,15 +693,16 @@ public sealed class AgentWorker : BackgroundService
                     // build is recorded and must not stop the pass.
                     try
                     {
-                        var packet = await _packets.BuildAsync(rec, verdict, inputs, scope, ct);
+                        var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
                         // With a browser that may drive this ATS, the moo waits for the
                         // dry-run fill (the submit lane sends it after the screenshot);
-                        // otherwise this is it and the human applies by hand.
+                        // otherwise this is it and the human applies by hand. An aggregator's
+                        // listing page has no form on it, so it never gets a run (#191).
                         if (_browser.IsConfigured && rec.Fields.Link.Length > 0
                             && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
                             await new SubmitRequestRepo(conn, tenantId).EnqueueAsync(rec.Name, dryRun: true);
                         else
-                            await _notifier.NotifyAsync(notifications, scope.Packets, events,
+                            await _notifier.NotifyAsync(work.Notifications, work.Scope.Packets, events,
                                 rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)

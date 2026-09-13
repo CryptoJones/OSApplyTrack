@@ -632,3 +632,16 @@ def test_fetch_paylocity_refuses_a_non_guid_slug_without_fetching() -> None:
 )
 def test_paylocity_slug_accepts_a_guid_or_a_board_url(raw: str, expected: str) -> None:
     assert paylocity_slug(raw) == expected
+
+
+def test_fetch_remoteok_keeps_the_apply_url_for_the_employer_resolution() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[
+            {"company": "Acme", "position": "Engineer", "url": "https://remoteok.com/remote-jobs/1",
+             "apply_url": "https://remoteok.com/l/1", "description": ""},
+            {"company": "Globex", "position": "Engineer", "url": "https://remoteok.com/remote-jobs/2",
+             "description": ""},
+        ])
+
+    out = fetch_remoteok(_client(handler), 40)
+    assert [j.apply_link for j in out] == ["https://remoteok.com/l/1", ""]

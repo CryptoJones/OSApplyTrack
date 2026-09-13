@@ -17,8 +17,8 @@ namespace ApplyTrack.Api.Data;
 public static class AgentWorkerRegistry
 {
     /// <summary>How long after its last heartbeat a worker still counts as present. The
-    /// submit lane ticks every 15 s and the judging pass every 5 min by default; a worker
-    /// silent for this long is gone (or wedged), and the UI should say so.</summary>
+    /// worker stamps its row every 30 s on a timer of its own (#184), whatever its lanes
+    /// are doing; a worker silent for this long is gone (or wedged), and the UI should say so.</summary>
     public static readonly TimeSpan Freshness = TimeSpan.FromMinutes(3);
 
     public static Task HeartbeatAsync(IDbConnection conn, string workerId, bool browser) =>
@@ -40,6 +40,14 @@ public static class AgentWorkerRegistry
         conn.ExecuteScalarAsync<bool>(
             "SELECT EXISTS (SELECT 1 FROM agent_workers WHERE seen_at > now() - @within)",
             new { within = Freshness });
+
+    /// <summary>When any worker was last heard from, fresh or not — so a wedged worker is
+    /// visible as "last seen 40 minutes ago" rather than as silence. Null when none ever was.</summary>
+    public static async Task<DateTimeOffset?> LastSeenAsync(IDbConnection conn)
+    {
+        var seen = await conn.ExecuteScalarAsync<DateTime?>("SELECT max(seen_at) FROM agent_workers");
+        return seen is null ? null : new DateTimeOffset(DateTime.SpecifyKind(seen.Value, DateTimeKind.Utc));
+    }
 }
 
 /// <summary>
@@ -58,6 +66,10 @@ public sealed class BrowserAvailability
         _local = local;
         _conn = conn;
     }
+
+    /// <summary>This process drives a browser itself, so a packet can be built with
+    /// discovery right here rather than handed to a worker.</summary>
+    public bool IsLocal => _local.IsConfigured;
 
     public async Task<bool> IsAvailableAsync() =>
         _local.IsConfigured || await AgentWorkerRegistry.BrowserSeenAsync(_conn);

@@ -125,4 +125,19 @@ public class TelegramNotifierTests
             PacketReadyNotifier.BuildMessage("Acme", "", PacketReadyNotifier.DeepLink("", "acme.md")));
         Assert.Equal("https://apply.example/#app=a%20b.md", PacketReadyNotifier.DeepLink("https://apply.example", "a b.md"));
     }
+
+    [Fact]
+    public void The_filled_moo_says_what_still_needs_the_person()
+    {
+        // A clean dry run is a click; one that stopped on required questions is a form to
+        // finish, and the moo names the questions (#190). Semicolons separate them because a
+        // label may carry a comma of its own.
+        Assert.Equal("🐮 moo — Acme · Engineer is filled in and ready for you to click Apply",
+            PacketReadyNotifier.BuildMessage("Acme", "Engineer", null, PacketReadyNotifier.Moment.Filled));
+        Assert.Equal("🐮 moo — Acme · Engineer is filled in — 2 questions need you: expected monthly salary, database technologies (SQL, NoSQL)",
+            PacketReadyNotifier.BuildMessage("Acme", "Engineer", null, PacketReadyNotifier.Moment.Filled,
+                "expected monthly salary; database technologies (SQL, NoSQL)"));
+        Assert.Equal("🐮 moo — Acme is filled in — 1 question needs you: notice period",
+            PacketReadyNotifier.BuildMessage("Acme", "", null, PacketReadyNotifier.Moment.Filled, "notice period"));
+    }
 }

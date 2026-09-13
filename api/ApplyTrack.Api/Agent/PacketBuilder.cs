@@ -88,8 +88,15 @@ public sealed partial class PacketBuilder
         // the standard set and the copy-and-open path.
         List<PacketQuestion>? questions = null;
         var greenhouseContent = "";
+        var source = f.Source;
+        // A company careers page that embeds a Greenhouse job (?gh_jid=) names its board in
+        // the embed script, not in the link; a lead from anywhere but the tenant's own board
+        // list carries no board in its source either. Read it off the page once (#180).
+        if (provider == AtsProvider.Greenhouse && !AtsProvider.TryParseGreenhouse(f.Link, source, out _, out _)
+            && AtsProvider.FindGreenhouseBoard(await _evaluator.FetchHtmlAsync(f.Link, ct)) is { } embedded)
+            source = $"auto:greenhouse:{embedded}";
         if (provider == AtsProvider.Greenhouse
-            && AtsProvider.TryParseGreenhouse(f.Link, f.Source, out var board, out var jobId)
+            && AtsProvider.TryParseGreenhouse(f.Link, source, out var board, out var jobId)
             && await _greenhouse.GetJobAsync(board, jobId, ct) is { } job)
         {
             questions = job.Questions;
@@ -162,6 +169,34 @@ public sealed partial class PacketBuilder
         _log.LogInformation("{Name}: packet ready ({Provider}, {Answered}/{Questions} answered, {Review} to review)",
             rec.Name, provider, answers.Count, questions.Count, packet.NeedsReview.Count);
         return await scope.Packets.GetAsync(rec.Name) ?? packet;
+    }
+
+    /// <summary>
+    /// Bring a packet's <b>standard</b> answers — name, email, phone, links, location,
+    /// country, the letter — up to date with the profile as it is now. A packet froze
+    /// these at build time, so when the account email changed every built packet had to be
+    /// patched by hand (#189). Only questions the drafter answers deterministically move;
+    /// a screening answer, the model's or the person's, is never touched. True when
+    /// anything changed, so the caller can persist it.
+    /// </summary>
+    public static bool RefreshStandardAnswers(AgentPacket packet, AnswerContext ctx)
+    {
+        var changed = false;
+        foreach (var q in packet.Questions)
+        {
+            if (q.Kind != PacketQuestion.Standard || q.Type == PacketQuestion.File)
+                continue;
+            var (answer, _) = AnswerDrafter.Deterministic(q, ctx);
+            if (answer is null)
+                continue;
+            if (packet.Answers.TryGetValue(q.Id, out var current) && current == answer)
+                continue;
+            packet.Answers[q.Id] = answer;
+            changed = true;
+        }
+        if (changed)
+            packet.RecomputeReview();
+        return changed;
     }
 
     private static string StripHtml(string html) =>

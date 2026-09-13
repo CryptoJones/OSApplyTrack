@@ -549,3 +549,43 @@ test("DELETE MY DATA needs the phrase typed before it will fire", async ({ page 
   await expect(confirm).toBeEnabled();
   expect(deleted).toBe(false);
 });
+
+test("the Ready lane offers bulk actions on the selection and submits them in one request", async ({ page }) => {
+  const readyApps = [
+    { ...application, status: "ready" },
+    { ...applications[1], status: "ready" },
+    applications[2],
+  ];
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    let body = { ok: true };
+    if (path === "/api/auth/me") body = { email: "person@example.com" };
+    else if (path === "/api/apps" && method === "GET") body = readyApps;
+    else if (path === "/api/stats") body = { status: { ready: 2, applied: 1 }, lane: {} };
+    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true, browser_available: true, dry_run: true };
+    else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
+    else if (path === "/api/ready/actions") body = { action: "submit", dry_run: true, done: [application.filename], skipped: [] };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/");
+  // Nothing bulk-shaped until the list is filtered to Ready.
+  await expect(page.getByRole("group", { name: "Ready lane bulk actions" })).toBeHidden();
+  await page.locator("#filter-status").selectOption("ready");
+  const bar = page.getByRole("group", { name: "Ready lane bulk actions" });
+  await expect(bar).toBeVisible();
+  await expect(bar.getByRole("button", { name: "Submit selected" })).toBeDisabled();
+  await page.getByRole("checkbox", { name: "Select Example Co · Senior Engineer" }).check();
+  await expect(bar).toContainText("1 selected");
+  await expect(bar.getByRole("button", { name: "Submit selected" })).toBeEnabled();
+  await expectNoSeriousViolations(page);
+
+  const sent = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/ready/actions" && request.method() === "POST");
+  await bar.getByRole("button", { name: "Submit selected" }).click();
+  await page.locator("#confirm-accept").click();
+  const req = await sent;
+  expect(req.postDataJSON()).toEqual({ action: "submit", names: [application.filename] });
+  await expect(page.locator("#toast")).toContainText("1 queued for a dry run");
+});
