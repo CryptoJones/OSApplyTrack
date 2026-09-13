@@ -43,6 +43,8 @@ public sealed class AgentWorker : BackgroundService
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<AgentWorker> _log;
     private readonly ISecurityCodeSource? _codes;
+    // This container's name: the quadlet/compose service name, or the pod's hostname.
+    private readonly string _workerId = Environment.MachineName;
 
     public AgentWorker(
         string connectionString, AgentOptions options, LlmOptions llmOptions,
@@ -74,6 +76,7 @@ public sealed class AgentWorker : BackgroundService
         var interval = TimeSpan.FromSeconds(Math.Max(15, _options.IntervalSeconds));
         _log.LogInformation("agent worker started; pass every {Interval}, submit queue every {Submit}s",
             interval, _options.SubmitPollSeconds);
+        await HeartbeatAsync(stoppingToken);
         // Two cadences: the slow judging pass, and a fast lane draining the human's
         // Submit clicks so a click never waits for the next pass.
         await Task.WhenAll(PassLoopAsync(interval, stoppingToken), SubmitLoopAsync(stoppingToken));
@@ -124,9 +127,30 @@ public sealed class AgentWorker : BackgroundService
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
+    /// <summary>
+    /// Stamp this worker's <c>agent_workers</c> row: it is here, and whether it drives a
+    /// browser. The api process reads it to decide whether a Submit click has anything
+    /// to land on — on every shipped deployment shape the browser is wired to the agent
+    /// container only, so the api cannot tell from its own configuration (#159).
+    /// Best-effort: a heartbeat that fails must never stop a pass.
+    /// </summary>
+    public async Task HeartbeatAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = await _db.OpenConnectionAsync(ct);
+            await AgentWorkerRegistry.HeartbeatAsync(conn, _workerId, _browser.IsConfigured);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogDebug(ex, "heartbeat failed");
+        }
+    }
+
     /// <summary>Drain the submit queue: every claimed request gets one browser run. Public for tests.</summary>
     public async Task<int> DrainSubmitsAsync(CancellationToken ct)
     {
+        await HeartbeatAsync(ct);
         var done = 0;
         while (!ct.IsCancellationRequested)
         {
@@ -394,6 +418,7 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>One pass over every enabled tenant. Public so tests can drive it directly.</summary>
     public async Task<int> RunOnceAsync(CancellationToken ct)
     {
+        await HeartbeatAsync(ct);
         long[] tenants;
         await using (var conn = await _db.OpenConnectionAsync(ct))
         {

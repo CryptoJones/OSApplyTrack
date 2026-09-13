@@ -17,7 +17,7 @@ BEGIN
         GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO applytrack_agent;
         REVOKE ALL ON sessions, magic_tokens FROM applytrack_agent;
         GRANT INSERT, UPDATE ON agent_events, agent_packets, agent_evidence,
-            cover_letters, submit_requests TO applytrack_agent;
+            cover_letters, submit_requests, agent_workers TO applytrack_agent;
         -- Status flips (ready / applied); the list-revision trigger bumps users.
         GRANT UPDATE ON applications TO applytrack_agent;
         GRANT UPDATE (applications_revision) ON users TO applytrack_agent;

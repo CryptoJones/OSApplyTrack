@@ -396,4 +396,30 @@ public class AgentWorkerTests(PostgresFixture pg)
         await new SubmitRequestRepo(conn, t).EnqueueAsync(name, dryRun: true);
         Assert.Null(await SubmitQueue.ClaimNextAsync(conn));
     }
+
+    [Fact]
+    public async Task A_pass_stamps_the_workers_heartbeat_and_the_api_side_reads_a_browser_from_it()
+    {
+        // The api container never has Browser__Endpoint on any shipped deployment shape;
+        // what it can know is that a worker with one has been heard from (#159).
+        var stub = new StubLlmClient(Responders.Agent());
+        var (conn, _) = await SeedTenantAsync(enabled: false);
+        await using var _ = conn;
+        using (var noBrowser = NewWorker(stub, pg.ConnectionString, new CapturingNotifier()))
+            await noBrowser.RunOnceAsync(CancellationToken.None);
+        Assert.True(await AgentWorkerRegistry.WorkerSeenAsync(conn));
+        Assert.False(await AgentWorkerRegistry.BrowserSeenAsync(conn));
+        Assert.False(await new BrowserAvailability(new BrowserOptions(), conn).IsAvailableAsync());
+
+        using (var withBrowser = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(),
+                   browser: new BrowserOptions { Endpoint = "ws://127.0.0.1:1/" }))
+            await withBrowser.DrainSubmitsAsync(CancellationToken.None);
+        Assert.True(await AgentWorkerRegistry.BrowserSeenAsync(conn));
+        Assert.True(await new BrowserAvailability(new BrowserOptions(), conn).IsAvailableAsync());
+
+        // Silence is absence: a stale heartbeat promises nothing.
+        await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '1 hour'");
+        Assert.False(await AgentWorkerRegistry.BrowserSeenAsync(conn));
+        Assert.False(await AgentWorkerRegistry.WorkerSeenAsync(conn));
+    }
 }

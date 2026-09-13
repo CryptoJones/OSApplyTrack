@@ -159,6 +159,9 @@ builder.Services.AddScoped(sp => new NotificationSettingsRepo(
 // harmless to register everywhere — it refuses to run unless configured.
 var browserOptions = builder.Configuration.GetSection("Browser").Get<BrowserOptions>() ?? new BrowserOptions();
 builder.Services.AddSingleton(browserOptions);
+// What a request may promise: a browser here, or on an agent worker whose heartbeat
+// (agent_workers) is fresh — the shipped shape, where only the agent has the endpoint.
+builder.Services.AddScoped(sp => new BrowserAvailability(browserOptions, sp.GetRequiredService<IDbConnection>()));
 builder.Services.AddSingleton<BrowserSubmitter>();
 builder.Services.AddSingleton<FormDiscoverer>();
 builder.Services.AddScoped(sp => new SubmitRequestRepo(
