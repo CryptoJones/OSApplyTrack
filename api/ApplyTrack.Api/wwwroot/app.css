@@ -373,7 +373,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 .beta-body li { margin-top: 0.6rem; }
 /* Terms acceptance on the login form. */
 .login-terms { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.9rem; line-height: 1.4; }
-.login-terms input { margin-top: 0.15rem; flex: none; }
+.login-terms input {
+  /* The generic input rule above sizes text fields (width 100%, 2.75rem tall, padded);
+     on the checkbox that swallowed the row and wrapped the label one word per line. */
+  width: 1.25rem; height: 1.25rem; min-height: 1.25rem; padding: 0;
+  margin: 0.15rem 0 0; flex: none; accent-color: var(--accent);
+}
+.login-terms > span { flex: 1 1 auto; min-width: 0; }
 /* A button that reads as a link — keeps the Terms opener keyboard- and screen-reader
    correct without pretending an in-page dialog trigger is a navigation. */
 .link-button {
