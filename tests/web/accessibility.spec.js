@@ -359,6 +359,28 @@ test("keyboard navigation and validation retain visible focus", async ({ page })
   await expect(page.locator("#form-errors")).toContainText("Enter a company");
 });
 
+test("a populated mobile list scrolls to its last card inside the shell", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "Mobile single-column layout");
+  // On a phone nothing between the fixed-height shell and the list was a scroll
+  // container, so the list was clipped and the swipe fell through to a document that
+  // cannot scroll — which Safari reads as pull-to-refresh (#201).
+  await expect(page.locator("#app-list .application-card").first()).toBeVisible();
+  await page.evaluate(() => {
+    const list = document.querySelector("#app-list");
+    const row = list.firstElementChild;
+    for (let index = 0; index < 12; index += 1) list.append(row.cloneNode(true));
+  });
+  const last = page.locator("#app-list .application-card").last();
+  // A gesture, not scrollIntoView: script can scroll an overflow-hidden box, a finger cannot.
+  const box = await page.locator("#app-list").boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + 10);
+  await page.mouse.wheel(0, 4000);
+  await expect(last).toBeInViewport();
+  // The shell itself did not move: the header stays put and the document is not the scroller.
+  await expect(page.locator(".app-header")).toBeInViewport();
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
 test("a populated desktop list scrolls without moving the application shell", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Desktop master-detail layout");
   // The heading is static; the rows arrive after the boot fetches. Wait for one.

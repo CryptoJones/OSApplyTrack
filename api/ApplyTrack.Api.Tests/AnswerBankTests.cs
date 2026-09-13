@@ -57,8 +57,10 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
             AnswerBankRepo.KeyFor(new PacketQuestion("q", "Salary expectation", true, PacketQuestion.Text, [], PacketQuestion.Custom) { Help = "per month, in EUR" }));
         Assert.NotEqual(AnswerBankRepo.KeyFor("Salary expectation"), AnswerBankRepo.KeyFor("Salary expectation (per month, in EUR)"));
         Assert.True(AnswerBankRepo.Bankable(Salary));
-        Assert.False(AnswerBankRepo.Bankable(Name));
+        Assert.True(AnswerBankRepo.Bankable(Name));      // the two name fields are the exception (#200)
+        Assert.Equal(AnswerBankRepo.FirstNameKey, AnswerBankRepo.KeyFor(Name));
         Assert.False(AnswerBankRepo.Bankable(Gender));
+        Assert.False(AnswerBankRepo.Bankable(new PacketQuestion("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard)));
     }
 
     [Fact]
@@ -75,7 +77,11 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         }, "acme-engineer.md");
 
         var entries = await bank.ListAsync();
-        Assert.Equal(["describe a system you scaled", "salary requirements"], entries.Select(e => e.Key).Order().ToArray());
+        Assert.Equal(["describe a system you scaled", "first name", "salary requirements"], entries.Select(e => e.Key).Order().ToArray());
+        // The name row is filed under its own label, not the form's, and listed first.
+        Assert.Equal("first name", entries[0].Key);
+        Assert.Equal("First name", entries[0].Label);
+        Assert.Equal("Ada", entries[0].Answer);
         var salary = entries.Single(e => e.Key == "salary requirements");
         Assert.Equal("125000", salary.Answer);
         Assert.Equal(AnswerBankEntry.Agent, salary.Source);
@@ -147,8 +153,10 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         var first = await builder.BuildAsync(rec, verdict, inputs, scope);
         Assert.Equal("MODEL DRAFT", first.Answers["question_3"]);
         var keys = (await bank.ListAsync()).Select(e => e.Key).Order().ToArray();
-        // The three custom questions; the standard fields and the hidden tracker never.
-        Assert.Equal(["are you legally authorized to work in the united states", "describe a system you scaled", "linkedin profile"], keys);
+        // The three custom questions and the two name fields; the other standard fields
+        // and the hidden tracker never.
+        Assert.Equal(["are you legally authorized to work in the united states", "describe a system you scaled", "first name", "last name", "linkedin profile"], keys);
+        Assert.Equal("Byte", (await bank.GetAsync(AnswerBankRepo.LastNameKey))!.Answer);
         Assert.Equal("MODEL DRAFT", (await bank.GetAsync("describe a system you scaled"))!.Answer);
 
         await bank.SetAsync("Describe a system you scaled.", "By hand: sharded the ledger.");
@@ -178,7 +186,15 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
             new Dictionary<string, string> { ["question_9"] = "125000" }, "acme-engineer.md");
 
         var list = JsonDocument.Parse(await (await client.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement;
-        Assert.Equal(2, list.GetArrayLength());
+        // The two banked questions, plus the name rows the listing seeds (#200) — blank
+        // here, with no résumé to split, and listed first.
+        Assert.Equal(4, list.GetArrayLength());
+        var rows = list.EnumerateArray().ToList();
+        Assert.Equal(["first name", "last name"], rows.Take(2).Select(e => e.GetProperty("key").GetString()).ToArray());
+        Assert.Equal("First name", rows[0].GetProperty("label").GetString());
+        Assert.Equal("", rows[0].GetProperty("answer").GetString());
+        Assert.Equal("agent", rows[0].GetProperty("source").GetString());
+        Assert.Equal(0, rows[0].GetProperty("times_seen").GetInt32());
         var salary = list.EnumerateArray().Single(e => e.GetProperty("key").GetString() == "salary requirements");
         Assert.Equal("125000", salary.GetProperty("answer").GetString());
         Assert.Equal("agent", salary.GetProperty("source").GetString());
@@ -199,13 +215,55 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
             new StringContent("""{"answer":"x"}""", Encoding.UTF8, "application/json"))).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync("/api/answers/" + Uri.EscapeDataString("salary requirements"))).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync("/api/answers/" + Uri.EscapeDataString("salary requirements"))).StatusCode);
-        Assert.Equal(1, JsonDocument.Parse(await (await client.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement.GetArrayLength());
+        Assert.Equal(3, JsonDocument.Parse(await (await client.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement.GetArrayLength());
 
-        // Another tenant sees nothing of it.
+        // Another tenant sees nothing of it — only its own seeded name rows.
         var (_, other) = await TestAuth.SeedSessionAsync(pg.ConnectionString);
         var stranger = f.CreateClient();
         stranger.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={other}");
-        Assert.Equal(0, JsonDocument.Parse(await (await stranger.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement.GetArrayLength());
+        var strangers = JsonDocument.Parse(await (await stranger.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(["first name", "last name"], strangers.EnumerateArray().Select(e => e.GetProperty("key").GetString()).ToArray());
+    }
+
+    [Fact]
+    public async Task The_name_rows_follow_the_resume_until_the_person_pins_one()
+    {
+        await using var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+        var t = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
+        var bank = new AnswerBankRepo(conn, t, Protector);
+
+        await bank.SeedNamesAsync("Aaron", "Clark");
+        var last = (await bank.GetAsync(AnswerBankRepo.LastNameKey))!;
+        Assert.Equal("Clark", last.Answer);
+        Assert.Equal(AnswerBankEntry.Agent, last.Source);
+        Assert.Equal(0, last.TimesSeen);
+        Assert.Empty(await bank.PinnedAsync());
+
+        // The résumé changes: the agent's row follows it.
+        await bank.SeedNamesAsync("Aaron", "Clarke");
+        Assert.Equal("Clarke", (await bank.GetAsync(AnswerBankRepo.LastNameKey))!.Answer);
+
+        // The person pins the last name; the résumé no longer moves it, and the drafter is told.
+        Assert.True(await bank.SetAsync(AnswerBankRepo.LastNameKey, "Clark-Jones"));
+        await bank.SeedNamesAsync("Aaron", "Clarke");
+        last = (await bank.GetAsync(AnswerBankRepo.LastNameKey))!;
+        Assert.Equal("Clark-Jones", last.Answer);
+        Assert.Equal(AnswerBankEntry.Human, last.Source);
+        Assert.Equal(new Dictionary<string, string> { [AnswerBankRepo.LastNameKey] = "Clark-Jones" }, await bank.PinnedAsync());
+
+        // A form asking "Surname" is a sighting of the same row; the pin still stands.
+        var surname = new PacketQuestion("q_2", "Surname", true, PacketQuestion.Text, [], PacketQuestion.Custom);
+        await bank.RecordAsync([surname], new Dictionary<string, string> { ["q_2"] = "Clark-Jones" }, "acme-engineer.md");
+        last = (await bank.GetAsync(AnswerBankRepo.LastNameKey))!;
+        Assert.Equal("Last name", last.Label);
+        Assert.Equal(1, last.TimesSeen);
+        Assert.Equal("Clark-Jones", last.Answer);
+
+        // Handed back to the agent, it follows the résumé again.
+        Assert.True(await bank.SetAsync(AnswerBankRepo.LastNameKey, ""));
+        await bank.SeedNamesAsync("Aaron", "Clarke");
+        Assert.Equal("Clarke", (await bank.GetAsync(AnswerBankRepo.LastNameKey))!.Answer);
     }
 
     [Fact]

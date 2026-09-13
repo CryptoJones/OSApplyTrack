@@ -28,6 +28,22 @@ public sealed partial class BrowserSession : IAsyncDisposable
     [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested)", RegexOptions.IgnoreCase)]
     private static partial Regex ApplyTrigger();
 
+    // Cookie-consent banners (#202): the well-known managers by their own ids first, then
+    // any visible button that reads as "accept" inside a box that calls itself a cookie,
+    // consent or privacy notice. Zoho Recruit and Workable's job finder both put an
+    // "Accept all" over the page; Playwright will not click Apply through it.
+    private static readonly string[] ConsentSelectors =
+    [
+        "#onetrust-accept-btn-handler",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll", "#CybotCookiebotDialogBodyButtonAccept",
+        ".cc-btn.cc-allow", ".cc-btn.cc-dismiss",
+        "#truste-consent-button", ".osano-cm-accept-all", "#hs-eu-confirmation-button",
+        "button[data-cookiebanner='accept_button']",
+        ".cw-cookie-banner .cookie-accept-btn",
+    ];
+    [GeneratedRegex(@"^\s*(?:accept|allow|agree|got it|ok(?:ay)?|i (?:agree|accept|understand)|yes)(?:\s+(?:all|everything|cookies|all cookies|and close|& close|to all))?\s*[.!]?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ConsentAccept();
+
     private readonly IPlaywright _playwright;
     private readonly IBrowser _browser;
     private readonly IBrowserContext _context;
@@ -112,9 +128,68 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
             await route.ContinueAsync();
         });
-        await page.GotoAsync(target.AbsoluteUri, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var response = await page.GotoAsync(target.AbsoluteUri, new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        // The status the posting answered with: a 404 or 410 is a gone job, whatever the
+        // page says (#203). Zero when the navigation produced no response (about:blank).
+        session.Status = response?.Status ?? 0;
+        await DismissConsentAsync(page);
         await session.RevealFormAsync();
         return session;
+    }
+
+    /// <summary>The HTTP status of the first navigation, or 0 when there was no response.</summary>
+    public int Status { get; private set; }
+
+    /// <summary>
+    /// Click away a cookie-consent banner when one is up (#202), in the page or any frame
+    /// it embeds. Bounded and quiet: a banner that will not go is left where it is and the
+    /// run carries on. Public: the submitter calls it again on the page the form is on,
+    /// since a banner can arrive after load or with the tab Apply opens. True when one was
+    /// dismissed.
+    /// </summary>
+    public static async Task<bool> DismissConsentAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                foreach (var selector in ConsentSelectors)
+                {
+                    var known = frame.Locator(selector).First;
+                    if (!await known.IsVisibleAsync()) continue;
+                    await known.ClickAsync(new() { Timeout = 2_000 });
+                    await page.WaitForTimeoutAsync(300);
+                    return true;
+                }
+                var buttons = frame.GetByRole(AriaRole.Button, new() { NameRegex = ConsentAccept() });
+                var count = Math.Min(await buttons.CountAsync(), 6);
+                for (var i = 0; i < count; i++)
+                {
+                    var candidate = buttons.Nth(i);
+                    if (!await candidate.IsVisibleAsync()) continue;
+                    // "I agree" on the application form itself is an answer, not a banner:
+                    // only a button inside something that calls itself cookie/consent/privacy.
+                    var inBanner = await candidate.EvaluateAsync<bool>("""
+                        el => {
+                          for (let a = el; a && a !== document.body; a = a.parentElement) {
+                            const id = a.id || '';
+                            const cls = typeof a.className === 'string' ? a.className : '';
+                            const label = a.getAttribute('aria-label') || '';
+                            if (/cookie|consent|gdpr|privacy/i.test(id + ' ' + cls + ' ' + label)) return true;
+                          }
+                          return false;
+                        }
+                        """);
+                    if (!inBanner) continue;
+                    await candidate.ClickAsync(new() { Timeout = 2_000 });
+                    await page.WaitForTimeoutAsync(300);
+                    return true;
+                }
+            }
+            catch (TimeoutException) { /* the click did not land; carry on without it */ }
+            catch (PlaywrightException) { /* a frame mid-navigation, or the banner went away on its own */ }
+        }
+        return false;
     }
 
     public async Task<byte[]?> ScreenshotAsync()
@@ -311,6 +386,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
             catch (TimeoutException) { /* judged by what renders */ }
             catch (PlaywrightException) { /* ditto */ }
+            await DismissConsentAsync(Page);
         }
         if (!await WaitForFieldAsync(Page, 10_000))
         {

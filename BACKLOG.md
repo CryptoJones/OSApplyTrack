@@ -38,6 +38,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#110 — Grey out "Mark applied" once a role is already applied](https://github.com/CryptoJones/OSApplyTrack/issues/110)
 - [x] [#111 — Show the running build version in the header](https://github.com/CryptoJones/OSApplyTrack/issues/111)
 - [x] [#112 — A dropped submit request leaves no trace anywhere](https://github.com/CryptoJones/OSApplyTrack/issues/112)
+- [x] [#201 — Mobile: the Ready list will not scroll — swiping down past the bulk bar rubber-bands and Safari refreshes the page](https://github.com/CryptoJones/OSApplyTrack/issues/201) (fixed in 1.31.0)
 - [x] [#114 — A crashed browser submission leaves no evidence at all](https://github.com/CryptoJones/OSApplyTrack/issues/114)
 
 ## Agentic auto-apply
@@ -73,6 +74,9 @@ review items and unsupported forms still need human attention.
 - [x] [#191 — Poller: resolve aggregator listing links to the employer's posting, or mark the lead apply-by-hand](https://github.com/CryptoJones/OSApplyTrack/issues/191) (fixed in 1.30.0)
 - [x] [#192 — Worker-level tests for the parked-on-code path, and a live check of the Telegram reply](https://github.com/CryptoJones/OSApplyTrack/issues/192) (worker-level tests in 1.30.0; live check passed on pluto 2026-09-13 — the code came back through a Telegram reply and GitLab was submitted)
 - [ ] [#195 — Greenhouse résumé listed optional by the API but required on the form: a failed attach is not unmapped, so the click goes ahead into "Resume/CV is required"](https://github.com/CryptoJones/OSApplyTrack/issues/195)
+- [x] [#200 — Last name drafted as "K. Clark": middle initials land in the last name, and the name fields cannot be corrected in Settings · Answers](https://github.com/CryptoJones/OSApplyTrack/issues/200) (fixed in 1.31.0: initials stay out of the split, and First name / Last name are rows in Settings · Answers)
+- [x] [#202 — Browser: cookie-consent dialogs ("Accept all") sit over the Apply button, so the click times out and the run reports no form](https://github.com/CryptoJones/OSApplyTrack/issues/202) (fixed in 1.31.0)
+- [x] [#203 — Submit drives the packet's stale provider, and a posting that is gone (HTTP 410/404) is reported as "no form found"](https://github.com/CryptoJones/OSApplyTrack/issues/203) (fixed in 1.31.0)
 - [x] [#177 — Browser fill misses plain forms: labels-as-text never match, Ashby's single Name box and late-loading form, and a zero-field dry run reports as filled](https://github.com/CryptoJones/OSApplyTrack/issues/177) (fix in [#178](https://github.com/CryptoJones/OSApplyTrack/pull/178): the form is found in any frame, after it renders)
 - [x] [#174 — Answer bank: every question the agent meets, with the answer it gave, editable in one place and reused next time](https://github.com/CryptoJones/OSApplyTrack/issues/174) (fix in [#175](https://github.com/CryptoJones/OSApplyTrack/pull/175): Settings · Answers)
 

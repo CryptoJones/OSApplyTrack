@@ -2332,8 +2332,7 @@ function answersMarkup(entries) {
       <label class="field-label" for="ans-${i}">${escapeHtml(e.label)}${e.help ? ` <span class="text-ink-faint">(${escapeHtml(e.help)})</span>` : ""}</label>
       <p class="field-help">
         <span class="link-status ${e.source === "human" ? "ok" : ""}">${e.source === "human" ? "Your answer" : "Agent's answer"}</span>
-        · asked on ${e.times_seen} form${e.times_seen === 1 ? "" : "s"}
-        · last ${escapeHtml(new Date(e.last_seen_at).toLocaleDateString())}
+        ${e.times_seen ? `· asked on ${e.times_seen} form${e.times_seen === 1 ? "" : "s"} · last ${escapeHtml(new Date(e.last_seen_at).toLocaleDateString())}` : "· not asked on a form yet"}
         ${e.first_application ? ` · first on <a href="#app=${encodeURIComponent(e.first_application)}">${escapeHtml(e.first_application.replace(/\.md$/, ""))}</a>` : ""}
         ${e.options && e.options.length && e.type !== "select" ? ` · options: ${escapeHtml(e.options.join(", "))}` : ""}
       </p>
@@ -2353,9 +2352,11 @@ function answersMarkup(entries) {
         Every screening question the agent has met, as the form asked it, with the answer it
         gave. Change one and <strong>Save as my answer</strong>: from then on the agent uses your
         words on every form that asks the same question, no model involved — and
-        <strong>Apply to Ready packets</strong> writes it into the packets already built. Name, email and
-        the résumé come from your profile and are not listed; salary, work authorization and
-        phone defaults live in Settings · Agent and show up here as the forms ask for them.
+        <strong>Apply to Ready packets</strong> writes it into the packets already built. Your first and
+        last name are always listed: the agent splits them from your résumé's name, and if a form
+        should see something else, set them here once. Email and the résumé come from your profile;
+        salary, work authorization and phone defaults live in Settings · Agent and show up here as
+        the forms ask for them.
       </p>
       ${entries.length ? rows : `<div class="board-empty field-help mt-5">No questions yet — they appear here as the agent prepares packets.</div>`}
     </article>`;

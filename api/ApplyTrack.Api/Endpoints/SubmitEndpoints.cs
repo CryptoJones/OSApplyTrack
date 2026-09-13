@@ -49,8 +49,11 @@ public static class SubmitEndpoints
                 ?? throw new AppValidationException("prepare the packet first");
 
             var agent = await settings.GetAsync();
-            if (!AtsProvider.BrowserCanSubmit(packet.Provider, agent.LongTail))
-                throw new AppValidationException(CannotDrive(packet.Provider));
+            // Gate on the link as it is read today, not the provider the packet was built
+            // with: a board taught since then drives packets built before it (#203).
+            var provider = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
+            if (!AtsProvider.BrowserCanSubmit(provider, agent.LongTail))
+                throw new AppValidationException(CannotDrive(provider));
 
             // Dry run unless the caller says otherwise AND the tenant has turned dry-run off.
             var wantsReal = payload is { ValueKind: JsonValueKind.Object } p

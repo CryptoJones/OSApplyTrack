@@ -20,7 +20,14 @@ public static class AnswersEndpoints
 {
     public static void MapAnswersEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/answers", async (AnswerBankRepo bank) => Results.Ok(await bank.ListAsync()));
+        app.MapGet("/api/answers", async (AnswerBankRepo bank, ResumeRepo resumes) =>
+        {
+            // The two name rows are always listed, seeded from the résumé's name, so the
+            // person can pin a first and last name before any form gets them wrong (#200).
+            var (first, last) = AnswerDrafter.SplitName((await resumes.GetAsync()).FullName);
+            await bank.SeedNamesAsync(first, last);
+            return Results.Ok(await bank.ListAsync());
+        });
 
         app.MapPut("/api/answers/{key}", async (string key, JsonElement payload, AnswerBankRepo bank) =>
         {

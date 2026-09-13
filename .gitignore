@@ -33,3 +33,6 @@ test-results/
 
 # Local agent runtime state
 .claude/
+
+# Playwright MCP session snapshots
+.playwright-mcp/

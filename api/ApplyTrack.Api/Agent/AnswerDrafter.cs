@@ -179,10 +179,13 @@ public sealed partial class AnswerDrafter
         var label = q.FullPrompt;
         var (first, last) = SplitName(ctx.Resume.FullName);
 
-        if (id is "first_name" || FirstName().IsMatch(label))
-            return first.Length > 0 ? (first, null) : (null, "add your name in Résumé settings");
-        if (id is "last_name" || LastName().IsMatch(label))
-            return last.Length > 0 ? (last, null) : (null, "add your name in Résumé settings");
+        switch (NameField(q))
+        {
+            case "first_name":
+                return first.Length > 0 ? (first, null) : (null, "add your name in Résumé settings");
+            case "last_name":
+                return last.Length > 0 ? (last, null) : (null, "add your name in Résumé settings");
+        }
         if (FullName().IsMatch(label))
             return ctx.Resume.FullName.Length > 0 ? (ctx.Resume.FullName, null) : (null, "add your name in Résumé settings");
         if (id is "email" || EmailRe().IsMatch(label))
@@ -450,16 +453,38 @@ public sealed partial class AnswerDrafter
         || auth.StartsWith("no", StringComparison.OrdinalIgnoreCase)
         || auth.Contains("require", StringComparison.OrdinalIgnoreCase);
 
-    private static (string First, string Last) SplitName(string full)
+    /// <summary>
+    /// "first_name" or "last_name" when the question is one of the two name fields — by
+    /// Greenhouse's id or by any form's label ("Given name", "Surname") — else null. The
+    /// answer bank files both under one key each, whatever the form called them, so the
+    /// person sets a name once (#200). Public for the bank.
+    /// </summary>
+    public static string? NameField(PacketQuestion q)
+    {
+        var id = q.Id.StartsWith("std:", StringComparison.Ordinal) ? q.Id[4..] : q.Id;
+        if (id is "first_name" || FirstName().IsMatch(q.FullPrompt)) return "first_name";
+        if (id is "last_name" || LastName().IsMatch(q.FullPrompt)) return "last_name";
+        return null;
+    }
+
+    /// <summary>
+    /// First and last name from the résumé's full name. A middle initial ("K.", "K") is
+    /// neither: "Aaron K. Clark" once went out with the last name "K. Clark" (#200).
+    /// Anything else between the first and last token stays with the last name — "Mary
+    /// Ann Smith" is anyone's guess, and the person can pin the split in Settings · Answers.
+    /// Public for tests and for the bank's seeded name rows.
+    /// </summary>
+    public static (string First, string Last) SplitName(string full)
     {
         var parts = full.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length switch
-        {
-            0 => ("", ""),
-            1 => (parts[0], ""),
-            _ => (parts[0], string.Join(' ', parts.Skip(1))),
-        };
+        if (parts.Length == 0) return ("", "");
+        if (parts.Length == 1) return (parts[0], "");
+        var rest = parts.Skip(1).Where(p => !Initial().IsMatch(p)).ToList();
+        return (parts[0], string.Join(' ', rest.Count > 0 ? rest : parts.Skip(1)));
     }
+
+    [GeneratedRegex(@"^\p{L}\.?$")]
+    private static partial Regex Initial();
 
     private static string? Link(Resume r, string host) =>
         r.Links.FirstOrDefault(l => l.Url.Contains(host, StringComparison.OrdinalIgnoreCase)

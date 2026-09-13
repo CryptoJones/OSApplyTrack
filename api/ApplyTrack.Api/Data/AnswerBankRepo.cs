@@ -5,6 +5,7 @@ using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Crypto;
 using Dapper;
 
@@ -23,8 +24,10 @@ public sealed record AnswerBankEntry(
 /// Tenant-scoped read/write of <c>answer_bank</c>: every custom screening question the
 /// agent has encountered, keyed by the question as the form asked it, with the answer
 /// it gave — and, once a person has edited one, the answer it must give from then on.
-/// Standard fields (name, email, résumé) and EEO questions never land here: the first
-/// come from the profile, the second are never answered.
+/// Standard fields (email, résumé, links) and EEO questions never land here: the first
+/// come from the profile, the second are never answered. The two name fields are the
+/// exception (#200): filed under one key each whatever a form calls them, seeded from
+/// the résumé's name before any form asks, so a person can set them once.
 /// </summary>
 public sealed partial class AnswerBankRepo
 {
@@ -51,7 +54,19 @@ public sealed partial class AnswerBankRepo
     /// the same question as "Salary expectation", and a pinned annual USD figure must not
     /// answer it. Public for tests.
     /// </summary>
-    public static string KeyFor(PacketQuestion q) => KeyFor(q.FullPrompt);
+    public static string KeyFor(PacketQuestion q) => AnswerDrafter.NameField(q) switch
+    {
+        "first_name" => FirstNameKey,
+        "last_name" => LastNameKey,
+        _ => KeyFor(q.FullPrompt),
+    };
+
+    /// <summary>The one key every form's first-name field files under, however it is labelled.</summary>
+    public const string FirstNameKey = "first name";
+    /// <summary>The one key every form's last-name field files under, however it is labelled.</summary>
+    public const string LastNameKey = "last name";
+
+    private static string NameLabel(string field) => field == "first_name" ? "First name" : "Last name";
 
     public static string KeyFor(string prompt)
     {
@@ -59,9 +74,13 @@ public sealed partial class AnswerBankRepo
         return key.Length > 200 ? key[..200].TrimEnd() : key;
     }
 
-    /// <summary>Only the questions worth banking: custom screening questions with a typed answer.</summary>
+    /// <summary>
+    /// Only the questions worth banking: custom screening questions with a typed answer,
+    /// and the two name fields whatever the form called them (#200).
+    /// </summary>
     public static bool Bankable(PacketQuestion q) =>
-        q.Kind == PacketQuestion.Custom && q.Type != PacketQuestion.File && KeyFor(q).Length > 0;
+        (q.Kind == PacketQuestion.Custom || AnswerDrafter.NameField(q) is not null)
+        && q.Type != PacketQuestion.File && KeyFor(q).Length > 0;
 
     private sealed record Row(
         string Key, string Label, string Help, string Type, string Options, string AnswerCiphertext, string Source,
@@ -75,7 +94,9 @@ public sealed partial class AnswerBankRepo
     public async Task<List<AnswerBankEntry>> ListAsync()
     {
         var rows = await _conn.QueryAsync<Row>(
-            $"SELECT {Columns} FROM answer_bank WHERE tenant_id = @t ORDER BY last_seen_at DESC, key", new { t = _t });
+            $"SELECT {Columns} FROM answer_bank WHERE tenant_id = @t "
+            + "ORDER BY CASE key WHEN @first THEN 0 WHEN @last THEN 1 ELSE 2 END, last_seen_at DESC, key",
+            new { t = _t, first = FirstNameKey, last = LastNameKey });
         return rows.Select(ToEntry).ToList();
     }
 
@@ -116,6 +137,9 @@ public sealed partial class AnswerBankRepo
             var key = KeyFor(q);
             if (!seen.Add(key)) continue;
             var answer = answers.TryGetValue(q.Id, out var a) ? a.Trim() : "";
+            // A name row keeps its own label: it stands for every form's field, not the last one's.
+            var nameField = AnswerDrafter.NameField(q);
+            var options = nameField is null ? q.Options : new List<string>();
             await _conn.ExecuteAsync(
                 """
                 INSERT INTO answer_bank (tenant_id, key, label, help, type, options, answer_ciphertext, source, first_application)
@@ -132,10 +156,39 @@ public sealed partial class AnswerBankRepo
                 """,
                 new
                 {
-                    t = _t, key, label = q.Label, help = q.Help, type = q.Type,
-                    options = JsonSerializer.Serialize(q.Options, Json),
+                    t = _t, key,
+                    label = nameField is null ? q.Label : NameLabel(nameField),
+                    help = nameField is null ? q.Help : "",
+                    type = nameField is null ? q.Type : PacketQuestion.Text,
+                    options = JsonSerializer.Serialize(options, Json),
                     answer = Seal(answer), agent = AnswerBankEntry.Agent, human = AnswerBankEntry.Human,
                     app = Slug.Normalize(applicationName),
+                });
+        }
+    }
+
+    /// <summary>
+    /// The two name rows, present before any form has asked (#200), so the person sets a
+    /// name here once rather than on the first packet that gets it wrong. The agent's
+    /// default is the résumé's name split; it follows the résumé until the person makes
+    /// the row theirs, and then never moves. Seeding is not a sighting: times_seen starts
+    /// at zero and is left alone.
+    /// </summary>
+    public async Task SeedNamesAsync(string first, string last)
+    {
+        foreach (var (key, label, answer) in new[] { (FirstNameKey, "First name", first), (LastNameKey, "Last name", last) })
+        {
+            await _conn.ExecuteAsync(
+                """
+                INSERT INTO answer_bank (tenant_id, key, label, help, type, options, answer_ciphertext, source, first_application, times_seen)
+                VALUES (@t, @key, @label, '', @type, '[]'::jsonb, @answer, @agent, '', 0)
+                ON CONFLICT (tenant_id, key) DO UPDATE SET
+                    answer_ciphertext = CASE WHEN answer_bank.source = @human THEN answer_bank.answer_ciphertext ELSE EXCLUDED.answer_ciphertext END
+                """,
+                new
+                {
+                    t = _t, key, label, type = PacketQuestion.Text, answer = Seal(answer.Trim()),
+                    agent = AnswerBankEntry.Agent, human = AnswerBankEntry.Human,
                 });
         }
     }
