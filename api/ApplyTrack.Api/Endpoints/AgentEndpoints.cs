@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Data;
 using System.Text.Json;
 using ApplyTrack.Api.Agent;
-using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 
@@ -20,11 +20,13 @@ public static class AgentEndpoints
 {
     public static void MapAgentEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/agent-settings", async (AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
-            Results.Ok(View(await repo.GetAsync(), options, browser, await repo.IsAllowedAsync())));
+        app.MapGet("/api/agent-settings", async (
+            AgentSettingsRepo repo, AgentOptions options, BrowserAvailability browser, IDbConnection conn) =>
+            Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, await repo.IsAllowedAsync())));
 
         app.MapPut("/api/agent-settings", async (
-            JsonElement payload, AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
+            JsonElement payload, AgentSettingsRepo repo, AgentOptions options, BrowserAvailability browser,
+            IDbConnection conn) =>
         {
             var settings = AgentSettings.FromJson(payload);
             var allowed = await repo.IsAllowedAsync();
@@ -33,7 +35,7 @@ public static class AgentEndpoints
             if (settings.Enabled && !allowed)
                 throw new AppForbiddenException(NotAllowed);
             await repo.UpsertAsync(settings);
-            return Results.Ok(View(await repo.GetAsync(), options, browser, allowed));
+            return Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, allowed));
         });
 
         app.MapGet("/api/agent-events", async (AgentEventRepo repo, int? limit) =>
@@ -63,7 +65,8 @@ public static class AgentEndpoints
     public const string NotAllowed =
         "auto-apply isn't enabled for this account — the operator adds accounts to the allowlist";
 
-    private static object View(AgentSettings s, AgentOptions options, BrowserOptions browser, bool allowed) => new
+    private static async Task<object> ViewAsync(
+        AgentSettings s, AgentOptions options, BrowserAvailability browser, IDbConnection conn, bool allowed) => new
     {
         // Whether the operator has allowed this account to use auto-apply at all.
         allowed,
@@ -79,10 +82,11 @@ public static class AgentEndpoints
         phone = s.Phone,
         country = s.Country,
         long_tail = s.LongTail,
-        // Whether this instance runs a worker at all — so the UI can say "saved, but
-        // nothing will happen until the operator starts the agent container".
-        worker_running = options.Enabled,
-        // Whether this instance has a browser container to fill and submit forms with.
-        browser_available = browser.IsConfigured,
+        // Whether a worker runs on this instance at all — in this process, or as the
+        // separate agent container that has checked in (agent_workers) — so the UI can
+        // say "saved, but nothing will happen until the operator starts the agent".
+        worker_running = options.Enabled || await AgentWorkerRegistry.WorkerSeenAsync(conn),
+        // Whether a browser can fill and submit forms: here, or on that worker.
+        browser_available = await browser.IsAvailableAsync(),
     };
 }

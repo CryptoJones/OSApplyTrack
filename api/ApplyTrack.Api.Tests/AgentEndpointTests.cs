@@ -99,6 +99,13 @@ public class AgentEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Settings_default_to_off_with_a_higher_bar_than_discovery()
     {
+        // worker_running now also reads the instance-wide heartbeat table, which another
+        // test's worker may have stamped moments ago: age every row first.
+        await using (var conn = new NpgsqlConnection(_pg.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '1 hour'");
+        }
         var s = await ReadJson(await _client.GetAsync("/api/agent-settings"));
         Assert.False(s.GetProperty("enabled").GetBoolean());
         Assert.True(s.GetProperty("dry_run").GetBoolean());

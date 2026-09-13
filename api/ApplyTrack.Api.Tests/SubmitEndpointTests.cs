@@ -79,9 +79,18 @@ public class SubmitEndpointTests : IAsyncLifetime
         return name;
     }
 
+    /// <summary>The heartbeat table is instance-wide: age every row so no other test's worker counts here.</summary>
+    private async Task StaleHeartbeatsAsync()
+    {
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '1 hour'");
+    }
+
     [Fact]
     public async Task Submit_is_refused_without_a_browser_or_a_packet()
     {
+        await StaleHeartbeatsAsync();
         var (noBrowser, _) = await ClientAsync(browser: false);
         var res = await noBrowser.PostAsync("/api/apps",
             Json("""{"company":"Acme","role":"Engineer","link":"https://example.com/jobs/1"}"""));
@@ -139,6 +148,44 @@ public class SubmitEndpointTests : IAsyncLifetime
         var blocked = await client.PostAsync($"/api/apps/{name}/submit", Json("""{"dry_run":false}"""));
         Assert.Equal(HttpStatusCode.BadRequest, blocked.StatusCode);
         Assert.Contains("still need you", (await ReadJson(blocked)).GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task A_workers_fresh_heartbeat_lets_an_api_without_a_browser_queue_runs()
+    {
+        // The shipped shape: Browser__Endpoint on the agent container only. The api learns
+        // a browser exists from the worker's heartbeat row and queues; when the heartbeat
+        // goes stale it refuses again, and the settings view says so both ways (#159).
+        await StaleHeartbeatsAsync();
+        var (client, tenant) = await ClientAsync(browser: false);
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+        var workerId = "test-worker-" + Guid.NewGuid().ToString("N");
+        await AgentWorkerRegistry.HeartbeatAsync(conn, workerId, browser: true);
+
+        var view = await ReadJson(await client.GetAsync("/api/agent-settings"));
+        Assert.True(view.GetProperty("browser_available").GetBoolean());
+        Assert.True(view.GetProperty("worker_running").GetBoolean());
+
+        // prepare queues the dry run instead of taking the notify branch…
+        var name = await PreparedLeadAsync(client);
+        var pending = await ReadJson(await client.GetAsync($"/api/apps/{name}/submit"));
+        Assert.True(pending.GetProperty("pending").GetBoolean());
+        Assert.True(pending.GetProperty("dry_run").GetBoolean());
+        Assert.NotNull(await DrainForAsync(conn, tenant));
+
+        // …and Submit is accepted.
+        var accepted = await client.PostAsync($"/api/apps/{name}/submit", Json("{}"));
+        Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
+        Assert.NotNull(await DrainForAsync(conn, tenant));
+
+        await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '1 hour' WHERE id = @id", new { id = workerId });
+        var refused = await client.PostAsync($"/api/apps/{name}/submit", Json("{}"));
+        Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        Assert.Contains("no agent worker", (await ReadJson(refused)).GetProperty("detail").GetString());
+        view = await ReadJson(await client.GetAsync("/api/agent-settings"));
+        Assert.False(view.GetProperty("browser_available").GetBoolean());
+        Assert.False(view.GetProperty("worker_running").GetBoolean());
     }
 
     /// <summary>Claim and complete requests until one for <paramref name="tenant"/> turns up (or none are left).</summary>

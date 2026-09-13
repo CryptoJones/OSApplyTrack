@@ -50,7 +50,7 @@ public static class PacketEndpoints
             CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications,
             UserRepo users, Auth.TenantContext tenant,
             LeadEvaluator evaluator, PacketBuilder builder, PacketReadyNotifier notifier,
-            BrowserOptions browser, SubmitRequestRepo queue,
+            BrowserAvailability browser, SubmitRequestRepo queue,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -91,9 +91,9 @@ public static class PacketEndpoints
                 resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
             var packet = await builder.BuildAsync(rec, verdict, inputs,
                 new PacketScope(apps, letters, packets, events), ct);
-            // With a browser that may drive this ATS, the moo waits for the dry-run
-            // fill; otherwise this is it.
-            if (browser.IsConfigured && rec.Fields.Link.Length > 0
+            // With a browser that may drive this ATS — here, or on a worker that has
+            // checked in — the moo waits for the dry-run fill; otherwise this is it.
+            if (await browser.IsAvailableAsync() && rec.Fields.Link.Length > 0
                 && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
                 await queue.EnqueueAsync(rec.Name, dryRun: true);
             else

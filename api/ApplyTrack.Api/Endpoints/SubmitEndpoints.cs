@@ -16,18 +16,23 @@ namespace ApplyTrack.Api.Endpoints;
 /// </summary>
 public static class SubmitEndpoints
 {
+    public const string NoBrowser =
+        "no browser is available on this instance — no agent worker with one has checked in; use Copy answers and open the posting";
+
     public static void MapSubmitEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/apps/{name}/submit", async (
-            string name, JsonElement? payload, BrowserOptions browser,
+            string name, JsonElement? payload, BrowserAvailability browser,
             ApplicationRepo apps, AgentPacketRepo packets, AgentSettingsRepo settings,
             SubmitRequestRepo queue) =>
         {
             if (!await settings.IsAllowedAsync())
                 throw new AppForbiddenException(AgentEndpoints.NotAllowed);
-            if (!browser.IsConfigured)
-                throw new AppValidationException(
-                    "browser submission isn't configured on this instance — use Copy answers and open the posting");
+            // A browser here, or an agent worker with one that has checked in lately: the
+            // shipped shape wires the browser to the agent container only, so this process's
+            // own configuration says nothing about whether a click has somewhere to land.
+            if (!await browser.IsAvailableAsync())
+                throw new AppValidationException(NoBrowser);
             var rec = await apps.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
             if (string.IsNullOrWhiteSpace(rec.Fields.Link))
