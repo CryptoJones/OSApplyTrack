@@ -2,7 +2,7 @@
 
 > ### Your job hunt, self-hosted and on autopilot.
 
-### ▶ [Try out the app here →](https://w3b.cryptojones.dev/OSApplyTrack/)
+### ▶ [Try out the app here →](https://osapplytrack.cryptojones.dev/)
 
 > Live demo instance. Sign in with a magic link — each visitor gets their own tenant.
 
