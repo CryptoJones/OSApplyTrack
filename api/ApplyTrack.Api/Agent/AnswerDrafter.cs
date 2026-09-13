@@ -164,8 +164,10 @@ public sealed partial class AnswerDrafter
             return Link(ctx.Resume, "github") is { } gh ? (gh, null) : (null, "no GitHub link in your résumé");
         if (id is "website" || Website().IsMatch(label))
             return FirstLink(ctx.Resume) is { } site ? (site, null) : (null, "no website link in your résumé");
+        // "Minden, Nebraska (Remote)" is how a résumé says it; "Minden, Nebraska" is what a
+        // form's city autocomplete can geocode. The suffix is for the reader, not the form.
         if (id is "location" || LocationRe().IsMatch(q.Label))
-            return ctx.Resume.Location.Length > 0 ? (ctx.Resume.Location, null) : (null, "add a location in Résumé settings");
+            return StripLocationSuffix(ctx.Resume.Location) is { Length: > 0 } loc ? (loc, null) : (null, "add a location in Résumé settings");
         if (id is "country" || CountryRe().IsMatch(q.Label))
             return Country(ctx) is { Length: > 0 } country ? (country, null) : (null, "add your country in Settings · Agent");
 
@@ -279,9 +281,7 @@ public sealed partial class AnswerDrafter
     /// </summary>
     public static string CountryFromLocation(string location)
     {
-        location = Regex.Replace(location, @"\s*[\(\[][^\)\]]*[\)\]]\s*", " ");
-        location = Regex.Replace(location, @"\s+[-–—|/]\s*(remote|hybrid|on-?site|relocat\w*)\b.*$", "", RegexOptions.IgnoreCase);
-        var parts = location.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = StripLocationSuffix(location).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length == 0) return "";
         var last = parts[^1].Trim().TrimEnd('.').Trim();
         // "Lincoln, NE 68508" — drop a trailing postal code.
@@ -292,6 +292,15 @@ public sealed partial class AnswerDrafter
         if (parts.Length >= 2 && last.Length >= 4 && last.All(c => char.IsLetter(c) || c == ' ' || c == '\''))
             return last;
         return "";
+    }
+
+    /// <summary>"Minden, Nebraska (Remote)" → "Minden, Nebraska"; "Omaha, NE - Hybrid" → "Omaha, NE".
+    /// A parenthesised or bracketed aside, or a dashed work-mode suffix, is dropped.</summary>
+    public static string StripLocationSuffix(string location)
+    {
+        location = Regex.Replace(location, @"\s*[\(\[][^\)\]]*[\)\]]\s*", " ");
+        location = Regex.Replace(location, @"\s+[-–—|/]\s*(remote|hybrid|on-?site|relocat\w*)\b.*$", "", RegexOptions.IgnoreCase);
+        return Regex.Replace(location, @"\s+", " ").Trim().TrimEnd(',').Trim();
     }
 
     private static (string? Answer, string? Reason) YesNo(PacketQuestion q, bool yes, string fallback)

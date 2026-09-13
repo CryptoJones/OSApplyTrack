@@ -90,6 +90,9 @@ public class AnswerDrafterTests
         // question that merely mentions "the posting location" is not a location question.
         var city = new PacketQuestion("candidate-location", "Location (City)", true, PacketQuestion.Text, [], PacketQuestion.Standard);
         Assert.Equal(("Lincoln, NE", null), AnswerDrafter.Deterministic(city, Ctx()));
+        // The résumé's aside is for the reader; a geocoder chokes on it.
+        var remote = Ctx() with { Resume = new Resume { FullName = "Ada Byte", Location = "Minden, Nebraska (Remote)" } };
+        Assert.Equal(("Minden, Nebraska", null), AnswerDrafter.Deterministic(city, remote));
         var sponsorship = new PacketQuestion("q8", "Do you need sponsorship now or in the future to accept this job in the posting location?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom);
         Assert.Equal(("No", null), AnswerDrafter.Deterministic(sponsorship, Ctx()));
     }

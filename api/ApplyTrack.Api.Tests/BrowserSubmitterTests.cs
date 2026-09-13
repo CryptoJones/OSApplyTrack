@@ -76,6 +76,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/validating", () => Results.Content(ValidatingFormHtml, "text/html"));
         // A form that re-mounts itself on Submit instead of posting.
         _fixture.MapGet("/jobs/resetting", () => Results.Content(ResettingFormHtml, "text/html"));
+        // A posting taken down outright: Greenhouse's 404 page, no gone-notice, no form.
+        _fixture.MapGet("/jobs/gone", () => Results.Content(
+            "<html><head><title>Page not found</title></head><body><h1>Page not found</h1>"
+            + "<p>The page you were looking for doesn't exist.</p></body></html>", "text/html"));
+        // A résumé and a cover letter, each a file field with its own Enter manually box.
+        _fixture.MapGet("/jobs/cover", () => Results.Content(CoverLetterHtml, "text/html"));
         // A posting that closed between discovery and now: the board's gone-notice, no form.
         _fixture.MapGet("/jobs/closed", () => Results.Content(
             "<html><body><h1>Current openings at Acme</h1>"
@@ -295,8 +301,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               const q = input.value.trim().toLowerCase();
               let any = false;
               for (const o of list.querySelectorAll('[role=option]')) {
-                // The city picker is a geocoder: it suggests for whatever was typed.
-                const show = shell.dataset.async ? q.length > 0 : o.textContent.toLowerCase().startsWith(q);
+                // The city picker is a geocoder: it suggests for whatever was typed — unless
+                // the text carries an aside it cannot place, like the real one.
+                const show = shell.dataset.async ? (q.length > 0 && !q.includes('(') && !q.includes('nowhere')) : o.textContent.toLowerCase().startsWith(q);
                 o.style.display = show ? '' : 'none'; any = any || show;
               }
               list.hidden = !any;
@@ -355,6 +362,34 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </form>
         <script>
           document.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); e.target.reset(); });
+        </script>
+        </body></html>
+        """;
+
+    // Greenhouse's shape for both documents: a file input, an Attach button and an Enter
+    // manually button per section, the résumé's first in the DOM.
+    private const string CoverLetterHtml = """
+        <html><head><meta charset="utf-8"></head><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <span>Resume/CV*</span>
+          <input id="resume" name="resume" type="file" />
+          <button type="button" id="resume_manual">Enter manually</button>
+          <textarea id="resume_text" name="resume_text" style="display:none"></textarea>
+          <span>Cover Letter*</span>
+          <input id="cover_letter" name="cover_letter" type="file" />
+          <button type="button" id="cover_manual">Enter manually</button>
+          <textarea id="cover_letter_text" name="cover_letter_text" style="display:none"></textarea>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          document.getElementById('resume_manual').addEventListener('click', () => {
+            setTimeout(() => { document.getElementById('resume_text').style.display = 'block'; }, 300);
+          });
+          document.getElementById('cover_manual').addEventListener('click', () => {
+            setTimeout(() => { document.getElementById('cover_letter_text').style.display = 'block'; }, 300);
+          });
         </script>
         </body></html>
         """;
@@ -460,6 +495,49 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Submitted);
         Assert.Equal(["question_9"], outcome.Unmapped);
         Assert.Contains("could not be mapped", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_posting_taken_down_to_a_404_page_is_reported_closed()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/gone", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Closed);
+        Assert.False(outcome.Filled);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_required_cover_letter_file_is_entered_as_text_in_its_own_box_not_the_resumes()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = OnePlusResumePacket();
+        packet.Questions.Add(new("cover_letter", "Cover Letter", true, PacketQuestion.File, [], PacketQuestion.Standard));
+        const string letter = "Dear Acme, I would like to scale your billing.";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/cover", packet, (Pdf, "resume.pdf"), dryRun: false, coverLetter: letter);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("cover_letter", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal(letter, post["cover_letter_text"]);
+        Assert.Equal("", post["resume_text"]);            // the résumé's box was left alone
+        Assert.Equal($"resume.pdf:{Pdf.Length}", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task A_required_cover_letter_file_with_no_letter_drafted_stays_unmapped()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = OnePlusResumePacket();
+        packet.Questions.Add(new("cover_letter", "Cover Letter", true, PacketQuestion.File, [], PacketQuestion.Standard));
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/cover", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(["cover_letter"], outcome.Unmapped);
         Assert.Empty(_posts);
     }
 
@@ -696,6 +774,35 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("US", post["country_value"]);
         Assert.Equal("Omaha, Nebraska, United States", post["location_value"]);
         Assert.Equal("1", post["question_9_value"]);
+    }
+
+    [SkippableFact]
+    public async Task An_autocomplete_that_finds_nothing_for_the_full_text_is_retried_with_a_shorter_one()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The geocoder has nothing for "Omaha, NE (Remote)" and a suggestion for "Omaha, NE".
+        var packet = ReactSelectPacket();
+        packet.Answers["location"] = "Omaha, NE (Remote)";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Omaha, Nebraska, United States", Assert.Single(_posts)["location_value"]);
+    }
+
+    [SkippableFact]
+    public async Task A_rendered_field_with_the_forms_own_prefix_is_reported_as_the_packets_question()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Nothing the geocoder can place: the packet's `location` stays empty. The rendered
+        // field is `candidate-location`; it must be reported once, as `location`, not twice.
+        var packet = ReactSelectPacket();
+        packet.Answers["location"] = "Nowhere";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.Equal(["location"], outcome.Unmapped);
+        Assert.DoesNotContain("location", outcome.Mapped);
     }
 
     [SkippableFact]
