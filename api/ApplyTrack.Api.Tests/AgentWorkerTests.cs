@@ -55,11 +55,12 @@ public class AgentWorkerTests(PostgresFixture pg)
             new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance);
     }
 
-    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true)
+    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true, bool allowed = true)
     {
         var conn = new NpgsqlConnection(pg.ConnectionString);
         await conn.OpenAsync();
         var t = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
+        if (!allowed) await TestAuth.DisallowAgentAsync(conn, t);
         await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings
         {
             Enabled = enabled, MinFitScore = 70, MaxPerRun = 2, MaxPerDay = 3, Phone = "555-0100",
@@ -375,5 +376,24 @@ public class AgentWorkerTests(PostgresFixture pg)
         await worker.DrainSubmitsAsync(CancellationToken.None);
 
         Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task A_tenant_off_the_operators_allowlist_is_never_judged_and_its_queued_run_is_never_claimed()
+    {
+        var (conn, t) = await SeedTenantAsync(enabled: true, allowed: false);
+        await using var _ = conn;
+        var stub = new StubLlmClient(Responders.Agent());
+        var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier());
+
+        // Enabled by the tenant, not allowed by the operator: the pass skips it entirely.
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(0, stub.Calls);
+        Assert.Empty(await new AgentEventRepo(conn, t).ListRecentAsync(50));
+
+        // A queued browser run for it is left alone too.
+        var name = (await new ApplicationRepo(conn, t).ListAsync()).First().Filename;
+        await new SubmitRequestRepo(conn, t).EnqueueAsync(name, dryRun: true);
+        Assert.Null(await SubmitQueue.ClaimNextAsync(conn));
     }
 }

@@ -23,6 +23,8 @@ public static class SubmitEndpoints
             ApplicationRepo apps, AgentPacketRepo packets, AgentSettingsRepo settings,
             SubmitRequestRepo queue) =>
         {
+            if (!await settings.IsAllowedAsync())
+                throw new AppForbiddenException(AgentEndpoints.NotAllowed);
             if (!browser.IsConfigured)
                 throw new AppValidationException(
                     "browser submission isn't configured on this instance — use Copy answers and open the posting");
@@ -54,8 +56,10 @@ public static class SubmitEndpoints
         }).RequireRateLimiting("draft");
 
         // The security code the board emailed the candidate, for the run parked on it.
-        app.MapPost("/api/apps/{name}/security-code", async (string name, JsonElement payload, SubmitRequestRepo queue) =>
+        app.MapPost("/api/apps/{name}/security-code", async (string name, JsonElement payload, SubmitRequestRepo queue, AgentSettingsRepo settings) =>
         {
+            if (!await settings.IsAllowedAsync())
+                throw new AppForbiddenException(AgentEndpoints.NotAllowed);
             var code = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String
                 ? (c.GetString() ?? "").Trim() : "";
             if (code.Length is < 4 or > 16 || !code.All(char.IsLetterOrDigit))

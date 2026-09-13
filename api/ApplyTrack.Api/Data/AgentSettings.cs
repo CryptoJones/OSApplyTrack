@@ -114,6 +114,13 @@ public sealed class AgentSettingsRepo
         string WorkAuthorization, bool NeedsSponsorship, bool ClearanceOk,
         string SalaryExpectation, string Phone, bool LongTail, string Country);
 
+    /// <summary>Whether the operator has allowed this account to use auto-apply at all —
+    /// a row in <c>agent_allowlist</c>, added by hand at the database. Nothing about the
+    /// agent runs for an account without one, whatever its settings say.</summary>
+    public Task<bool> IsAllowedAsync() =>
+        _conn.ExecuteScalarAsync<bool>(
+            "SELECT EXISTS (SELECT 1 FROM agent_allowlist WHERE tenant_id = @t)", new { t = _t });
+
     /// <summary>The stored settings, or the defaults (agent off) when no row exists.</summary>
     public async Task<AgentSettings> GetAsync()
     {

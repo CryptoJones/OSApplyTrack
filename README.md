@@ -317,7 +317,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether this instance runs a worker at all. |
+| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `allowed` (whether the operator has put this account on the auto-apply allowlist — see [The agent](#the-agent)), `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether this instance runs a worker at all. |
 | `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. |
 | `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
 | `GET`    | `/api/apps/{name}/packet` | The prepared packet: `provider`, `questions[]` (`id`, `label`, `required`, `type`, `options`, `kind`), `answers{}`, `needs_review[]` (`id`, `reason`), `posting_excerpt`, `verdict`, `version`. Also rides along as `packet` on `GET /api/apps/{name}`. |
@@ -464,6 +464,19 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
   stored per application and are excluded from the export snapshot by design.
 
 ## The agent
+
+> **Off for everyone until the operator says otherwise.** Auto-apply is gated per
+> account by an allowlist in the database, `agent_allowlist`, with no API on purpose.
+> An account not in it sees the agent switch disabled, and `PUT /api/agent-settings`
+> with `enabled`, `packet/prepare`, `submit` and `security-code` answer **403**; the
+> worker never fans out over it and never claims its queue rows. To allow an account:
+>
+> ```sql
+> INSERT INTO agent_allowlist (tenant_id, note) VALUES (1, 'the operator');
+> ```
+>
+> Delete the row to take it away again. Standing answers and hand-run verdicts stay
+> available to every account.
 
 The agent is the opt-in, step-by-step automation of the application itself. It
 uses the same any-OpenAI-compatible endpoint as cover letters (**Settings · AI**)

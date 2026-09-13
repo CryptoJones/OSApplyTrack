@@ -55,6 +55,8 @@ public static class PacketEndpoints
         {
             var rec = await apps.GetAsync(name)
                 ?? throw new AppNotFoundException($"application not found: '{name}'");
+            if (!await agentSettings.IsAllowedAsync())
+                throw new AppForbiddenException(AgentEndpoints.NotAllowed);
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
             if (!cfg.IsConfigured)
                 throw new AppValidationException(
