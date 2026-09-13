@@ -115,12 +115,12 @@ public sealed partial class BrowserSubmitter
                     continue;
                 if (q.Type == PacketQuestion.File)
                 {
-                    if (q.Id.Contains("resume", StringComparison.OrdinalIgnoreCase) && resumePdf is { } pdf)
+                    if (IsResume(q) && resumePdf is { } pdf)
                     {
                         if (await AttachResumeAsync(form, q, pdf, resumeText)) mapped.Add(q.Id);
                         else if (q.Required) unmapped.Add(q.Id);
                     }
-                    else if (q.Id.Contains("cover", StringComparison.OrdinalIgnoreCase) && coverLetter.Length > 0)
+                    else if (IsCoverLetter(q) && coverLetter.Length > 0)
                     {
                         // Greenhouse's cover letter is a file field with a text twin behind its
                         // own "Enter manually"; a form that requires one was refused for want of
@@ -300,8 +300,16 @@ public sealed partial class BrowserSubmitter
                         "a captcha appeared on Submit — finish it with Copy answers and open",
                         Captcha: true);
                 // The invisible kind, with no code offered: the board simply refused the
-                // application as a bot's. Same handoff.
+                // application as a bot's. Same handoff. Ashby says it in words — "Your
+                // application submission was flagged as possible spam" — after a 200 from its
+                // API, so the page text is the only tell.
                 await page.WaitForTimeoutAsync(500); // let the response body reader finish
+                var refusal = SpamRefusal().Match(text + "\n" + await BodyTextAsync(page.MainFrame));
+                if (refusal.Success)
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        $"the board refused the application as a bot's (\"{refusal.Value}\")" + PostNote()
+                        + " — finish it with Copy answers and open",
+                        Captcha: true);
                 if (captchaRefused && !await HasSecurityCodePromptAsync(form))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "the board refused the application as a bot's" + (boardSaid.Length > 0 ? $" (\"{boardSaid}\")" : "")
@@ -1088,6 +1096,19 @@ public sealed partial class BrowserSubmitter
     private static string XPathLiteral(string s) =>
         !s.Contains('\'') ? $"'{s}'" : !s.Contains('"') ? $"\"{s}\""
         : "concat(" + string.Join(", \"'\", ", s.Split('\'').Select(part => $"'{part}'")) + ")";
+
+    [GeneratedRegex(@"flagged as (?:possible |potential )?spam|couldn't submit your application|unable to submit your application|suspicious activity|automated (?:submission|traffic)", RegexOptions.IgnoreCase)]
+    private static partial Regex SpamRefusal();
+
+    [GeneratedRegex(@"resume|résumé|\bcv\b|curriculum", RegexOptions.IgnoreCase)]
+    private static partial Regex ResumeWords();
+
+    /// <summary>The résumé field, by id or by label — "resume", "Attach Resume", "CV", "curriculum vitae".</summary>
+    private static bool IsResume(PacketQuestion q) =>
+        ResumeWords().IsMatch(q.Id) || ResumeWords().IsMatch(q.Label);
+
+    private static bool IsCoverLetter(PacketQuestion q) =>
+        q.Id.Contains("cover", StringComparison.OrdinalIgnoreCase) || q.Label.Contains("cover letter", StringComparison.OrdinalIgnoreCase);
 
     private static string CssEscape(string id) => Regex.Replace(id, @"([^a-zA-Z0-9_-])", "\\$1");
 

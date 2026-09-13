@@ -137,8 +137,13 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             ("", "email", "Email *", "input", "email", true, []),
             ("", "veteran", "Veteran status", "select", "select-one", true, ["Yes", "No"]),
             ("", "agree", "I agree to the terms", "input", "checkbox", true, []),
+            ("", "", "What are the database technologies you are proficient with? *", "input", "text", true, []),
+            ("", "", "", "input", "text", false, []),
         ]);
-        Assert.Equal(3, qs.Count);
+        Assert.Equal(4, qs.Count);
+        // No name, no id: keyed by the label (Comeet's custom questions); nothing at all is dropped.
+        Assert.Equal("What are the database technologies you are proficient with?", qs[3].Id);
+        Assert.True(qs[3].Required);
         Assert.Equal("Email", qs[0].Label);
         Assert.Equal(PacketQuestion.Eeo, qs[1].Kind);
         Assert.False(qs[1].Required);   // EEO is never required of the agent
