@@ -189,6 +189,12 @@ public sealed partial class BrowserSubmitter
                 if (Uri.TryCreate(r.Url, UriKind.Absolute, out var u))
                     lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → {r.Status}");
             };
+            page.RequestFailed += (_, req) =>
+            {
+                if (req.Method is "GET" or "HEAD" || IsChatter(req.Url)) return;
+                if (Uri.TryCreate(req.Url, UriKind.Absolute, out var u))
+                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → failed ({req.Failure})");
+            };
             var urlBefore = page.Url;
             await submit.ClickAsync();
             // Then WAIT for the form's verdict rather than reading the page in the quiet
@@ -863,13 +869,24 @@ public sealed partial class BrowserSubmitter
         catch (PlaywrightException) { return false; }
     }
 
+    /// <summary>
+    /// The button that sends the application. Most specific first, and "Apply" dead last:
+    /// Greenhouse's posting page carries an "Apply" button above the description that only
+    /// scrolls to the form, and one regex matching both names took it — in document order it
+    /// comes first — so every real run clicked the anchor, waited, and reported "Submit was
+    /// clicked but no confirmation text was recognised" while no request ever left the page.
+    /// </summary>
     private static async Task<ILocator?> FindSubmitAsync(IPage page)
     {
         var candidates = new[]
         {
             page.Locator("#submit_app").First,
-            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:application|your application)|^submit$|^apply$", RegexOptions.IgnoreCase) }).First,
-            page.Locator("button[type=submit], input[type=submit]").First,
+            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Last,
+            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Last,
+            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Last,
+            page.Locator("form button[type=submit], form input[type=submit]").Last,
+            page.Locator("button[type=submit], input[type=submit]").Last,
+            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Last,
         };
         foreach (var c in candidates)
         {
