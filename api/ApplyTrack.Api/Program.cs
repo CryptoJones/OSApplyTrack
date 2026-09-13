@@ -143,6 +143,11 @@ builder.Services.AddHttpClient(TelegramNotifier.ClientName, c =>
     c.Timeout = TimeSpan.FromSeconds(15);
 }).RemoveAllLoggers();
 builder.Services.AddSingleton<INotifier, TelegramNotifier>();
+// The candidate's mailbox, for the security code Greenhouse emails after a click.
+builder.Services.AddSingleton<ISecurityCodeSource, ImapSecurityCodeSource>();
+builder.Services.AddScoped(sp => new MailboxSettingsRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<ILogger<MailboxSettingsRepo>>()));
 builder.Services.AddSingleton<PacketReadyNotifier>();
 builder.Services.AddScoped(sp => new NotificationSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
@@ -170,7 +175,7 @@ if (agentOptions.Enabled)
         sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
         sp.GetRequiredService<PacketBuilder>(), sp.GetRequiredService<PacketReadyNotifier>(),
         browserOptions, sp.GetRequiredService<BrowserSubmitter>(),
-        sp.GetRequiredService<ILoggerFactory>()));
+        sp.GetRequiredService<ILoggerFactory>(), sp.GetRequiredService<ISecurityCodeSource>()));
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
 

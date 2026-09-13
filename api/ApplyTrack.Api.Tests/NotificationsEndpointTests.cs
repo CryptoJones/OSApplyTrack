@@ -91,6 +91,34 @@ public class NotificationsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_mailbox_saves_with_its_password_write_only_and_the_test_needs_a_saved_password()
+    {
+        var client = await ClientAsync();
+        var put = await client.PutAsync("/api/notifications", Json(
+            """{"mailbox_enabled":true,"mailbox_host":"imap.example.com","mailbox_port":993,"mailbox_username":"ada@example.com","mailbox_password":"app-pass-1234"}"""));
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var raw = await (await client.GetAsync("/api/notifications")).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("app-pass-1234", raw);
+        var v = JsonDocument.Parse(raw).RootElement;
+        Assert.True(v.GetProperty("mailbox_enabled").GetBoolean());
+        Assert.Equal("imap.example.com", v.GetProperty("mailbox_host").GetString());
+        Assert.Equal(993, v.GetProperty("mailbox_port").GetInt32());
+        Assert.True(v.GetProperty("has_mailbox_password").GetBoolean());
+
+        // Omitting the password keeps it; a blank clears it; a bad host is refused.
+        await client.PutAsync("/api/notifications", Json("""{"mailbox_port":143}"""));
+        v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.True(v.GetProperty("has_mailbox_password").GetBoolean());
+        Assert.Equal(143, v.GetProperty("mailbox_port").GetInt32());
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsync("/api/notifications", Json("""{"mailbox_host":"not a host"}"""))).StatusCode);
+        await client.PutAsync("/api/notifications", Json("""{"mailbox_password":""}"""));
+        v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.False(v.GetProperty("has_mailbox_password").GetBoolean());
+        var test = await client.PostAsync("/api/notifications/mailbox/test", null);
+        Assert.Equal(HttpStatusCode.BadRequest, test.StatusCode);
+    }
+
+    [Fact]
     public async Task The_token_is_stored_encrypted_never_echoed_kept_when_omitted_and_cleared_when_blank()
     {
         var client = await ClientAsync();
