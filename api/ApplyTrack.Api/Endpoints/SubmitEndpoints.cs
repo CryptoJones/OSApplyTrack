@@ -53,6 +53,18 @@ public static class SubmitEndpoints
                 statusCode: queued ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
         }).RequireRateLimiting("draft");
 
+        // The security code the board emailed the candidate, for the run parked on it.
+        app.MapPost("/api/apps/{name}/security-code", async (string name, JsonElement payload, SubmitRequestRepo queue) =>
+        {
+            var code = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String
+                ? (c.GetString() ?? "").Trim() : "";
+            if (code.Length is < 4 or > 16 || !code.All(char.IsLetterOrDigit))
+                throw new AppValidationException("the code is 4–16 letters and digits, as the email shows it");
+            if (!await queue.SetSecurityCodeAsync(name, code))
+                throw new AppConflictException("no run is waiting for a code on this application — run Submit again and paste the code when the next email arrives");
+            return Results.Json(new { accepted = true }, statusCode: StatusCodes.Status202Accepted);
+        }).RequireRateLimiting("draft");
+
         app.MapGet("/api/apps/{name}/submit", async (string name, SubmitRequestRepo queue) =>
         {
             var r = await queue.GetAsync(name);

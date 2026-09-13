@@ -40,10 +40,25 @@ public sealed class SubmitRequestRepo
             INSERT INTO submit_requests (tenant_id, application_name, dry_run)
             VALUES (@t, @n, @dryRun)
             ON CONFLICT (tenant_id, application_name) DO UPDATE SET
-                dry_run = EXCLUDED.dry_run, requested_at = now(), claimed_at = NULL, done_at = NULL
+                dry_run = EXCLUDED.dry_run, requested_at = now(), claimed_at = NULL, done_at = NULL,
+                security_code = ''
             WHERE submit_requests.done_at IS NOT NULL
             """,
             new { t = _t, n = Slug.Normalize(appName), dryRun });
+        return affected > 0;
+    }
+
+    /// <summary>
+    /// Hand the security code the board emailed to the run parked on this application.
+    /// True when a run is pending to take it; false when nothing is waiting (the run
+    /// timed out, or none was queued) — then the human runs Submit again.
+    /// </summary>
+    public async Task<bool> SetSecurityCodeAsync(string appName, string code)
+    {
+        var affected = await _conn.ExecuteAsync(
+            "UPDATE submit_requests SET security_code = @code "
+            + "WHERE tenant_id = @t AND application_name = @n AND done_at IS NULL",
+            new { t = _t, n = Slug.Normalize(appName), code = code.Trim() });
         return affected > 0;
     }
 
@@ -66,6 +81,10 @@ public sealed class SubmitRequestRepo
 /// whose claim went stale — a crashed pass), and mark it done. UPDATE, never DELETE.</summary>
 public static class SubmitQueue
 {
+    /// <summary>The security code the human handed a parked run, or "" while none has arrived.</summary>
+    public static async Task<string> SecurityCodeAsync(IDbConnection conn, long id) =>
+        await conn.ExecuteScalarAsync<string?>("SELECT security_code FROM submit_requests WHERE id = @id", new { id }) ?? "";
+
     public static Task<SubmitRequest?> ClaimNextAsync(IDbConnection conn) =>
         conn.QuerySingleOrDefaultAsync<SubmitRequest?>(
             """

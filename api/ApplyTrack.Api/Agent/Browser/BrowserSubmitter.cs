@@ -65,9 +65,13 @@ public sealed partial class BrowserSubmitter
     /// <param name="coverLetter">The drafted letter, for a form whose cover letter is a file
     /// field: it goes in through that field's own "Enter manually" box. Empty means a required
     /// cover-letter file stays unmapped.</param>
+    /// <param name="awaitSecurityCode">Called with the address the board emailed a security
+    /// code to when the form asks for one after Submit; returns the code the human handed
+    /// over, or null when none arrived in time. Null disables the second phase.</param>
     public async Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
-        CancellationToken ct = default, string resumeText = "", string coverLetter = "")
+        CancellationToken ct = default, string resumeText = "", string coverLetter = "",
+        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null)
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -182,12 +186,31 @@ public sealed partial class BrowserSubmitter
             // your application". Every non-GET response bar analytics is recorded, so a run
             // that ends without a confirmation can say whether an application was ever posted.
             var posts = new List<string>();
+            var captchaRefused = false;
+            var boardSaid = "";
             page.Response += (_, r) =>
             {
                 var req = r.Request;
                 if (req.Method is "GET" or "HEAD" || IsChatter(r.Url)) return;
                 if (Uri.TryCreate(r.Url, UriKind.Absolute, out var u))
                     lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → {r.Status}");
+                // The board's own verdict on the application. Greenhouse answers a submission
+                // its invisible reCAPTCHA Enterprise scored as a bot's with
+                // 428 {"code":"captcha-failed", "security_code_recipient": "<email>"} and asks
+                // for the code it emailed — handled below. Without a recipient it is the plain
+                // captcha refusal: the form asking for a person.
+                if (r.Status >= 400)
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var body = await r.TextAsync();
+                            if (Regex.IsMatch(body, "captcha", RegexOptions.IgnoreCase)) captchaRefused = true;
+                            var msg = Regex.Match(body, "\"message\"\\s*:\\s*\"([^\"]{1,200})\"");
+                            if (msg.Success) boardSaid = msg.Groups[1].Value;
+                        }
+                        catch (PlaywrightException) { /* body gone with the page */ }
+                    });
             };
             page.RequestFailed += (_, req) =>
             {
@@ -204,15 +227,49 @@ public sealed partial class BrowserSubmitter
             var text = "";
             Match m = Match.Empty;
             List<string> complaints = [];
-            for (var i = 0; i < 30; i++)
+            async Task WaitForVerdictAsync(bool stopAtCodePrompt)
             {
-                await page.WaitForTimeoutAsync(1000);
-                text = await BodyTextAsync(page);
-                m = Confirmation().Match(text);
-                if (m.Success) break;
-                complaints = await ValidationErrorsAsync(page);
-                if (complaints.Count > 0) break;
-                if (page.Url != urlBefore && i >= 3) break; // navigated somewhere new: read it below
+                complaints = [];
+                for (var i = 0; i < 30; i++)
+                {
+                    await page.WaitForTimeoutAsync(1000);
+                    text = await BodyTextAsync(page);
+                    m = Confirmation().Match(text);
+                    if (m.Success) break;
+                    if (stopAtCodePrompt && await HasSecurityCodePromptAsync(page)) break;
+                    complaints = await ValidationErrorsAsync(page);
+                    if (complaints.Count > 0) break;
+                    if (page.Url != urlBefore && i >= 3) break; // navigated somewhere new: read it below
+                }
+            }
+            await WaitForVerdictAsync(stopAtCodePrompt: true);
+
+            // Phase two. The board emailed the candidate a security code and put its boxes on
+            // the form: park here, ask for the code, type it, and click again. This is the
+            // gate every production click ended at; the human relays one code and the run
+            // finishes in the same session, which is the only session the code is good for.
+            if (!m.Success && await HasSecurityCodePromptAsync(page))
+            {
+                var recipient = Regex.Match(text, @"sent to\s+([^\s,]+@[A-Za-z0-9.-]+[A-Za-z0-9])", RegexOptions.IgnoreCase) is { Success: true } rm
+                    ? rm.Groups[1].Value : "";
+                screenshot = await session.ScreenshotAsync();
+                if (awaitSecurityCode is null)
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        $"the board emailed a security code to {(recipient.Length > 0 ? recipient : "the candidate")} and this run cannot take one — finish it with Copy answers and open");
+                var code = await awaitSecurityCode(recipient, ct);
+                if (string.IsNullOrWhiteSpace(code))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        $"the board emailed a security code to {(recipient.Length > 0 ? recipient : "the candidate")} and none was entered in time — run Submit again and paste the code when it arrives");
+                if (!await EnterSecurityCodeAsync(page, code.Trim()))
+                    return new SubmitOutcome(true, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
+                        "the security code could not be entered — check the screenshot");
+                var again = await FindSubmitAsync(page);
+                if (again is null)
+                    return new SubmitOutcome(true, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
+                        "the security code was entered but Submit did not become clickable — check the screenshot");
+                captchaRefused = false; // the first verdict was the code request; judge the second afresh
+                await again.ClickAsync();
+                await WaitForVerdictAsync(stopAtCodePrompt: false);
             }
             screenshot = await session.ScreenshotAsync();
             string PostNote()
@@ -229,6 +286,14 @@ public sealed partial class BrowserSubmitter
                 if (await HasCaptchaAsync(page))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "a captcha appeared on Submit — finish it with Copy answers and open",
+                        Captcha: true);
+                // The invisible kind, with no code offered: the board simply refused the
+                // application as a bot's. Same handoff.
+                await page.WaitForTimeoutAsync(500); // let the response body reader finish
+                if (captchaRefused && !await HasSecurityCodePromptAsync(page))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "the board refused the application as a bot's" + (boardSaid.Length > 0 ? $" (\"{boardSaid}\")" : "")
+                        + PostNote() + " — finish it with Copy answers and open",
                         Captcha: true);
                 // The form's own validation messages are the diagnosis; without them every
                 // refused click reads as the same mystery and gets the same wrong theory.
@@ -498,6 +563,48 @@ public sealed partial class BrowserSubmitter
           return out;
         }
         """;
+
+    /// <summary>Greenhouse's security-code prompt: one box per character, ids <c>security-input-N</c>,
+    /// under "A verification code was sent to …".</summary>
+    private static async Task<bool> HasSecurityCodePromptAsync(IPage page)
+    {
+        try
+        {
+            var boxes = page.Locator("input[id^='security-input-']:visible");
+            if (await boxes.CountAsync() > 0) return true;
+            return Regex.IsMatch(await BodyTextAsync(page), @"(?:verification|security) code was sent to", RegexOptions.IgnoreCase)
+                && await page.Locator("input[maxlength='1']:visible").CountAsync() >= 4;
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>Type the code into the first box; the widget advances a box per character. True
+    /// when every box ended up holding a character of the code.</summary>
+    private static async Task<bool> EnterSecurityCodeAsync(IPage page, string code)
+    {
+        try
+        {
+            var boxes = page.Locator("input[id^='security-input-']:visible");
+            if (await boxes.CountAsync() == 0) boxes = page.Locator("input[maxlength='1']:visible");
+            var n = await boxes.CountAsync();
+            if (n == 0) return false;
+            await boxes.First.ClickAsync();
+            await page.Keyboard.TypeAsync(code, new() { Delay = 40 });
+            await page.WaitForTimeoutAsync(400);
+            var typed = "";
+            for (var i = 0; i < n; i++) typed += await boxes.Nth(i).InputValueAsync();
+            if (typed.Equals(code, StringComparison.OrdinalIgnoreCase)) return true;
+            // A widget that does not advance on its own: one character per box, by hand.
+            for (var i = 0; i < n && i < code.Length; i++)
+                await boxes.Nth(i).FillAsync(code[i].ToString());
+            await page.WaitForTimeoutAsync(400);
+            typed = "";
+            for (var i = 0; i < n; i++) typed += await boxes.Nth(i).InputValueAsync();
+            return typed.Equals(code, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (PlaywrightException) { return false; }
+        catch (TimeoutException) { return false; }
+    }
 
     /// <summary>Does the page have anything a person could type into or pick from?</summary>
     private static async Task<bool> HasFillableControlsAsync(IPage page)

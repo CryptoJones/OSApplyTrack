@@ -80,6 +80,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // shows its verdict seconds later — a confirmation, or an error line.
         _fixture.MapGet("/jobs/slow", () => Results.Content(SlowFormHtml.Replace("OUTCOME", "ok"), "text/html"));
         _fixture.MapGet("/jobs/slow-error", () => Results.Content(SlowFormHtml.Replace("OUTCOME", "error"), "text/html"));
+        // Greenhouse's captcha fallback: 428 with the address it emailed a security code to,
+        // then one box per character on the form and a second Submit.
+        _fixture.MapGet("/jobs/security-code", () => Results.Content(SecurityCodeHtml, "text/html"));
+        _fixture.MapPost("/apply-code.json", async (HttpRequest req) =>
+        {
+            using var sr = new StreamReader(req.Body);
+            var body = await sr.ReadToEndAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("security_code", out var sc) || sc.GetString() != "IEG0PXWR")
+                return Results.Json(new { code = "captcha-failed", message = "Oops! We were unable to verify your Captcha response.", security_code_recipient = "ada@example.com" }, statusCode: 428);
+            lock (_posts) _posts.Add(new() { ["json"] = body });
+            return Results.Json(new { ok = true });
+        });
         _fixture.MapPost("/apply.json", async (HttpRequest req) =>
         {
             using var sr = new StreamReader(req.Body);
@@ -420,6 +433,36 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string SecurityCodeHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <button type="button">Apply</button>
+        <form id="f">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <div id="code" style="display:none">
+            <p>A verification code was sent to ada@example.com. To submit your application, enter the 8-character code to confirm you're a human.</p>
+            <label>Security code</label>
+            <input id="security-input-0" maxlength="1" /><input id="security-input-1" maxlength="1" /><input id="security-input-2" maxlength="1" /><input id="security-input-3" maxlength="1" />
+            <input id="security-input-4" maxlength="1" /><input id="security-input-5" maxlength="1" /><input id="security-input-6" maxlength="1" /><input id="security-input-7" maxlength="1" />
+          </div>
+          <button id="submit_btn" type="submit">Submit application</button>
+        </form>
+        <script>
+          const boxes = [...document.querySelectorAll('[id^=security-input-]')];
+          boxes.forEach((b, i) => b.addEventListener('input', () => { if (b.value && boxes[i + 1]) boxes[i + 1].focus(); document.getElementById('submit_btn').disabled = boxes.some(x => !x.value); }));
+          document.getElementById('f').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await new Promise(r => setTimeout(r, 1500));
+            const code = boxes.map(b => b.value).join('').toUpperCase();
+            const res = await fetch('/apply-code.json', { method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ job_application: { first_name: document.getElementById('first_name').value }, security_code: code || null }) });
+            if (res.status === 428) { document.getElementById('code').style.display = 'block'; document.getElementById('submit_btn').disabled = true; return; }
+            document.body.innerHTML = '<h1>Thank you for applying!</h1>';
+          });
+        </script>
+        </body></html>
+        """;
+
     private const string SlowFormHtml = """
         <html><body>
         <form id="f">
@@ -566,6 +609,47 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Contains("Thank you", outcome.Confirmation);
         Assert.Contains("\"first_name\":\"Ada\"", Assert.Single(_posts)["json"]);
+    }
+
+    [SkippableFact]
+    public async Task A_security_code_the_board_emails_is_relayed_by_the_human_and_the_run_finishes_in_the_same_session()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var askedFor = "";
+        Task<string?> Relay(string recipient, CancellationToken _) { askedFor = recipient; return Task.FromResult<string?>("ieg0pxwr"); }
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/security-code", packet, null, dryRun: false, awaitSecurityCode: Relay);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("ada@example.com", askedFor);
+        Assert.Contains("\"security_code\":\"IEG0PXWR\"", Assert.Single(_posts)["json"]);
+    }
+
+    [SkippableFact]
+    public async Task A_security_code_that_never_arrives_ends_the_run_with_the_recipient_named_and_nothing_submitted()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/security-code", packet, null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>(null));
+
+        Assert.False(outcome.Submitted);
+        Assert.False(outcome.Captcha);
+        Assert.Contains("security code to ada@example.com", outcome.Error);
+        Assert.Contains("run Submit again", outcome.Error);
+        Assert.Empty(_posts);
     }
 
     [SkippableFact]

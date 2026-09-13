@@ -204,10 +204,35 @@ public sealed class AgentWorker : BackgroundService
         var resumeText = (await resumes.GetAsync()).Summary;
         // The drafted letter, for a form whose cover letter is a required file field.
         var coverLetter = await new CoverLetterRepo(conn, t, _protector).GetBodyAsync(rec.Name) ?? "";
+        var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
+        // Phase two of a real click: the board emailed the candidate a security code. Record
+        // it, moo, and wait — polling the queue row the human's paste lands on — for up to
+        // eight minutes, holding the browser session the code is good for.
+        async Task<string?> AwaitSecurityCodeAsync(string recipient, CancellationToken token)
+        {
+            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.AwaitingCode, rec.Fields.Link, "",
+                new { recipient, dry_run = false }, null);
+            await events.RecordAsync(AgentEvidenceRepo.Kinds.AwaitingCode, rec.Name,
+                new { recipient, rec.Fields.Company, rec.Fields.Role });
+            await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
+                PacketReadyNotifier.Moment.Code, recipient);
+            _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}", rec.Name, recipient);
+            var deadline = DateTime.UtcNow.AddMinutes(8);
+            while (DateTime.UtcNow < deadline && !token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), token);
+                await using var poll = await _db.OpenConnectionAsync(token);
+                var code = await SubmitQueue.SecurityCodeAsync(poll, req.Id);
+                if (code.Length > 0) return code;
+            }
+            return null;
+        }
+
         SubmitOutcome outcome;
         try
         {
-            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText, coverLetter);
+            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText, coverLetter,
+                dryRun ? null : AwaitSecurityCodeAsync);
         }
         // Catch EVERYTHING except cancellation. This filter used to name three types --
         // AppValidationException, PlaywrightException, TimeoutException -- which quietly
@@ -276,7 +301,6 @@ public sealed class AgentWorker : BackgroundService
             error = outcome.Error, latency_seconds = latency, rec.Fields.Company, rec.Fields.Role,
         });
 
-        var notifications = new NotificationSettingsRepo(conn, t, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
         if (outcome.Submitted)
         {
             // The human's job is done: mark it applied the way the Mark-applied button does.
