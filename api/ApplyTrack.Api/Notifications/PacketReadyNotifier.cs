@@ -38,7 +38,8 @@ public sealed class PacketReadyNotifier
         /// <summary>The browser submitted and saw a confirmation. Informational, not claimed.</summary>
         Submitted,
         /// <summary>The board emailed the candidate a security code and the run is parked on
-        /// it — the human has minutes to paste it into the app. Always news, never claimed.</summary>
+        /// it — the human has minutes to reply with it or paste it into the app. Always news,
+        /// never claimed.</summary>
         Code,
     }
 
@@ -76,7 +77,7 @@ public sealed class PacketReadyNotifier
         {
             Moment.Filled => $"🐮 moo — {subject} is filled in and ready for you to click Apply",
             Moment.Submitted => $"✅ {subject} was submitted",
-            Moment.Code => $"🔐 {subject}: the board emailed a security code to {(detail.Length > 0 ? detail : "you")} — paste it in the app within a few minutes to finish",
+            Moment.Code => $"🔐 {subject}: the board emailed a security code to {(detail.Length > 0 ? detail : "you")} — reply here with the code (or paste it in the app) within a few minutes to finish",
             _ => $"🐮 moo — {subject} is ready to submit",
         };
         return link is null ? text : text + "\n" + link;

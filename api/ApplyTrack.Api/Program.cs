@@ -178,7 +178,8 @@ if (agentOptions.Enabled)
         sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
         sp.GetRequiredService<PacketBuilder>(), sp.GetRequiredService<PacketReadyNotifier>(),
         browserOptions, sp.GetRequiredService<BrowserSubmitter>(),
-        sp.GetRequiredService<ILoggerFactory>(), sp.GetRequiredService<ISecurityCodeSource>()));
+        sp.GetRequiredService<ILoggerFactory>(), sp.GetRequiredService<ISecurityCodeSource>(),
+        sp.GetRequiredService<INotifier>()));
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
 
