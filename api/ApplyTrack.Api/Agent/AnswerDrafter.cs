@@ -270,13 +270,17 @@ public sealed partial class AnswerDrafter
     };
 
     /// <summary>
-    /// "Omaha, NE" → "United States"; "Berlin, Germany" → "Germany"; "Remote" → "". Only the
-    /// last comma-separated part is read, and a US state (name or postal code) means the US.
-    /// A bare "CA" is ambiguous (California, Canada) and reads as the state, since that is
-    /// how a US résumé writes it. Conservative on purpose: "" means "ask the human".
+    /// "Omaha, NE" → "United States"; "Minden, Nebraska (Remote)" → "United States";
+    /// "Berlin, Germany" → "Germany"; "Remote" → "". A parenthesised or dashed suffix
+    /// ("(Remote)", "- Hybrid") is dropped first, then only the last comma-separated part is
+    /// read, and a US state (name or postal code) means the US. A bare "CA" is ambiguous
+    /// (California, Canada) and reads as the state, since that is how a US résumé writes
+    /// it. Conservative on purpose: "" means "ask the human".
     /// </summary>
     public static string CountryFromLocation(string location)
     {
+        location = Regex.Replace(location, @"\s*[\(\[][^\)\]]*[\)\]]\s*", " ");
+        location = Regex.Replace(location, @"\s+[-–—|/]\s*(remote|hybrid|on-?site|relocat\w*)\b.*$", "", RegexOptions.IgnoreCase);
         var parts = location.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length == 0) return "";
         var last = parts[^1].Trim().TrimEnd('.').Trim();

@@ -183,8 +183,10 @@ public class GreenhouseBoardTests
         Assert.Equal(PacketQuestion.Standard, country.Kind);
         Assert.Equal(["first_name", "country", "location"], with.Questions.Select(q => q.Id));
 
-        var without = GreenhouseBoard.Parse("""{"title":"x","content":"","questions":[{"required":true,"label":"First Name","fields":[{"name":"first_name","type":"input_text","values":[]}]}]}""");
-        Assert.DoesNotContain(without.Questions, q => q.Id == "country");
+        // GitLab's board: a Country picker on the form, no location question in the API.
+        var without = GreenhouseBoard.Parse("""{"title":"x","content":"","questions":[{"required":true,"label":"First Name","fields":[{"name":"first_name","type":"input_text","values":[]}]},{"required":true,"label":"Why us?","fields":[{"name":"question_1","type":"textarea","values":[]}]}]}""");
+        Assert.Equal(["first_name", "country", "question_1"], without.Questions.Select(q => q.Id));
+        Assert.False(without.Questions.Single(q => q.Id == "country").Required);
     }
 
     [Fact]
