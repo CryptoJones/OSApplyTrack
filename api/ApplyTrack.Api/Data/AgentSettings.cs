@@ -24,6 +24,17 @@ public sealed class AgentSettings
     public bool NeedsSponsorship { get; set; }
     public bool ClearanceOk { get; set; }
     public string SalaryExpectation { get; set; } = "";
+
+    /// <summary>What period the figure is for: <c>annual</c>, <c>monthly</c>, <c>hourly</c>,
+    /// or blank for "whatever the figure itself says". With one stated the drafter can
+    /// convert to the period a form asks for, within the same currency (#188).</summary>
+    public string SalaryPeriod { get; set; } = "";
+
+    /// <summary>The figure's currency as a code (<c>USD</c>, <c>EUR</c>), or blank. The
+    /// drafter never converts across currencies; a form asking in another one is the
+    /// person's to answer.</summary>
+    public string SalaryCurrency { get; set; } = "";
+
     public string Phone { get; set; } = "";
 
     /// <summary>Country of residence, as an application form's country picker wants it
@@ -34,6 +45,8 @@ public sealed class AgentSettings
     /// <summary>Let the browser discover and fill forms on ATSs it doesn't know. Off by
     /// default: a never-seen form is where a wrong guess is likeliest.</summary>
     public bool LongTail { get; set; }
+
+    public static readonly string[] SalaryPeriods = ["annual", "monthly", "hourly"];
 
     private const int MaxPerRunCeil = 50;
     private const int MaxPerDayCeil = 500;
@@ -53,6 +66,12 @@ public sealed class AgentSettings
         s.NeedsSponsorship = GetBool(data, "needs_sponsorship", s.NeedsSponsorship);
         s.ClearanceOk = GetBool(data, "clearance_ok", s.ClearanceOk);
         s.SalaryExpectation = GetString(data, "salary_expectation");
+        // Unknown periods read as blank rather than failing the whole save; the currency is
+        // a short upper-case code, whatever case it was typed in.
+        var period = GetString(data, "salary_period").ToLowerInvariant();
+        s.SalaryPeriod = SalaryPeriods.Contains(period) ? period : "";
+        var currency = GetString(data, "salary_currency").ToUpperInvariant();
+        s.SalaryCurrency = currency.Length > 8 ? currency[..8] : currency;
         s.Phone = GetString(data, "phone");
         s.Country = GetString(data, "country");
         s.LongTail = GetBool(data, "long_tail", s.LongTail);
@@ -73,7 +92,11 @@ public sealed class AgentSettings
         lines.Add(ClearanceOk
             ? "Security clearance: holds or can obtain one"
             : "Security clearance: none, and cannot obtain one");
-        if (SalaryExpectation.Length > 0) lines.Add($"Salary expectation: {SalaryExpectation}");
+        if (SalaryExpectation.Length > 0)
+        {
+            var units = string.Join(", ", new[] { SalaryPeriod, SalaryCurrency }.Where(u => u.Length > 0));
+            lines.Add($"Salary expectation: {SalaryExpectation}" + (units.Length > 0 ? $" ({units})" : ""));
+        }
         if (Country.Length > 0) lines.Add($"Country of residence: {Country}");
         return string.Join("\n", lines);
     }
@@ -112,7 +135,7 @@ public sealed class AgentSettingsRepo
     private sealed record Row(
         bool Enabled, bool DryRun, int MinFitScore, int MaxPerRun, int MaxPerDay,
         string WorkAuthorization, bool NeedsSponsorship, bool ClearanceOk,
-        string SalaryExpectation, string Phone, bool LongTail, string Country);
+        string SalaryExpectation, string SalaryPeriod, string SalaryCurrency, string Phone, bool LongTail, string Country);
 
     /// <summary>Whether the operator has allowed this account to use auto-apply at all —
     /// a row in <c>agent_allowlist</c>, added by hand at the database. Nothing about the
@@ -128,7 +151,8 @@ public sealed class AgentSettingsRepo
             "SELECT enabled, dry_run AS dryrun, min_fit_score AS minfitscore, "
             + "max_per_run AS maxperrun, max_per_day AS maxperday, "
             + "work_authorization AS workauthorization, needs_sponsorship AS needssponsorship, "
-            + "clearance_ok AS clearanceok, salary_expectation AS salaryexpectation, phone, "
+            + "clearance_ok AS clearanceok, salary_expectation AS salaryexpectation, "
+            + "salary_period AS salaryperiod, salary_currency AS salarycurrency, phone, "
             + "long_tail AS longtail, country "
             + "FROM agent_settings WHERE tenant_id = @t",
             new { t = _t });
@@ -139,7 +163,8 @@ public sealed class AgentSettingsRepo
             Enabled = row.Enabled, DryRun = row.DryRun, MinFitScore = row.MinFitScore,
             MaxPerRun = row.MaxPerRun, MaxPerDay = row.MaxPerDay,
             WorkAuthorization = row.WorkAuthorization, NeedsSponsorship = row.NeedsSponsorship,
-            ClearanceOk = row.ClearanceOk, SalaryExpectation = row.SalaryExpectation, Phone = row.Phone,
+            ClearanceOk = row.ClearanceOk, SalaryExpectation = row.SalaryExpectation,
+            SalaryPeriod = row.SalaryPeriod, SalaryCurrency = row.SalaryCurrency, Phone = row.Phone,
             LongTail = row.LongTail, Country = row.Country,
         };
     }
@@ -149,11 +174,11 @@ public sealed class AgentSettingsRepo
             """
             INSERT INTO agent_settings (
                 tenant_id, enabled, dry_run, min_fit_score, max_per_run, max_per_day,
-                work_authorization, needs_sponsorship, clearance_ok, salary_expectation, phone,
-                long_tail, country, updated_at)
+                work_authorization, needs_sponsorship, clearance_ok, salary_expectation,
+                salary_period, salary_currency, phone, long_tail, country, updated_at)
             VALUES (@t, @Enabled, @DryRun, @MinFitScore, @MaxPerRun, @MaxPerDay,
-                @WorkAuthorization, @NeedsSponsorship, @ClearanceOk, @SalaryExpectation, @Phone,
-                @LongTail, @Country, now())
+                @WorkAuthorization, @NeedsSponsorship, @ClearanceOk, @SalaryExpectation,
+                @SalaryPeriod, @SalaryCurrency, @Phone, @LongTail, @Country, now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 enabled            = EXCLUDED.enabled,
                 dry_run            = EXCLUDED.dry_run,
@@ -164,6 +189,8 @@ public sealed class AgentSettingsRepo
                 needs_sponsorship  = EXCLUDED.needs_sponsorship,
                 clearance_ok       = EXCLUDED.clearance_ok,
                 salary_expectation = EXCLUDED.salary_expectation,
+                salary_period      = EXCLUDED.salary_period,
+                salary_currency    = EXCLUDED.salary_currency,
                 phone              = EXCLUDED.phone,
                 long_tail          = EXCLUDED.long_tail,
                 country            = EXCLUDED.country,
@@ -172,8 +199,8 @@ public sealed class AgentSettingsRepo
             new
             {
                 t = _t, s.Enabled, s.DryRun, s.MinFitScore, s.MaxPerRun, s.MaxPerDay,
-                s.WorkAuthorization, s.NeedsSponsorship, s.ClearanceOk, s.SalaryExpectation, s.Phone,
-                s.LongTail, s.Country,
+                s.WorkAuthorization, s.NeedsSponsorship, s.ClearanceOk, s.SalaryExpectation,
+                s.SalaryPeriod, s.SalaryCurrency, s.Phone, s.LongTail, s.Country,
             },
             tx);
 }

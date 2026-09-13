@@ -207,4 +207,59 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         stranger.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={other}");
         Assert.Equal(0, JsonDocument.Parse(await (await stranger.GetAsync("/api/answers")).Content.ReadAsStringAsync()).RootElement.GetArrayLength());
     }
+
+    [Fact]
+    public async Task A_saved_answer_is_written_into_every_ready_packet_that_asks_the_question()
+    {
+        // Saving an answer used to change the future only; every built packet kept the old
+        // one, and re-preparing cost a model call per packet (#189).
+        var f = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("ConnectionStrings:Postgres", pg.ConnectionString);
+            b.UseSetting("Secrets:Key", "test-master-key");
+        });
+        _factories.Add(f);
+        var (tenant, sid) = await TestAuth.SeedSessionAsync(pg.ConnectionString);
+        var client = f.CreateClient();
+        client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
+        await using var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+        var apps = new ApplicationRepo(conn, tenant);
+        var packets = new AgentPacketRepo(conn, tenant, Protector);
+        var choice = new PacketQuestion("q_5", "Salary Requirements", true, PacketQuestion.Select, ["Under 100k", "100k–150k"], PacketQuestion.Custom);
+        async Task<string> ReadyPacketAsync(string company, string status, PacketQuestion q)
+        {
+            var name = await apps.CreateAsync(new AppFields { Company = company, Role = "Engineer", Status = status });
+            await packets.UpsertAsync(new AgentPacket
+            {
+                ApplicationName = name, Provider = "greenhouse", Questions = [Name, q],
+                Answers = new() { ["first_name"] = "Ada", [q.Id] = q == Salary ? "125000" : "" },
+            });
+            return name;
+        }
+        var ready = await ReadyPacketAsync("Acme", "ready", Salary);
+        var other = await ReadyPacketAsync("Globex", "ready", Why);
+        var picked = await ReadyPacketAsync("Initech", "ready", choice);
+        var applied = await ReadyPacketAsync("Umbrella", "applied", Salary);
+        await new AnswerBankRepo(conn, tenant, Protector).RecordAsync([Salary], new Dictionary<string, string> { ["question_9"] = "125000" }, ready);
+
+        // Only the person's own answer is applied.
+        var notMine = await client.PostAsync("/api/answers/" + Uri.EscapeDataString("salary requirements") + "/apply", null);
+        Assert.Equal(HttpStatusCode.BadRequest, notMine.StatusCode);
+
+        await client.PutAsync("/api/answers/" + Uri.EscapeDataString("salary requirements"),
+            new StringContent("""{"answer":"140000"}""", Encoding.UTF8, "application/json"));
+        var res = await client.PostAsync("/api/answers/" + Uri.EscapeDataString("salary requirements") + "/apply", null);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var body = JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
+        Assert.Equal(1, body.GetProperty("updated").GetInt32());
+        Assert.Equal([ready], body.GetProperty("packets").EnumerateArray().Select(e => e.GetString()));
+
+        Assert.Equal("140000", (await packets.GetAsync(ready))!.Answers["question_9"]);
+        Assert.Equal(2, (await packets.GetAsync(ready))!.Version);
+        Assert.Equal("125000", (await packets.GetAsync(applied))!.Answers["question_9"]); // not in Ready
+        Assert.Equal("", (await packets.GetAsync(picked))!.Answers["q_5"]);              // "140000" is not one of its options
+        Assert.False((await packets.GetAsync(other))!.Answers.ContainsKey("question_9"));  // never asked it
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/api/answers/never-asked/apply", null)).StatusCode);
+    }
 }

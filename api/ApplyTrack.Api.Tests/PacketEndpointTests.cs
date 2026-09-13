@@ -59,12 +59,48 @@ public class PacketEndpointTests : IAsyncLifetime
             });
         });
         _factories.Add(f);
+        // A browser-capable worker another test heartbeated moments ago would make prepare
+        // hand the build to it (#183); these tests are about the inline build, so age every row.
+        await using (var conn = new Npgsql.NpgsqlConnection(_pg.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await Dapper.SqlMapper.ExecuteAsync(conn, "UPDATE agent_workers SET seen_at = now() - interval '1 hour'");
+        }
         var (_, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
         var client = f.CreateClient();
         client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
         await client.PutAsync("/api/resume", Json(Resume));
         await client.PutAsync("/api/agent-settings", Json("""{"phone":"555-0100","work_authorization":"US citizen"}"""));
         return client;
+    }
+
+    [Fact]
+    public async Task Prepare_is_handed_to_the_worker_when_the_browser_is_there_and_not_here()
+    {
+        // The api container never has a browser on the shipped shapes; a packet built here
+        // never sees the real form. With a browser-capable worker fresh, prepare queues the
+        // rebuild for it and answers at once (#183).
+        var client = await ClientAsync(new StubLlmClient(Responders.Agent()));
+        var res = await client.PostAsync("/api/apps",
+            Json("""{"company":"Acme Corp","role":"Senior .NET Engineer","score":"80","link":"https://jobs.lever.co/acme/1234"}"""));
+        var name = (await ReadJson(res)).GetProperty("filename").GetString()!;
+        await using (var conn = new Npgsql.NpgsqlConnection(_pg.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await Data.AgentWorkerRegistry.HeartbeatAsync(conn, "browser-worker-183", browser: true);
+        }
+
+        var handed = await client.PostAsync($"/api/apps/{name}/packet/prepare", null);
+        Assert.Equal(HttpStatusCode.Accepted, handed.StatusCode);
+        var body = await ReadJson(handed);
+        Assert.True(body.GetProperty("queued").GetBoolean());
+        Assert.True(body.GetProperty("prepare").GetBoolean());
+        var pending = await ReadJson(await client.GetAsync($"/api/apps/{name}/submit"));
+        Assert.True(pending.GetProperty("pending").GetBoolean());
+        Assert.True(pending.GetProperty("prepare").GetBoolean());
+        // Nothing was built in the request thread.
+        Assert.Equal(JsonValueKind.Null, (await ReadJson(await client.GetAsync($"/api/apps/{name}"))).GetProperty("packet").ValueKind);
+        Assert.Empty(_notifier.Sent);
     }
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");

@@ -33,11 +33,11 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from html import unescape
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 # Stdlib import is the Element *type* only — never a parser entry point; all parsing
 # below goes through defusedxml, which is XXE / billion-laughs safe.
@@ -50,8 +50,10 @@ import psycopg
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.linkcheck import (
     BROWSER_HEADERS,
+    PublicFetchError,
     fetch_public,
     is_reachable,
+    probe,
     ssrf_safe_client,
 )
 from applytrack.store import AppFields
@@ -78,9 +80,81 @@ class Listing:
     salary: str = ""
     source: str = ""
     description: str = ""
+    #: The aggregator's own "apply" link when its API hands one over (remoteOK's
+    #: ``apply_url``): a redirect to the employer, cheaper and surer than scraping
+    #: the listing page for it.
+    apply_link: str = ""
 
 
 # A fetcher takes an http client + per-source scan cap and returns listings.
+
+# -- aggregator listings -----------------------------------------------------
+#
+# A lead from remoteOK, Remotive and their kind carries the aggregator's listing page
+# as its link. There is no application form on that page: the agent judged such a
+# lead, built a packet, opened it in the browser and found nothing to fill — a wasted
+# model call and browser run per lead (#191). At discovery time the listing's apply
+# link is followed to the employer's posting (through the same SSRF guard as the link
+# check) and THAT is stored; when it cannot be, the lead keeps the aggregator link and
+# the .NET side reads it as apply-by-hand. Both runtimes carry this host list — the
+# schema is the contract, and this is a reading of its ``link`` column; keep it in
+# step with ``AtsProvider.AggregatorHosts``.
+AGGREGATOR_HOSTS = frozenset({
+    "remoteok.com", "remoteok.io", "remotive.com", "remotive.io", "jobicy.com",
+    "arbeitnow.com", "weworkremotely.com", "remotefirstjobs.com", "workanywhere.pro",
+    "news.ycombinator.com",
+})
+
+_APPLY_ANCHOR_RE = re.compile(
+    r"<a\b[^>]*?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL
+)
+_APPLY_WORDS_RE = re.compile(r"\bapply\b|i['’]?m interested", re.IGNORECASE)
+_MAX_APPLY_CANDIDATES = 3
+
+
+def is_aggregator_link(url: str) -> bool:
+    """True when ``url`` is on a job aggregator's host rather than an employer's."""
+    host = (urlsplit(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in AGGREGATOR_HOSTS)
+
+
+def _apply_candidates(html: str, base: str) -> list[str]:
+    """The anchors on a listing page that read as its Apply link, absolute, in order."""
+    out: list[str] = []
+    for href, inner in _APPLY_ANCHOR_RE.findall(html):
+        label = _strip_html(inner)
+        if not (_APPLY_WORDS_RE.search(label) or _APPLY_WORDS_RE.search(href)):
+            continue
+        url = urljoin(base, unescape(href).strip())
+        if url.startswith(("http://", "https://")) and url not in out:
+            out.append(url)
+        if len(out) >= _MAX_APPLY_CANDIDATES:
+            break
+    return out
+
+
+def resolve_employer_link(item: Listing, client: httpx.Client) -> str | None:
+    """Follow an aggregator listing to the employer's own posting, or ``None``.
+
+    The aggregator's apply link when its API gave one, else the Apply anchors on the
+    listing page; each is walked through the SSRF-guarded probe (every redirect hop
+    validated) and the first live final URL that is *not* on an aggregator's host is
+    the employer's posting. Bounded to a few candidates; any failure is ``None``.
+    """
+    candidates = [item.apply_link] if item.apply_link else []
+    if not candidates:
+        try:
+            html = fetch_public(item.link, client=client).decode("utf-8", "replace")
+        except PublicFetchError:
+            return None
+        candidates = _apply_candidates(html, item.link)
+    for url in candidates[:_MAX_APPLY_CANDIDATES]:
+        status = probe(url, client=client)
+        final = status.final_url or url
+        if status.ok and not is_aggregator_link(final):
+            return final
+    return None
+
 Fetcher = Callable[[httpx.Client, int], list[Listing]]
 
 
@@ -459,6 +533,7 @@ def fetch_remoteok(client: httpx.Client, limit: int) -> list[Listing]:
                 salary=_fmt_salary(j.get("salary_min"), j.get("salary_max")),
                 source="remoteok",
                 description=_strip_html(str(j.get("description", ""))),
+                apply_link=str(j.get("apply_url", "") or "").strip(),
             )
         )
     return out
@@ -1230,13 +1305,23 @@ def score_and_stage(
                 seen.add(item.link, slug)
                 continue
 
+            # The dedupe ledger is keyed on the listing's own link, whatever we store.
+            listing_link = item.link
+            # An aggregator's listing page has no form on it: store the employer's
+            # posting instead when the apply link leads there (#191).
+            if verify_client is not None and item.link and is_aggregator_link(item.link):
+                resolved = resolve_employer_link(item, verify_client)
+                if resolved:
+                    logger.info("resolved %s -> %s", item.link, resolved)
+                    item = replace(item, link=resolved)
+
             # Block dead postings: don't create an entry we can't actually open.
             if (
                 verify_client is not None
                 and item.link
                 and not is_reachable(item.link, client=verify_client)
             ):
-                seen.add(item.link, slug)
+                seen.add(listing_link, slug)
                 continue
 
             fields = _to_fields(item, profile.default_lane, score, hits)
@@ -1255,7 +1340,7 @@ def score_and_stage(
                 )
                 continue
             # Staged: record keys, then collect. Cover letter is drafted on demand.
-            seen.add(item.link, slug)
+            seen.add(listing_link, slug)
             added.append(name)
     finally:
         if verify_client is not None:

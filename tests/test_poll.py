@@ -819,3 +819,120 @@ def test_classify_never_exceeds_one_hundred() -> None:
     score, hits = classify(title, "", kws)
     assert len(hits) == len(kws)
     assert score == 100  # 50 + 9*7 = 113 before clamping
+
+
+# -- aggregator listings resolve to the employer's posting (#191) -----------------
+
+
+def test_score_and_stage_stores_the_employer_link_behind_an_aggregator_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import LinkStatus
+
+    class _Client:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("applytrack.poll.ssrf_safe_client", lambda **_: _Client())
+    monkeypatch.setattr("applytrack.poll.is_reachable", lambda url, *, client=None: True)
+    probed: list[str] = []
+
+    def fake_probe(url: str, *, client: object = None, timeout: float = 12.0) -> LinkStatus:
+        probed.append(url)
+        if url == "https://remoteok.com/l/123":
+            return LinkStatus(url=url, ok=True, status_code=200,
+                              final_url="https://boards.greenhouse.io/acme/jobs/9")
+        return LinkStatus(url=url, ok=True, status_code=200, final_url=url)
+
+    monkeypatch.setattr("applytrack.poll.probe", fake_probe)
+    repo = FakeRepo()
+    listing = Listing(
+        company="Acme", role="Senior Backend Engineer",
+        link="https://remoteok.com/remote-jobs/remote-senior-backend-engineer-acme-123",
+        apply_link="https://remoteok.com/l/123", source="remoteok",
+        location="Remote", description="Python backend",
+    )
+
+    added = score_and_stage(
+        repo, Criteria(keywords=["backend"], min_fit_score=1), [listing], verify_links=True
+    )
+
+    assert len(added) == 1
+    assert repo.added[0].link == "https://boards.greenhouse.io/acme/jobs/9"
+    assert repo.added[0].source == "auto:remoteok"
+    # The dedupe ledger stays keyed on the listing's own link (stored scheme-less).
+    assert any(listing.link.endswith(key) for key in repo._seen_urls)
+    assert probed == ["https://remoteok.com/l/123"]
+
+
+def test_an_aggregator_listing_that_cannot_be_resolved_keeps_its_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import LinkStatus
+
+    class _Client:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("applytrack.poll.ssrf_safe_client", lambda **_: _Client())
+    monkeypatch.setattr("applytrack.poll.is_reachable", lambda url, *, client=None: True)
+    # The apply link only bounces around the aggregator itself.
+    monkeypatch.setattr(
+        "applytrack.poll.probe",
+        lambda url, *, client=None, timeout=12.0: LinkStatus(
+            url=url, ok=True, status_code=200, final_url="https://remoteok.com/remote-jobs/123"
+        ),
+    )
+    repo = FakeRepo()
+    listing = Listing(
+        company="Acme", role="Backend Engineer", link="https://remoteok.com/remote-jobs/123",
+        apply_link="https://remoteok.com/l/123", source="remoteok", location="Remote",
+        description="backend",
+    )
+
+    score_and_stage(
+        repo, Criteria(keywords=["backend"], min_fit_score=1), [listing], verify_links=True
+    )
+
+    # Staged with the aggregator link: the .NET side reads that host as apply-by-hand.
+    assert repo.added[0].link == "https://remoteok.com/remote-jobs/123"
+
+
+def test_resolve_employer_link_reads_the_apply_anchor_when_the_api_gave_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import LinkStatus
+    from applytrack.poll import is_aggregator_link, resolve_employer_link
+
+    html = (
+        b'<html><body><nav><a href="/remote-jobs">All jobs</a></nav>'
+        b'<a class="btn" href="/l/555">Apply for this job</a>'
+        b'<a href="https://remotive.com/apply-tips">Apply tips</a></body></html>'
+    )
+    monkeypatch.setattr("applytrack.poll.fetch_public", lambda url, *, client=None: html)
+    monkeypatch.setattr(
+        "applytrack.poll.probe",
+        lambda url, *, client=None, timeout=12.0: LinkStatus(
+            url=url, ok=True, status_code=200,
+            final_url="https://jobs.lever.co/acme/1" if url.endswith("/l/555") else url,
+        ),
+    )
+
+    item = Listing(company="Acme", role="Engineer", link="https://remotive.com/remote-jobs/software-dev/engineer-1")
+    assert resolve_employer_link(item, client=None) == "https://jobs.lever.co/acme/1"  # type: ignore[arg-type]
+    assert is_aggregator_link("https://weworkremotely.com/remote-jobs/x")
+    assert is_aggregator_link("https://www.remoteok.com/remote-jobs/x")
+    assert not is_aggregator_link("https://boards.greenhouse.io/acme/jobs/1")
+
+
+def test_resolve_employer_link_gives_up_quietly_when_the_listing_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.poll import resolve_employer_link
+
+    def boom(url: str, *, client: object = None) -> bytes:
+        raise PublicFetchError("HTTP 403")
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", boom)
+    item = Listing(company="Acme", role="Engineer", link="https://remotive.com/remote-jobs/x")
+    assert resolve_employer_link(item, client=None) is None  # type: ignore[arg-type]

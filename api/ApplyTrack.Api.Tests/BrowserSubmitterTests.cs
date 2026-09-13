@@ -127,6 +127,14 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/late-name", () => Results.Content(LateNameHtml, "text/html"));
         // A form whose labels are plain text above each box — no <label for>, no aria.
         _fixture.MapGet("/jobs/text-labels", () => Results.Content(TextLabelsHtml, "text/html"));
+        // Comeet's shape (Kendago): an optional "LinkedIn Profile URL" in the standard section,
+        // then a required "LinkedIn profile" in the custom section (#187).
+        _fixture.MapGet("/jobs/two-linkedin", () => Results.Content(TwoLinkedInHtml, "text/html"));
+        // Workable's job finder: a search box on the posting page, and an Apply link to the
+        // form on another page of the same site (#180).
+        _fixture.MapGet("/jobs/search-first", () => Results.Content(SearchFirstHtml, "text/html"));
+        // A posting whose Apply button never becomes clickable (Fuse Energy).
+        _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
@@ -572,6 +580,35 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             }
           });
         </script>
+        </body></html>
+        """;
+
+    private const string TwoLinkedInHtml = """
+        <html><body>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="first_name" />
+          <label for="li_url">LinkedIn Profile URL</label><input id="li_url" name="li_url" />
+          <h3>Additional questions</h3>
+          <label for="li_req">LinkedIn profile *</label><input id="li_req" name="li_req" required />
+          <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string SearchFirstHtml = """
+        <html><body>
+        <header><input type="text" placeholder="Search jobs" aria-label="Search jobs" /></header>
+        <h1>Senior Engineer</h1>
+        <p>A posting page with no form on it.</p>
+        <a href="/jobs/1">Apply now</a>
+        </body></html>
+        """;
+
+    private const string StuckApplyHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <p>A posting whose Apply never wakes up.</p>
+        <button type="button" disabled>Apply</button>
         </body></html>
         """;
 
@@ -1348,6 +1385,54 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             submitter.RunAsync("http://127.0.0.1:8080/jobs/1", Packet(), null, dryRun: true));
         await Assert.ThrowsAsync<AppValidationException>(() =>
             submitter.RunAsync("ftp://example.com/x", Packet(), null, dryRun: true));
+    }
+
+    [SkippableFact]
+    public async Task An_exact_label_wins_over_a_longer_one_that_merely_contains_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // "LinkedIn profile" (required) used to match "LinkedIn Profile URL" first, so the URL
+        // box was filled twice and the required one stayed empty — the run stopped on it (#187).
+        var packet = new AgentPacket
+        {
+            ApplicationName = "kendago-engineer.md", Provider = "unknown",
+            Questions =
+            [
+                new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("li_url", "LinkedIn Profile URL", false, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("LinkedIn profile", "LinkedIn profile", true, PacketQuestion.Text, [], PacketQuestion.Custom),
+            ],
+            Answers = new()
+            {
+                ["first_name"] = "Ada", ["li_url"] = "https://www.linkedin.com/in/ada", ["LinkedIn profile"] = "https://www.linkedin.com/in/ada",
+            },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/two-linkedin", packet, null, dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("https://www.linkedin.com/in/ada", post["li_url"]);
+        Assert.Equal("https://www.linkedin.com/in/ada", post["li_req"]);
+    }
+
+    [SkippableFact]
+    public async Task A_search_box_on_the_posting_page_is_not_the_form_and_apply_is_followed_to_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/search-first", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.EndsWith("/apply", new Uri(outcome.Url).AbsolutePath);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_button_that_never_responds_is_a_clear_reason_not_a_timeout()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/stuck-apply", Packet(), null, dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.Contains("no application form was found", outcome.Error);
+        Assert.Contains("the Apply button did not respond within 5 s", outcome.Error);
+        Assert.Empty(_posts);
     }
 
     private static string FindRepoRoot()

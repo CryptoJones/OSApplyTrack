@@ -96,6 +96,24 @@ public sealed class LeadEvaluator
         }
     }
 
+    /// <summary>The page's raw HTML through the same SSRF-guarded fetcher, or "" on any
+    /// failure — for reading a careers page's Greenhouse embed token, not its prose.</summary>
+    public async Task<string> FetchHtmlAsync(string link, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+            return "";
+        try
+        {
+            var (html, _) = await _fetcher.FetchAsync(link, ct);
+            return html;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogInformation("no page read for {Link}: {Reason}", link, ex.Message);
+            return "";
+        }
+    }
+
     /// <summary>Best-effort posting fetch, the same contract as the draft endpoint's.</summary>
     public async Task<string> ReadPostingAsync(string link, CancellationToken ct)
     {

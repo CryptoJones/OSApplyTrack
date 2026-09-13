@@ -10,8 +10,9 @@ namespace ApplyTrack.Api.Agent;
 /// stamps <c>source = auto:greenhouse:{board}</c> / <c>auto:lever:{site}</c> on leads it
 /// found through a tenant's ATS boards — that is trusted over URL sniffing when
 /// present. Only Greenhouse publishes its application form without an employer key,
-/// so only Greenhouse gets a real field map here; everything else falls back to the
-/// standard question set and the copy-and-open path.
+/// so only Greenhouse gets a real field map here; Lever, Ashby, Workable, Breezy,
+/// SmartRecruiters and join.com are discovered read-only in the browser; everything
+/// else falls back to the standard question set and the copy-and-open path.
 /// </summary>
 public static partial class AtsProvider
 {
@@ -19,7 +20,28 @@ public static partial class AtsProvider
     public const string Lever = "lever";
     public const string Ashby = "ashby";
     public const string Workday = "workday";
+    public const string Workable = "workable";
+    public const string Breezy = "breezy";
+    public const string SmartRecruiters = "smartrecruiters";
+    public const string Join = "join";
+    /// <summary>A job aggregator's listing page (remoteOK, Remotive, …), not the employer's
+    /// posting: there is no form on it to fill. The poller resolves these to the employer's
+    /// page where it can (#191); one still on the aggregator's host is applied to by hand.</summary>
+    public const string Aggregator = "aggregator";
     public const string Unknown = "unknown";
+
+    /// <summary>
+    /// Hosts that list other employers' postings. The same set the Python poller carries
+    /// (<c>AGGREGATOR_HOSTS</c> in <c>poll.py</c>): it tries to follow the listing's apply
+    /// link to the employer, and a lead whose link is still on one of these is one it
+    /// could not resolve. Kept in step by hand — the schema, not the code, is the contract,
+    /// and this is a reading of the schema's <c>link</c> column.
+    /// </summary>
+    private static readonly string[] AggregatorHosts =
+    [
+        "remoteok.com", "remoteok.io", "remotive.com", "remotive.io", "jobicy.com", "arbeitnow.com",
+        "weworkremotely.com", "remotefirstjobs.com", "workanywhere.pro", "news.ycombinator.com",
+    ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]
     private static partial Regex SourceBoard();
@@ -32,6 +54,30 @@ public static partial class AtsProvider
     [GeneratedRegex(@"[?&]gh_jid=(\d+)", RegexOptions.IgnoreCase)]
     private static partial Regex GreenhouseEmbed();
 
+    // The board token as a careers page that embeds Greenhouse names it: the embed script
+    // (…/embed/job_board?for=acme, …/embed/job_app?for=acme&token=123), the board API
+    // (boards-api.greenhouse.io/v1/boards/acme/…), or a link to the hosted board.
+    [GeneratedRegex(@"greenhouse\.io/embed/job_(?:board|app)[^""'\s]*?[?&](?:for|board)=([a-z0-9][a-z0-9._-]*)", RegexOptions.IgnoreCase)]
+    private static partial Regex GreenhouseEmbedFor();
+
+    [GeneratedRegex(@"boards-api\.greenhouse\.io/v1/boards/([a-z0-9][a-z0-9._-]*)", RegexOptions.IgnoreCase)]
+    private static partial Regex GreenhouseBoardApi();
+
+    [GeneratedRegex(@"(?:job-)?boards(?:\.eu)?\.greenhouse\.io/(?!embed\b)([a-z0-9][a-z0-9._-]*)", RegexOptions.IgnoreCase)]
+    private static partial Regex GreenhouseBoardLink();
+
+    // Workable's job finder (jobs.workable.com/view/{shortcode}/{slug}) and its hosted
+    // application (apply.workable.com/{account}/j/{shortcode}/, form at …/apply/).
+    [GeneratedRegex(@"^/view/([A-Za-z0-9]+)(?:/|$)")]
+    private static partial Regex WorkableView();
+
+    [GeneratedRegex(@"^/([^/]+)/j/([A-Za-z0-9]+)/?$")]
+    private static partial Regex WorkableHosted();
+
+    // Breezy's public posting: {company}.breezy.hr/p/{id}[-slug]; the form is at …/apply.
+    [GeneratedRegex(@"^/p/([A-Za-z0-9-]+)/?$")]
+    private static partial Regex BreezyPosting();
+
     public static string Detect(string link, string source)
     {
         var m = SourceBoard().Match(source ?? "");
@@ -41,6 +87,8 @@ public static partial class AtsProvider
         if (!Uri.TryCreate(link, UriKind.Absolute, out var uri))
             return Unknown;
         var host = uri.Host.ToLowerInvariant();
+        if (IsAggregatorHost(host))
+            return Aggregator;
         if (host.EndsWith("greenhouse.io") || GreenhouseEmbed().IsMatch(uri.Query))
             return Greenhouse;
         if (host.EndsWith("lever.co"))
@@ -49,13 +97,31 @@ public static partial class AtsProvider
             return Ashby;
         if (host.EndsWith("myworkdayjobs.com") || host.EndsWith("myworkdaysite.com"))
             return Workday;
+        if (host.EndsWith("workable.com"))
+            return Workable;
+        if (host.EndsWith("breezy.hr"))
+            return Breezy;
+        if (host.EndsWith("smartrecruiters.com"))
+            return SmartRecruiters;
+        if (host == "join.com" || host.EndsWith(".join.com"))
+            return Join;
         return Unknown;
+    }
+
+    /// <summary>A host that lists other employers' postings (see <see cref="Aggregator"/>).</summary>
+    public static bool IsAggregatorHost(string host)
+    {
+        host = (host ?? "").ToLowerInvariant();
+        return AggregatorHosts.Any(h => host == h || host.EndsWith("." + h, StringComparison.Ordinal));
     }
 
     /// <summary>
     /// The page the application form is on. Lever and Ashby post their form one hop
-    /// past the posting (<c>/apply</c>, <c>/application</c>); everyone else's is the
-    /// posting itself (Greenhouse hosted pages carry the form; an embed reveals it).
+    /// past the posting (<c>/apply</c>, <c>/application</c>); Workable's is at
+    /// <c>…/j/{shortcode}/apply/</c> (a job-finder link goes through the shortlink, which
+    /// redirects to the account's page); Breezy's is at <c>/p/{id}/apply</c>. Everyone
+    /// else's is the posting itself (Greenhouse hosted pages carry the form; an embed
+    /// reveals it; SmartRecruiters and join.com open theirs behind an Apply click).
     /// </summary>
     public static string ApplyUrl(string link, string provider)
     {
@@ -70,6 +136,15 @@ public static partial class AtsProvider
             case Ashby when uri.Host.EndsWith("ashbyhq.com", StringComparison.OrdinalIgnoreCase)
                             && !path.EndsWith("/application", StringComparison.OrdinalIgnoreCase):
                 return $"{uri.Scheme}://{uri.Host}{path}/application";
+            case Workable when uri.Host.Equals("jobs.workable.com", StringComparison.OrdinalIgnoreCase)
+                               && WorkableView().Match(uri.AbsolutePath) is { Success: true } view:
+                return $"https://apply.workable.com/j/{view.Groups[1].Value}/";
+            case Workable when uri.Host.Equals("apply.workable.com", StringComparison.OrdinalIgnoreCase)
+                               && WorkableHosted().Match(uri.AbsolutePath) is { Success: true } hosted:
+                return $"https://apply.workable.com/{hosted.Groups[1].Value}/j/{hosted.Groups[2].Value}/apply/";
+            case Breezy when uri.Host.EndsWith("breezy.hr", StringComparison.OrdinalIgnoreCase)
+                             && BreezyPosting().IsMatch(uri.AbsolutePath):
+                return $"{uri.Scheme}://{uri.Host}{path}/apply";
             default:
                 return link;
         }
@@ -78,13 +153,14 @@ public static partial class AtsProvider
     /// <summary>
     /// Whether the browser may drive this provider's form. Workday never: applying
     /// needs an account with the employer's tenant, email verification and a
-    /// multi-step wizard — the honest outcome is copy-and-open. The unknown long tail
-    /// only with the tenant's explicit opt-in.
+    /// multi-step wizard — the honest outcome is copy-and-open. An aggregator's listing
+    /// never: there is no form on it. The unknown long tail only with the tenant's
+    /// explicit opt-in.
     /// </summary>
     public static bool BrowserCanSubmit(string provider, bool longTailOptIn) => provider switch
     {
-        Greenhouse or Lever or Ashby => true,
-        Workday => false,
+        Greenhouse or Lever or Ashby or Workable or Breezy or SmartRecruiters or Join => true,
+        Workday or Aggregator => false,
         _ => longTailOptIn,
     };
 
@@ -110,5 +186,22 @@ public static partial class AtsProvider
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// The Greenhouse board token a company careers page embeds, read from its HTML —
+    /// for a <c>?gh_jid=</c> lead that came from anywhere but the tenant's own board list
+    /// (an aggregator, a hand-pasted link), where the source carries no board. Null when
+    /// the page does not name one.
+    /// </summary>
+    public static string? FindGreenhouseBoard(string html)
+    {
+        if (string.IsNullOrEmpty(html)) return null;
+        foreach (var re in new[] { GreenhouseEmbedFor(), GreenhouseBoardApi(), GreenhouseBoardLink() })
+        {
+            var m = re.Match(html);
+            if (m.Success) return m.Groups[1].Value.ToLowerInvariant();
+        }
+        return null;
     }
 }

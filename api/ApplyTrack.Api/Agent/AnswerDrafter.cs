@@ -234,21 +234,9 @@ public sealed partial class AnswerDrafter
         }
         if (Salary().IsMatch(label))
         {
-            var saved = ctx.Settings.SalaryExpectation;
-            if (saved.Length == 0 || q.Options.Count > 0)
+            if (ctx.Settings.SalaryExpectation.Length == 0 || q.Options.Count > 0)
                 return (null, "salary is yours to state — set an expectation in Settings · Agent");
-            // A saved figure is a bare number with an assumed period and currency. If the
-            // field states its own and they are not demonstrably the same, do NOT guess:
-            // a 12x error reads as a well-formed answer and would sail through the
-            // clean-dry-run check straight into a real submission. Observed live — an
-            // annual USD expectation typed into "remuneration (Gross) per month, in EUR".
-            var wanted = MoneyUnits(label);
-            var have = MoneyUnits(saved);
-            if (wanted.Length > 0 && wanted != have)
-                return (null, $"this field wants {wanted} — your saved expectation "
-                    + (have.Length > 0 ? $"is {have}" : "does not say which")
-                    + ", so state it yourself");
-            return (saved, null);
+            return SalaryFor(label, ctx.Settings);
         }
         if (HumanOnly().IsMatch(label))
             return (null, "only you can answer this one");
@@ -257,22 +245,105 @@ public sealed partial class AnswerDrafter
     }
 
     /// <summary>
+    /// The salary answer for a form's question, from the saved expectation. The saved
+    /// figure carries a period and a currency — stated in Settings · Agent, else whatever
+    /// the figure itself says. A question that asks in another <b>currency</b> is never
+    /// converted: rates move and a wrong figure reads as a well-formed answer. One that
+    /// asks for another <b>period</b> in the same currency is converted (annual ÷ 12 per
+    /// month, annual ÷ 2080 per hour) when the saved period is known, so "expected
+    /// monthly salary (USD)" no longer needs the person every time (#188). Observed live
+    /// before any of this: an annual USD expectation typed into "remuneration (Gross) per
+    /// month, in EUR" — which is why a mismatch that cannot be converted is refused, not
+    /// guessed. Public for tests.
+    /// </summary>
+    public static (string? Answer, string? Reason) SalaryFor(string prompt, AgentSettings settings)
+    {
+        var saved = settings.SalaryExpectation.Trim();
+        if (saved.Length == 0)
+            return (null, "salary is yours to state — set an expectation in Settings · Agent");
+        var havePeriod = settings.SalaryPeriod.Length > 0 ? settings.SalaryPeriod : MoneyPeriod(saved);
+        var haveCurrency = settings.SalaryCurrency.Length > 0 ? settings.SalaryCurrency : MoneyCurrency(saved);
+        var wantPeriod = MoneyPeriod(prompt);
+        var wantCurrency = MoneyCurrency(prompt);
+
+        var have = string.Join(' ', new[] { havePeriod, haveCurrency }.Where(u => u.Length > 0));
+        if (wantCurrency.Length > 0 && wantCurrency != haveCurrency)
+            return (null, $"this field wants {MoneyUnits(prompt)} — your saved expectation "
+                + (have.Length > 0 ? $"is {have}" : "does not say which currency")
+                + ", so state it yourself");
+        if (wantPeriod.Length == 0 || wantPeriod == havePeriod)
+            return (saved, null);
+        if (havePeriod.Length == 0)
+            return (null, $"this field wants {MoneyUnits(prompt)} — your saved expectation "
+                + (have.Length > 0 ? $"is {have}" : "does not say which currency")
+                + " with no period stated; set the period in Settings · Agent or state it yourself");
+        var amount = ParseAmount(saved);
+        if (amount is null)
+            return (null, $"this field wants a {wantPeriod} figure and your saved expectation "
+                + $"\"{saved}\" is not a plain number to convert, so state it yourself");
+        var annual = havePeriod switch
+        {
+            "monthly" => amount.Value * 12m,
+            "hourly" => amount.Value * HoursPerYear,
+            _ => amount.Value,
+        };
+        var converted = wantPeriod switch
+        {
+            "monthly" => annual / 12m,
+            "hourly" => annual / HoursPerYear,
+            _ => annual,
+        };
+        return (FormatAmount(converted), null);
+    }
+
+    /// <summary>A working year: 40 hours × 52 weeks, the figure payroll uses.</summary>
+    private const decimal HoursPerYear = 2080m;
+
+    /// <summary>"$140,000" → 140000; "125k" → 125000; "60/hr" → 60; a range or prose → null.</summary>
+    public static decimal? ParseAmount(string text)
+    {
+        var m = Regex.Match(text, @"(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?\s*([kK])?(?!\d)");
+        if (!m.Success) return null;
+        // Two numbers (a range "120-140k") cannot be converted honestly.
+        if (Regex.Matches(text, @"\d+(?:,\d{3})*(?:\.\d+)?").Count > 1) return null;
+        var whole = m.Groups[1].Value.Replace(",", "");
+        var frac = m.Groups[2].Success ? "." + m.Groups[2].Value : "";
+        if (!decimal.TryParse(whole + frac, System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out var value))
+            return null;
+        if (m.Groups[3].Success) value *= 1000m;
+        return value;
+    }
+
+    /// <summary>A plain figure as a form's numeric box takes it: whole dollars, or to the
+    /// cent for an hourly rate; no separators, no symbol.</summary>
+    private static string FormatAmount(decimal value)
+    {
+        var rounded = value >= 1000m ? Math.Round(value, 0) : Math.Round(value, 2);
+        return rounded.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// The period and currency a money string commits to, as a comparable key like
     /// "monthly EUR" — or "" when it names neither, which means "unknown, do not assume".
     /// Deliberately conservative: it only reports what the text actually says.
     /// </summary>
-    public static string MoneyUnits(string text)
-    {
-        var period = MonthlyRe().IsMatch(text) ? "monthly"
-            : HourlyRe().IsMatch(text) ? "hourly"
-            : AnnualRe().IsMatch(text) ? "annual"
-            : "";
-        var currency = text.Contains('€') || EurRe().IsMatch(text) ? "EUR"
-            : text.Contains('£') || GbpRe().IsMatch(text) ? "GBP"
-            : text.Contains('$') || UsdRe().IsMatch(text) ? "USD"
-            : "";
-        return string.Join(' ', new[] { period, currency }.Where(p => p.Length > 0));
-    }
+    public static string MoneyUnits(string text) =>
+        string.Join(' ', new[] { MoneyPeriod(text), MoneyCurrency(text) }.Where(p => p.Length > 0));
+
+    /// <summary>"annual" | "monthly" | "hourly" | "" — only what the text says.</summary>
+    public static string MoneyPeriod(string text) =>
+        MonthlyRe().IsMatch(text) ? "monthly"
+        : HourlyRe().IsMatch(text) ? "hourly"
+        : AnnualRe().IsMatch(text) ? "annual"
+        : "";
+
+    /// <summary>"EUR" | "GBP" | "USD" | "" — only what the text says.</summary>
+    public static string MoneyCurrency(string text) =>
+        text.Contains('€') || EurRe().IsMatch(text) ? "EUR"
+        : text.Contains('£') || GbpRe().IsMatch(text) ? "GBP"
+        : text.Contains('$') || UsdRe().IsMatch(text) ? "USD"
+        : "";
 
     [GeneratedRegex(@"per month|monthly|/\s*mo\b|\bmonth\b", RegexOptions.IgnoreCase)]
     private static partial Regex MonthlyRe();

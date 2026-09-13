@@ -70,6 +70,40 @@ public sealed class AgentEvidenceRepo
             new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc)))).ToList();
     }
 
+    /// <summary>The newest piece of evidence per application still parked in <c>ready</c>,
+    /// without bytes — what the promotion pass and "Submit all clean" judge a packet by.</summary>
+    public async Task<IReadOnlyList<(string Name, string Kind, JsonElement Detail)>> LatestPerReadyApplicationAsync()
+    {
+        var rows = await _conn.QueryAsync<(string Name, string Kind, string Detail)>(
+            """
+            SELECT DISTINCT ON (e.application_name) e.application_name, e.kind, e.detail::text
+            FROM agent_evidence e
+            JOIN applications a ON a.tenant_id = e.tenant_id AND a.name = e.application_name
+            WHERE e.tenant_id = @t AND a.status = 'ready'
+            ORDER BY e.application_name, e.created_at DESC, e.id DESC
+            """,
+            new { t = _t });
+        return rows.Select(r => (r.Name, r.Kind,
+            JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone())).ToList();
+    }
+
+    /// <summary>
+    /// A dry run that proved the form can be finished unattended: the kind is
+    /// <see cref="Kinds.DryRun"/>, no required field went unmapped, nothing errored. This
+    /// is the same bar the worker applies before promoting a run it has just finished
+    /// (#185); it is what lets a packet filled while dry-run was on be promoted later,
+    /// once the switch flips, instead of sitting in Ready forever.
+    /// </summary>
+    public static bool IsCleanDryRun(string kind, JsonElement detail)
+    {
+        if (kind != Kinds.DryRun || detail.ValueKind != JsonValueKind.Object) return false;
+        if (detail.TryGetProperty("unmapped", out var u) && u.ValueKind == JsonValueKind.Array && u.GetArrayLength() > 0)
+            return false;
+        if (detail.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String && (e.GetString() ?? "").Length > 0)
+            return false;
+        return true;
+    }
+
     public async Task<byte[]?> ScreenshotAsync(string appName, long id)
     {
         var bytes = await _conn.QuerySingleOrDefaultAsync<byte[]?>(

@@ -32,7 +32,9 @@ public class AgentWorkerTests(PostgresFixture pg)
 
     internal static AgentWorker NewWorker(
         StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
-        BrowserOptions? browser = null, JobPageFetcher? fetcher = null)
+        BrowserOptions? browser = null, JobPageFetcher? fetcher = null,
+        IBrowserSubmitter? submitter = null, ISecurityCodeSource? codes = null, INotifier? telegram = null,
+        AgentOptions? options = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), fetcher ?? new JobPageFetcher(),
@@ -49,10 +51,11 @@ public class AgentWorkerTests(PostgresFixture pg)
             .Build();
         var ready = new PacketReadyNotifier(notifier, config, NullLogger<PacketReadyNotifier>.Instance);
         return new AgentWorker(
-            connectionString, new AgentOptions { Enabled = true },
+            connectionString, options ?? new AgentOptions { Enabled = true },
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
             Protector, evaluator, builder, ready, browserOptions,
-            new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance);
+            submitter ?? new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance,
+            codes, telegram);
     }
 
     private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true, bool allowed = true)
@@ -421,5 +424,301 @@ public class AgentWorkerTests(PostgresFixture pg)
         await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '1 hour'");
         Assert.False(await AgentWorkerRegistry.BrowserSeenAsync(conn));
         Assert.False(await AgentWorkerRegistry.WorkerSeenAsync(conn));
+        // …but when it was last heard from is still on record (#184).
+        var seen = await AgentWorkerRegistry.LastSeenAsync(conn);
+        Assert.NotNull(seen);
+        Assert.True(seen < DateTimeOffset.UtcNow.AddMinutes(-50));
+    }
+
+    // -- the Ready lane: promotion after the flip, the queued prepare, the profile at fill time --
+
+    private static readonly BrowserOptions FakeBrowser = new() { Endpoint = "ws://127.0.0.1:1/", AllowPrivateTargets = true };
+
+    private static Task<string?> StatusAsync(NpgsqlConnection conn, long t, string name) =>
+        conn.ExecuteScalarAsync<string?>("SELECT status FROM applications WHERE tenant_id = @t AND name = @n", new { t, n = name });
+
+    private static async Task<List<(string Kind, string Detail)>> EvidenceAsync(NpgsqlConnection conn, long t, string name) =>
+        (await conn.QueryAsync<(string, string)>(
+            "SELECT kind, detail::text FROM agent_evidence WHERE tenant_id = @t AND application_name = @n ORDER BY id",
+            new { t, n = name })).ToList();
+
+    /// <summary>A tenant with dry-run off and the long tail on, two packets built and parked in Ready.</summary>
+    private async Task<(NpgsqlConnection Conn, long Tenant, CapturingNotifier Notifier)> ReadyTenantAsync(bool dryRun = false)
+    {
+        var stub = new StubLlmClient(Responders.Agent());
+        var notifier = new CapturingNotifier();
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings
+        {
+            Enabled = true, DryRun = dryRun, LongTail = true, MinFitScore = 70, MaxPerRun = 2, MaxPerDay = 3, Phone = "555-0100",
+        });
+        using (var builder = NewWorker(stub, pg.ConnectionString, notifier))
+            await builder.RunOnceAsync(CancellationToken.None);
+        var apps = new ApplicationRepo(conn, t);
+        foreach (var name in new[] { "high-engineer.md", "mid-engineer.md" })
+        {
+            var rec = await apps.GetAsync(name);
+            await apps.UpdateStructuredAsync(name, rec!.Fields with { Link = $"https://careers.example.com/{name}" }, null);
+        }
+        return (conn, t, notifier);
+    }
+
+    [Fact]
+    public async Task A_pass_promotes_ready_packets_whose_last_dry_run_was_clean_once_dry_run_is_off()
+    {
+        // 23 packets sat in Ready on 2026-09-13: each was dry-run-filled while the switch was
+        // on, and nothing revisited them when it flipped (#185). The pass does now.
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        await evidence.RecordAsync("high-engineer.md", "dry_run", "https://careers.example.com/high-engineer.md", "",
+            new { dry_run = true, mapped = new[] { "std:first_name" }, unmapped = Array.Empty<string>(), error = "" }, null);
+        await evidence.RecordAsync("mid-engineer.md", "dry_run", "https://careers.example.com/mid-engineer.md", "",
+            new { dry_run = true, mapped = new[] { "std:first_name" }, unmapped = new[] { "std:resume" }, error = "" }, null);
+
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        var queued = (await conn.QueryAsync<(string Name, bool DryRun)>(
+            "SELECT application_name, dry_run FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL ORDER BY 1", new { t })).ToList();
+        Assert.Equal([("high-engineer.md", false)], queued);
+
+        // Still in dry-run mode, nothing is promoted however clean the evidence.
+        await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings { Enabled = true, DryRun = true, LongTail = true, MinFitScore = 70 });
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t });
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task A_queued_prepare_rebuilds_the_packet_on_the_worker_and_goes_straight_to_the_dry_run()
+    {
+        // The api container has no browser, so a packet prepared there never sees the form;
+        // queued with prepare = true, the worker builds it and runs the fill in one claim (#183).
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var before = (await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md"))!.Version;
+        // The account email changes between the build and the run.
+        await conn.ExecuteAsync("UPDATE users SET email = 'ada.new@example.com' WHERE id = @t", new { t });
+        var handler = new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("<html><body><form><input name='email'></form></body></html>", System.Text.Encoding.UTF8, "text/html"),
+        });
+        var fake = new FakeSubmitter((link, _, dry, _, _) => Task.FromResult(dry ? FakeSubmitter.Clean(link) : FakeSubmitter.Submitted(link)));
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true, prepare: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, fetcher: new JobPageFetcher(handler), submitter: fake);
+
+        Assert.Equal(1, await worker.DrainSubmitsAsync(CancellationToken.None));
+
+        var packet = await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md");
+        Assert.True(packet!.Version > before, "the packet was rebuilt");
+        var run = Assert.Single(fake.Runs);
+        Assert.True(run.DryRun);
+        Assert.Equal("ada.new@example.com", run.Answers["std:email"]);
+        Assert.Equal("dry_run", (await EvidenceAsync(conn, t, "high-engineer.md")).Last().Kind);
+        Assert.Equal("ready", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.Contains(notifier.Sent, m => m.Text.Contains("filled in and ready for you to click Apply"));
+    }
+
+    [Fact]
+    public async Task A_queued_prepare_for_an_aggregator_listing_builds_the_packet_and_moos_without_a_browser_run()
+    {
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            rec!.Fields with { Link = "https://remoteok.com/remote-jobs/remote-engineer-acme-1", Source = "auto:remoteok" }, null);
+        var handler = new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("<html><body><p>A listing.</p></body></html>", System.Text.Encoding.UTF8, "text/html"),
+        });
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(FakeSubmitter.Clean(link)));
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true, prepare: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, fetcher: new JobPageFetcher(handler), submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Empty(fake.Runs);
+        Assert.Equal("aggregator", (await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md"))!.Provider);
+        Assert.Contains(notifier.Sent, m => m.Text.Contains("High · Engineer is ready to submit"));
+    }
+
+    [Fact]
+    public async Task The_standard_answers_are_refreshed_from_the_profile_at_fill_time()
+    {
+        // When the account email changed, all 35 built packets had to be patched by hand (#189).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        await conn.ExecuteAsync("UPDATE users SET email = 'ada.moved@example.com' WHERE id = @t", new { t });
+        await new AgentSettingsRepo(conn, t).UpsertAsync(new AgentSettings { Enabled = true, DryRun = true, LongTail = true, Phone = "555-0199" });
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(FakeSubmitter.Clean(link)));
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        var run = Assert.Single(fake.Runs);
+        Assert.Equal("ada.moved@example.com", run.Answers["std:email"]);
+        Assert.Equal("555-0199", run.Answers["std:phone"]);
+        var stored = await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md");
+        Assert.Equal("ada.moved@example.com", stored!.Answers["std:email"]);
+    }
+
+    [Fact]
+    public async Task A_dry_run_that_stopped_on_required_questions_moos_what_still_needs_the_person()
+    {
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var packets = new AgentPacketRepo(conn, t, Protector);
+        var packet = (await packets.GetAsync("high-engineer.md"))!;
+        packet.Questions.Add(new PacketQuestion("q_salary", "Expected monthly salary", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        packet.NeedsReview.Add(new ReviewItem("q_salary", "salary is yours to state"));
+        await packets.UpsertAsync(packet);
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(true, false, link, "", null, ["std:resume"], ["std:first_name"], "")));
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier, browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        // The two Ready moos from the build, then the Filled one that names the questions.
+        var moo = Assert.Single(notifier.Sent, m => m.Text.Contains("is filled in"));
+        Assert.Contains("2 questions need you: Expected monthly salary, Résumé", moo.Text);
+        var detail = (await EvidenceAsync(conn, t, "high-engineer.md")).Last().Detail;
+        Assert.Contains("\"needs_you\": [\"Expected monthly salary\", \"Résumé\"]", detail.Replace("\n", "").Replace("  ", " "));
+    }
+
+    // -- the parked-on-code path, end to end against the worker (#192) --------------------
+
+    private const string Code = "IEG0PXWR";
+
+    private static FakeSubmitter CodeGate() => new((link, _, dry, awaitCode, ct) =>
+        dry ? Task.FromResult(FakeSubmitter.Clean(link)) : RealRunAsync(link, awaitCode!, ct));
+
+    private static async Task<SubmitOutcome> RealRunAsync(string link, Func<string, CancellationToken, Task<string?>> awaitCode, CancellationToken ct)
+    {
+        var code = await awaitCode("ada@example.com", ct);
+        if (code == Code) return FakeSubmitter.Submitted(link);
+        return new SubmitOutcome(true, false, link, "", null, [], ["std:first_name"],
+            code is null
+                ? "the board emailed a security code to ada@example.com and none was entered in time — run Submit again and paste the code when it arrives"
+                : "the security code was refused");
+    }
+
+    private async Task<(NpgsqlConnection Conn, long Tenant, CapturingNotifier Notifier)> ParkedTenantAsync()
+    {
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: false);
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: false);
+        return (conn, t, notifier);
+    }
+
+    [Fact]
+    public async Task The_code_pasted_into_the_app_finishes_the_parked_run_and_the_moo_asked_for_it()
+    {
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: CodeGate(), options: new AgentOptions { Enabled = true, SecurityCodeWaitSeconds = 30 });
+
+        var drain = worker.DrainSubmitsAsync(CancellationToken.None);
+        // The person pastes the code a moment after the 🔐 moo.
+        await Task.Delay(1500);
+        await using (var paste = new NpgsqlConnection(pg.ConnectionString))
+        {
+            await paste.OpenAsync();
+            Assert.True(await new SubmitRequestRepo(paste, t).SetSecurityCodeAsync("high-engineer.md", Code));
+        }
+        await drain;
+
+        Assert.Equal("applied", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.Equal(["awaiting_code", "submitted"], (await EvidenceAsync(conn, t, "high-engineer.md")).Select(e => e.Kind));
+        Assert.Contains(notifier.Sent, m => m.Text.StartsWith("🔐") && m.Text.Contains("ada@example.com"));
+        Assert.Contains(notifier.Sent, m => m.Text.StartsWith("✅"));
+    }
+
+    [Fact]
+    public async Task A_reply_to_the_moo_carries_the_code()
+    {
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        // The reply is dated after the moo and comes from the configured chat.
+        notifier.Replies.Add(new TelegramReply(7, "4242", DateTimeOffset.UtcNow.AddSeconds(60), "code: " + Code));
+        // Noise from another chat, and an earlier message, are never a code.
+        notifier.Replies.Add(new TelegramReply(5, "9999", DateTimeOffset.UtcNow.AddSeconds(60), Code));
+        notifier.Replies.Add(new TelegramReply(6, "4242", DateTimeOffset.UtcNow.AddMinutes(-10), "ZZZZ9999"));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: CodeGate(), telegram: notifier,
+            options: new AgentOptions { Enabled = true, SecurityCodeWaitSeconds = 30 });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal("applied", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.NotEmpty(notifier.Offsets);
+        Assert.Contains(notifier.Sent, m => m.Text.StartsWith("🔐"));
+    }
+
+    [Fact]
+    public async Task With_a_mailbox_the_code_is_read_from_it_and_nobody_is_mooed()
+    {
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        await new MailboxSettingsRepo(conn, t, Protector, NullLogger<MailboxSettingsRepo>.Instance)
+            .UpsertAsync(true, "imap.example", 993, "ada@example.com", true, "app-password");
+        var mailbox = new FakeCodeSource(() => Code);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: CodeGate(), codes: mailbox, telegram: notifier,
+            options: new AgentOptions { Enabled = true, SecurityCodeWaitSeconds = 30 });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal("applied", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.True(mailbox.Calls >= 1);
+        Assert.DoesNotContain(notifier.Sent, m => m.Text.StartsWith("🔐"));
+        Assert.Contains("\"mailbox\": true", (await EvidenceAsync(conn, t, "high-engineer.md")).First().Detail.Replace("\n", ""));
+    }
+
+    [Fact]
+    public async Task A_mailbox_that_fails_falls_back_to_the_moo_and_the_reply_still_finishes_the_run()
+    {
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        await new MailboxSettingsRepo(conn, t, Protector, NullLogger<MailboxSettingsRepo>.Instance)
+            .UpsertAsync(true, "imap.example", 993, "ada@example.com", true, "app-password");
+        var mailbox = new FakeCodeSource(() => throw new IOException("connection refused"));
+        notifier.Replies.Add(new TelegramReply(1, "4242", DateTimeOffset.UtcNow.AddSeconds(60), Code));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: CodeGate(), codes: mailbox, telegram: notifier,
+            options: new AgentOptions { Enabled = true, SecurityCodeWaitSeconds = 30 });
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal("applied", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.Contains(notifier.Sent, m => m.Text.StartsWith("🔐"));
+        var reasons = await conn.QueryAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error' AND application_name = 'high-engineer.md'", new { t });
+        Assert.Contains(reasons, r => r.StartsWith("mailbox: ") && r.Contains("connection refused"));
+    }
+
+    [Fact]
+    public async Task A_code_that_never_arrives_ends_the_run_at_the_deadline_with_nothing_submitted()
+    {
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: CodeGate(), options: new AgentOptions { Enabled = true, SecurityCodeWaitSeconds = 2 });
+
+        var started = DateTime.UtcNow;
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(20), "the deadline bounded the wait");
+        Assert.Equal("ready", await StatusAsync(conn, t, "high-engineer.md"));
+        var last = (await EvidenceAsync(conn, t, "high-engineer.md")).Last();
+        Assert.Equal("failed", last.Kind);
+        Assert.Contains("none was entered in time", last.Detail);
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
     }
 }

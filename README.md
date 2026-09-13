@@ -317,23 +317,25 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `allowed` (whether the operator has put this account on the auto-apply allowlist — see [The agent](#the-agent)), `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation`, `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether a worker runs on this instance (in this process, or an agent container whose heartbeat is fresh) and `browser_available` whether a browser can fill forms (here, or on that worker). |
-| `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. |
+| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `allowed` (whether the operator has put this account on the auto-apply allowlist — see [The agent](#the-agent)), `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation` with `salary_period` (`annual` / `monthly` / `hourly`, or blank) and `salary_currency` (`USD`, `EUR`, …) — with both stated the drafter converts a form's *per month* / *per hour* ask within the same currency and still refuses across currencies; `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether a worker runs on this instance (in this process, or an agent container whose heartbeat is fresh), `worker_last_seen` when one last checked in (fresh or stale, so a wedged worker is visible), and `browser_available` whether a browser can fill forms (here, or on that worker). |
+| `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. Turning `dry_run` **off** queues the real click for every Ready packet whose latest dry run was clean (nothing unmapped, nothing errored, nothing left to review) and lists them in `requeued`. |
 | `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
 | `GET`    | `/api/apps/{name}/packet` | The prepared packet: `provider`, `questions[]` (`id`, `label`, `required`, `type`, `options`, `kind`), `answers{}`, `needs_review[]` (`id`, `reason`), `posting_excerpt`, `verdict`, `version`. Also rides along as `packet` on `GET /api/apps/{name}`. |
 | `PUT`    | `/api/apps/{name}/packet?expected_version=…` | Save edited `answers{}`; **409** on a version mismatch (the packet's own version). Unknown ids are dropped; the review list is recomputed. |
-| `POST`   | `/api/apps/{name}/packet/prepare?force=` | Judge (reusing a recorded verdict unless `force=true`), and on `proceed` build the packet, draft the letter, park the application in `ready`, and moo → `{ok, packet}`. **400** on a `skip` verdict (with the rationale) or with no LLM endpoint. |
+| `POST`   | `/api/apps/{name}/packet/prepare?force=` | Judge (reusing a recorded verdict unless `force=true`), and on `proceed` build the packet, draft the letter, park the application in `ready`, and moo → `{ok, packet}`. **400** on a `skip` verdict (with the rationale) or with no LLM endpoint. When the browser is on a worker rather than in this process, the whole build is handed to that worker instead — **202** `{queued, pending, prepare: true}` — so form discovery and drafting happen where the browser is and the dry run follows in the same claim. |
+| `POST`   | `/api/ready/actions` | The Ready lane in bulk: `{action: "prepare" \| "submit" \| "pass", names: [...]}` queues (or passes) the batch server-side in one rate-limited request → `{action, dry_run, done[], skipped[{name, reason}]}` (**202** for the queued actions, **200** for pass). `{action: "submit", all_clean: true}` queues the real click for every Ready packet whose latest dry run was clean; **400** while *Dry run only* is still on. |
 | `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
 | `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
 | `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. | Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from.
 | `GET`    | `/api/answers` | The answer bank: every screening question the agent has met on a form (`key`, `label`, `help`, `type`, `options`), the `answer` it gave, whose it is (`source`: `agent` or `human`), how many forms asked it and when. |
 | `PUT`    | `/api/answers/{key}` | `{answer}` — make it your answer: the drafter uses it verbatim on every later form that asks this question (for a fixed list, it must name an option). Blank hands the question back to the drafter. **404** for a question never met. |
+| `POST`   | `/api/answers/{key}/apply` | Write your saved answer into every Ready packet that asks this question, no model → `{updated, packets[]}`. A packet whose fixed option list does not carry your answer is left for you to pick on. **400** unless the answer is yours (`source: human`). |
 | `DELETE` | `/api/answers/{key}` | Forget the question; it returns the next time a form asks it. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
 | `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
-| `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, timestamps. |
-| `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed`), `url`, `confirmation`, `detail`, `has_screenshot`. |
+| `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, `prepare` (rebuild first), timestamps. |
+| `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed` / `awaiting_code`), `url`, `confirmation`, `detail` (a dry run's carries `needs_you[]` — the required questions the person still has to answer, by label; empty means clean), `has_screenshot`. |
 | `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback). **202** when a run is waiting, **409** when none is; the run types it in and clicks Submit again. Replying to the 🔐 Telegram moo with the code does the same thing without the app. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
@@ -556,12 +558,28 @@ box takes. Nothing else sent to the bot is acted on.
 configured, a prepared packet gets a **dry run** automatically: the browser opens
 the posting, fills every mapped answer, attaches your résumé PDF from memory,
 takes a screenshot, and stops. The moo then says *filled in and ready for you to
-click Apply*, the sheet shows the screenshot, and **Submit application** queues
-the real thing — only when nothing is left to review, and only once you have
-untied *Dry run only* in **Settings · Agent** (on by default: you can watch it
-correctly fill thirty real postings without applying to one). A submission is
+click Apply* — or, when the fill stopped on questions only you can answer,
+*filled in — 2 questions need you: expected monthly salary, …*, and the evidence
+row reads *needs you (2)* rather than *clean* — the sheet shows the screenshot,
+and **Submit application** queues the real thing — only when nothing is left to
+review, and only once you have untied *Dry run only* in **Settings · Agent** (on
+by default: you can watch it correctly fill thirty real postings without applying
+to one). Flipping that switch off queues the real click for every Ready packet
+whose dry run was already clean, and the worker's pass does the same on every
+tick, so nothing proven sits in Ready waiting to be revisited. A submission is
 recognised by its confirmation text, recorded with a screenshot, marks the
 application **applied**, and moos ✅.
+
+The Ready lane is worked in bulk: filter the list to **Ready** and each card gets
+a checkbox, with **Prepare selected**, **Submit selected**, **Pass selected** and
+**Submit all clean** above the list — one request per action, so the rate limit
+applies to the batch rather than to each packet. **Prepare** always runs where the
+browser is: the api hands the build to the worker, which discovers the real form,
+drafts the answers, and goes straight on to the dry run. At fill time the standard
+fields (name, email, phone, links) are re-read from your profile, so a changed
+email reaches every built packet without a rebuild; and **Apply to Ready packets**
+in **Settings · Answers** writes a saved answer into every Ready packet that asks
+the question, no model involved.
 
 ATS submission APIs are not available to applicants (Greenhouse/Lever/Ashby all
 require an employer key), so browser form-fill is the only general mechanism — and
@@ -585,11 +603,20 @@ contained rather than trusted:
    "write rows the agent already writes", not "read every session token".
 
 **Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
-schema. Lever and Ashby forms are **discovered read-only in the browser** — the
-agent visits the form one hop past the posting, enumerates every control by its
-accessible name (field name, type, options, required), never types, never clicks
-— and the result is the same question list Greenhouse's API gives, so the answer
-drafter and the submitter need no per-ATS code. Anything else is the **long tail**:
+schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are
+**discovered read-only in the browser** — the agent visits the form one hop past
+the posting (Lever's `/apply`, Ashby's `/application`, Workable's `…/j/{id}/apply/`,
+Breezy's `/p/{id}/apply`; SmartRecruiters and join.com open theirs behind the
+Apply click, which is followed, new tab included, and bounded so a button that
+never wakes up is a named reason rather than a timeout), enumerates every control
+by its accessible name (field name, type, options, required), never types, never
+clicks — and the result is the same question list Greenhouse's API gives, so the
+answer drafter and the submitter need no per-ATS code. A company careers page
+that embeds a Greenhouse job (`?gh_jid=`) has its board token read off the page,
+so it takes the API path. A lead whose link is a **job aggregator's listing**
+(remoteOK, Remotive, We Work Remotely, …) has no form on it: the poller follows
+the listing's Apply to the employer's posting and stores that; one it could not
+resolve is prepared and mooed as apply-by-hand, never run. Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
 field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
 doesn't know* in Settings · Agent. **Workday stays manual, permanently** — applying

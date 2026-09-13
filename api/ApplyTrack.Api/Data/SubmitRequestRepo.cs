@@ -7,10 +7,13 @@ using Dapper;
 namespace ApplyTrack.Api.Data;
 
 /// <summary>A queued submit request as the worker claims it (cross-tenant).</summary>
-public sealed record SubmitRequest(long Id, long TenantId, string ApplicationName, bool DryRun);
+/// <param name="Prepare">Rebuild the packet first — judge, discover the form, draft — and
+/// only then run the browser. The human's Prepare click, drained where the browser is (#183).</param>
+public sealed record SubmitRequest(long Id, long TenantId, string ApplicationName, bool DryRun, bool Prepare = false);
 
 /// <summary>A tenant's view of the request behind one application, if any.</summary>
-public sealed record SubmitRequestView(bool DryRun, DateTimeOffset RequestedAt, DateTimeOffset? ClaimedAt, DateTimeOffset? DoneAt)
+public sealed record SubmitRequestView(
+    bool DryRun, DateTimeOffset RequestedAt, DateTimeOffset? ClaimedAt, DateTimeOffset? DoneAt, bool Prepare = false)
 {
     public bool Pending => DoneAt is null;
 }
@@ -33,18 +36,19 @@ public sealed class SubmitRequestRepo
 
     /// <summary>Queue a request. False when one is already in flight for this application
     /// (a double-click is a no-op); a finished request is reused.</summary>
-    public async Task<bool> EnqueueAsync(string appName, bool dryRun)
+    public async Task<bool> EnqueueAsync(string appName, bool dryRun, bool prepare = false)
     {
         var affected = await _conn.ExecuteAsync(
             """
-            INSERT INTO submit_requests (tenant_id, application_name, dry_run)
-            VALUES (@t, @n, @dryRun)
+            INSERT INTO submit_requests (tenant_id, application_name, dry_run, prepare)
+            VALUES (@t, @n, @dryRun, @prepare)
             ON CONFLICT (tenant_id, application_name) DO UPDATE SET
-                dry_run = EXCLUDED.dry_run, requested_at = now(), claimed_at = NULL, done_at = NULL,
+                dry_run = EXCLUDED.dry_run, prepare = EXCLUDED.prepare,
+                requested_at = now(), claimed_at = NULL, done_at = NULL,
                 security_code = ''
             WHERE submit_requests.done_at IS NOT NULL
             """,
-            new { t = _t, n = Slug.Normalize(appName), dryRun });
+            new { t = _t, n = Slug.Normalize(appName), dryRun, prepare });
         return affected > 0;
     }
 
@@ -62,16 +66,22 @@ public sealed class SubmitRequestRepo
         return affected > 0;
     }
 
-    private sealed record Row(bool DryRun, DateTime RequestedAt, DateTime? ClaimedAt, DateTime? DoneAt);
+    private sealed record Row(bool DryRun, DateTime RequestedAt, DateTime? ClaimedAt, DateTime? DoneAt, bool Prepare);
 
     public async Task<SubmitRequestView?> GetAsync(string appName)
     {
         var r = await _conn.QuerySingleOrDefaultAsync<Row?>(
-            "SELECT dry_run AS dryrun, requested_at AS requestedat, claimed_at AS claimedat, done_at AS doneat "
+            "SELECT dry_run AS dryrun, requested_at AS requestedat, claimed_at AS claimedat, done_at AS doneat, prepare "
             + "FROM submit_requests WHERE tenant_id = @t AND application_name = @n",
             new { t = _t, n = Slug.Normalize(appName) });
-        return r is null ? null : new SubmitRequestView(r.DryRun, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), Utc(r.DoneAt));
+        return r is null ? null : new SubmitRequestView(r.DryRun, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), Utc(r.DoneAt), r.Prepare);
     }
+
+    /// <summary>The applications with a request still pending (queued or claimed, not done).</summary>
+    public async Task<HashSet<string>> PendingNamesAsync() =>
+        (await _conn.QueryAsync<string>(
+            "SELECT application_name FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL",
+            new { t = _t })).ToHashSet(StringComparer.Ordinal);
 
     private static DateTimeOffset? Utc(DateTime? d) =>
         d is null ? null : new DateTimeOffset(DateTime.SpecifyKind(d.Value, DateTimeKind.Utc));
@@ -97,7 +107,7 @@ public static class SubmitQueue
                 ORDER BY requested_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1)
-            RETURNING id, tenant_id AS tenantid, application_name AS applicationname, dry_run AS dryrun
+            RETURNING id, tenant_id AS tenantid, application_name AS applicationname, dry_run AS dryrun, prepare
             """);
 
     public static Task CompleteAsync(IDbConnection conn, long id) =>

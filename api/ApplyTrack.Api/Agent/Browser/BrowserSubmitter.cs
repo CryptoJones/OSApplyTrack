@@ -21,6 +21,17 @@ public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false);
 
+/// <summary>The one browser-run seam: what the worker calls, and what a worker-level test
+/// can stand in for without a browser (#192).</summary>
+public interface IBrowserSubmitter
+{
+    /// <inheritdoc cref="BrowserSubmitter.RunAsync"/>
+    Task<SubmitOutcome> RunAsync(
+        string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
+        CancellationToken ct = default, string resumeText = "", string coverLetter = "",
+        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null);
+}
+
 /// <summary>
 /// Drives the browser container at a posting: fill every mapped answer, attach the
 /// résumé from memory, screenshot — and click Submit only when asked (<c>dry_run</c>
@@ -29,7 +40,7 @@ public sealed record SubmitOutcome(
 /// generic adapter — so Greenhouse, Lever, Ashby and (with the opt-in) the long tail
 /// all go through the same code. Containment lives in <see cref="BrowserSession"/>.
 /// </summary>
-public sealed partial class BrowserSubmitter
+public sealed partial class BrowserSubmitter : IBrowserSubmitter
 {
     [GeneratedRegex(@"thank you|thanks for applying|application (?:has been |was )?(?:submitted|received|sent)|we(?:'ve| have) received your application|successfully (?:submitted|applied)|your application is in", RegexOptions.IgnoreCase)]
     private static partial Regex Confirmation();
@@ -182,7 +193,8 @@ public sealed partial class BrowserSubmitter
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     await HasFillableControlsAsync(form)
                         ? "nothing on this form could be filled — the packet's questions match none of its fields"
-                        : "no application form was found on the page — nothing to fill");
+                        : "no application form was found on the page — nothing to fill"
+                          + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : ""));
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
             if (unmapped.Count > 0)
@@ -811,35 +823,63 @@ public sealed partial class BrowserSubmitter
     private static string Unprefixed(string id) =>
         id.StartsWith("std:", StringComparison.Ordinal) ? id[4..] : id;
 
+    /// <summary>
+    /// The control for a question. The <b>exact</b> label first (the label text, allowing
+    /// the required asterisk and case), then the field id/name, then a label that merely
+    /// contains the question's text, then bare text above the box. Substring-first was
+    /// how "LinkedIn profile" (required) matched "LinkedIn Profile URL" (optional) on a
+    /// Comeet form: the URL box was filled twice and the required one stayed empty (#187).
+    /// When one locator matches several controls, the one not yet filled is preferred.
+    /// </summary>
     private static async Task<ILocator?> LocateAsync(IFrame page, PacketQuestion q)
     {
         var id = Unprefixed(q.Id);
+        var label = q.Label.Trim().TrimEnd('*').Trim();
         var candidates = new List<ILocator>();
-        if (q.Label.Length > 0)
-            candidates.Add(page.GetByLabel(q.Label, new() { Exact = false }).First);
-        candidates.Add(page.Locator($"#{CssEscape(id)}").First);
-        candidates.Add(page.Locator($"[id$='-{id}']").First);
-        candidates.Add(page.Locator($"[name='{id}']").First);
-        candidates.Add(page.Locator($"[name$='[{id}]']").First);
-        candidates.Add(page.Locator($"[name*='{id}']").First);
+        if (label.Length > 0)
+            candidates.Add(page.GetByLabel(new Regex(@"^\s*" + Regex.Escape(label) + @"\s*\*?\s*$", RegexOptions.IgnoreCase)));
+        candidates.Add(page.Locator($"#{CssEscape(id)}"));
+        candidates.Add(page.Locator($"[id$='-{id}']"));
+        candidates.Add(page.Locator($"[name='{id}']"));
+        candidates.Add(page.Locator($"[name$='[{id}]']"));
+        candidates.Add(page.Locator($"[name*='{id}']"));
+        if (label.Length > 0)
+            candidates.Add(page.GetByLabel(label, new() { Exact = false }));
         // Last: a label that is nothing but text above the box — no <label for>, no aria —
         // which is how a good part of the long tail writes its forms. The control whose
         // nearest preceding text starts with the question's label.
-        if (q.Label.Length > 0)
+        if (label.Length > 0)
             candidates.Add(page.Locator(
                 "xpath=//*[self::input or self::textarea or self::select][not(@type='hidden')]"
                 + "[preceding::*[normalize-space(text())!=''][1][starts-with(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
-                + $"{XPathLiteral(q.Label.Trim().TrimEnd('*').Trim().ToLowerInvariant())})]]").First);
+                + $"{XPathLiteral(label.ToLowerInvariant())})]]"));
         foreach (var c in candidates)
         {
             try
             {
-                if (await c.CountAsync() > 0 && await c.IsVisibleAsync() && await c.IsEditableAsync())
-                    return c;
+                var count = Math.Min(await c.CountAsync(), 6);
+                ILocator? usable = null;
+                for (var i = 0; i < count; i++)
+                {
+                    var nth = c.Nth(i);
+                    if (!await nth.IsVisibleAsync() || !await nth.IsEditableAsync()) continue;
+                    usable ??= nth;
+                    if (await IsEmptyAsync(nth)) return nth;
+                }
+                if (usable is not null) return usable;
             }
             catch (PlaywrightException) { /* try the next */ }
         }
         return null;
+    }
+
+    /// <summary>Nothing typed or chosen in the control yet. A widget with no readable value
+    /// (a div-based combobox) counts as empty — it is at least not something we filled.</summary>
+    private static async Task<bool> IsEmptyAsync(ILocator control)
+    {
+        try { return (await control.InputValueAsync(new() { Timeout = 1_000 })).Trim().Length == 0; }
+        catch (PlaywrightException) { return true; }
+        catch (TimeoutException) { return true; }
     }
 
     /// <summary>

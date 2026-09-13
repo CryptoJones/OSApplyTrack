@@ -5,6 +5,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using Dapper;
 using Npgsql;
@@ -111,6 +112,65 @@ public class AgentEndpointTests : IAsyncLifetime
         Assert.True(s.GetProperty("dry_run").GetBoolean());
         Assert.Equal(70, s.GetProperty("min_fit_score").GetInt32());
         Assert.False(s.GetProperty("worker_running").GetBoolean());
+    }
+
+    [Fact]
+    public async Task The_worker_is_reported_by_when_it_was_last_seen_even_once_stale()
+    {
+        await using (var conn = new NpgsqlConnection(_pg.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await AgentWorkerRegistry.HeartbeatAsync(conn, "test-worker-184", false);
+            await conn.ExecuteAsync("UPDATE agent_workers SET seen_at = now() - interval '40 minutes'");
+        }
+        var s = await ReadJson(await _client.GetAsync("/api/agent-settings"));
+        Assert.False(s.GetProperty("worker_running").GetBoolean());
+        var seen = s.GetProperty("worker_last_seen").GetDateTimeOffset();
+        Assert.InRange(DateTimeOffset.UtcNow - seen, TimeSpan.FromMinutes(39), TimeSpan.FromMinutes(45));
+    }
+
+    [Fact]
+    public async Task Turning_dry_run_off_queues_the_real_click_for_every_ready_packet_whose_dry_run_was_clean()
+    {
+        // The api has a browser of its own here, so the flip can promise a run (#185).
+        var factory = NewFactory(b =>
+        {
+            b.UseSetting("Browser:Endpoint", "ws://127.0.0.1:1/");
+            b.UseSetting("Browser:AllowPrivateTargets", "true");
+        });
+        var (tenant, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
+        var name = await CreateLeadAsync(client, "Cleanco");
+        await using (var conn = new NpgsqlConnection(_pg.ConnectionString))
+        {
+            await conn.OpenAsync();
+            var apps = new ApplicationRepo(conn, tenant);
+            var rec = await apps.GetAsync(name);
+            await apps.UpdateStructuredAsync(name, rec!.Fields with { Status = "ready", Link = "https://jobs.lever.co/cleanco/1" }, null);
+            await new AgentPacketRepo(conn, tenant, TestAuth.Protector).UpsertAsync(new AgentPacket
+            {
+                ApplicationName = name, Provider = "lever",
+                Questions = [new("std:first_name", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+                Answers = new() { ["std:first_name"] = "Ada" },
+            });
+            await new AgentEvidenceRepo(conn, tenant, TestAuth.Protector).RecordAsync(name, "dry_run", "https://x", "",
+                new { dry_run = true, unmapped = Array.Empty<string>(), error = "" }, null);
+        }
+
+        // Saving with dry-run still on changes nothing.
+        var kept = await ReadJson(await client.PutAsync("/api/agent-settings", Json("""{"dry_run":true}""")));
+        Assert.Equal(0, kept.GetProperty("requeued").GetArrayLength());
+
+        var flipped = await ReadJson(await client.PutAsync("/api/agent-settings", Json("""{"dry_run":false}""")));
+        Assert.Equal([name], flipped.GetProperty("requeued").EnumerateArray().Select(e => e.GetString()));
+        var pending = await ReadJson(await client.GetAsync($"/api/apps/{name}/submit"));
+        Assert.True(pending.GetProperty("pending").GetBoolean());
+        Assert.False(pending.GetProperty("dry_run").GetBoolean());
+
+        // Saving again with it off is not a second flip.
+        var again = await ReadJson(await client.PutAsync("/api/agent-settings", Json("""{"dry_run":false}""")));
+        Assert.Equal(0, again.GetProperty("requeued").GetArrayLength());
     }
 
     [Fact]

@@ -167,14 +167,26 @@ public class SubmitEndpointTests : IAsyncLifetime
         Assert.True(view.GetProperty("browser_available").GetBoolean());
         Assert.True(view.GetProperty("worker_running").GetBoolean());
 
-        // prepare queues the dry run instead of taking the notify branch…
-        var name = await PreparedLeadAsync(client);
+        // prepare hands the whole build to that worker (#183): a rebuild-then-dry-run row…
+        var res = await client.PostAsync("/api/apps",
+            Json("""{"company":"Acme","role":"Engineer","score":"80","link":"https://jobs.lever.co/acme/1234-abcd"}"""));
+        var name = (await ReadJson(res)).GetProperty("filename").GetString()!;
+        Assert.Equal(HttpStatusCode.Accepted, (await client.PostAsync($"/api/apps/{name}/packet/prepare", null)).StatusCode);
         var pending = await ReadJson(await client.GetAsync($"/api/apps/{name}/submit"));
         Assert.True(pending.GetProperty("pending").GetBoolean());
         Assert.True(pending.GetProperty("dry_run").GetBoolean());
-        Assert.NotNull(await DrainForAsync(conn, tenant));
+        Assert.True(pending.GetProperty("prepare").GetBoolean());
+        var claimed = await DrainForAsync(conn, tenant);
+        Assert.NotNull(claimed);
+        Assert.True(claimed!.Prepare);
 
-        // …and Submit is accepted.
+        // …and once the worker has built the packet, Submit is accepted.
+        await new AgentPacketRepo(conn, tenant, TestAuth.Protector).UpsertAsync(new AgentPacket
+        {
+            ApplicationName = name, Provider = "lever",
+            Questions = [new("std:first_name", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["std:first_name"] = "Ada" },
+        });
         var accepted = await client.PostAsync($"/api/apps/{name}/submit", Json("{}"));
         Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
         Assert.NotNull(await DrainForAsync(conn, tenant));

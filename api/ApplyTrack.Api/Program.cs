@@ -167,6 +167,8 @@ builder.Services.AddSingleton(browserOptions);
 // (agent_workers) is fresh — the shipped shape, where only the agent has the endpoint.
 builder.Services.AddScoped(sp => new BrowserAvailability(browserOptions, sp.GetRequiredService<IDbConnection>()));
 builder.Services.AddSingleton<BrowserSubmitter>();
+// The worker takes the seam, so a worker-level test can stand a fake browser in (#192).
+builder.Services.AddSingleton<IBrowserSubmitter>(sp => sp.GetRequiredService<BrowserSubmitter>());
 builder.Services.AddSingleton<FormDiscoverer>();
 builder.Services.AddScoped(sp => new SubmitRequestRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
@@ -181,7 +183,7 @@ if (agentOptions.Enabled)
         agentConnectionString, agentOptions, sp.GetRequiredService<LlmOptions>(),
         sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<LeadEvaluator>(),
         sp.GetRequiredService<PacketBuilder>(), sp.GetRequiredService<PacketReadyNotifier>(),
-        browserOptions, sp.GetRequiredService<BrowserSubmitter>(),
+        browserOptions, sp.GetRequiredService<IBrowserSubmitter>(),
         sp.GetRequiredService<ILoggerFactory>(), sp.GetRequiredService<ISecurityCodeSource>(),
         sp.GetRequiredService<INotifier>()));
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
@@ -358,6 +360,7 @@ app.MapPacketEndpoints();
 app.MapAnswersEndpoints();
 app.MapNotificationsEndpoints();
 app.MapSubmitEndpoints();
+app.MapReadyEndpoints();
 
 app.Run();
 

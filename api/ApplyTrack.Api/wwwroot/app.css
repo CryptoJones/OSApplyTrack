@@ -1391,3 +1391,33 @@ html[data-density="compact"] .sheet { padding: 1.3rem; }
   .score-chip,
   .lane-pill { color: CanvasText; background: Canvas; border-color: CanvasText; }
 }
+
+/* ---- The Ready lane's bulk actions (#186) ------------------------------------ */
+/* A checkbox beside each card while the status filter is Ready, and a toolbar above the
+   list that acts on the selection in one request. The checkbox sits outside the card
+   button (a button cannot contain another control) and gets the same hit target. */
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+.bulk-bar .bulk-count { font-weight: 650; color: var(--text); margin-inline-end: auto; }
+.application-list-item.selectable {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  align-items: center;
+}
+.card-select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+.card-select input { width: 1.25rem; height: 1.25rem; margin: 0; accent-color: var(--accent); }
+.evidence-needs { margin: 0.25rem 0 0 1rem; padding: 0; list-style: disc; }

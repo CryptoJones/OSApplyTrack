@@ -62,6 +62,19 @@ public static class PacketEndpoints
                 throw new AppValidationException(
                     "no LLM endpoint is configured — set one in Settings · AI (or the instance default)");
 
+            // The browser is on a worker, not here: hand the whole build to it. Built in
+            // this process, a non-Greenhouse packet never sees the real form (no
+            // FormDiscoverer without a browser) and the model runs inside the request for
+            // a minute; queued, discovery and drafting happen where the browser is, the
+            // request answers at once, and the dry run follows in the same claim (#183).
+            // Only a process with a browser of its own, or none anywhere, builds inline.
+            if (!browser.IsLocal && rec.Fields.Link.Length > 0 && await browser.IsAvailableAsync())
+            {
+                var handed = await queue.EnqueueAsync(rec.Name, dryRun: true, prepare: true);
+                return Results.Json(new { ok = true, queued = handed, pending = true, prepare = true, dry_run = true },
+                    statusCode: StatusCodes.Status202Accepted);
+            }
+
             var resume = await resumes.GetAsync();
             var crit = await criteria.GetAsync();
             var settings = await agentSettings.GetAsync();
