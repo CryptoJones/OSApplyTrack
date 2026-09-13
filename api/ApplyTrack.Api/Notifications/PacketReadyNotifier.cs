@@ -37,21 +37,24 @@ public sealed class PacketReadyNotifier
         Filled,
         /// <summary>The browser submitted and saw a confirmation. Informational, not claimed.</summary>
         Submitted,
+        /// <summary>The board emailed the candidate a security code and the run is parked on
+        /// it — the human has minutes to paste it into the app. Always news, never claimed.</summary>
+        Code,
     }
 
     public async Task NotifyAsync(
         NotificationSettingsRepo settings, AgentPacketRepo packets, AgentEventRepo events,
         string applicationName, string company, string role, CancellationToken ct,
-        Moment moment = Moment.Ready)
+        Moment moment = Moment.Ready, string detail = "")
     {
         var target = await settings.GetTargetAsync();
         if (target is null)
             return;
-        // Ready and Filled share the one claim per packet build; Submitted is always news.
-        if (moment != Moment.Submitted && !await packets.TryClaimNotificationAsync(applicationName))
+        // Ready and Filled share the one claim per packet build; Submitted and Code are always news.
+        if (moment is not (Moment.Submitted or Moment.Code) && !await packets.TryClaimNotificationAsync(applicationName))
             return;
 
-        var text = BuildMessage(company, role, DeepLink(_publicBaseUrl, applicationName), moment);
+        var text = BuildMessage(company, role, DeepLink(_publicBaseUrl, applicationName), moment, detail);
         try
         {
             await _notifier.SendAsync(target.BotToken, target.ChatId, text, ct);
@@ -65,7 +68,7 @@ public sealed class PacketReadyNotifier
     }
 
     /// <summary>The 🐮. Pure, for tests.</summary>
-    public static string BuildMessage(string company, string role, string? link, Moment moment = Moment.Ready)
+    public static string BuildMessage(string company, string role, string? link, Moment moment = Moment.Ready, string detail = "")
     {
         var who = string.Join(" · ", new[] { company.Trim(), role.Trim() }.Where(s => s.Length > 0));
         var subject = who.Length > 0 ? who : "an application";
@@ -73,6 +76,7 @@ public sealed class PacketReadyNotifier
         {
             Moment.Filled => $"🐮 moo — {subject} is filled in and ready for you to click Apply",
             Moment.Submitted => $"✅ {subject} was submitted",
+            Moment.Code => $"🔐 {subject}: the board emailed a security code to {(detail.Length > 0 ? detail : "you")} — paste it in the app within a few minutes to finish",
             _ => $"🐮 moo — {subject} is ready to submit",
         };
         return link is null ? text : text + "\n" + link;

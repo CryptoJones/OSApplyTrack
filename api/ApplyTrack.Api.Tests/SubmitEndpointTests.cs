@@ -179,6 +179,33 @@ public class SubmitEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_security_code_is_taken_only_while_a_run_is_pending_and_only_in_the_shape_the_email_shows()
+    {
+        var (client, tenant) = await ClientAsync();
+        var created = await client.PostAsync("/api/apps",
+            Json("""{"company":"Acme","role":"Engineer","score":"80","link":"https://job-boards.greenhouse.io/acme/jobs/1"}"""));
+        var name = (await ReadJson(created)).GetProperty("filename").GetString()!;
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+
+        var nothing = await client.PostAsync($"/api/apps/{name}/security-code", Json("""{"code":"IEG0pxWr"}"""));
+        Assert.Equal(HttpStatusCode.Conflict, nothing.StatusCode);
+
+        Assert.True(await new SubmitRequestRepo(conn, tenant).EnqueueAsync(name, dryRun: false));
+        var bad = await client.PostAsync($"/api/apps/{name}/security-code", Json("""{"code":"no spaces!"}"""));
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        var ok = await client.PostAsync($"/api/apps/{name}/security-code", Json("""{"code":" IEG0pxWr "}"""));
+        Assert.Equal(HttpStatusCode.Accepted, ok.StatusCode);
+        var id = await conn.ExecuteScalarAsync<long>("SELECT id FROM submit_requests WHERE tenant_id = @t AND application_name = @n", new { t = tenant, n = name });
+        Assert.Equal("IEG0pxWr", await SubmitQueue.SecurityCodeAsync(conn, id));
+
+        // A fresh request forgets the old code.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE id = @id", new { id });
+        Assert.True(await new SubmitRequestRepo(conn, tenant).EnqueueAsync(name, dryRun: true));
+        Assert.Equal("", await SubmitQueue.SecurityCodeAsync(conn, id));
+    }
+
+    [Fact]
     public async Task Evidence_lists_metadata_and_serves_the_screenshot()
     {
         var (client, tenant) = await ClientAsync();

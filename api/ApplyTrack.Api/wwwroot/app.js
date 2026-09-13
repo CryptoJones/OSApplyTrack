@@ -707,9 +707,19 @@ async function loadEvidence(name) {
     return;
   }
   if (!Array.isArray(items) || !items.length) { out.innerHTML = ""; return; }
-  const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed" };
+  const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed", awaiting_code: "Waiting for your security code" };
+  // The run is parked on the board's security-code prompt: the code it emailed goes here.
+  const parked = items[0].kind === "awaiting_code" ? items[0] : null;
   out.innerHTML = `
     <h4 class="mt-4">What the browser saw</h4>
+    ${parked ? `
+    <form id="security-code-form" class="packet-flag mt-2" aria-live="polite">
+      <label class="field-label" for="security-code">The board emailed a security code${parked.detail && parked.detail.recipient ? ` to ${escapeHtml(parked.detail.recipient)}` : ""}. Paste it here within a few minutes:</label>
+      <div class="flex gap-2 mt-1">
+        <input id="security-code" class="field-input mono" autocomplete="one-time-code" inputmode="text" maxlength="16" pattern="[A-Za-z0-9]{4,16}" required />
+        <button class="btn btn-primary" type="submit">Send code</button>
+      </div>
+    </form>` : ""}
     <ul class="agent-log">${items.map((e) => `
       <li class="mt-2 text-sm">
         <span class="link-status ${e.kind === "failed" ? "bad" : "ok"}">${escapeHtml(KIND[e.kind] || e.kind)}</span>
@@ -721,6 +731,18 @@ async function loadEvidence(name) {
             src="/api/apps/${encodeURIComponent(name)}/evidence/${e.id}/screenshot.png" /></details>` : ""}
       </li>`).join("")}
     </ul>`;
+  const form = document.getElementById("security-code-form");
+  if (form) form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const code = document.getElementById("security-code").value.trim();
+    try {
+      await api("POST", `/api/apps/${encodeURIComponent(name)}/security-code`, { code });
+      toast("Code sent — the browser is finishing the submission.");
+      setTimeout(() => loadEvidence(name), 15000);
+    } catch (e) {
+      toast(e.message);
+    }
+  };
 }
 
 function collectPacketAnswers() {

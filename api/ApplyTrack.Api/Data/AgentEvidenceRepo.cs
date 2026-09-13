@@ -19,6 +19,8 @@ public sealed class AgentEvidenceRepo
         public const string DryRun = "dry_run";
         public const string Submitted = "submitted";
         public const string Failed = "failed";
+        /// <summary>The board emailed the candidate a security code; the run is parked waiting for it.</summary>
+        public const string AwaitingCode = "awaiting_code";
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
