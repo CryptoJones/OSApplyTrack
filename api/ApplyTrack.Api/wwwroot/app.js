@@ -1936,6 +1936,11 @@ function agentMarkup(s, events) {
           <label class="field-label" for="a-phone">Phone</label>
           <input id="a-phone" class="field-input" value="${escapeHtml(s.phone || "")}" autocomplete="tel" />
         </div>
+        <div>
+          <label class="field-label" for="a-country">Country</label>
+          <input id="a-country" class="field-input" value="${escapeHtml(s.country || "")}" autocomplete="country-name" placeholder="e.g. United States" />
+          <p class="field-help">As a form's country picker lists it. Blank infers it from your résumé's location.</p>
+        </div>
       </div>
 
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
@@ -1965,6 +1970,7 @@ function wireAgent() {
       clearance_ok: $("#a-clearance").checked,
       salary_expectation: $("#a-salary").value.trim(),
       phone: $("#a-phone").value.trim(),
+      country: $("#a-country").value.trim(),
     };
     try {
       const r = await api("PUT", "/api/agent-settings", body);

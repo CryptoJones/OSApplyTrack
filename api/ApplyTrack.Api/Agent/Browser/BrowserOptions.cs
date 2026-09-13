@@ -30,5 +30,11 @@ public sealed class BrowserOptions
     /// the SSRF pre-flight — a job posting is never on a private address.</summary>
     public bool AllowPrivateTargets { get; set; }
 
+    /// <summary>Tests only: abort every request that is not a GET/HEAD (bar a résumé upload to
+    /// object storage), so a real run against a live form can click Submit and read the form's
+    /// reaction without an application ever being sent. Production never sets it — a blocked
+    /// POST would look like a rejected submission.</summary>
+    public bool BlockSubmissions { get; set; }
+
     public bool IsConfigured => Endpoint.Trim().Length > 0;
 }

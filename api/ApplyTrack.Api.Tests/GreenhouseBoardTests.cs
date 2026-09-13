@@ -171,6 +171,23 @@ public class GreenhouseBoardTests
         """;
 
     [Fact]
+    public void A_job_with_location_questions_gets_the_country_picker_its_form_renders_but_its_api_omits()
+    {
+        var with = GreenhouseBoard.Parse("""
+            {"title":"x","content":"","questions":[{"required":true,"label":"First Name","fields":[{"name":"first_name","type":"input_text","values":[]}]}],
+             "location_questions":[{"required":true,"label":"Longitude","fields":[{"name":"longitude","type":"input_hidden"}]},
+                                   {"required":true,"label":"Location","fields":[{"name":"location","type":"input_text","values":[]}]}]}
+            """);
+        var country = Assert.Single(with.Questions, q => q.Id == "country");
+        Assert.False(country.Required);   // whether THIS form renders one is decided in the browser
+        Assert.Equal(PacketQuestion.Standard, country.Kind);
+        Assert.Equal(["first_name", "country", "location"], with.Questions.Select(q => q.Id));
+
+        var without = GreenhouseBoard.Parse("""{"title":"x","content":"","questions":[{"required":true,"label":"First Name","fields":[{"name":"first_name","type":"input_text","values":[]}]}]}""");
+        Assert.DoesNotContain(without.Questions, q => q.Id == "country");
+    }
+
+    [Fact]
     public void Parses_questions_types_options_and_marks_eeo()
     {
         var job = GreenhouseBoard.Parse(JobJson);

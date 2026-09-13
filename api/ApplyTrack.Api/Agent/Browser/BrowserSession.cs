@@ -79,6 +79,15 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 await route.AbortAsync();
                 return;
             }
+            // The live-form verification harness: nothing that could create an application
+            // leaves. The one exception is the board's résumé uploader, which stages the file
+            // straight to object storage with a multipart POST — an application is always
+            // posted to the board's own host, and that is always aborted.
+            if (options.BlockSubmissions && req.Method is not ("GET" or "HEAD") && !IsStorageUpload(u, req))
+            {
+                await route.AbortAsync();
+                return;
+            }
             // Top-level navigations stay on the posting's site (redirects to the ATS
             // that hosts its form are fine); sub-resources are left alone so the form
             // can load its scripts and styles.
@@ -141,6 +150,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
         return new() { ["x-playwright-launch-options"] = JsonSerializer.Serialize(launch) };
     }
+
+    private static bool IsStorageUpload(Uri u, IRequest req) =>
+        u.Host.EndsWith(".amazonaws.com", StringComparison.OrdinalIgnoreCase)
+        && req.Headers.TryGetValue("content-type", out var ct)
+        && ct.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase);
 
     private static bool HostAllowed(string host, string original)
     {

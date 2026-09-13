@@ -108,7 +108,7 @@ public class AgentEndpointTests : IAsyncLifetime
     public async Task Settings_round_trip_and_clamp()
     {
         var res = await _client.PutAsync("/api/agent-settings", Json(
-            """{"enabled":true,"min_fit_score":150,"max_per_run":0,"work_authorization":"US citizen","needs_sponsorship":false,"clearance_ok":true,"phone":"555-0100","junk":1}"""));
+            """{"enabled":true,"min_fit_score":150,"max_per_run":0,"work_authorization":"US citizen","needs_sponsorship":false,"clearance_ok":true,"phone":"555-0100","country":"United States","junk":1}"""));
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         var s = await ReadJson(res);
         Assert.True(s.GetProperty("enabled").GetBoolean());
@@ -119,6 +119,7 @@ public class AgentEndpointTests : IAsyncLifetime
 
         var again = await ReadJson(await _client.GetAsync("/api/agent-settings"));
         Assert.Equal("555-0100", again.GetProperty("phone").GetString());
+        Assert.Equal("United States", again.GetProperty("country").GetString());
     }
 
     [Fact]

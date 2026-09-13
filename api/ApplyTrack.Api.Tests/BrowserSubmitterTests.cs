@@ -69,6 +69,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/captcha", () => Results.Content(CaptchaFormHtml, "text/html"));
         // The invisible reCAPTCHA v3 badge, which must NOT count as a captcha.
         _fixture.MapGet("/jobs/badge", () => Results.Content(BadgeFormHtml, "text/html"));
+        // Greenhouse's current form: react-select comboboxes for country, city (an async
+        // autocomplete) and the custom questions, each with a hidden required input.
+        _fixture.MapGet("/jobs/react-select", () => Results.Content(ReactSelectHtml, "text/html"));
+        // A form whose own validation blocks Submit on a field the DOM never marks required.
+        _fixture.MapGet("/jobs/validating", () => Results.Content(ValidatingFormHtml, "text/html"));
+        // A form that re-mounts itself on Submit instead of posting.
+        _fixture.MapGet("/jobs/resetting", () => Results.Content(ResettingFormHtml, "text/html"));
         // A posting that closed between discovery and now: the board's gone-notice, no form.
         _fixture.MapGet("/jobs/closed", () => Results.Content(
             "<html><body><h1>Current openings at Acme</h1>"
@@ -221,6 +228,156 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <button id="submit_app" type="submit">Submit Application</button>
         </form></body></html>
         """;
+
+    // Modelled on job-boards.greenhouse.io as inspected live: the visible input is
+    // role=combobox with aria-required and NO name; the committed value lives in a hidden
+    // required input beside it and in a single-value element; typing alone commits nothing.
+    private const string ReactSelectHtml = """
+        <html><head><meta charset="utf-8"><style>
+          [role=listbox][hidden] { display: none }
+          .requiredInput { opacity: 0; width: 1px; height: 1px; position: absolute }
+        </style></head><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name*</label><input id="first_name" name="job_application[first_name]" aria-required="true" />
+          <label id="country-label">Country*</label>
+          <div class="select-shell" data-select="country">
+            <div class="select__control"><div class="select__value-container">
+              <div class="select__placeholder">Select a country</div>
+              <div class="select__input-container"><input id="country" role="combobox" aria-autocomplete="list" aria-required="true" aria-labelledby="country-label" aria-controls="country-listbox" /></div>
+            </div></div>
+            <input required tabindex="-1" class="requiredInput" />
+            <div id="country-listbox" role="listbox" hidden>
+              <div role="option" data-value="US">United States +1</div>
+              <div role="option" data-value="UM">United States Minor Outlying Islands +1</div>
+              <div role="option" data-value="GB">United Kingdom +44</div>
+              <div role="option" data-value="CA">Canada +1</div>
+            </div>
+            <input type="hidden" name="country_value" />
+          </div>
+          <label id="candidate-location-label">Location (City)*</label>
+          <div class="select-shell" data-select="candidate-location" data-async="1">
+            <div class="select__control"><div class="select__value-container">
+              <div class="select__placeholder">Start typing a city</div>
+              <div class="select__input-container"><input id="candidate-location" role="combobox" aria-autocomplete="list" aria-required="true" aria-labelledby="candidate-location-label" aria-controls="candidate-location-listbox" /></div>
+            </div></div>
+            <input required tabindex="-1" class="requiredInput" />
+            <div id="candidate-location-listbox" role="listbox" hidden>
+              <div role="option" data-value="Omaha, Nebraska, United States">Omaha, Nebraska, United States</div>
+              <div role="option" data-value="South Omaha, Nebraska, United States">South Omaha, Nebraska, United States</div>
+            </div>
+            <input type="hidden" name="location_value" />
+          </div>
+          <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" />
+          <label id="question_9-label">Are you willing to submit to a background check?*</label>
+          <div class="select-shell" data-select="question_9">
+            <div class="select__control"><div class="select__value-container">
+              <div class="select__placeholder">Select...</div>
+              <div class="select__input-container"><input id="question_9" role="combobox" aria-autocomplete="list" aria-required="true" aria-labelledby="question_9-label" aria-controls="question_9-listbox" /></div>
+            </div></div>
+            <input required tabindex="-1" class="requiredInput" />
+            <div id="question_9-listbox" role="listbox" hidden>
+              <div role="option" data-value="1">Yes</div>
+              <div role="option" data-value="0">No</div>
+            </div>
+            <input type="hidden" name="question_9_value" />
+          </div>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          for (const shell of document.querySelectorAll('.select-shell')) {
+            const input = shell.querySelector('[role=combobox]');
+            const list = shell.querySelector('[role=listbox]');
+            const hidden = shell.querySelector('input.requiredInput');
+            const out = shell.querySelector('input[type=hidden]');
+            const container = shell.querySelector('.select__value-container');
+            const open = () => {
+              const q = input.value.trim().toLowerCase();
+              let any = false;
+              for (const o of list.querySelectorAll('[role=option]')) {
+                // The city picker is a geocoder: it suggests for whatever was typed.
+                const show = shell.dataset.async ? q.length > 0 : o.textContent.toLowerCase().startsWith(q);
+                o.style.display = show ? '' : 'none'; any = any || show;
+              }
+              list.hidden = !any;
+            };
+            input.addEventListener('input', () => shell.dataset.async ? setTimeout(open, 400) : open());
+            input.addEventListener('click', open);
+            const commit = (o) => {
+              hidden.value = o.dataset.value; out.value = o.dataset.value;
+              let sv = container.querySelector('.select__single-value');
+              if (!sv) { sv = document.createElement('div'); sv.className = 'select__single-value'; container.prepend(sv); }
+              sv.textContent = o.textContent; container.querySelector('.select__placeholder')?.remove();
+              input.value = ''; list.hidden = true;
+            };
+            for (const o of list.querySelectorAll('[role=option]')) o.addEventListener('click', () => commit(o));
+            input.addEventListener('keydown', (e) => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              const first = [...list.querySelectorAll('[role=option]')].find(o => o.style.display !== 'none');
+              if (first && !list.hidden) commit(first);
+            });
+          }
+          // The board's own validation: nothing leaves while a required input is empty.
+          document.querySelector('form').addEventListener('submit', (e) => {
+            if ([...document.querySelectorAll('input[required], input[aria-required=true]')].some(i => !i.value.trim() && i.getAttribute('role') !== 'combobox')) e.preventDefault();
+          });
+        </script>
+        </body></html>
+        """;
+
+    // The DOM says nothing about email being required; only the form's own submit handler does.
+    private const string ValidatingFormHtml = """
+        <html><body>
+        <form method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <label for="email">Email</label><input id="email" name="job_application[email]" aria-describedby="email-error" />
+          <p id="email-error" class="helper-text helper-text--error" style="display:none">Email is required.</p>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          document.querySelector('form').addEventListener('submit', (e) => {
+            if (!document.getElementById('email').value.trim()) {
+              e.preventDefault();
+              document.getElementById('email-error').style.display = 'block';
+              document.getElementById('email').setAttribute('aria-invalid', 'true');
+            }
+          });
+        </script>
+        </body></html>
+        """;
+
+    private const string ResettingFormHtml = """
+        <html><body>
+        <form method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          document.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); e.target.reset(); });
+        </script>
+        </body></html>
+        """;
+
+    private static AgentPacket ReactSelectPacket() => new()
+    {
+        ApplicationName = "acme-senior-engineer.md",
+        Provider = "greenhouse",
+        Questions =
+        [
+            new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            // What the Greenhouse API hands over: country is the synthetic optional question,
+            // location is plain required text, the custom question is a select with options.
+            new("country", "Country", false, PacketQuestion.Select, [], PacketQuestion.Standard),
+            new("location", "Location", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("resume", "Resume/CV", true, PacketQuestion.File, [], PacketQuestion.Standard),
+            new("question_9", "Are you willing to submit to a background check?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom),
+        ],
+        Answers = new()
+        {
+            ["first_name"] = "Ada", ["country"] = "United States", ["location"] = "Omaha, NE", ["question_9"] = "Yes",
+        },
+    };
 
     private static AgentPacket OnePlusResumePacket() => new()
     {
@@ -521,6 +678,175 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.False(outcome.Captcha);
         Assert.True(outcome.Submitted, outcome.Error);
+    }
+
+    [SkippableFact]
+    public async Task A_react_select_combobox_is_driven_to_a_committed_option_and_reaches_the_post()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Country: the option is "United States +1", the answer "United States" — chosen by
+        // prefix, never by exact text. City: an async geocoder that suggests for "Omaha, NE";
+        // the first suggestion is taken. Custom question: a fixed Yes/No set.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", ReactSelectPacket(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal(["first_name", "country", "location", "resume", "question_9"], outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal("US", post["country_value"]);
+        Assert.Equal("Omaha, Nebraska, United States", post["location_value"]);
+        Assert.Equal("1", post["question_9_value"]);
+    }
+
+    [SkippableFact]
+    public async Task A_required_field_the_packet_never_knew_is_reported_unmapped_and_refuses_the_click()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The production failure: Greenhouse's API lists no country question, its form
+        // requires one, and the run reported every packet question mapped and clicked into
+        // "Select a country". The rendered form's own required state is the last word.
+        var packet = ReactSelectPacket();
+        packet.Questions.RemoveAll(q => q.Id == "country");
+        packet.Answers.Remove("country");
+
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", packet, (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Equal(["country"], dry.Unmapped);
+        Assert.Equal("", dry.Error);
+
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", packet, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.False(real.Submitted);
+        Assert.Equal(["country"], real.Unmapped);
+        Assert.Contains("could not be mapped", real.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_combobox_answer_that_commits_nothing_is_not_counted_as_mapped()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // No option starts with or contains "Mars"; the widget keeps the text as search input
+        // and commits nothing — which used to count as mapped.
+        var packet = ReactSelectPacket();
+        packet.Answers["country"] = "Mars";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("country", outcome.Unmapped);
+        Assert.DoesNotContain("country", outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_form_where_nothing_maps_is_refused_not_submitted_empty()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Zero mapped, zero unmapped — a packet for some other form. Seen in production, and
+        // the old code would have clicked Submit on an empty application.
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("zz_given", "Given name", false, PacketQuestion.Text, [], PacketQuestion.Custom)],
+            Answers = new() { ["zz_given"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/1", packet, null, dryRun: false);
+
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("nothing on this form could be filled", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_submit_the_forms_own_validation_rejects_reports_the_forms_message()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/validating", packet, null, dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("the form rejected the submission", outcome.Error);
+        Assert.Contains("Email is required.", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_form_that_resets_itself_on_submit_is_reported_as_such()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md",
+            Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/resetting", packet, null, dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("reset itself", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    /// <summary>
+    /// The live check. Set <c>APPLYTRACK_LIVE_GREENHOUSE_URL</c> to a real Greenhouse posting
+    /// and this drives the actual form: the packet comes from the real Job Board API, every
+    /// question gets a stock answer, the résumé is a stand-in PDF, and <b>every non-GET request
+    /// is aborted at the browser</b>, so Submit is clicked and nothing can ever be sent. Two
+    /// assertions: the dry run maps every required field the form renders, and the click meets
+    /// no "is required" wall. Never runs in CI.
+    /// </summary>
+    [SkippableFact]
+    public async Task Live_greenhouse_form_fills_every_required_field_and_the_click_meets_no_validation_wall()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_GREENHOUSE_URL") ?? "";
+        Skip.If(url.Length == 0, "set APPLYTRACK_LIVE_GREENHOUSE_URL to a Greenhouse posting to run this");
+        Assert.True(ApplyTrack.Api.Agent.AtsProvider.TryParseGreenhouse(url, "", out var board, out var jobId), "not a Greenhouse URL");
+
+        var http = new HttpClient(new SocketsHttpHandler()) { BaseAddress = new Uri("https://boards-api.greenhouse.io/") };
+        var job = await new ApplyTrack.Api.Agent.Greenhouse.GreenhouseBoard(
+                new PassThroughFactory(http), NullLogger<ApplyTrack.Api.Agent.Greenhouse.GreenhouseBoard>.Instance)
+            .GetJobAsync(board, jobId);
+        Assert.NotNull(job);
+        var packet = new AgentPacket { ApplicationName = "live.md", Provider = "greenhouse", Questions = job!.Questions };
+        var ctx = new ApplyTrack.Api.Agent.AnswerContext(
+            new Resume { FullName = "Ada Byte", Location = "Omaha, NE", Links = [new ResumeLink("LinkedIn", "https://linkedin.com/in/ada")] },
+            new AgentSettings { Phone = "4025550100", SalaryExpectation = "150000", WorkAuthorization = "US citizen" },
+            "ada@example.com", "", "");
+        foreach (var q in packet.Questions.Where(q => q.Kind != PacketQuestion.Eeo && q.Type != PacketQuestion.File))
+        {
+            var (answer, _) = ApplyTrack.Api.Agent.AnswerDrafter.Deterministic(q, ctx);
+            packet.Answers[q.Id] = answer ?? (q.Options.Count > 0 ? q.Options[0] : q.Type == PacketQuestion.Textarea ? "Stand-in text." : "n/a");
+        }
+
+        var submitter = new BrowserSubmitter(
+            new BrowserOptions { Endpoint = _ws, TimeoutSeconds = 120, BlockSubmissions = true },
+            NullLogger<BrowserSubmitter>.Instance);
+        var dry = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: true, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE DRY: mapped=[{string.Join(", ", dry.Mapped)}] unmapped=[{string.Join(", ", dry.Unmapped)}] error={dry.Error}");
+        Assert.True(dry.Filled, dry.Error);
+        Assert.Empty(dry.Unmapped);
+
+        var real = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: false, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE REAL: submitted={real.Submitted} unmapped=[{string.Join(", ", real.Unmapped)}] error={real.Error}");
+        Assert.False(real.Submitted); // the POST was aborted; a confirmation here would mean the block failed
+        Assert.DoesNotMatch("(?i)is required|select a country|enter your location", real.Error);
+    }
+
+    private sealed class PassThroughFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
     }
 
     [Fact]
