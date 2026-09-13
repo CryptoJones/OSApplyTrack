@@ -122,6 +122,10 @@ builder.Services.AddScoped(sp => new AgentEventRepo(
 builder.Services.AddScoped(sp => new AgentPacketRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>()));
+// The answer bank: every screening question the agent has met, and what it says.
+builder.Services.AddScoped(sp => new AnswerBankRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 // Step 3: the packet. Greenhouse's public Job Board API is the one ATS form we can
 // read without a browser or an employer key; host pinned here, no tenant URL.
 builder.Services.AddHttpClient(GreenhouseBoard.ClientName, c =>
@@ -351,6 +355,7 @@ app.MapMaterialsEndpoints();
 app.MapScrapeEndpoints();
 app.MapAgentEndpoints();
 app.MapPacketEndpoints();
+app.MapAnswersEndpoints();
 app.MapNotificationsEndpoints();
 app.MapSubmitEndpoints();
 

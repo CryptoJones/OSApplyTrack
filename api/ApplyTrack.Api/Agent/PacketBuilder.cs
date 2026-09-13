@@ -13,7 +13,8 @@ namespace ApplyTrack.Api.Agent;
 
 /// <summary>The tenant-scoped repos a build writes through.</summary>
 public sealed record PacketScope(
-    ApplicationRepo Apps, CoverLetterRepo Letters, AgentPacketRepo Packets, AgentEventRepo Events);
+    ApplicationRepo Apps, CoverLetterRepo Letters, AgentPacketRepo Packets, AgentEventRepo Events,
+    AnswerBankRepo Bank);
 
 /// <summary>The tenant facts a build draws on.</summary>
 public sealed record PacketInputs(
@@ -128,9 +129,12 @@ public sealed partial class PacketBuilder
             }
         }
 
-        // 4. The answers.
+        // 4. The answers — the person's own from the answer bank first, then the
+        // deterministic set, then the model; and every screening question this form asked
+        // goes into the bank with the answer it got, so the person can see and correct it.
         var ctx = new AnswerContext(inputs.Resume, inputs.Settings, inputs.Email, letter, excerpt);
-        var (answers, review) = await _answers.DraftAsync(questions, ctx, inputs.Cfg, ct);
+        var (answers, review) = await _answers.DraftAsync(questions, ctx, inputs.Cfg, ct, await scope.Bank.PinnedAsync());
+        await scope.Bank.RecordAsync(questions, answers, rec.Name);
 
         var packet = new AgentPacket
         {

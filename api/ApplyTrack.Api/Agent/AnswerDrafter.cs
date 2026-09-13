@@ -73,7 +73,7 @@ public sealed partial class AnswerDrafter
 
     public async Task<(Dictionary<string, string> Answers, List<ReviewItem> NeedsReview)> DraftAsync(
         IReadOnlyList<PacketQuestion> questions, AnswerContext ctx, EffectiveLlmConfig cfg,
-        CancellationToken ct = default)
+        CancellationToken ct = default, IReadOnlyDictionary<string, string>? pinned = null)
     {
         var answers = new Dictionary<string, string>();
         var review = new List<ReviewItem>();
@@ -85,6 +85,15 @@ public sealed partial class AnswerDrafter
                 continue; // never answered, never flagged
             if (q.Type == PacketQuestion.File)
                 continue; // attached at submit (résumé) — not a text answer
+            // The person's own answer to this question, from the answer bank, wins over
+            // everything: it is how a wrong answer gets corrected once instead of per form.
+            if (pinned is not null && pinned.TryGetValue(AnswerBankRepo.KeyFor(q), out var mine) && mine.Length > 0)
+            {
+                var (fitted, why) = FitToOptions(q, mine);
+                if (fitted is not null) answers[q.Id] = fitted;
+                else review.Add(new ReviewItem(q.Id, why!));
+                continue;
+            }
             var (answer, reason) = Deterministic(q, ctx);
             if (answer is not null)
             {
@@ -133,6 +142,29 @@ public sealed partial class AnswerDrafter
                                    || r.Reason.StartsWith("the model", StringComparison.Ordinal)
                                    || r.Reason.StartsWith("no draft", StringComparison.Ordinal)).ToList();
         return (answers, review);
+    }
+
+    /// <summary>
+    /// A banked answer as this form will take it: verbatim for free text; for a fixed list,
+    /// the option it names (case-insensitively; a multi-select takes a comma-separated
+    /// set), else a reason for the human. Public for tests.
+    /// </summary>
+    public static (string? Answer, string? Reason) FitToOptions(PacketQuestion q, string answer)
+    {
+        if (q.Options.Count == 0 || q.Type is not (PacketQuestion.Select or PacketQuestion.MultiSelect))
+            return (answer, null);
+        var wanted = q.Type == PacketQuestion.MultiSelect
+            ? answer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [answer.Trim()];
+        var picked = new List<string>();
+        foreach (var w in wanted)
+        {
+            var option = q.Options.FirstOrDefault(o => string.Equals(o.Trim(), w, StringComparison.OrdinalIgnoreCase));
+            if (option is null)
+                return (null, $"your saved answer \"{w}\" isn't one of this form's options — pick one");
+            picked.Add(option);
+        }
+        return (string.Join(", ", picked), null);
     }
 
     /// <summary>

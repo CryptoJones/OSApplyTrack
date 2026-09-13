@@ -326,6 +326,9 @@ killing the process:
 | `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
 | `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
 | `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. | Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from.
+| `GET`    | `/api/answers` | The answer bank: every screening question the agent has met on a form (`key`, `label`, `help`, `type`, `options`), the `answer` it gave, whose it is (`source`: `agent` or `human`), how many forms asked it and when. |
+| `PUT`    | `/api/answers/{key}` | `{answer}` — make it your answer: the drafter uses it verbatim on every later form that asks this question (for a fixed list, it must name an option). Blank hands the question back to the drafter. **404** for a question never met. |
+| `DELETE` | `/api/answers/{key}` | Forget the question; it returns the next time a form asks it. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
 | `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
@@ -530,6 +533,11 @@ packet, and the application moves to **ready** — the queue of things waiting f
   posting** — one click puts every answer on your clipboard and opens the job, which
   works for every ATS and turns a 15-minute application into a 1-minute one.
 - **Prepare by hand** from any lead's sheet, or let the worker do it unattended.
+- **Settings · Answers** is the answer bank: every screening question the agent has
+  met on a form, with the answer it gave, in one place. Edit one and save it as yours
+  and the agent uses your words on every later form that asks the same question — no
+  model call, and a wrong answer is corrected once instead of per application. New
+  questions land there as packets are built, blank when the agent had no answer.
 
 **The moo.** **Settings · Notifications** takes your own Telegram bot token
 (write-only, encrypted with `APPLYTRACK_SECRETS_KEY` like the LLM key) and chat id.

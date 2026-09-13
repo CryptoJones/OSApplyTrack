@@ -48,7 +48,7 @@ public static class PacketEndpoints
             ApplicationRepo apps, AgentSettingsRepo agentSettings, AgentEventRepo events,
             ResumeRepo resumes, CriteriaRepo criteria, LlmSettingsRepo llm, LlmOptions instance,
             CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications,
-            UserRepo users, Auth.TenantContext tenant,
+            UserRepo users, Auth.TenantContext tenant, AnswerBankRepo bank,
             LeadEvaluator evaluator, PacketBuilder builder, PacketReadyNotifier notifier,
             BrowserAvailability browser, SubmitRequestRepo queue,
             CancellationToken ct) =>
@@ -90,7 +90,7 @@ public static class PacketEndpoints
             var inputs = new PacketInputs(
                 resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
             var packet = await builder.BuildAsync(rec, verdict, inputs,
-                new PacketScope(apps, letters, packets, events), ct);
+                new PacketScope(apps, letters, packets, events, bank), ct);
             // With a browser that may drive this ATS — here, or on a worker that has
             // checked in — the moo waits for the dry-run fill; otherwise this is it.
             if (await browser.IsAvailableAsync() && rec.Fields.Link.Length > 0

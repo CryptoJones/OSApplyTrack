@@ -112,6 +112,12 @@ async function mockApi(page) {
       experience: [], skills: [], certifications: [], links: [],
     };
     else if (path === "/api/blacklist") body = [];
+  else if (path === "/api/answers") body = [
+    { key: "salary requirements", label: "Salary Requirements", help: "", type: "text", options: [], answer: "125000", source: "agent",
+      first_application: "acme-engineer.md", times_seen: 3, first_seen_at: "2026-09-10T12:00:00Z", last_seen_at: "2026-09-13T12:00:00Z", updated_at: "2026-09-13T12:00:00Z" },
+    { key: "are you legally authorized to work in the united states", label: "Are you legally authorized to work in the United States?", help: "", type: "select", options: ["Yes", "No"], answer: "Yes", source: "human",
+      first_application: "acme-engineer.md", times_seen: 1, first_seen_at: "2026-09-10T12:00:00Z", last_seen_at: "2026-09-10T12:00:00Z", updated_at: "2026-09-10T12:00:00Z" },
+  ];
     else if (path === "/api/agent-settings") body = {
       enabled: false, dry_run: true, min_fit_score: 70, max_per_run: 5, max_per_day: 20,
       work_authorization: "", needs_sponsorship: false, clearance_ok: false,
@@ -263,7 +269,7 @@ test("criteria settings add and remove custom RSS feeds", async ({ page }) => {
 
 test("settings sections expose labeled controls", async ({ page }) => {
   await openSettings(page);
-  for (const tab of ["Criteria", "Résumé", "AI", "Agent", "Notifications", "Blacklist", "Account"]) {
+  for (const tab of ["Criteria", "Résumé", "AI", "Agent", "Answers", "Notifications", "Blacklist", "Account"]) {
     await page.getByRole("tab", { name: tab, exact: true }).click();
     await expect(page.getByRole("tabpanel")).not.toBeEmpty();
     await expectNoSeriousViolations(page);

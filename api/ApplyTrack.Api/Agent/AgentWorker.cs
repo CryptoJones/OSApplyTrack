@@ -507,7 +507,7 @@ public sealed class AgentWorker : BackgroundService
             var inputs = new PacketInputs(
                 resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
             var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId, _protector),
-                new AgentPacketRepo(conn, tenantId, _protector), events);
+                new AgentPacketRepo(conn, tenantId, _protector), events, new AnswerBankRepo(conn, tenantId, _protector));
             var notifications = new NotificationSettingsRepo(
                 conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
 

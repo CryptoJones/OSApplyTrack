@@ -336,4 +336,43 @@ public class AnswerDrafterTests
 
         Assert.Equal(["gone"], packet.BlockingReview().Select(r => r.Id).ToArray());
     }
+
+    [Fact]
+    public async Task A_pinned_answer_from_the_bank_wins_over_the_model_and_must_name_an_option_on_a_fixed_list()
+    {
+        var questions = GreenhouseBoard.Parse(GreenhouseBoardTests.JobJson).Questions;
+        var stub = new StubLlmClient((_, _, _) => "{\"answers\":[{\"id\":\"question_3\",\"answer\":\"MODEL\"}]}");
+        var pinned = new Dictionary<string, string>
+        {
+            [AnswerBankRepo.KeyFor("Describe a system you scaled.")] = "I scaled the billing service to 10x, by hand.",
+            [AnswerBankRepo.KeyFor("Are you legally authorized to work in the United States?")] = "yes",
+        };
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub))
+            .DraftAsync(questions, Ctx(), Cfg, pinned: pinned);
+
+        Assert.Equal("I scaled the billing service to 10x, by hand.", answers["question_3"]);
+        Assert.Equal("Yes", answers["question_2"]);            // the option's own spelling
+        Assert.Equal(0, stub.Calls);                            // nothing was left for the model
+        Assert.DoesNotContain(review, r => r.Id is "question_2" or "question_3");
+
+        // A saved answer that is not on the list is flagged, never typed.
+        pinned[AnswerBankRepo.KeyFor("Are you legally authorized to work in the United States?")] = "Sure";
+        var (again, flagged) = await new AnswerDrafter(new StructuredCompleter(stub)).DraftAsync(questions, Ctx(), Cfg, pinned: pinned);
+        Assert.False(again.ContainsKey("question_2"));
+        Assert.Contains(flagged, r => r.Id == "question_2" && r.Reason.Contains("isn't one of this form's options"));
+    }
+
+    [Fact]
+    public void Fit_to_options_matches_case_insensitively_and_splits_a_multiselect()
+    {
+        var single = new PacketQuestion("q", "Pick", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom);
+        Assert.Equal(("Yes", null), AnswerDrafter.FitToOptions(single, " yes "));
+        Assert.Null(AnswerDrafter.FitToOptions(single, "maybe").Answer);
+        var multi = new PacketQuestion("q", "Stack", true, PacketQuestion.MultiSelect, ["C#", "Python", "Go"], PacketQuestion.Custom);
+        Assert.Equal(("C#, Python", null), AnswerDrafter.FitToOptions(multi, "c#, python"));
+        Assert.Null(AnswerDrafter.FitToOptions(multi, "C#, Rust").Answer);
+        var free = new PacketQuestion("q", "Why", true, PacketQuestion.Textarea, [], PacketQuestion.Custom);
+        Assert.Equal(("because", null), AnswerDrafter.FitToOptions(free, "because"));
+    }
 }

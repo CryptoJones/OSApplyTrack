@@ -2169,6 +2169,107 @@ function wireNotifications() {
   };
 }
 
+// ---- Answers panel ----------------------------------------------------------
+// The answer bank: every screening question the agent has met on a form, with the
+// answer it gave. Edit one and the agent says that from now on; clear it to hand the
+// question back to the drafter; forget it and it comes back the next time a form asks.
+
+function answerControl(e, i) {
+  const id = `ans-${i}`;
+  if (e.options && e.options.length && e.type === "select") {
+    const current = (e.answer || "").trim().toLowerCase();
+    return `<select id="${id}" class="field-input" data-key="${escapeHtml(e.key)}">
+      <option value=""${current ? "" : " selected"}>— let the agent decide —</option>
+      ${e.options.map((o) => `<option value="${escapeHtml(o)}"${o.trim().toLowerCase() === current ? " selected" : ""}>${escapeHtml(o)}</option>`).join("")}
+    </select>`;
+  }
+  const rows = e.type === "textarea" ? 4 : 1;
+  return `<textarea id="${id}" class="field-input" rows="${rows}" data-key="${escapeHtml(e.key)}"
+    placeholder="${e.answer ? "" : "No answer yet — the agent left this one to you"}">${escapeHtml(e.answer || "")}</textarea>`;
+}
+
+function answersMarkup(entries) {
+  const rows = entries.map((e, i) => `
+    <div class="answer-row mt-5" data-answer-key="${escapeHtml(e.key)}">
+      <label class="field-label" for="ans-${i}">${escapeHtml(e.label)}${e.help ? ` <span class="text-ink-faint">(${escapeHtml(e.help)})</span>` : ""}</label>
+      <p class="field-help">
+        <span class="link-status ${e.source === "human" ? "ok" : ""}">${e.source === "human" ? "Your answer" : "Agent's answer"}</span>
+        · asked on ${e.times_seen} form${e.times_seen === 1 ? "" : "s"}
+        · last ${escapeHtml(new Date(e.last_seen_at).toLocaleDateString())}
+        ${e.first_application ? ` · first on <a href="#app=${encodeURIComponent(e.first_application)}">${escapeHtml(e.first_application.replace(/\.md$/, ""))}</a>` : ""}
+        ${e.options && e.options.length && e.type !== "select" ? ` · options: ${escapeHtml(e.options.join(", "))}` : ""}
+      </p>
+      ${answerControl(e, i)}
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button class="btn btn-primary btn-xs" type="button" data-ans-save="${escapeHtml(e.key)}" aria-label="Save your answer to ${escapeHtml(e.label)}">Save as my answer</button>
+        ${e.source === "human" ? `<button class="btn btn-ghost btn-xs" type="button" data-ans-reset="${escapeHtml(e.key)}" aria-label="Let the agent answer ${escapeHtml(e.label)} again">Let the agent answer</button>` : ""}
+        <button class="btn btn-ghost btn-xs" type="button" data-ans-forget="${escapeHtml(e.key)}" aria-label="Forget ${escapeHtml(e.label)}">Forget</button>
+      </div>
+    </div>`).join("");
+  return `
+    <article class="sheet">
+      <div class="sheet-eyebrow">Answers</div>
+      <h2 class="sheet-title">What the agent says on application forms</h2>
+      <p class="field-help">
+        Every screening question the agent has met, as the form asked it, with the answer it
+        gave. Change one and <strong>Save as my answer</strong>: from then on the agent uses your
+        words on every form that asks the same question, no model involved. Name, email and
+        the résumé come from your profile and are not listed; salary, work authorization and
+        phone defaults live in Settings · Agent and show up here as the forms ask for them.
+      </p>
+      ${entries.length ? rows : `<div class="board-empty field-help mt-5">No questions yet — they appear here as the agent prepares packets.</div>`}
+    </article>`;
+}
+
+function wireAnswers(body, gen) {
+  const reload = () => loadAnswersTab(body, gen);
+  body.querySelectorAll("[data-ans-save]").forEach((btn) => {
+    btn.onclick = async () => {
+      const key = btn.dataset.ansSave;
+      const control = body.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      const answer = (control ? control.value : "").trim();
+      if (!answer) return toast("Type an answer first, or use Let the agent answer.");
+      try {
+        await api("PUT", `/api/answers/${encodeURIComponent(key)}`, { answer });
+        toast("Saved — the agent will use your answer from now on.");
+        await reload();
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+  });
+  body.querySelectorAll("[data-ans-reset]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("PUT", `/api/answers/${encodeURIComponent(btn.dataset.ansReset)}`, { answer: "" });
+        toast("The agent will draft this one again.");
+        await reload();
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+  });
+  body.querySelectorAll("[data-ans-forget]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("DELETE", `/api/answers/${encodeURIComponent(btn.dataset.ansForget)}`);
+        toast("Forgotten — it comes back the next time a form asks.");
+        await reload();
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+  });
+}
+
+// Settings · Answers tab.
+async function loadAnswersTab(body, gen = settingsGen) {
+  const entries = await api("GET", "/api/answers");
+  if (settingsSuperseded(gen)) return;
+  body.innerHTML = answersMarkup(entries);
+  wireAnswers(body, gen);
+}
+
 // Settings · Notifications tab.
 async function loadNotificationsTab(body, gen = settingsGen) {
   const s = await api("GET", "/api/notifications");
@@ -2335,6 +2436,7 @@ const SETTINGS_TABS = [
   ["resume", "Résumé"],
   ["ai", "AI"],
   ["agent", "Agent"],
+  ["answers", "Answers"],
   ["notifications", "Notifications"],
   ["blacklist", "Blacklist"],
   ["account", "Account"],
@@ -2390,6 +2492,7 @@ async function openSettings(tab, focusSelectedTab = false) {
     else if (state.settingsTab === "resume") await loadResumeTab(body, gen);
     else if (state.settingsTab === "ai") await loadLlmTab(body, gen);
     else if (state.settingsTab === "agent") await loadAgentTab(body, gen);
+    else if (state.settingsTab === "answers") await loadAnswersTab(body, gen);
     else if (state.settingsTab === "notifications") await loadNotificationsTab(body, gen);
     else if (state.settingsTab === "blacklist") await loadBlacklistTab(body);
     else await loadAccountTab(body);
