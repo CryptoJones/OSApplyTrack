@@ -61,7 +61,7 @@ review items and unsupported forms still need human attention.
 - [x] [#129 — Agent abandons a run when the form has a radio group or checkbox](https://github.com/CryptoJones/OSApplyTrack/issues/129) (fix in [#128](https://github.com/CryptoJones/OSApplyTrack/pull/128))
 - [x] [#159 — Submit and packet/prepare never queue a browser run from the api container — only the agent has Browser__Endpoint](https://github.com/CryptoJones/OSApplyTrack/issues/159) (fix in [#172](https://github.com/CryptoJones/OSApplyTrack/pull/172): the worker heartbeats, the api reads it)
 - [x] [#168 — Take the Greenhouse security code back from a Telegram reply to the moo](https://github.com/CryptoJones/OSApplyTrack/issues/168) (fix in [#173](https://github.com/CryptoJones/OSApplyTrack/pull/173))
-- [ ] [#177 — Browser fill misses plain forms: labels-as-text never match, Ashby's single Name box and late-loading form, and a zero-field dry run reports as filled](https://github.com/CryptoJones/OSApplyTrack/issues/177)
+- [x] [#177 — Browser fill misses plain forms: labels-as-text never match, Ashby's single Name box and late-loading form, and a zero-field dry run reports as filled](https://github.com/CryptoJones/OSApplyTrack/issues/177) (fix in [#178](https://github.com/CryptoJones/OSApplyTrack/pull/178): the form is found in any frame, after it renders)
 - [x] [#174 — Answer bank: every question the agent meets, with the answer it gave, editable in one place and reused next time](https://github.com/CryptoJones/OSApplyTrack/issues/174) (fix in [#175](https://github.com/CryptoJones/OSApplyTrack/pull/175): Settings · Answers)
 
 ## Production audit — 2026-09-12, closed out 2026-09-13
