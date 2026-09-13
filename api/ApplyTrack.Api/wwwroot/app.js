@@ -714,7 +714,7 @@ async function loadEvidence(name) {
     <h4 class="mt-4">What the browser saw</h4>
     ${parked ? `
     <form id="security-code-form" class="packet-flag mt-2" aria-live="polite">
-      <label class="field-label" for="security-code">The board emailed a security code${parked.detail && parked.detail.recipient ? ` to ${escapeHtml(parked.detail.recipient)}` : ""}. Paste it here within a few minutes:</label>
+      <label class="field-label" for="security-code">The board emailed a security code${parked.detail && parked.detail.recipient ? ` to ${escapeHtml(parked.detail.recipient)}` : ""}. Paste it here within a few minutes, or reply to the Telegram moo with it:</label>
       <div class="flex gap-2 mt-1">
         <input id="security-code" class="field-input mono" autocomplete="one-time-code" inputmode="text" maxlength="16" pattern="[A-Za-z0-9]{4,16}" required />
         <button class="btn btn-primary" type="submit">Send code</button>

@@ -331,7 +331,7 @@ killing the process:
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, timestamps. |
 | `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed`), `url`, `confirmation`, `detail`, `has_screenshot`. |
-| `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback). **202** when a run is waiting, **409** when none is; the run types it in and clicks Submit again. |
+| `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback). **202** when a run is waiting, **409** when none is; the run types it in and clicks Submit again. Replying to the 🔐 Telegram moo with the code does the same thing without the app. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
 
@@ -537,7 +537,12 @@ When a packet lands in ready you get one message — `🐮 moo — Acme · Engin
 ready to submit` — with a link that opens that application (`App__PublicBaseUrl`
 must be set for the link). Exactly one per packet, recorded in the agent log; a
 failed send never blocks the packet. **Send test message** checks the wiring first.
-The api container needs outbound HTTPS to `api.telegram.org`.
+The api container needs outbound HTTPS to `api.telegram.org`. The bot is two-way in
+one case: when a run is parked on Greenhouse's emailed security code and there is
+no mailbox to read it from, the 🔐 moo asks for the code and the worker reads the
+bot's inbox (`getUpdates`, no webhook) until you **reply to the moo with it** — from
+the configured chat only, 4–16 letters and digits, the same shape the app's paste
+box takes. Nothing else sent to the bot is acted on.
 
 **Step 4 — the browser fills it in; you click Apply.** With a browser container
 configured, a prepared packet gets a **dry run** automatically: the browser opens

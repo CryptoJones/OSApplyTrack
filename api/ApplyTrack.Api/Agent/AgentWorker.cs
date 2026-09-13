@@ -43,6 +43,7 @@ public sealed class AgentWorker : BackgroundService
     private readonly ILoggerFactory _loggers;
     private readonly ILogger<AgentWorker> _log;
     private readonly ISecurityCodeSource? _codes;
+    private readonly INotifier? _telegram;
     // This container's name: the quadlet/compose service name, or the pod's hostname.
     private readonly string _workerId = Environment.MachineName;
 
@@ -50,9 +51,10 @@ public sealed class AgentWorker : BackgroundService
         string connectionString, AgentOptions options, LlmOptions llmOptions,
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
         PacketReadyNotifier notifier, BrowserOptions browser, BrowserSubmitter submitter,
-        ILoggerFactory loggers, ISecurityCodeSource? codes = null)
+        ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null)
     {
         _codes = codes;
+        _telegram = telegram;
         var csb = new NpgsqlConnectionStringBuilder(connectionString)
         {
             MaxPoolSize = Math.Max(1, options.MaxPoolSize),
@@ -235,7 +237,9 @@ public sealed class AgentWorker : BackgroundService
         // it, and wait — up to eight minutes, holding the browser session the code is good
         // for — reading the candidate's own mailbox for the mail when one is configured, and
         // polling the queue row a human's paste lands on either way. The moo goes out only
-        // when there is no mailbox to read: with one, the human never needs to know.
+        // when there is no mailbox to read: with one, the human never needs to know. Once
+        // it has gone out, a reply to it with the code counts the same as the paste — the
+        // phone-in-hand path for anyone whose mail the app cannot read (#168).
         async Task<string?> AwaitSecurityCodeAsync(string recipient, CancellationToken token)
         {
             var since = DateTimeOffset.UtcNow.AddMinutes(-1);
@@ -245,11 +249,20 @@ public sealed class AgentWorker : BackgroundService
                 new { recipient, dry_run = false, mailbox = mailbox is not null }, null);
             await events.RecordAsync(AgentEvidenceRepo.Kinds.AwaitingCode, rec.Name,
                 new { recipient, mailbox = mailbox is not null, rec.Fields.Company, rec.Fields.Role });
-            if (mailbox is null)
+            TelegramCodeReplies? replies = null;
+            async Task MooAndListenAsync()
+            {
+                // Replies dated before the moo (a 15 s grace for clock skew) are never a code.
+                var mooed = DateTimeOffset.UtcNow.AddSeconds(-15);
                 await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
                     PacketReadyNotifier.Moment.Code, recipient);
+                var target = _telegram is null ? null : await notifications.GetTargetAsync();
+                replies = target is null ? null : new TelegramCodeReplies(_telegram!, target, mooed, _log);
+            }
+            if (mailbox is null)
+                await MooAndListenAsync();
             _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}{How}", rec.Name, recipient,
-                mailbox is null ? "" : "; reading the mailbox for it");
+                mailbox is not null ? "; reading the mailbox for it" : replies is not null ? "; mooed, reading Telegram replies for it" : "; mooed");
             var deadline = DateTime.UtcNow.AddMinutes(8);
             var tick = 0;
             while (DateTime.UtcNow < deadline && !token.IsCancellationRequested)
@@ -259,6 +272,26 @@ public sealed class AgentWorker : BackgroundService
                 {
                     var pasted = await SubmitQueue.SecurityCodeAsync(poll, req.Id);
                     if (pasted.Length > 0) return pasted;
+                }
+                if (replies is not null)
+                {
+                    try
+                    {
+                        var code = await replies.PollAsync(token);
+                        if (code is not null)
+                        {
+                            _log.LogInformation("{Name}: security code read from a Telegram reply", rec.Name);
+                            return code;
+                        }
+                    }
+                    catch (NotificationFailedException ex)
+                    {
+                        // A bot that cannot be read (a webhook set on it, Telegram down) must not
+                        // end the run: the paste still works. Say so once and stop asking.
+                        _log.LogWarning("{Name}: Telegram replies unreadable: {Reason}", rec.Name, ex.Message);
+                        await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new { reason = "telegram: " + ex.Message });
+                        replies = null;
+                    }
                 }
                 if (mailbox is not null && tick++ % 3 == 0)
                 {
@@ -276,9 +309,8 @@ public sealed class AgentWorker : BackgroundService
                         // A mailbox that will not open must not end the run: the human can still paste.
                         _log.LogWarning("{Name}: mailbox read failed: {Reason}", rec.Name, ex.Message);
                         await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new { reason = "mailbox: " + ex.Message });
-                        await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
-                            PacketReadyNotifier.Moment.Code, recipient);
                         mailbox = null;
+                        await MooAndListenAsync();
                     }
                 }
             }

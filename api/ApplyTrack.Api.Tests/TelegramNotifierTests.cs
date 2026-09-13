@@ -76,6 +76,46 @@ public class TelegramNotifierTests
     }
 
     [Fact]
+    public async Task Get_updates_is_a_short_poll_for_messages_only_that_confirms_with_the_offset()
+    {
+        const string Updates = """
+            {"ok":true,"result":[
+              {"update_id":900,"message":{"message_id":1,"date":1789310400,"chat":{"id":4242,"type":"private"},"text":"IEG0pxWr"}},
+              {"update_id":901,"edited_message":{"message_id":1,"date":1789310460,"chat":{"id":4242,"type":"private"},"text":"x"}},
+              {"update_id":902,"message":{"message_id":2,"date":1789310500,"chat":{"id":9999,"type":"private"}}}
+            ]}
+            """;
+        var handler = CapturingHandler.Always(HttpStatusCode.OK, Updates);
+
+        var replies = await NewNotifier(handler).ReadRepliesAsync(Token, 900);
+
+        var (req, _) = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.Equal($"/bot{Token}/getUpdates", req.RequestUri!.AbsolutePath);
+        Assert.Contains("timeout=0", req.RequestUri.Query);
+        Assert.Contains("offset=900", req.RequestUri.Query);
+        Assert.Contains("allowed_updates=%5B%22message%22%5D", req.RequestUri.Query);
+        // An edit is not a message; a message without text is still an update to confirm past.
+        Assert.Equal(2, replies.Count);
+        Assert.Equal(new TelegramReply(900, "4242", DateTimeOffset.FromUnixTimeSeconds(1789310400), "IEG0pxWr"), replies[0]);
+        Assert.Equal(new TelegramReply(902, "9999", DateTimeOffset.FromUnixTimeSeconds(1789310500), ""), replies[1]);
+
+        // No offset on the first poll of a parked run.
+        await NewNotifier(handler).ReadRepliesAsync(Token, null);
+        Assert.DoesNotContain("offset=", handler.Requests[1].Request.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task A_webhook_conflict_on_get_updates_is_a_refusal_without_the_token()
+    {
+        var handler = CapturingHandler.Always(HttpStatusCode.Conflict,
+            "{\"ok\":false,\"description\":\"Conflict: can't use getUpdates method while webhook is active\"}");
+        var ex = await Assert.ThrowsAsync<NotificationFailedException>(() => NewNotifier(handler).ReadRepliesAsync(Token, null));
+        Assert.Contains("webhook is active", ex.Message);
+        Assert.DoesNotContain(Token, ex.Message);
+    }
+
+    [Fact]
     public void The_message_names_the_role_and_links_when_a_public_url_is_set()
     {
         Assert.Equal("🐮 moo — Acme · Engineer is ready to submit\nhttps://apply.example/#app=acme-engineer.md",

@@ -43,6 +43,20 @@ internal sealed class CapturingNotifier(Exception? fail = null) : INotifier
         lock (_sent) _sent.Add((botToken, chatId, text));
         return Task.CompletedTask;
     }
+
+    /// <summary>What the bot's inbox holds; a test fills it.</summary>
+    public List<TelegramReply> Replies { get; } = [];
+
+    /// <summary>Every offset a poll asked with, in order.</summary>
+    public List<long?> Offsets { get; } = [];
+
+    public Task<IReadOnlyList<TelegramReply>> ReadRepliesAsync(string botToken, long? offset, CancellationToken ct = default)
+    {
+        if (fail is not null) throw fail;
+        lock (Offsets) Offsets.Add(offset);
+        IReadOnlyList<TelegramReply> page = Replies.Where(r => offset is null || r.UpdateId >= offset).ToList();
+        return Task.FromResult(page);
+    }
 }
 
 /// <summary>A stub model that answers the fit judge, the answer drafter and the letter
