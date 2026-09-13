@@ -45,6 +45,11 @@ public sealed class FormDiscovererTests : IAsyncLifetime
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _fixture = builder.Build();
         _fixture.MapGet("/acme/1234/apply", () => Results.Content(LeverHtml, "text/html"));
+        // The same form, loaded into an iframe by an Apply click; and fetched late into the page.
+        _fixture.MapGet("/framed", () => Results.Content(
+            "<html><body><h1>Job</h1><button type=\"button\" onclick=\"const f=document.createElement('iframe');f.src='/acme/1234/apply';f.style.width='700px';f.style.height='900px';document.body.appendChild(f);this.remove()\">Apply for this job</button></body></html>", "text/html"));
+        _fixture.MapGet("/late", () => Results.Content(
+            "<html><body><h1>Job</h1><div id=\"slot\">Fetching application form</div><script>setTimeout(()=>{fetch('/acme/1234/apply').then(r=>r.text()).then(h=>{document.getElementById('slot').innerHTML=h.replace(/^[\\s\\S]*<body>/,'').replace(/<\\/body>[\\s\\S]*$/,'');});},1500)</script></body></html>", "text/html"));
         _fixture.MapPost("/acme/1234/apply", () => { Interlocked.Increment(ref _posts); return Results.Content("nope"); });
         await _fixture.StartAsync();
         _url = _fixture.Urls.First();
@@ -101,6 +106,25 @@ public sealed class FormDiscovererTests : IAsyncLifetime
         Assert.Equal(["Remote", "Office"], byId["cards[abc][field2]"].Options);
         Assert.Equal(PacketQuestion.Eeo, byId["eeo[gender]"].Kind);
         Assert.False(byId.ContainsKey("token"));
+        Assert.Equal(0, _posts);
+    }
+
+    [SkippableFact]
+    public async Task Discovers_a_form_that_arrives_in_an_iframe_or_after_the_page_is_idle()
+    {
+        Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(
+            new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
+
+        foreach (var path in new[] { "/framed", "/late" })
+        {
+            var questions = await discoverer.DiscoverAsync($"{_url}{path}");
+            Assert.NotNull(questions);
+            var byId = questions!.ToDictionary(q => q.Id);
+            Assert.Equal("Full name", byId["name"].Label);
+            Assert.Equal(PacketQuestion.Custom, byId["cards[abc][field0]"].Kind);
+            Assert.Equal(["Remote", "Office"], byId["cards[abc][field2]"].Options);
+        }
         Assert.Equal(0, _posts);
     }
 

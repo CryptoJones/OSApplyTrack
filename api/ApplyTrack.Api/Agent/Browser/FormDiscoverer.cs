@@ -41,18 +41,26 @@ public sealed partial class FormDiscoverer
     public async Task<List<PacketQuestion>?> DiscoverAsync(string link, CancellationToken ct = default)
     {
         await using var session = await BrowserSession.OpenAsync(_options, link, ct);
-        JsonElement raw;
-        try
+        // The form is often not there yet (Ashby fetches it after the page is idle) and often
+        // not in the page at all (Comeet loads it into a cross-origin iframe): wait for a
+        // control to show anywhere, then read every frame, top document first.
+        await BrowserSession.WaitForFieldAsync(session.Page, 10_000);
+        var controls = new List<Control>();
+        foreach (var frame in session.Page.Frames)
         {
-            raw = await session.Page.EvaluateAsync<JsonElement>(EnumerateScript);
+            JsonElement raw;
+            try
+            {
+                raw = await frame.EvaluateAsync<JsonElement>(EnumerateScript);
+            }
+            catch (PlaywrightException ex)
+            {
+                _log.LogInformation("discovery at {Link}: {Reason}", link, ex.Message.Split('\n')[0]);
+                continue;
+            }
+            controls.AddRange(JsonSerializer.Deserialize<List<Control>>(raw.GetRawText(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? []);
         }
-        catch (PlaywrightException ex)
-        {
-            _log.LogInformation("discovery at {Link}: {Reason}", link, ex.Message.Split('\n')[0]);
-            return null;
-        }
-        var controls = JsonSerializer.Deserialize<List<Control>>(raw.GetRawText(),
-            new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
         var questions = Map(controls);
         return questions.Count == 0 ? null : questions;
     }
