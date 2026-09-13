@@ -176,14 +176,43 @@ public sealed partial class BrowserSubmitter
             var submit = await FindSubmitAsync(page);
             if (submit is null)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "no Submit button found");
+            // What the click actually sent. Greenhouse's form runs reCAPTCHA Enterprise first
+            // and only then POSTs the application as JSON — to boards.greenhouse.io, a host the
+            // page itself is not on — and a failed POST shows "There was an error processing
+            // your application". Every non-GET response bar analytics is recorded, so a run
+            // that ends without a confirmation can say whether an application was ever posted.
+            var posts = new List<string>();
+            page.Response += (_, r) =>
+            {
+                var req = r.Request;
+                if (req.Method is "GET" or "HEAD" || IsChatter(r.Url)) return;
+                if (Uri.TryCreate(r.Url, UriKind.Absolute, out var u))
+                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → {r.Status}");
+            };
+            var urlBefore = page.Url;
             await submit.ClickAsync();
-            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 15_000 }); }
-            catch (TimeoutException) { /* single-page confirmations never go idle; read what's there */ }
-            await page.WaitForTimeoutAsync(1500);
-
-            var text = await page.InnerTextAsync("body");
-            var m = Confirmation().Match(text);
+            // Then WAIT for the form's verdict rather than reading the page in the quiet
+            // moment before the captcha and the POST have even started. This used to wait for
+            // network idle (which fires in exactly that moment), read the untouched form,
+            // screenshot it, and tear the browser down — cancelling whatever was in flight.
+            var text = "";
+            Match m = Match.Empty;
+            List<string> complaints = [];
+            for (var i = 0; i < 30; i++)
+            {
+                await page.WaitForTimeoutAsync(1000);
+                text = await BodyTextAsync(page);
+                m = Confirmation().Match(text);
+                if (m.Success) break;
+                complaints = await ValidationErrorsAsync(page);
+                if (complaints.Count > 0) break;
+                if (page.Url != urlBefore && i >= 3) break; // navigated somewhere new: read it below
+            }
             screenshot = await session.ScreenshotAsync();
+            string PostNote()
+            {
+                lock (posts) return posts.Count == 0 ? " (no application request was sent)" : $" ({string.Join("; ", posts)})";
+            }
             if (!m.Success)
             {
                 // A challenge thrown up BY the click is the common case, not the rare one: the
@@ -197,15 +226,15 @@ public sealed partial class BrowserSubmitter
                         Captcha: true);
                 // The form's own validation messages are the diagnosis; without them every
                 // refused click reads as the same mystery and gets the same wrong theory.
-                var complaints = await ValidationErrorsAsync(page);
+                if (complaints.Count == 0) complaints = await ValidationErrorsAsync(page);
                 if (complaints.Count > 0)
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                        "the form rejected the submission: " + string.Join("; ", complaints));
+                        "the form rejected the submission: " + string.Join("; ", complaints) + PostNote());
                 if (await FormResetAsync(page, packet, mapped))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                        "Submit was clicked and the form reset itself with no confirmation — check the screenshot");
+                        "Submit was clicked and the form reset itself with no confirmation" + PostNote() + " — check the screenshot");
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                    "Submit was clicked but no confirmation text was recognised — check the screenshot");
+                    "Submit was clicked but no confirmation text was recognised" + PostNote() + " — check the screenshot");
             }
             var start = Math.Max(0, m.Index - 80);
             var snippet = text.Substring(start, Math.Min(text.Length - start, 240)).Trim();
@@ -851,6 +880,11 @@ public sealed partial class BrowserSubmitter
     }
 
     private static string CssEscape(string id) => Regex.Replace(id, @"([^a-zA-Z0-9_-])", "\\$1");
+
+    /// <summary>Requests that are never the application: analytics beacons, the captcha's own
+    /// traffic, and the résumé uploader's trip to object storage.</summary>
+    private static bool IsChatter(string url) =>
+        Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog", RegexOptions.IgnoreCase);
 
     /// <summary>The page's visible text, or "" if it can't be read — never throws.</summary>
     private static async Task<string> BodyTextAsync(IPage page)

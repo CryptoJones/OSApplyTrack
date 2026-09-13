@@ -95,6 +95,29 @@ public class AnswerDrafterTests
         Assert.Equal(("Minden, Nebraska", null), AnswerDrafter.Deterministic(city, remote));
         var sponsorship = new PacketQuestion("q8", "Do you need sponsorship now or in the future to accept this job in the posting location?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom);
         Assert.Equal(("No", null), AnswerDrafter.Deterministic(sponsorship, Ctx()));
+        // GitLab's wording: a sponsorship question that ends in "your current location".
+        var gitlab = new PacketQuestion("q9", "Will you now or in the future require sponsorship for a visa to remain in your current location?", true, PacketQuestion.Select, ["No", "Yes, EU Blue Card", "Yes, but not one of the visas listed here"], PacketQuestion.Custom);
+        Assert.Equal(("No", null), AnswerDrafter.Deterministic(gitlab, Ctx()));
+    }
+
+    [Fact]
+    public void A_country_pick_list_is_answered_with_its_own_spelling_and_a_combined_eligibility_question_goes_to_the_model()
+    {
+        var gitlab = new PacketQuestion("q1", "What is your current country of residence?", true, PacketQuestion.Select, ["Afghanistan", "United Kingdom", "United States of America"], PacketQuestion.Custom);
+        Assert.Equal(("United States of America", null), AnswerDrafter.Deterministic(gitlab, Ctx()));
+        var gr8 = new PacketQuestion("q2", "Choose your current location country", true, PacketQuestion.Select, ["Ukraine", "United States, U.S., USA"], PacketQuestion.Custom);
+        Assert.Equal(("United States, U.S., USA", null), AnswerDrafter.Deterministic(gr8, Ctx()));
+        var none = new PacketQuestion("q3", "Country of residence", true, PacketQuestion.Select, ["Mars", "Venus"], PacketQuestion.Custom);
+        var (answer, reason) = AnswerDrafter.Deterministic(none, Ctx());
+        Assert.Null(answer);
+        Assert.Contains("pick the country option", reason);
+        Assert.Equal("USA", AnswerDrafter.PickCountryOption(["Canada", "USA"], "United States"));
+        Assert.Null(AnswerDrafter.PickCountryOption(["United Arab Emirates"], "United States"));
+
+        // Miris: authorization and sponsorship in one question with fixed options — the
+        // polarity of "No, I require support now" is not the polarity of the answer.
+        var miris = new PacketQuestion("q4", "Are you legally authorized to work in the country where you intend to perform this role, and do you now or will you in the future require Miris to sponsor your work authorization?", true, PacketQuestion.Select, ["Yes, and I do not require sponsorship", "No, I require support now"], PacketQuestion.Custom);
+        Assert.Equal((null, null), AnswerDrafter.Deterministic(miris, Ctx()));
     }
 
     [Fact]

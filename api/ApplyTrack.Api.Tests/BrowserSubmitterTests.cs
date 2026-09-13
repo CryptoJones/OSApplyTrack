@@ -76,6 +76,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/validating", () => Results.Content(ValidatingFormHtml, "text/html"));
         // A form that re-mounts itself on Submit instead of posting.
         _fixture.MapGet("/jobs/resetting", () => Results.Content(ResettingFormHtml, "text/html"));
+        // Greenhouse's real shape: the click posts as JSON in the background and the page
+        // shows its verdict seconds later — a confirmation, or an error line.
+        _fixture.MapGet("/jobs/slow", () => Results.Content(SlowFormHtml.Replace("OUTCOME", "ok"), "text/html"));
+        _fixture.MapGet("/jobs/slow-error", () => Results.Content(SlowFormHtml.Replace("OUTCOME", "error"), "text/html"));
+        _fixture.MapPost("/apply.json", async (HttpRequest req) =>
+        {
+            using var sr = new StreamReader(req.Body);
+            var body = await sr.ReadToEndAsync();
+            lock (_posts) _posts.Add(new() { ["json"] = body });
+            return Results.Json(new { ok = true });
+        });
         // A posting taken down outright: Greenhouse's 404 page, no gone-notice, no form.
         _fixture.MapGet("/jobs/gone", () => Results.Content(
             "<html><head><title>Page not found</title></head><body><h1>Page not found</h1>"
@@ -394,6 +405,32 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string SlowFormHtml = """
+        <html><body>
+        <form id="f">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <button id="submit_app" type="submit">Submit application</button>
+        </form>
+        <p id="msg" class="helper-text helper-text--error" style="display:none"></p>
+        <script>
+          document.getElementById('f').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await new Promise(r => setTimeout(r, 2500));   // the captcha, then the request
+            if ('OUTCOME' === 'ok') {
+              await fetch('/apply.json', { method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ job_application: { first_name: document.getElementById('first_name').value } }) });
+              await new Promise(r => setTimeout(r, 1500));
+              document.body.innerHTML = '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+            } else {
+              const m = document.getElementById('msg');
+              m.textContent = 'There was an error processing your application. Please try again.';
+              m.style.display = 'block';
+            }
+          });
+        </script>
+        </body></html>
+        """;
+
     private static AgentPacket ReactSelectPacket() => new()
     {
         ApplicationName = "acme-senior-engineer.md",
@@ -495,6 +532,43 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Submitted);
         Assert.Equal(["question_9"], outcome.Unmapped);
         Assert.Contains("could not be mapped", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_confirmation_that_arrives_seconds_after_the_click_is_waited_for_and_the_post_is_recorded()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/slow", packet, null, dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Thank you", outcome.Confirmation);
+        Assert.Contains("\"first_name\":\"Ada\"", Assert.Single(_posts)["json"]);
+    }
+
+    [SkippableFact]
+    public async Task An_error_the_form_shows_seconds_after_the_click_is_the_reported_reason_with_what_was_sent()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/slow-error", packet, null, dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("There was an error processing your application", outcome.Error);
+        Assert.Contains("no application request was sent", outcome.Error);
         Assert.Empty(_posts);
     }
 
