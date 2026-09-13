@@ -75,9 +75,12 @@ public sealed partial class FormDiscoverer
         var seen = new HashSet<string>();
         foreach (var c in controls)
         {
-            var key = c.Name.Length > 0 ? c.Name : c.Id;
-            if (key.Length == 0 || !seen.Add(key)) continue;
             var label = c.Label.Trim().TrimEnd('*').Trim();
+            // A control with neither name nor id — Comeet's custom questions — is keyed by its
+            // label; the submitter finds it by that label, and the required-empty sweep
+            // reports it under the same key.
+            var key = c.Name.Length > 0 ? c.Name : c.Id.Length > 0 ? c.Id : label;
+            if (key.Length == 0 || !seen.Add(key)) continue;
             var type = (c.Tag, c.Type) switch
             {
                 ("textarea", _) => PacketQuestion.Textarea,

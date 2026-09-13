@@ -117,6 +117,11 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Comeet's shape: the posting page has only an "Apply for this job" button, and the
         // click loads the form into an iframe. Nothing fillable ever lives in the top document.
         _fixture.MapGet("/jobs/framed", () => Results.Content(FramedHtml, "text/html"));
+        // Ashby's shape after the click: the API answers 200, then the page says the
+        // application was flagged as spam. No code, no challenge — a person's job.
+        _fixture.MapGet("/jobs/spam-on-submit", () => Results.Content(SpamOnSubmitHtml, "text/html"));
+        // A résumé input that is called cv, labelled "Attach Resume".
+        _fixture.MapGet("/jobs/cv", () => Results.Content(CvHtml, "text/html"));
         _fixture.MapGet("/jobs/framed-form", () => Results.Content(FormHtml, "text/html"));
         // Ashby's shape: the form is fetched after the page is idle, and asks for one Name.
         _fixture.MapGet("/jobs/late-name", () => Results.Content(LateNameHtml, "text/html"));
@@ -176,6 +181,37 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <p>Description of the job.</p>
         <button type="button" id="open" onclick="const f=document.createElement('iframe');f.src='/jobs/framed-form';f.style.width='700px';f.style.height='900px';document.getElementById('slot').appendChild(f);this.remove()">Apply for this job</button>
         <div id="slot"></div>
+        </body></html>
+        """;
+
+    private const string SpamOnSubmitHtml = """
+        <html><body><form id="f" method="post" action="/apply.json">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <button id="submit_app" type="button">Submit Application</button>
+        </form>
+        <div id="refused" style="display:none">
+          <strong>We couldn't submit your application</strong>
+          <p>Your application submission was flagged as possible spam. If you believe this was a mistake, please submit your application again.</p>
+        </div>
+        <script>
+          document.getElementById('submit_app').addEventListener('click', async () => {
+            await fetch('/apply.json', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"probe":true}' });
+            document.getElementById('f').style.display = 'none';
+            document.getElementById('refused').style.display = 'block';
+          });
+        </script>
+        </body></html>
+        """;
+
+    private const string CvHtml = """
+        <html><body>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="firstName">First name *</label><input id="firstName" name="firstName" required />
+          <label for="lastName">Last name *</label><input id="lastName" name="lastName" required />
+          <label for="email">Email *</label><input id="email" name="email" type="email" required />
+          <label for="cv">Attach Resume *</label><input id="cv" name="resume" type="file" required />
+          <button type="submit">Submit application</button>
+        </form>
         </body></html>
         """;
 
@@ -618,6 +654,48 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.NotNull(outcome.Screenshot);
         Assert.True(outcome.Screenshot!.Length > 1000);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_board_that_flags_the_application_as_spam_is_a_captcha_outcome_not_a_mystery()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "ashby",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/spam-on-submit", packet, null, dryRun: false);
+        Assert.True(outcome.Captcha, outcome.Error);
+        Assert.False(outcome.Submitted);
+        // The earliest phrase on the page names the refusal; either of Ashby's will do.
+        Assert.Contains("refused the application as a bot's", outcome.Error);
+        Assert.Matches("couldn't submit your application|flagged as possible spam", outcome.Error);
+        Assert.Contains("Copy answers and open", outcome.Error);
+    }
+
+    [SkippableFact]
+    public async Task A_resume_field_called_cv_gets_the_resume()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-engineer.md", Provider = "unknown",
+            Questions =
+            [
+                new("firstName", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("lastName", "Last name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("cv", "Attach Resume", true, PacketQuestion.File, [], PacketQuestion.Standard),
+            ],
+            Answers = new() { ["firstName"] = "Ada", ["lastName"] = "Byte", ["email"] = "ada@example.com" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/cv", packet, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("cv", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal($"resume.pdf:{Pdf.Length}", post["resume:file"]);
     }
 
     [SkippableFact]
