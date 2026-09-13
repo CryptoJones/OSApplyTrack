@@ -59,7 +59,7 @@ review items and unsupported forms still need human attention.
 - [x] [#151 — Greenhouse submit blocked by unfilled required fields (country, location, react-select questions) — not reCAPTCHA](https://github.com/CryptoJones/OSApplyTrack/issues/151) (fixed in 1.26.0)
 - [x] [#124 — Reduce posting→applied latency so the agent reaches postings before they close](https://github.com/CryptoJones/OSApplyTrack/issues/124)
 - [x] [#129 — Agent abandons a run when the form has a radio group or checkbox](https://github.com/CryptoJones/OSApplyTrack/issues/129) (fix in [#128](https://github.com/CryptoJones/OSApplyTrack/pull/128))
-- [ ] [#159 — Submit and packet/prepare never queue a browser run from the api container — only the agent has Browser__Endpoint](https://github.com/CryptoJones/OSApplyTrack/issues/159)
+- [x] [#159 — Submit and packet/prepare never queue a browser run from the api container — only the agent has Browser__Endpoint](https://github.com/CryptoJones/OSApplyTrack/issues/159) (fix in [#172](https://github.com/CryptoJones/OSApplyTrack/pull/172): the worker heartbeats, the api reads it)
 - [ ] [#168 — Take the Greenhouse security code back from a Telegram reply to the moo](https://github.com/CryptoJones/OSApplyTrack/issues/168)
 
 ## Production audit — 2026-09-12, closed out 2026-09-13
