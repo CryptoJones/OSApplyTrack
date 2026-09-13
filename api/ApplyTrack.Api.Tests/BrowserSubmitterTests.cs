@@ -87,6 +87,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             lock (_posts) _posts.Add(new() { ["json"] = body });
             return Results.Json(new { ok = true });
         });
+        // Greenhouse's posting page: an "Apply" button above the description that only
+        // scrolls to the form, and the real "Submit application" at the bottom of it.
+        _fixture.MapGet("/jobs/anchor", () => Results.Content(ApplyAnchorHtml, "text/html"));
         // A posting taken down outright: Greenhouse's 404 page, no gone-notice, no form.
         _fixture.MapGet("/jobs/gone", () => Results.Content(
             "<html><head><title>Page not found</title></head><body><h1>Page not found</h1>"
@@ -405,6 +408,18 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string ApplyAnchorHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <button type="button" id="apply_anchor" onclick="document.getElementById('form').scrollIntoView()">Apply</button>
+        <p style="height:2400px">The posting, at length.</p>
+        <form id="form" method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
     private const string SlowFormHtml = """
         <html><body>
         <form id="f">
@@ -570,6 +585,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("There was an error processing your application", outcome.Error);
         Assert.Contains("no application request was sent", outcome.Error);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task The_submit_button_is_the_forms_not_the_apply_anchor_above_the_posting()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Every production real run clicked the "Apply" anchor — first in document order —
+        // and reported no confirmation while no request ever left the page.
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/anchor", packet, null, dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }
 
     [SkippableFact]
