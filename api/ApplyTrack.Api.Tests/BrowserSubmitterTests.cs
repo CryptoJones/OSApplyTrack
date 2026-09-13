@@ -64,6 +64,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Greenhouse's shape: the uploader rejects the file, but the form offers to take the
         // résumé as text instead.
         _fixture.MapGet("/jobs/manual", () => Results.Content(ManualResumeHtml, "text/html"));
+        // Greenhouse's current résumé widget as GitLab's board renders it (#195): the required
+        // flag is on the upload group, not the file input; the uploader fails ?err= ms after
+        // the attach; Enter manually opens a textarea inside the group.
+        _fixture.MapGet("/jobs/gh-resume", () => Results.Content(GreenhouseResumeHtml, "text/html"));
         // A challenge that only appears once Submit is clicked.
         _fixture.MapGet("/jobs/captcha-on-submit", () => Results.Content(CaptchaOnSubmitHtml, "text/html"));
         // A form guarded by an interactive captcha.
@@ -140,6 +144,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/consent", () => Results.Content(ConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
         // The same banner, over the form itself.
         _fixture.MapGet("/jobs/consent-form", () => Results.Content(ConsentHtml.Replace("BODY", FormHtml), "text/html"));
+        // Zoho Recruit's consent: rendered after the page has booted, with a transparent
+        // freeze layer over the whole viewport until a choice is made (fyerx).
+        _fixture.MapGet("/jobs/consent-late", () => Results.Content(LateFreezeConsentHtml, "text/html"));
         // Workable's answer for a job taken down: HTTP 410 and a page that says so (#203).
         _fixture.MapGet("/jobs/gone-410", () => Results.Content(
             "<html><head><title>This job is not available anymore</title></head><body>"
@@ -323,6 +330,71 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             err.textContent = '';
             // The widget renders its box after the click, not synchronously with it.
             setTimeout(() => { document.getElementById('resume_text').style.display = 'block'; }, 700);
+          });
+        </script>
+        </body></html>
+        """;
+
+    // GitLab's Greenhouse form, as inspected live for #195: `required` lives on the upload
+    // group's aria-required, never on the file input (which is visually hidden behind a
+    // styled Attach button); Enter manually reveals textarea#resume_text inside the group;
+    // a staged file shows its name and a Remove control instead of the buttons. The
+    // uploader's failure arrives ?err= ms after the attach — on the live form it came well
+    // after the attach had looked good.
+    private const string GreenhouseResumeHtml = """
+        <html><head><meta charset="utf-8">
+        <style>.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}</style>
+        </head><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <div role="group" aria-labelledby="upload-label-resume" aria-required="true" class="file-upload">
+            <div id="upload-label-resume" class="label">Resume/CV<span class="required">*</span></div>
+            <div id="resume_buttons">
+              <div><button type="button">Attach</button><label class="visually-hidden" for="resume">Attach</label>
+                <input id="resume" name="resume" type="file" class="visually-hidden" /></div>
+              <div><button type="button" id="resume_manual">Enter manually</button><label class="visually-hidden" for="resume_text">Enter manually</label></div>
+            </div>
+            <div id="resume_staged" style="display:none"><span id="resume_name"></span> <button type="button" id="resume_remove" aria-label="Remove file">✕</button></div>
+            <p id="resume_error"></p>
+            <div id="resume_text_wrap" style="display:none"><textarea id="resume_text" name="resume_text" rows="6"></textarea></div>
+          </div>
+          <div role="group" aria-labelledby="upload-label-cover_letter" aria-required="false" class="file-upload">
+            <div id="upload-label-cover_letter" class="label">Cover Letter</div>
+            <div><button type="button">Attach</button><input id="cover_letter" name="cover_letter" type="file" class="visually-hidden" /></div>
+            <div><button type="button" id="cover_manual">Enter manually</button></div>
+            <div id="cover_text_wrap" style="display:none"><textarea id="cover_letter_text" name="cover_letter_text" rows="6"></textarea></div>
+          </div>
+          <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        <script>
+          const err = Number(new URLSearchParams(location.search).get('err') || 0);
+          const file = document.getElementById('resume');
+          const buttons = document.getElementById('resume_buttons');
+          const staged = document.getElementById('resume_staged');
+          const error = document.getElementById('resume_error');
+          file.addEventListener('change', () => {
+            if (file.files.length === 0) return;
+            buttons.style.display = 'none';
+            staged.style.display = 'block';
+            document.getElementById('resume_name').textContent = file.files[0].name;
+            setTimeout(() => {
+              if (file.files.length > 0) error.textContent = "Cannot read properties of undefined (reading 'uploadFile')";
+            }, err);
+          });
+          document.getElementById('resume_remove').addEventListener('click', () => {
+            file.value = '';
+            error.textContent = '';
+            staged.style.display = 'none';
+            buttons.style.display = 'block';
+          });
+          document.getElementById('resume_manual').addEventListener('click', () => {
+            setTimeout(() => { document.getElementById('resume_text_wrap').style.display = 'block'; }, 300);
+          });
+          // The cover letter's box takes its time, which is what puts the judgement of the
+          // form after the résumé uploader's late failure in the tests that need it.
+          document.getElementById('cover_manual').addEventListener('click', () => {
+            setTimeout(() => { document.getElementById('cover_text_wrap').style.display = 'block'; }, 1500);
           });
         </script>
         </body></html>
@@ -634,6 +706,31 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <h1>Senior Engineer</h1>
         <p>A posting page with no form on it, under a cookie banner.</p>
         <a href="/jobs/1">Apply now</a>
+        """;
+
+    // Zoho Recruit's career site as fyerx runs it: the posting loads clean, then a consent
+    // web component arrives with a full-viewport freeze layer (z 100) under its banner
+    // (z 110). Nothing on the page takes a click until Accept all or Decline is pressed —
+    // the first dismissal, run straight after navigation, finds nothing to dismiss.
+    private const string LateFreezeConsentHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <p>A posting page with no form on it; the cookie banner comes later.</p>
+        <button type="button" onclick="location.href='/jobs/1'">I'm interested</button>
+        <script>
+          setTimeout(() => {
+            const c = document.createElement('career-cookie-consent');
+            c.innerHTML = '<div class="cw-cookie-freeze-layer" style="position:fixed;inset:0;z-index:100"></div>'
+              + '<div class="cw-cookie-banner" style="position:fixed;left:0;right:0;bottom:0;z-index:110;background:#fff;padding:16px">'
+              + '<p>We use cookies to improve your experience. See our <a href="#">Cookie Policy</a>.</p>'
+              + '<a href="#">Manage cookies</a> '
+              + '<button type="button" class="lyte-button primary cookie-accept-btn">Accept all</button> '
+              + '<button type="button" class="lyte-button primary cookie-decline-btn">Decline non-essential</button></div>';
+            document.body.appendChild(c);
+            for (const b of c.querySelectorAll('button')) b.addEventListener('click', () => c.remove());
+          }, 1500);
+        </script>
+        </body></html>
         """;
 
     private const string StuckApplyHtml = """
@@ -1153,6 +1250,110 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Empty(_posts);
     }
 
+    /// <summary>What Greenhouse's Job Board API hands over for GitLab: a résumé it calls optional.</summary>
+    private static AgentPacket OptionalResumePacket() => new()
+    {
+        ApplicationName = "acme-senior-engineer.md",
+        Provider = "greenhouse",
+        Questions =
+        [
+            new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("resume", "Resume/CV", false, PacketQuestion.File, [], PacketQuestion.Standard),
+        ],
+        Answers = new() { ["first_name"] = "Ada" },
+    };
+
+    [SkippableFact]
+    public async Task A_resume_the_api_called_optional_whose_uploader_fails_late_goes_in_as_text_not_into_a_rejection()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // #195: the input held the file and the page was quiet for over a second before the
+        // uploader threw. The old 1.5 s look believed the attach; the form then said
+        // "Resume/CV is required".
+        const string text = "Ada Byte — Staff Engineer. Scaled billing to 10x.";
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/gh-resume?err=2500", OptionalResumePacket(), (Pdf, "resume.pdf"), dryRun: false, resumeText: text);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("resume", outcome.Mapped);
+        Assert.Empty(outcome.Unmapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal(text, post["resume_text"]);
+        Assert.DoesNotContain("resume.pdf", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task A_resume_the_api_called_optional_that_would_not_attach_refuses_the_click_when_there_is_no_text()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The API's "optional" is not the form's: with a PDF on hand a failed attach is
+        // unmapped, never a click into the form's own validation.
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/gh-resume?err=2500", OptionalResumePacket(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("resume", outcome.Unmapped);
+        Assert.Contains("could not be mapped", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task An_uploader_that_fails_after_the_attach_was_believed_is_caught_by_the_forms_own_required_and_retried_as_text()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The failure lands after the attach has been believed and while the cover letter is
+        // being entered. The pre-click sweep now reads the upload group's own required flag,
+        // sees the error where the file should be, and takes the Enter manually route
+        // before judging — instead of clicking Submit with no résumé on the form.
+        var packet = OptionalResumePacket();
+        packet.Questions.Add(new("cover_letter", "Cover Letter", false, PacketQuestion.File, [], PacketQuestion.Standard));
+        const string text = "Ada Byte — Staff Engineer.";
+        const string letter = "Dear Acme, I would like to scale your billing.";
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/gh-resume?err=3800", packet, (Pdf, "resume.pdf"), dryRun: false, resumeText: text, coverLetter: letter);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("resume", outcome.Mapped);
+        Assert.Contains("cover_letter", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal(text, post["resume_text"]);
+        Assert.Equal(letter, post["cover_letter_text"]);
+        Assert.DoesNotContain("resume.pdf", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task An_uploader_that_fails_after_the_attach_was_believed_refuses_the_click_when_there_is_no_text()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = OptionalResumePacket();
+        packet.Questions.Add(new("cover_letter", "Cover Letter", false, PacketQuestion.File, [], PacketQuestion.Standard));
+        var outcome = await Submitter().RunAsync(
+            $"{_fixtureUrl}/jobs/gh-resume?err=3800", packet, (Pdf, "resume.pdf"), dryRun: false, coverLetter: "Dear Acme.");
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("resume", outcome.Unmapped);
+        Assert.DoesNotContain("resume", outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_required_upload_group_the_packet_never_listed_is_unmapped_by_the_forms_own_required()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Like the Country picker: the rendered form wants a résumé the API never mentioned.
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "greenhouse",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/gh-resume", packet, null, dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(["resume"], outcome.Unmapped);
+        Assert.Empty(_posts);
+    }
+
     [SkippableFact]
     public async Task An_interactive_captcha_stops_the_run_before_the_click()
     {
@@ -1474,6 +1675,18 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Zoho Recruit and Workable put an "Accept all" over the posting; the Apply click
         // timed out behind it and the run said "no application form was found" (#202).
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_cookie_banner_that_arrives_after_load_with_a_freeze_layer_is_dismissed_before_apply_is_clicked()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // fyerx on Zoho Recruit: "the Apply button did not respond within 5 s" — every click
+        // on "I'm interested" landed on the transparent freeze layer the late consent
+        // component put over the page.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent-late", Packet(), (Pdf, "resume.pdf"), dryRun: false);
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }
