@@ -232,7 +232,9 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `FORWARDED_HEADERS_KNOWN_PROXY` / `FORWARDED_HEADERS_KNOWN_NETWORK` | _(empty)_ | Source IP or CIDR of a trusted reverse proxy when it is not on loopback. |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
-| `APPLYTRACK_SECRETS_KEY` | _(empty)_ | Master key (AES-256-GCM) that encrypts each tenant's **own** stored secrets at rest: their LLM API key and their Telegram bot token. Leave unset to disable both — the instance-default LLM endpoint is still used. |
+| `APPLYTRACK_SECRETS_KEY` | _(generated)_ | Master key (AES-256-GCM) for [encryption at rest](#encryption-at-rest): the résumé PDF, cover letters, packet answers and posting text, evidence screenshots, and each tenant's own LLM API key and Telegram bot token. Unset, the api generates one on first run into `APPLYTRACK_SECRETS_KEY_FILE` and reuses it; the hardened production stack requires it set. **Back it up with the database** — losing it loses what it encrypts. |
+| `APPLYTRACK_SECRETS_KEY_FILE` | `/var/lib/applytrack/secrets.key` in a container, else `~/.local/share/applytrack/secrets.key` | Where the generated key is kept when `APPLYTRACK_SECRETS_KEY` is unset. The compose files and quadlets mount a `secrets` volume there, shared by the api and agent containers. |
+| `APPLYTRACK_SECRETS_KEY_PREVIOUS` | _(empty)_ | The old key(s), `;`-separated, during a [key rotation](#encryption-at-rest): decrypt-only; the startup sweep re-keys every row to the current key. Remove once the sweep has run. |
 | `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
 | `Browser__Endpoint` / `Browser__Proxy` | _(empty)_ | The Playwright server the agent drives (`ws://browser:3000/`) and the forward proxy it must use (`http://proxy:3128`). Unset = no browser: packets are still prepared and you apply via copy-and-open. Set on the `agent` service; see [The agent](#the-agent), step 4. |
 | `AGENT_DB_PASSWORD` | _(required in production)_ | Creates the least-privilege `applytrack_agent` Postgres role on first init; the `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
@@ -594,11 +596,12 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
 - **Output sanitization.** User Markdown is rendered with `marked` and scrubbed
   through **DOMPurify** before it touches the DOM — defense in depth against stored
   XSS even though the poller already strips HTML at ingestion.
-- **Encrypted secrets at rest.** A tenant's own LLM API key is sealed with
-  **AES-256-GCM** under an operator master key (`APPLYTRACK_SECRETS_KEY`) before it
-  reaches the database, and is never returned by the API — only a `has_api_key`
-  flag. With no master key configured, the per-tenant-key path is disabled rather
-  than storing anything in the clear.
+- **Encryption at rest, on for every deploy.** The résumé PDF, cover letters, the
+  agent's packet answers and posting excerpts, evidence screenshots, and a tenant's
+  own LLM API key and Telegram bot token are sealed with **AES-256-GCM** before they
+  reach the database. With no `APPLYTRACK_SECRETS_KEY` set, the api generates a key on
+  first run and keeps it in a key file; it never runs plaintext. See
+  [Encryption at rest](#encryption-at-rest) for what is and is not covered.
 - **Rate limiting.** The magic-link and poll endpoints are per-IP fixed-window
   rate-limited so the always-200 auth surface can't be abused for spam or probing.
 - **Bounded API input.** Ordinary JSON mutations are capped at 1 MiB, application
@@ -631,6 +634,40 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   scheduled or push-to-`main` build fails — commenting on the open one rather than
   opening a fresh issue every Monday. Pull requests are excluded; their author
   already sees the failing check.
+
+### Encryption at rest
+
+Every self-hosted database holds the operator's and their tenants' most personal
+material. Since 1.26 the API seals it before it is written, so a database file, a
+dump, or a read-only connection yields ciphertext:
+
+| Sealed | Not sealed (and why) |
+| --- | --- |
+| `resume_profiles.source_pdf` — the uploaded résumé | `applications.company`, `role`, `status`, `score`, dates — they drive the list, sorting and stats |
+| `cover_letters.body` | `applications.notes` — written by the Python poller too, and shown in the list snippet; a cross-runtime change, deferred |
+| `agent_packets.answers` and `posting_excerpt` | `users.email` — the login identity has to be looked up; needs a lookup hash plus an encrypted copy, deferred with `contact_email` and `phone` |
+| `agent_evidence.screenshot` — the filled form | the résumé's *extracted* fields (`summary`, `experience`, …) — the same shape as the PDF and next in line; deferred |
+| `llm_settings.api_key_ciphertext`, `notification_settings.telegram_bot_token_ciphertext` | |
+
+**The key.** `APPLYTRACK_SECRETS_KEY` if set; otherwise the api generates a 48-byte
+random key on first run, writes it owner-only to `APPLYTRACK_SECRETS_KEY_FILE`
+(`/var/lib/applytrack/secrets.key` in a container — the compose files and quadlets
+mount a `secrets` volume there, shared with the agent container) and reuses it from
+then on. A deploy that can do neither refuses to start and says why. A generated key
+lives on the same host as the data: it stops an offline database copy, not someone
+with the whole box. The hardened production stack therefore requires the operator to
+set the key. **Back the key up with the database.** Losing it loses everything in
+the left column; the API cannot recover it for you.
+
+**Upgrading.** On the first boot after upgrading, the api sweeps every covered column
+and seals what the previous release stored in the clear. The sweep is idempotent and
+runs on every boot; it only rewrites rows that are not already under the current key.
+
+**Rotating.** Set the new key as `APPLYTRACK_SECRETS_KEY` and the old one as
+`APPLYTRACK_SECRETS_KEY_PREVIOUS`, restart the api, wait for the log line
+`encryption at rest: sealed N value(s)`, then remove the previous key. Rows under a
+key the instance no longer has are logged and left alone; their owner re-enters the
+value.
 
 ## Your data
 

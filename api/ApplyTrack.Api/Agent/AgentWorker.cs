@@ -172,9 +172,9 @@ public sealed class AgentWorker : BackgroundService
         await using var conn = await _db.OpenConnectionAsync(ct);
         var t = req.TenantId;
         var apps = new ApplicationRepo(conn, t);
-        var packets = new AgentPacketRepo(conn, t);
+        var packets = new AgentPacketRepo(conn, t, _protector);
         var events = new AgentEventRepo(conn, t);
-        var evidence = new AgentEvidenceRepo(conn, t);
+        var evidence = new AgentEvidenceRepo(conn, t, _protector);
         var rec = await apps.GetAsync(req.ApplicationName);
         var packet = await packets.GetAsync(req.ApplicationName);
         if (rec is null || packet is null)
@@ -198,7 +198,7 @@ public sealed class AgentWorker : BackgroundService
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
 
-        var resumes = new ResumeRepo(conn, t);
+        var resumes = new ResumeRepo(conn, t, _protector);
         var pdf = await resumes.GetPdfAsync();
         // The same résumé as text, for a board whose uploader will not take the file.
         var resumeText = (await resumes.GetAsync()).Summary;
@@ -381,14 +381,14 @@ public sealed class AgentWorker : BackgroundService
                 return 0;
             }
 
-            var resume = await new ResumeRepo(conn, tenantId).GetAsync();
+            var resume = await new ResumeRepo(conn, tenantId, _protector).GetAsync();
             var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
             var (_, _, _, lettersEnabled) = await llmSettings.GetViewAsync();
             var email = (await new UserRepo(conn).GetAsync(tenantId))?.Email ?? "";
             var inputs = new PacketInputs(
                 resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
-            var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId),
-                new AgentPacketRepo(conn, tenantId), events);
+            var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId, _protector),
+                new AgentPacketRepo(conn, tenantId, _protector), events);
             var notifications = new NotificationSettingsRepo(
                 conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
 

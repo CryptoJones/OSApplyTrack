@@ -10,6 +10,7 @@ ContainerName=applytrack-agent
 Image=ghcr.io/cryptojones/osapplytrack-api:latest
 Network=applytrack.network
 EnvironmentFile=%h/.config/applytrack/applytrack.env
+Volume=applytrack-secrets.volume:/var/lib/applytrack
 Environment=ASPNETCORE_URLS=http://+:8080
 # The switch that turns this container into the worker. Everything else (the DB
 # connection string, the LLM endpoint, the secrets key) comes from the shared env

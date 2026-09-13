@@ -42,7 +42,13 @@ public class NotificationsEndpointTests : IAsyncLifetime
         var f = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString);
-            if (secrets) b.UseSetting("Secrets:Key", "test-master-key");
+            if (secrets) b.UseSetting("Secrets:Key", TestAuth.MasterKey);
+            else
+            {
+                // No operator key at all: the app must generate and keep one itself.
+                b.UseSetting("Secrets:Key", "");
+                b.UseSetting("Secrets:KeyFile", Path.Combine(Path.GetTempPath(), "applytrack-notif-" + Guid.NewGuid().ToString("N"), "secrets.key"));
+            }
             if (notifier is not null)
                 b.ConfigureTestServices(s =>
                 {
@@ -63,24 +69,25 @@ public class NotificationsEndpointTests : IAsyncLifetime
         JsonDocument.Parse(await res.Content.ReadAsStringAsync()).RootElement;
 
     [Fact]
-    public async Task Default_view_is_off_and_reports_secrets_availability()
+    public async Task Default_view_is_off_and_secrets_are_available_even_with_no_operator_key()
     {
+        // Secure by default: with no APPLYTRACK_SECRETS_KEY the app generated a key file,
+        // so there is no "unavailable" state for a tenant to run into any more.
         var client = await ClientAsync(secrets: false);
         var v = await ReadJson(await client.GetAsync("/api/notifications"));
         Assert.False(v.GetProperty("telegram_enabled").GetBoolean());
         Assert.False(v.GetProperty("has_bot_token").GetBoolean());
         Assert.Equal("", v.GetProperty("telegram_chat_id").GetString());
-        Assert.False(v.GetProperty("secrets_available").GetBoolean());
+        Assert.True(v.GetProperty("secrets_available").GetBoolean());
     }
 
     [Fact]
-    public async Task A_token_is_refused_without_a_master_key()
+    public async Task A_token_is_stored_under_the_generated_key_when_no_master_key_is_configured()
     {
         var client = await ClientAsync(secrets: false);
         var res = await client.PutAsync("/api/notifications", Json($$"""{"telegram_bot_token":"{{Token}}"}"""));
-        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
-        Assert.Contains("APPLYTRACK_SECRETS_KEY", (await ReadJson(res)).GetProperty("detail").GetString());
-        Assert.False((await ReadJson(await client.GetAsync("/api/notifications"))).GetProperty("has_bot_token").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True((await ReadJson(await client.GetAsync("/api/notifications"))).GetProperty("has_bot_token").GetBoolean());
     }
 
     [Fact]

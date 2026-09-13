@@ -402,7 +402,7 @@ public class RepoTests(PostgresFixture pg)
     {
         await using var conn = await OpenAsync();
         var t = await NewTenantAsync(conn);
-        var repo = new ResumeRepo(conn, t);
+        var repo = new ResumeRepo(conn, t, TestAuth.Protector);
 
         Assert.True((await repo.GetAsync()).IsEmpty);
 
@@ -488,7 +488,7 @@ public class RepoTests(PostgresFixture pg)
         // The composite FK requires the application to exist first.
         var apps = new ApplicationRepo(conn, t);
         var name = await apps.CreateAsync(Fields("Acme Corp", "Engineer"));
-        var letters = new CoverLetterRepo(conn, t);
+        var letters = new CoverLetterRepo(conn, t, TestAuth.Protector);
 
         Assert.Null(await letters.GetBodyAsync(name));
 
@@ -502,5 +502,113 @@ public class RepoTests(PostgresFixture pg)
         Assert.True(await letters.DeleteAsync(name));
         Assert.Null(await letters.GetBodyAsync(name));
         Assert.False(await letters.DeleteAsync(name)); // nothing left to delete
+    }
+
+    // ---- Encryption at rest (#117) -------------------------------------------------
+
+    [Fact]
+    public async Task Resume_pdf_letter_packet_and_screenshot_are_sealed_at_rest_and_read_back()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var p = TestAuth.Protector;
+        var name = await new ApplicationRepo(conn, t).CreateAsync(Fields("Acme Corp", "Engineer"));
+
+        var pdf = System.Text.Encoding.ASCII.GetBytes("%PDF-1.4 the resume in full");
+        await new ResumeRepo(conn, t, p).UpsertAsync(new Resume { FullName = "Ada Byte" });
+        await new ResumeRepo(conn, t, p).StorePdfAsync(pdf, "ada.pdf");
+        var rawPdf = await conn.QuerySingleAsync<byte[]>("SELECT source_pdf FROM resume_profiles WHERE tenant_id = @t", new { t });
+        Assert.True(SecretProtector.IsProtected(rawPdf));
+        Assert.DoesNotContain("the resume", System.Text.Encoding.ASCII.GetString(rawPdf));
+        Assert.Equal(pdf, (await new ResumeRepo(conn, t, p).GetPdfAsync())!.Value.Bytes);
+
+        await new CoverLetterRepo(conn, t, p).UpsertAsync(name, "Dear team, the secret letter.", "m");
+        var rawBody = await conn.QuerySingleAsync<string>("SELECT body FROM cover_letters WHERE tenant_id = @t", new { t });
+        Assert.True(SecretProtector.IsProtected(rawBody));
+        Assert.Equal("Dear team, the secret letter.", await new CoverLetterRepo(conn, t, p).GetBodyAsync(name));
+
+        var packets = new AgentPacketRepo(conn, t, p);
+        await packets.UpsertAsync(new AgentPacket
+        {
+            ApplicationName = name, PostingExcerpt = "We pay in gold.",
+            Questions = [new("q1", "Why?", true, PacketQuestion.Text, [], PacketQuestion.Custom)],
+            Answers = new() { ["q1"] = "Because gold." },
+        });
+        var raw = await conn.QuerySingleAsync<(string Excerpt, string Answers)>(
+            "SELECT posting_excerpt, answers::text FROM agent_packets WHERE tenant_id = @t", new { t });
+        Assert.True(SecretProtector.IsProtected(raw.Excerpt));
+        Assert.DoesNotContain("gold", raw.Answers);
+        var back = await packets.GetAsync(name);
+        Assert.Equal("We pay in gold.", back!.PostingExcerpt);
+        Assert.Equal("Because gold.", back.Answers["q1"]);
+        var edited = await packets.UpdateAnswersAsync(name, new() { ["q1"] = "Silver." }, back.Version.ToString());
+        Assert.Equal("Silver.", edited.Answers["q1"]);
+        Assert.DoesNotContain("Silver", await conn.QuerySingleAsync<string>("SELECT answers::text FROM agent_packets WHERE tenant_id = @t", new { t }));
+
+        var evidence = new AgentEvidenceRepo(conn, t, p);
+        var shot = System.Text.Encoding.ASCII.GetBytes("PNG the filled form");
+        var id = await evidence.RecordAsync(name, AgentEvidenceRepo.Kinds.DryRun, "https://x", "", new { }, shot);
+        var rawShot = await conn.QuerySingleAsync<byte[]>("SELECT screenshot FROM agent_evidence WHERE id = @id", new { id });
+        Assert.True(SecretProtector.IsProtected(rawShot));
+        Assert.Equal(shot, await evidence.ScreenshotAsync(name, id));
+        Assert.True((await evidence.ListAsync(name)).Single().HasScreenshot);
+    }
+
+    [Fact]
+    public async Task The_startup_sweep_seals_plaintext_rows_and_rekeys_rows_under_a_previous_key()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var apps = new ApplicationRepo(conn, t);
+        var plain = await apps.CreateAsync(Fields("Plain Co", "Engineer"));
+        var rotated = await apps.CreateAsync(Fields("Rotated Co", "Engineer"));
+        var old = new SecretProtector("old-key");
+        var pdf = System.Text.Encoding.ASCII.GetBytes("%PDF-1.4 clear");
+        var shot = System.Text.Encoding.ASCII.GetBytes("PNG clear");
+
+        // 1. Rows as a release before 1.26 left them: in the clear (and, for the two columns
+        //    that were already encrypted, a bare legacy token with no fingerprint).
+        await conn.ExecuteAsync("INSERT INTO cover_letters (tenant_id, application_name, body, model) VALUES (@t, @n, 'clear letter', 'm')", new { t, n = plain });
+        await conn.ExecuteAsync("INSERT INTO agent_packets (tenant_id, application_name, posting_excerpt, answers) "
+            + "VALUES (@t, @n, 'clear excerpt', '{\"q1\":\"clear answer\"}'::jsonb)", new { t, n = plain });
+        await conn.ExecuteAsync("INSERT INTO resume_profiles (tenant_id, source_pdf, source_pdf_name) VALUES (@t, @pdf, 'r.pdf')", new { t, pdf });
+        await conn.ExecuteAsync("INSERT INTO agent_evidence (tenant_id, application_name, kind, url, confirmation, detail, screenshot) "
+            + "VALUES (@t, @n, 'dry_run', '', '', '{}'::jsonb, @shot)", new { t, n = plain, shot });
+        await conn.ExecuteAsync("INSERT INTO llm_settings (tenant_id, api_key_ciphertext) VALUES (@t, @c)",
+            new { t, c = SecretProtectorTests.LegacyToken("old-key", "sk-legacy") });
+        // 2. Rows under the key being rotated out.
+        await new CoverLetterRepo(conn, t, old).UpsertAsync(rotated, "rotated letter", "m");
+        await new AgentPacketRepo(conn, t, old).UpsertAsync(new AgentPacket { ApplicationName = rotated, PostingExcerpt = "rotated excerpt", Answers = new() { ["q1"] = "rotated answer" } });
+
+        var current = new SecretProtector("new-key", ["old-key"]);
+        var report = await AtRestEncryptor.SweepAsync(pg.ConnectionString, current, NullLogger.Instance, onlyTenant: t);
+        Assert.Equal(0, report.Unreadable);
+        Assert.Equal(9, report.Sealed); // 2 letters, 2 excerpts, 2 answers, 1 legacy API key, 1 PDF, 1 screenshot
+
+        // Everything is under the current key now...
+        Assert.All(await conn.QueryAsync<string>("SELECT body FROM cover_letters WHERE tenant_id = @t", new { t }), b => Assert.True(current.IsCurrent(b)));
+        Assert.All(await conn.QueryAsync<string>("SELECT posting_excerpt FROM agent_packets WHERE tenant_id = @t", new { t }), e => Assert.True(current.IsCurrent(e)));
+        Assert.All(await conn.QueryAsync<string>("SELECT answers #>> '{}' FROM agent_packets WHERE tenant_id = @t", new { t }), a => Assert.True(current.IsCurrent(a)));
+        Assert.True(current.IsCurrent(await conn.QuerySingleAsync<byte[]>("SELECT source_pdf FROM resume_profiles WHERE tenant_id = @t", new { t })));
+        Assert.True(current.IsCurrent(await conn.QuerySingleAsync<byte[]>("SELECT screenshot FROM agent_evidence WHERE tenant_id = @t", new { t })));
+        Assert.True(current.IsCurrent(await conn.QuerySingleAsync<string>("SELECT api_key_ciphertext FROM llm_settings WHERE tenant_id = @t", new { t })));
+
+        // ...and reads back through an instance that has ONLY the new key.
+        var only = new SecretProtector("new-key");
+        Assert.Equal("clear letter", await new CoverLetterRepo(conn, t, only).GetBodyAsync(plain));
+        Assert.Equal("rotated letter", await new CoverLetterRepo(conn, t, only).GetBodyAsync(rotated));
+        var p1 = await new AgentPacketRepo(conn, t, only).GetAsync(plain);
+        Assert.Equal("clear excerpt", p1!.PostingExcerpt);
+        Assert.Equal("clear answer", p1.Answers["q1"]);
+        Assert.Equal("rotated answer", (await new AgentPacketRepo(conn, t, only).GetAsync(rotated))!.Answers["q1"]);
+        Assert.Equal(pdf, (await new ResumeRepo(conn, t, only).GetPdfAsync())!.Value.Bytes);
+        Assert.Equal("sk-legacy", only.Unprotect(await conn.QuerySingleAsync<string>("SELECT api_key_ciphertext FROM llm_settings WHERE tenant_id = @t", new { t })));
+
+        // A second sweep has nothing to do; one without the old key leaves a foreign row alone.
+        Assert.Equal(new AtRestEncryptor.Report(0, 0), await AtRestEncryptor.SweepAsync(pg.ConnectionString, current, NullLogger.Instance, onlyTenant: t));
+        await new CoverLetterRepo(conn, t, old).UpsertAsync(rotated, "written under the old key again", "m");
+        var partial = await AtRestEncryptor.SweepAsync(pg.ConnectionString, only, NullLogger.Instance, onlyTenant: t);
+        Assert.Equal(new AtRestEncryptor.Report(0, 1), partial);
+        Assert.Equal("written under the old key again", await new CoverLetterRepo(conn, t, current).GetBodyAsync(rotated));
     }
 }

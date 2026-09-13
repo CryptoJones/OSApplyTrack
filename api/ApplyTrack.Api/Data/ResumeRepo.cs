@@ -3,6 +3,7 @@
 
 using System.Data;
 using System.Text.Json;
+using ApplyTrack.Api.Crypto;
 using Dapper;
 
 namespace ApplyTrack.Api.Data;
@@ -23,11 +24,13 @@ public sealed class ResumeRepo
 
     private readonly IDbConnection _conn;
     private readonly long _t;
+    private readonly SecretProtector _protector;
 
-    public ResumeRepo(IDbConnection conn, long tenantId)
+    public ResumeRepo(IDbConnection conn, long tenantId, SecretProtector protector)
     {
         _conn = conn;
         _t = tenantId;
+        _protector = protector;
     }
 
     public async Task<Resume> GetAsync()
@@ -57,7 +60,8 @@ public sealed class ResumeRepo
     }
 
     /// <summary>Keep the uploaded PDF bytes alongside the extracted text, so the browser
-    /// can attach the real file at submit time. Only these two columns are touched.</summary>
+    /// can attach the real file at submit time. Only these two columns are touched. The
+    /// bytes are sealed at rest: a database dump holds no résumé.</summary>
     public Task StorePdfAsync(byte[] bytes, string fileName) =>
         _conn.ExecuteAsync(
             """
@@ -66,14 +70,17 @@ public sealed class ResumeRepo
             ON CONFLICT (tenant_id) DO UPDATE SET
                 source_pdf = EXCLUDED.source_pdf, source_pdf_name = EXCLUDED.source_pdf_name, updated_at = now()
             """,
-            new { t = _t, bytes, name = fileName });
+            new { t = _t, bytes = _protector.ProtectBytes(bytes), name = fileName });
 
-    /// <summary>The stored PDF, or null when the résumé was never uploaded as a file.</summary>
+    /// <summary>The stored PDF, or null when the résumé was never uploaded as a file. A row an
+    /// older release stored in the clear is read as is (the startup sweep seals it).</summary>
     public async Task<(byte[] Bytes, string Name)?> GetPdfAsync()
     {
         var row = await _conn.QuerySingleOrDefaultAsync<(byte[]? Bytes, string Name)>(
             "SELECT source_pdf, source_pdf_name FROM resume_profiles WHERE tenant_id = @t", new { t = _t });
-        return row.Bytes is null ? null : (row.Bytes, row.Name.Length > 0 ? row.Name : "resume.pdf");
+        if (row.Bytes is null) return null;
+        var bytes = SecretProtector.IsProtected(row.Bytes) ? _protector.UnprotectBytes(row.Bytes) : row.Bytes;
+        return (bytes, row.Name.Length > 0 ? row.Name : "resume.pdf");
     }
 
     public async Task UpsertAsync(Resume r, IDbTransaction? tx = null)

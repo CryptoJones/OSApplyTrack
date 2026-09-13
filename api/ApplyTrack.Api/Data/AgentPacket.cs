@@ -110,11 +110,13 @@ public sealed class AgentPacketRepo
 
     private readonly IDbConnection _conn;
     private readonly long _t;
+    private readonly Crypto.SecretProtector _protector;
 
-    public AgentPacketRepo(IDbConnection conn, long tenantId)
+    public AgentPacketRepo(IDbConnection conn, long tenantId, Crypto.SecretProtector protector)
     {
         _conn = conn;
         _t = tenantId;
+        _protector = protector;
     }
 
     private sealed record Row(
@@ -145,7 +147,7 @@ public sealed class AgentPacketRepo
                 tenant_id, application_name, provider, posting_excerpt, verdict,
                 questions, answers, needs_review, model, updated_at)
             VALUES (@t, @n, @provider, @excerpt, @verdict::jsonb,
-                @questions::jsonb, @answers::jsonb, @review::jsonb, @model, now())
+                @questions::jsonb, to_jsonb(@answers::text), @review::jsonb, @model, now())
             ON CONFLICT (tenant_id, application_name) DO UPDATE SET
                 provider        = EXCLUDED.provider,
                 posting_excerpt = EXCLUDED.posting_excerpt,
@@ -161,9 +163,12 @@ public sealed class AgentPacketRepo
             new
             {
                 t = _t, n = Slug.Normalize(p.ApplicationName), provider = p.Provider,
-                excerpt = p.PostingExcerpt, verdict = p.Verdict.ValueKind == JsonValueKind.Undefined ? "{}" : p.Verdict.GetRawText(),
+                // The answers and the posting text are the candidate's own words and the
+                // employer's: sealed at rest, like the letter and the résumé.
+                excerpt = _protector.Protect(p.PostingExcerpt),
+                verdict = p.Verdict.ValueKind == JsonValueKind.Undefined ? "{}" : p.Verdict.GetRawText(),
                 questions = JsonSerializer.Serialize(p.Questions, Json),
-                answers = JsonSerializer.Serialize(p.Answers, Json),
+                answers = _protector.Protect(JsonSerializer.Serialize(p.Answers, Json)),
                 review = JsonSerializer.Serialize(p.NeedsReview, Json),
                 model = p.Model,
             },
@@ -203,7 +208,7 @@ public sealed class AgentPacketRepo
         var affected = await _conn.ExecuteAsync(
             """
             UPDATE agent_packets
-            SET answers = @answers::jsonb, needs_review = @review::jsonb,
+            SET answers = to_jsonb(@answers::text), needs_review = @review::jsonb,
                 version = version + 1, updated_at = now()
             WHERE tenant_id = @t AND application_name = @n
               AND (@ev::bigint IS NULL OR version = @ev)
@@ -211,7 +216,7 @@ public sealed class AgentPacketRepo
             new
             {
                 t = _t, n, ev,
-                answers = JsonSerializer.Serialize(current.Answers, Json),
+                answers = _protector.Protect(JsonSerializer.Serialize(current.Answers, Json)),
                 review = JsonSerializer.Serialize(current.NeedsReview, Json),
             });
         if (affected == 0)
@@ -237,14 +242,15 @@ public sealed class AgentPacketRepo
         return affected > 0;
     }
 
-    private static AgentPacket ToPacket(Row r) => new()
+    // A row an older release stored in the clear reads as is; the startup sweep seals it.
+    private AgentPacket ToPacket(Row r) => new()
     {
         ApplicationName = r.ApplicationName,
         Provider = r.Provider,
-        PostingExcerpt = r.PostingExcerpt,
+        PostingExcerpt = Crypto.SecretProtector.IsProtected(r.PostingExcerpt) ? _protector.Unprotect(r.PostingExcerpt) : r.PostingExcerpt,
         Verdict = JsonDocument.Parse(r.Verdict.Length > 0 ? r.Verdict : "{}").RootElement.Clone(),
         Questions = JsonSerializer.Deserialize<List<PacketQuestion>>(r.Questions, Json) ?? [],
-        Answers = JsonSerializer.Deserialize<Dictionary<string, string>>(r.Answers, Json) ?? [],
+        Answers = JsonSerializer.Deserialize<Dictionary<string, string>>(Crypto.ProtectedJson.Read(r.Answers, _protector), Json) ?? [],
         NeedsReview = JsonSerializer.Deserialize<List<ReviewItem>>(r.NeedsReview, Json) ?? [],
         Model = r.Model,
         Version = r.Version,

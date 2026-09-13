@@ -20,9 +20,12 @@ POSTGRES_DB=applytrack
 POSTGRES_PASSWORD=<generate one>
 ConnectionStrings__Postgres=Host=applytrack-db;Port=5432;Database=applytrack;Username=applytrack;Password=<same>
 DATABASE_URL=postgresql://applytrack:<same>@applytrack-db:5432/applytrack
-# Optional cover-letter engine + per-tenant key encryption — see README.
+# Optional cover-letter engine — see README.
 #Llm__BaseUrl=
 #Llm__Model=
+# Encryption-at-rest key. Leave unset and the api generates one on first run into the
+# applytrack-secrets volume (back that volume up with the database); set it to manage
+# the key yourself. APPLYTRACK_SECRETS_KEY_PREVIOUS=<old> rotates it — see README.
 #APPLYTRACK_SECRETS_KEY=
 # Optional email (magic-link login). Leave Email__Host unset to log links to the
 # console instead of sending. To relay through any SMTP provider (e.g. Resend):
