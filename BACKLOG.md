@@ -60,33 +60,33 @@ review items and unsupported forms still need human attention.
 - [x] [#124 — Reduce posting→applied latency so the agent reaches postings before they close](https://github.com/CryptoJones/OSApplyTrack/issues/124)
 - [x] [#129 — Agent abandons a run when the form has a radio group or checkbox](https://github.com/CryptoJones/OSApplyTrack/issues/129) (fix in [#128](https://github.com/CryptoJones/OSApplyTrack/pull/128))
 - [ ] [#159 — Submit and packet/prepare never queue a browser run from the api container — only the agent has Browser__Endpoint](https://github.com/CryptoJones/OSApplyTrack/issues/159)
+- [ ] [#168 — Take the Greenhouse security code back from a Telegram reply to the moo](https://github.com/CryptoJones/OSApplyTrack/issues/168)
 
-## Production audit — 2026-09-12
+## Production audit — 2026-09-12, closed out 2026-09-13
 
-Pluto's API and agent ran release **v1.25.5**, revision `4a7f926`, at audit time.
-Tenant 1 has the agent **enabled** and **dry_run=false**. Production evidence then
-held **102 dry runs, 26 failures, and zero confirmed submissions**.
+Pluto ran **v1.25.5** at audit time with **102 dry runs, 26 failures, and zero
+confirmed submissions**. Between 1.26.0 and **1.27.0** (all deployed the same night)
+the chain was fixed end to end, each step found by reading the next production run:
 
-The cause, reproduced live against a Greenhouse form with every non-GET request
-aborted: client-side validation blocked Submit and no application POST was ever
-made. Three gaps, all closed in **1.26.0** (#151):
+1. **Required fields the packet never knew** (Greenhouse's Country picker, its
+   react-select city and custom selects) and no check of the rendered form — 1.26.0.
+2. Country on every Greenhouse packet, a geocodable city answer, a required cover
+   letter entered as text, "Page not found" retired as closed — 1.26.1.
+3. The click read the page in the quiet moment before reCAPTCHA and the POST even
+   started; it now waits for the form's verdict and records the application request.
+   Country pick-list spellings and combined eligibility questions drafted as the
+   form accepts them — 1.26.2.
+4. **The click itself**: the finder took the posting's "Apply" anchor, first in
+   document order, never the form's Submit — 1.26.3.
+5. **Greenhouse's captcha fallback**: a bot-scored submission is answered 428 and an
+   emailed security code. The run parks in the same session, moos, and finishes once
+   the human pastes the code (`POST /api/apps/{name}/security-code`) — 1.27.0.
+6. Auto-apply gated per account by the operator's `agent_allowlist` — 1.27.0.
 
-1. Greenhouse's rendered form requires a **Country** picker its Job Board API never
-   lists. The packet now carries a `country` question (answered from the new
-   Settings · Agent **Country** field, else inferred from the résumé's location).
-2. Country, city and the custom questions are **react-select** comboboxes. Typing
-   and pressing Enter committed nothing. The submitter now opens the widget, picks
-   the matching option, and **verifies the committed value** before counting a field
-   mapped.
-3. The run trusted the packet's idea of the form. It now reads the **rendered form's
-   own required-and-empty state** before any click (a dry run that leaves one is not
-   clean and is not promoted), refuses a form where **nothing** mapped, and after a
-   refused click reports the form's **own validation messages** instead of "no
-   confirmation text was recognised".
-
-Verified against the live Aperia posting from the issue with the application POST
-aborted at the browser: all twelve fields mapped, zero unmapped, Submit clicked,
-no validation wall. Creatio separately reports an interactive captcha and remains a
-manual handoff.
+**First real submission: Aperia, 2026-09-13 04:37 CDT**, confirmed by Greenhouse and by
+the employer's email. Greenhouse applications go one at a time: each parks for its
+code for up to eight minutes. Open follow-ups: [#159](https://github.com/CryptoJones/OSApplyTrack/issues/159)
+(the api container cannot queue a browser run, so the SPA's Submit and Prepare do
+nothing on a stock deploy); Eleventh Hour needs a human answer to a required question.
 
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
