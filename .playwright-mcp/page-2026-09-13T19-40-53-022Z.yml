@@ -1,0 +1,57 @@
+- generic [active] [ref=e1]:
+  - link "Skip to application details" [ref=e2] [cursor=pointer]:
+    - /url: "#content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - link "ApplyTrack home" [ref=e5] [cursor=pointer]:
+        - /url: "#application-list"
+        - generic [aria-hidden] [ref=e10]:
+          - generic [ref=e11]:
+            - text: Apply
+            - strong [ref=e12]: Track
+          - generic [ref=e13]: Opportunity command center
+      - navigation "Application actions" [ref=e14]:
+        - button "Poll for leads" [ref=e15] [cursor=pointer]
+        - button "New application" [ref=e19] [cursor=pointer]
+        - button "Open settings" [ref=e22] [cursor=pointer]
+    - region "Application status filters" [ref=e26]
+    - generic [ref=e27]:
+      - complementary [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - heading "Applications" [level=1] [ref=e31]
+            - generic [ref=e32]: 0 applications
+          - generic [ref=e33]:
+            - generic [ref=e34]: Search applications
+            - searchbox "Search applications" [ref=e36]
+          - group "Filter applications" [ref=e37]:
+            - generic [ref=e38]:
+              - generic [ref=e39]: Lane
+              - combobox "Lane" [ref=e40]:
+                - option "All lanes" [selected]
+                - option ".NET / backend"
+                - option "Developer relations"
+                - option "AI / agentic"
+            - generic [ref=e41]:
+              - generic [ref=e42]: Status
+              - combobox "Status" [ref=e43]:
+                - option "All statuses" [selected]
+                - option "Lead"
+                - option "Ready"
+                - option "Applied"
+                - option "Screen"
+                - option "Onsite"
+                - option "Offer"
+                - option "Rejected"
+                - option "Passed"
+            - generic [ref=e44]:
+              - generic [ref=e45]: Sort by
+              - combobox "Sort by" [ref=e46]:
+                - option "Pipeline order" [selected]
+                - option "Fit score (high to low)"
+                - option "Date posted (newest first)"
+                - option "Company name (A to Z)"
+        - list "Matching applications" [ref=e47]
+      - main [ref=e48]
+  - status [ref=e49]
+  - alert [ref=e50]
