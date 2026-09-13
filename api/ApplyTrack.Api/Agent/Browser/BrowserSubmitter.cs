@@ -134,8 +134,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 {
                     if (IsResume(q) && resumePdf is { } pdf)
                     {
+                        // With a PDF on hand the résumé is required for the click whatever the
+                        // API said: Greenhouse's Job Board API lists GitLab's résumé as optional
+                        // while the rendered form marks it required, so an attach that failed
+                        // on an "optional" résumé landed in neither list and the run clicked
+                        // Submit into "Resume/CV is required" (#195). A failed attach refuses.
                         if (await AttachResumeAsync(form, q, pdf, resumeText)) mapped.Add(q.Id);
-                        else if (q.Required) unmapped.Add(q.Id);
+                        else unmapped.Add(q.Id);
                     }
                     else if (IsCoverLetter(q) && coverLetter.Length > 0)
                     {
@@ -176,9 +181,26 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // those produced "9 mapped, 0 unmapped", a clean dry run, an automatic promotion,
             // and a Submit click into a wall of client-side validation with no POST ever sent.
             // Anything the page still marks required-and-empty is unmapped, whatever we thought.
+            // That now includes the résumé: Greenhouse marks the whole upload group required
+            // (never the file input), and its uploader can fail well after the attach looked
+            // good — so the group is read here, and a résumé the form still wants gets one
+            // more go through the board's own Enter manually box before it is judged (#195).
+            var resumeRetried = false;
             foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
-                var id = FindQuestion(packet, key, label)?.Id ?? key;
+                var q = FindQuestion(packet, key, label);
+                var id = q?.Id ?? key;
+                var isResume = q is not null ? IsResume(q) : ResumeWords().IsMatch(key) || ResumeWords().IsMatch(label);
+                if (isResume && resumePdf is not null && !resumeRetried)
+                {
+                    resumeRetried = true;
+                    await ClearStagedResumeAsync(form);
+                    if (await EnterResumeManuallyAsync(form, resumeText))
+                    {
+                        if (!mapped.Contains(id)) mapped.Add(id);
+                        continue;
+                    }
+                }
                 mapped.Remove(id);
                 if (!unmapped.Contains(id)) unmapped.Add(id);
             }
@@ -634,10 +656,46 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             return (cb.value || '').trim().length > 0;
           };
+          // A file field is filled when its input holds a file and the uploader has not
+          // complained, when the field's own Enter manually box has text in it, or when the
+          // widget is showing a file name. Judged over the whole field, not the input: an
+          // uploader's error and its text twin both live beside the input, not on it.
+          const uploadError = /cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i;
+          const fileFilled = root => {
+            const text = root.innerText || '';
+            if (uploadError.test(text)) return false;
+            if ([...root.querySelectorAll('input[type=file]')].some(i => i.files && i.files.length > 0)) return true;
+            if ([...root.querySelectorAll('textarea')].some(t => (t.value || '').trim().length > 0)) return true;
+            return /\.(pdf|docx?|txt|rtf)\b/i.test(text);
+          };
+          const fileField = input => {
+            let root = input;
+            for (let i = 0; i < 6 && root.parentElement; i++) {
+              root = root.parentElement;
+              if (root.getAttribute('role') === 'group' || root.querySelector('textarea')) return root;
+            }
+            return input.parentElement || input;
+          };
+          const addFile = (root, input, label) => {
+            if (!visible(root) || fileFilled(root)) return;
+            add(input.id || input.getAttribute('name'), label);
+          };
+          // Greenhouse's shape: the required flag sits on the upload group, never on the
+          // file input inside it — which is why the résumé's own "required" never reached
+          // this check and the click went ahead into "Resume/CV is required" (#195).
+          for (const g of document.querySelectorAll('[role=group][aria-required=true]')) {
+            const input = g.querySelector('input[type=file]');
+            if (input && !input.disabled) addFile(g, input, labelFor(g));
+          }
           for (const el of document.querySelectorAll('input, select, textarea')) {
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
-            if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled) continue;
+            if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
             if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
+            if (type === 'file') {
+              // Not gated on the input being visible: uploaders keep theirs off screen behind
+              // a styled Attach button.
+              addFile(fileField(el), el, labelFor(el)); continue;
+            }
             const combo = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete') === 'list';
             if (combo) {
               if (!visible(el) || comboFilled(el)) continue;
@@ -999,15 +1057,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 trigger = page.GetByRole(AriaRole.Link, new() { NameRegex = manually }).First;
                 if (await trigger.CountAsync() == 0 || !await trigger.IsVisibleAsync()) return false;
             }
-            await trigger.ClickAsync();
-
             // Wait for the box rather than looking for it straight away: the widget renders it
             // after the click, and checking immediately finds nothing and gives up on a board
             // that was about to work. (On GitLab's form it is textarea#resume_text, which
             // carries no name attribute — so match on id as well.)
             var box = page.Locator("textarea[name*='resume' i], textarea[id*='resume' i]").First;
-            try { await box.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 8_000 }); }
-            catch (TimeoutException)
+            if (!await RevealBoxAsync(trigger, box))
             {
                 box = page.Locator("textarea:visible").First;
                 if (await box.CountAsync() == 0) return false;
@@ -1034,15 +1089,36 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 + "[starts-with(normalize-space(translate(text(), 'COVER LETTER', 'cover letter')), 'cover letter')])[1]"
                 + "/following::*[(self::button or self::a) and contains(translate(normalize-space(.), 'ENTER MANUALY', 'enter manualy'), 'enter manually')][1]").First;
             if (await trigger.CountAsync() == 0 || !await trigger.IsVisibleAsync()) return false;
-            await trigger.ClickAsync();
             var box = page.Locator("textarea[name*='cover' i], textarea[id*='cover' i]").First;
-            try { await box.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 8_000 }); }
-            catch (TimeoutException) { return false; }
+            if (!await RevealBoxAsync(trigger, box)) return false;
             await box.FillAsync(letter, new() { Timeout = 10_000 });
             return (await box.InputValueAsync()).Length > 0;
         }
         catch (PlaywrightException) { return false; }
         catch (TimeoutException) { return false; }
+    }
+
+    /// <summary>
+    /// Click an "Enter manually" trigger and wait for its box; click once more if the box did
+    /// not come. On GitLab's form the cover letter's click landed while the résumé uploader
+    /// beside it was mid-failure and re-rendering, and the box never opened (#195 — the
+    /// evidence screenshot shows Attach and Enter manually still standing, no textarea). A
+    /// second click after the widget has settled is cheap, and it is what a person would do.
+    /// </summary>
+    private static async Task<bool> RevealBoxAsync(ILocator trigger, ILocator box)
+    {
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                await trigger.ClickAsync(new() { Timeout = 5_000 });
+                await box.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 4_000 });
+                return true;
+            }
+            catch (TimeoutException) { /* the box did not come — once more */ }
+            catch (PlaywrightException) { /* the trigger went away under the click */ }
+        }
+        return false;
     }
 
     /// <summary>
@@ -1056,9 +1132,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // uploader is still working, so a single early look says "attached" and a later one says
         // "error" — which is exactly how a dry run came back clean and the real run that followed
         // it refused. Wait for whichever lands first, and treat neither as failure.
+        // And once it says "attached", keep watching: on GitLab's form the input held the file
+        // and the page was quiet for well over a second before the uploader threw, so a look
+        // that stopped at 1.5 s counted a résumé that never went up (#195). "Attached" now
+        // has to hold for a further 2.5 s with no error before it is believed.
         try
         {
-            for (var i = 0; i < 10; i++)
+            var attachedAt = -1;
+            for (var i = 0; i < 16; i++)
             {
                 await page.WaitForTimeoutAsync(500);
                 var verdict = await page.EvaluateAsync<string>("""
@@ -1072,8 +1153,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     }
                     """, fileName);
                 if (verdict == "error") return false;
+                if (verdict != "attached") continue;
+                if (attachedAt < 0) attachedAt = i;
                 // Only trust "attached" once the uploader has had a chance to disagree.
-                if (verdict == "attached" && i >= 2) return true;
+                if (i >= Math.Max(attachedAt, 2) + 5) return true;
             }
             return false;
         }

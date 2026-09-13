@@ -362,21 +362,32 @@ public sealed partial class BrowserSession : IAsyncDisposable
         var popup = new TaskCompletionSource<IPage>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnPage(object? _, IPage p) => popup.TrySetResult(p);
         _context.Page += OnPage;
-        try
+        // The banner may only now be up: Zoho Recruit renders its consent component after
+        // the page has booted, and with it a transparent freeze layer over the whole
+        // viewport — so the first dismissal, run straight after navigation, found nothing,
+        // and every click on "I'm interested" then timed out under the layer (fyerx). Clear
+        // it before the click, and once more if the click still would not land.
+        await DismissConsentAsync(Page);
+        for (var attempt = 0; ; attempt++)
         {
-            await apply.ClickAsync(new() { Timeout = 5_000 });
-        }
-        catch (TimeoutException)
-        {
-            _context.Page -= OnPage;
-            RevealNote = "the Apply button did not respond within 5 s";
-            return;
-        }
-        catch (PlaywrightException ex)
-        {
-            _context.Page -= OnPage;
-            RevealNote = "clicking Apply failed: " + ex.Message.Split('\n')[0];
-            return;
+            try
+            {
+                await apply.ClickAsync(new() { Timeout = 5_000 });
+                break;
+            }
+            catch (TimeoutException)
+            {
+                if (attempt == 0 && await DismissConsentAsync(Page)) continue;
+                _context.Page -= OnPage;
+                RevealNote = "the Apply button did not respond within 5 s";
+                return;
+            }
+            catch (PlaywrightException ex)
+            {
+                _context.Page -= OnPage;
+                RevealNote = "clicking Apply failed: " + ex.Message.Split('\n')[0];
+                return;
+            }
         }
         var opened = await Task.WhenAny(popup.Task, Task.Delay(1_500));
         _context.Page -= OnPage;
