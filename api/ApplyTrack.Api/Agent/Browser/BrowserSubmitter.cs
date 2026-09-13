@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Text.RegularExpressions;
+using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Data;
 using Microsoft.Playwright;
 
@@ -37,7 +38,9 @@ public sealed partial class BrowserSubmitter
     // any of these means there is no form to fill — the lead expired between discovery and now,
     // which is an expected outcome, not a failure to fix. Kept specific so an open posting's
     // prose ("no longer supported", etc.) never trips it.
-    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed)", RegexOptions.IgnoreCase)]
+    // "Page not found" is what Greenhouse serves for a posting that has been taken down
+    // outright (Cresteo and Varicent on 2026-09-13): no gone-notice, no form, a 404 page.
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
 
     /// <summary>
@@ -59,9 +62,12 @@ public sealed partial class BrowserSubmitter
 
     /// <param name="resumeText">The résumé as text, for boards whose uploader will not take the
     /// file — their own "Enter manually" box accepts it. Empty disables that fallback.</param>
+    /// <param name="coverLetter">The drafted letter, for a form whose cover letter is a file
+    /// field: it goes in through that field's own "Enter manually" box. Empty means a required
+    /// cover-letter file stays unmapped.</param>
     public async Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
-        CancellationToken ct = default, string resumeText = "")
+        CancellationToken ct = default, string resumeText = "", string coverLetter = "")
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -103,6 +109,14 @@ public sealed partial class BrowserSubmitter
                     if (q.Id.Contains("resume", StringComparison.OrdinalIgnoreCase) && resumePdf is { } pdf)
                     {
                         if (await AttachResumeAsync(page, q, pdf, resumeText)) mapped.Add(q.Id);
+                        else if (q.Required) unmapped.Add(q.Id);
+                    }
+                    else if (q.Id.Contains("cover", StringComparison.OrdinalIgnoreCase) && coverLetter.Length > 0)
+                    {
+                        // Greenhouse's cover letter is a file field with a text twin behind its
+                        // own "Enter manually"; a form that requires one was refused for want of
+                        // a file we never had. The drafted letter is the text.
+                        if (await EnterCoverLetterAsync(page, coverLetter)) mapped.Add(q.Id);
                         else if (q.Required) unmapped.Add(q.Id);
                     }
                     else if (q.Required)
@@ -207,9 +221,12 @@ public sealed partial class BrowserSubmitter
         }
     }
 
-    /// <summary>The packet question a rendered field belongs to — by field id/name, else by label.</summary>
+    /// <summary>The packet question a rendered field belongs to — by field id/name (exactly, or
+    /// with the form's own prefix: <c>candidate-location</c> is the API's <c>location</c>, the
+    /// same rule <see cref="LocateAsync"/> finds it by), else by label.</summary>
     private static PacketQuestion? FindQuestion(AgentPacket packet, string key, string label) =>
         packet.Questions.FirstOrDefault(x => Unprefixed(x.Id).Equals(key, StringComparison.OrdinalIgnoreCase))
+        ?? packet.Questions.FirstOrDefault(x => key.EndsWith("-" + Unprefixed(x.Id), StringComparison.OrdinalIgnoreCase))
         ?? (label.Length == 0 ? null
             : packet.Questions.FirstOrDefault(x => x.Label.Trim().TrimEnd('*').Trim().Equals(label, StringComparison.OrdinalIgnoreCase)));
 
@@ -256,26 +273,45 @@ public sealed partial class BrowserSubmitter
         if (fixedSet && !q.Options.Any(o => Same(o, answer)))
             return false;
         var combobox = await IsComboboxAsync(control);
-        await control.ClickAsync();
-        try { await control.FillAsync(answer); }
-        catch (PlaywrightException) { await page.Keyboard.TypeAsync(answer); } // a div-based widget: type at it
         ILocator? pick = null;
-        if (combobox)
+        var typed = answer;
+        // An open autocomplete (a geocoded city picker) may find nothing for the full text
+        // and everything for a shorter one: "Minden, Nebraska (Remote)" → "Minden, Nebraska"
+        // → "Minden". Fixed option sets get one try with the answer as given.
+        foreach (var query in fixedSet ? [answer] : AutocompleteQueries(answer))
         {
+            typed = query;
+            await control.ClickAsync();
+            try { await control.FillAsync(query); }
+            catch (PlaywrightException) { await page.Keyboard.TypeAsync(query); } // a div-based widget: type at it
+            if (!combobox) break;
             for (var i = 0; i < 12 && pick is null; i++)
             {
                 await page.WaitForTimeoutAsync(250);
                 pick = await BestOptionAsync(page, control, answer, fixedSet);
             }
-            // No menu ever showed: commit whatever is under the caret. Only on a combobox —
-            // Enter in a plain text input submits the form it sits in.
-            if (pick is null)
-                await page.Keyboard.PressAsync("Enter");
+            if (pick is not null) break;
         }
+        // No menu ever showed: commit whatever is under the caret. Only on a combobox —
+        // Enter in a plain text input submits the form it sits in.
+        if (pick is null && combobox)
+            await page.Keyboard.PressAsync("Enter");
         if (pick is not null)
             await pick.ClickAsync();
         await page.WaitForTimeoutAsync(300);
-        return await CommittedAsync(control, answer);
+        return await CommittedAsync(control, typed);
+    }
+
+    /// <summary>The answer, then the answer without its aside, then each comma-separated head of it.</summary>
+    private static List<string> AutocompleteQueries(string answer)
+    {
+        var list = new List<string> { answer.Trim() };
+        var clean = AnswerDrafter.StripLocationSuffix(answer);
+        if (clean.Length > 0) list.Add(clean);
+        var parts = clean.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        for (var n = parts.Length - 1; n >= 1; n--)
+            list.Add(string.Join(", ", parts[..n]));
+        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>The option to click for an answer, or null while the menu has nothing usable:
@@ -701,6 +737,31 @@ public sealed partial class BrowserSubmitter
             }
 
             await box.FillAsync(resumeText, new() { Timeout = 10_000 });
+            return (await box.InputValueAsync()).Length > 0;
+        }
+        catch (PlaywrightException) { return false; }
+        catch (TimeoutException) { return false; }
+    }
+
+    /// <summary>
+    /// The cover letter section's own "Enter manually" box — scoped to that section, never the
+    /// résumé's (the first such button on the page is the résumé's, and taking it is how a
+    /// letter would land in the wrong box). Found from the section's label forward.
+    /// </summary>
+    private static async Task<bool> EnterCoverLetterAsync(IPage page, string letter)
+    {
+        try
+        {
+            var trigger = page.Locator(
+                "xpath=(//*[self::label or self::span or self::div or self::legend or self::h3 or self::h4]"
+                + "[starts-with(normalize-space(translate(text(), 'COVER LETTER', 'cover letter')), 'cover letter')])[1]"
+                + "/following::*[(self::button or self::a) and contains(translate(normalize-space(.), 'ENTER MANUALY', 'enter manualy'), 'enter manually')][1]").First;
+            if (await trigger.CountAsync() == 0 || !await trigger.IsVisibleAsync()) return false;
+            await trigger.ClickAsync();
+            var box = page.Locator("textarea[name*='cover' i], textarea[id*='cover' i]").First;
+            try { await box.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 8_000 }); }
+            catch (TimeoutException) { return false; }
+            await box.FillAsync(letter, new() { Timeout = 10_000 });
             return (await box.InputValueAsync()).Length > 0;
         }
         catch (PlaywrightException) { return false; }

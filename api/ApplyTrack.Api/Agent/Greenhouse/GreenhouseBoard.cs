@@ -89,17 +89,23 @@ public sealed partial class GreenhouseBoard
                 if (block.TryGetProperty("questions", out var cq) && cq.ValueKind == JsonValueKind.Array)
                     foreach (var q in cq.EnumerateArray())
                         AddQuestion(questions, q, eeo: true);
-        // The rendered form asks for more than the API admits: a job with location questions
-        // renders a required Country picker that appears nowhere in the document. Carry it in
-        // the packet so there is an answer to give it at submit time — optional here, because
-        // whether THIS form renders one is only known in the browser, and the submitter's
-        // check of the rendered form is what refuses the click if it does and stays empty.
-        var at = questions.FindIndex(q => q.Id == "location");
-        if (at >= 0 && !questions.Any(q => q.Id == "country"))
+        // The rendered form asks for more than the API admits: it renders a required Country
+        // picker that appears nowhere in the document — with or without location questions
+        // (GitLab's board has the picker and no location question at all). Carry it in every
+        // Greenhouse packet so there is an answer to give it at submit time — optional here,
+        // because whether THIS form renders one is only known in the browser, and the
+        // submitter's check of the rendered form is what refuses the click if it does and
+        // stays empty. Placed before the location question when there is one, else after the
+        // standard fields.
+        if (!questions.Any(q => q.Id == "country"))
+        {
+            var at = questions.FindIndex(q => q.Id == "location");
+            if (at < 0) at = questions.FindLastIndex(q => q.Kind == PacketQuestion.Standard) + 1;
             questions.Insert(at, new PacketQuestion("country", "Country", false, PacketQuestion.Select, [], PacketQuestion.Standard)
             {
                 Help = "Country of residence; the form's own list is matched at submit time",
             });
+        }
         return new GreenhouseJob(Str(root, "title"), Str(root, "content"), questions);
     }
 

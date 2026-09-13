@@ -202,10 +202,12 @@ public sealed class AgentWorker : BackgroundService
         var pdf = await resumes.GetPdfAsync();
         // The same résumé as text, for a board whose uploader will not take the file.
         var resumeText = (await resumes.GetAsync()).Summary;
+        // The drafted letter, for a form whose cover letter is a required file field.
+        var coverLetter = await new CoverLetterRepo(conn, t, _protector).GetBodyAsync(rec.Name) ?? "";
         SubmitOutcome outcome;
         try
         {
-            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText);
+            outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText, coverLetter);
         }
         // Catch EVERYTHING except cancellation. This filter used to name three types --
         // AppValidationException, PlaywrightException, TimeoutException -- which quietly
