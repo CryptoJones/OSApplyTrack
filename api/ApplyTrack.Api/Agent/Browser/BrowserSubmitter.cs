@@ -88,7 +88,7 @@ public sealed partial class BrowserSubmitter
             // comes back "unmapped" and the run looks like a mapping failure when nothing is wrong.
             // Recognise it, screenshot it, and hand the caller a Closed outcome so the lead is
             // retired rather than logged as a broken submission.
-            var body = await BodyTextAsync(page);
+            var body = await BodyTextAsync(page.MainFrame);
             if (IsClosedPosting(body))
             {
                 screenshot = await session.ScreenshotAsync();
@@ -102,6 +102,11 @@ public sealed partial class BrowserSubmitter
             // been typed. Bounded: a page that never goes idle is filled anyway.
             try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
             catch (TimeoutException) { /* analytics beacons and the like; carry on */ }
+            // Then find the form — which is not always in the page. Comeet's "Apply for this job"
+            // loads it into a cross-origin iframe; Ashby fetches it after the page has gone idle
+            // ("Fetching application form" was the whole of one dry run's screenshot). Every
+            // locator and page script below runs against this frame, not the top document.
+            var form = await FormFrameAsync(page);
 
             foreach (var q in packet.Questions)
             {
@@ -112,7 +117,7 @@ public sealed partial class BrowserSubmitter
                 {
                     if (q.Id.Contains("resume", StringComparison.OrdinalIgnoreCase) && resumePdf is { } pdf)
                     {
-                        if (await AttachResumeAsync(page, q, pdf, resumeText)) mapped.Add(q.Id);
+                        if (await AttachResumeAsync(form, q, pdf, resumeText)) mapped.Add(q.Id);
                         else if (q.Required) unmapped.Add(q.Id);
                     }
                     else if (q.Id.Contains("cover", StringComparison.OrdinalIgnoreCase) && coverLetter.Length > 0)
@@ -120,7 +125,7 @@ public sealed partial class BrowserSubmitter
                         // Greenhouse's cover letter is a file field with a text twin behind its
                         // own "Enter manually"; a form that requires one was refused for want of
                         // a file we never had. The drafted letter is the text.
-                        if (await EnterCoverLetterAsync(page, coverLetter)) mapped.Add(q.Id);
+                        if (await EnterCoverLetterAsync(form, coverLetter)) mapped.Add(q.Id);
                         else if (q.Required) unmapped.Add(q.Id);
                     }
                     else if (q.Required)
@@ -129,18 +134,21 @@ public sealed partial class BrowserSubmitter
                 }
                 if (!packet.Answers.TryGetValue(q.Id, out var answer) || string.IsNullOrWhiteSpace(answer))
                     continue;
-                if (await FillAsync(page, q, answer)) mapped.Add(q.Id);
+                if (await FillAsync(form, q, answer)) mapped.Add(q.Id);
                 else if (q.Required) unmapped.Add(q.Id);
             }
 
             // Anything the page emptied behind our back gets one more go before it is judged.
-            foreach (var (key, label) in await RequiredEmptyAsync(page))
+            // Ashby, Lever and a good part of the long tail take one Name box, not first and
+            // last: when both halves went unmapped and such a box exists, it gets "First Last".
+            await FillFullNameAsync(form, packet, mapped, unmapped);
+            foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
                 var q = FindQuestion(packet, key, label);
                 if (q is null || !mapped.Contains(q.Id) || q.Type == PacketQuestion.File
                     || !packet.Answers.TryGetValue(q.Id, out var again) || string.IsNullOrWhiteSpace(again))
                     continue;
-                await FillAsync(page, q, again);
+                await FillAsync(form, q, again);
             }
 
             // Now ask the FORM what is still missing, not just the packet. The packet is the ATS
@@ -151,7 +159,7 @@ public sealed partial class BrowserSubmitter
             // those produced "9 mapped, 0 unmapped", a clean dry run, an automatic promotion,
             // and a Submit click into a wall of client-side validation with no POST ever sent.
             // Anything the page still marks required-and-empty is unmapped, whatever we thought.
-            foreach (var (key, label) in await RequiredEmptyAsync(page))
+            foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
                 var id = FindQuestion(packet, key, label)?.Id ?? key;
                 mapped.Remove(id);
@@ -161,23 +169,27 @@ public sealed partial class BrowserSubmitter
             screenshot = await session.ScreenshotAsync();
             // Reported on a dry run too: the dry run's whole job is to find out whether this
             // posting can be finished unattended, and with a captcha in the way the answer is no.
-            if (await HasCaptchaAsync(page))
+            if (await HasCaptchaAsync(page.MainFrame) || await HasCaptchaAsync(form))
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                     "this form is guarded by a captcha — finish it with Copy answers and open",
                     Captcha: true);
             // A form with fields on it and not one of them filled is not "clean", it is a packet
             // that describes some other form. Seen in production: zero mapped, zero unmapped,
             // and a run that would have clicked Submit on an empty application.
-            if (mapped.Count == 0 && await HasFillableControlsAsync(page))
+            // Likewise a page with no form on it at all: that used to pass as a clean dry run
+            // ("filled", zero mapped) and moo the human to come and click Apply on nothing.
+            if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
-                    "nothing on this form could be filled — the packet's questions match none of its fields");
+                    await HasFillableControlsAsync(form)
+                        ? "nothing on this form could be filled — the packet's questions match none of its fields"
+                        : "no application form was found on the page — nothing to fill");
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
             if (unmapped.Count > 0)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                     "refused to submit: required fields could not be mapped (" + string.Join(", ", unmapped) + ")");
 
-            var submit = await FindSubmitAsync(page);
+            var submit = await FindSubmitAsync(form);
             if (submit is null)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "no Submit button found");
             // What the click actually sent. Greenhouse's form runs reCAPTCHA Enterprise first
@@ -233,11 +245,11 @@ public sealed partial class BrowserSubmitter
                 for (var i = 0; i < 30; i++)
                 {
                     await page.WaitForTimeoutAsync(1000);
-                    text = await BodyTextAsync(page);
+                    text = await BodyTextAsync(form);
                     m = Confirmation().Match(text);
                     if (m.Success) break;
-                    if (stopAtCodePrompt && await HasSecurityCodePromptAsync(page)) break;
-                    complaints = await ValidationErrorsAsync(page);
+                    if (stopAtCodePrompt && await HasSecurityCodePromptAsync(form)) break;
+                    complaints = await ValidationErrorsAsync(form);
                     if (complaints.Count > 0) break;
                     if (page.Url != urlBefore && i >= 3) break; // navigated somewhere new: read it below
                 }
@@ -248,7 +260,7 @@ public sealed partial class BrowserSubmitter
             // the form: park here, ask for the code, type it, and click again. This is the
             // gate every production click ended at; the human relays one code and the run
             // finishes in the same session, which is the only session the code is good for.
-            if (!m.Success && await HasSecurityCodePromptAsync(page))
+            if (!m.Success && await HasSecurityCodePromptAsync(form))
             {
                 var recipient = Regex.Match(text, @"sent to\s+([^\s,]+@[A-Za-z0-9.-]+[A-Za-z0-9])", RegexOptions.IgnoreCase) is { Success: true } rm
                     ? rm.Groups[1].Value : "";
@@ -260,10 +272,10 @@ public sealed partial class BrowserSubmitter
                 if (string.IsNullOrWhiteSpace(code))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         $"the board emailed a security code to {(recipient.Length > 0 ? recipient : "the candidate")} and none was entered in time — run Submit again and paste the code when it arrives");
-                if (!await EnterSecurityCodeAsync(page, code.Trim()))
+                if (!await EnterSecurityCodeAsync(form, code.Trim()))
                     return new SubmitOutcome(true, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
                         "the security code could not be entered — check the screenshot");
-                var again = await FindSubmitAsync(page);
+                var again = await FindSubmitAsync(form);
                 if (again is null)
                     return new SubmitOutcome(true, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
                         "the security code was entered but Submit did not become clickable — check the screenshot");
@@ -283,25 +295,25 @@ public sealed partial class BrowserSubmitter
                 // that does not fit the column pattern". Checking only before the click filed
                 // nine of these as mystery failures to retry forever, when every one of them
                 // was a form asking for a person.
-                if (await HasCaptchaAsync(page))
+                if (await HasCaptchaAsync(page.MainFrame) || await HasCaptchaAsync(form))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "a captcha appeared on Submit — finish it with Copy answers and open",
                         Captcha: true);
                 // The invisible kind, with no code offered: the board simply refused the
                 // application as a bot's. Same handoff.
                 await page.WaitForTimeoutAsync(500); // let the response body reader finish
-                if (captchaRefused && !await HasSecurityCodePromptAsync(page))
+                if (captchaRefused && !await HasSecurityCodePromptAsync(form))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "the board refused the application as a bot's" + (boardSaid.Length > 0 ? $" (\"{boardSaid}\")" : "")
                         + PostNote() + " — finish it with Copy answers and open",
                         Captcha: true);
                 // The form's own validation messages are the diagnosis; without them every
                 // refused click reads as the same mystery and gets the same wrong theory.
-                if (complaints.Count == 0) complaints = await ValidationErrorsAsync(page);
+                if (complaints.Count == 0) complaints = await ValidationErrorsAsync(form);
                 if (complaints.Count > 0)
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "the form rejected the submission: " + string.Join("; ", complaints) + PostNote());
-                if (await FormResetAsync(page, packet, mapped))
+                if (await FormResetAsync(form, packet, mapped))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "Submit was clicked and the form reset itself with no confirmation" + PostNote() + " — check the screenshot");
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
@@ -321,6 +333,67 @@ public sealed partial class BrowserSubmitter
         }
     }
 
+    /// <summary>
+    /// The frame the application form lives in: the top document when it has fillable
+    /// controls, else the child frame that does — waiting up to ten seconds for either to
+    /// render, because both the iframe embed and the fetched-after-idle form arrive late.
+    /// Falls back to the top document, whose emptiness the caller then reports honestly.
+    /// </summary>
+    private static async Task<IFrame> FormFrameAsync(IPage page)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            if (await HasFillableControlsAsync(page.MainFrame)) return page.MainFrame;
+            foreach (var child in page.Frames)
+            {
+                if (child == page.MainFrame) continue;
+                if (await HasFillableControlsAsync(child)) return child;
+            }
+            if (DateTime.UtcNow >= deadline) return page.MainFrame;
+            await page.WaitForTimeoutAsync(500);
+        }
+    }
+
+    /// <summary>
+    /// A form that asks for one name, not two: Ashby's <c>_systemfield_name</c>, Lever's
+    /// <c>name</c>, any box labelled "Name" or "Full name". When the packet's first and last
+    /// name both went unmapped and such a box is there, type them together and count both.
+    /// </summary>
+    private static async Task FillFullNameAsync(IFrame page, AgentPacket packet, List<string> mapped, List<string> unmapped)
+    {
+        var first = packet.Questions.FirstOrDefault(q => Unprefixed(q.Id) == "first_name");
+        var last = packet.Questions.FirstOrDefault(q => Unprefixed(q.Id) == "last_name");
+        if (first is null || last is null || mapped.Contains(first.Id) || mapped.Contains(last.Id)) return;
+        packet.Answers.TryGetValue(first.Id, out var firstName);
+        packet.Answers.TryGetValue(last.Id, out var lastName);
+        var full = string.Join(' ', new[] { firstName ?? "", lastName ?? "" }.Where(n => n.Trim().Length > 0));
+        if (full.Length == 0) return;
+        var candidates = new[]
+        {
+            page.Locator("input[name='_systemfield_name'], input#_systemfield_name").First,
+            page.GetByLabel(new Regex(@"^\s*(?:full |your )?name\s*\*?\s*$", RegexOptions.IgnoreCase)).First,
+            page.Locator("input[name='name'], input#name, input[name='full_name'], input#full_name, input[name='fullName']").First,
+            page.Locator("input[placeholder*='full name' i]").First,
+        };
+        foreach (var c in candidates)
+        {
+            try
+            {
+                if (await c.CountAsync() == 0 || !await c.IsVisibleAsync() || !await c.IsEditableAsync()) continue;
+                await c.FillAsync(full);
+                if ((await c.InputValueAsync()).Trim() != full) continue;
+                mapped.Add(first.Id);
+                mapped.Add(last.Id);
+                unmapped.Remove(first.Id);
+                unmapped.Remove(last.Id);
+                return;
+            }
+            catch (PlaywrightException) { /* try the next */ }
+            catch (TimeoutException) { /* try the next */ }
+        }
+    }
+
     /// <summary>The packet question a rendered field belongs to — by field id/name (exactly, or
     /// with the form's own prefix: <c>candidate-location</c> is the API's <c>location</c>, the
     /// same rule <see cref="LocateAsync"/> finds it by), else by label.</summary>
@@ -332,7 +405,7 @@ public sealed partial class BrowserSubmitter
 
     /// <summary>Find the control for a question — by accessible name first, then by the
     /// ATS field name — and set it. False when nothing visible matched.</summary>
-    private static async Task<bool> FillAsync(IPage page, PacketQuestion q, string answer)
+    private static async Task<bool> FillAsync(IFrame page, PacketQuestion q, string answer)
     {
         // Radio groups and checkboxes are set, never typed into — Playwright refuses to
         // fill() them ("Input of type \"radio\" cannot be filled"), and discovery hands
@@ -367,7 +440,7 @@ public sealed partial class BrowserSubmitter
     /// answer that is one of them; an open autocomplete (a city picker fed by a geocoder)
     /// takes the first suggestion for what was typed, which is what the human would click.
     /// </summary>
-    private static async Task<bool> ChooseAsync(IPage page, ILocator control, PacketQuestion q, string answer)
+    private static async Task<bool> ChooseAsync(IFrame page, ILocator control, PacketQuestion q, string answer)
     {
         var fixedSet = q.Options.Count > 0;
         if (fixedSet && !q.Options.Any(o => Same(o, answer)))
@@ -383,7 +456,7 @@ public sealed partial class BrowserSubmitter
             typed = query;
             await control.ClickAsync();
             try { await control.FillAsync(query); }
-            catch (PlaywrightException) { await page.Keyboard.TypeAsync(query); } // a div-based widget: type at it
+            catch (PlaywrightException) { await page.Page.Keyboard.TypeAsync(query); } // a div-based widget: type at it
             if (!combobox) break;
             for (var i = 0; i < 12 && pick is null; i++)
             {
@@ -395,7 +468,7 @@ public sealed partial class BrowserSubmitter
         // No menu ever showed: commit whatever is under the caret. Only on a combobox —
         // Enter in a plain text input submits the form it sits in.
         if (pick is null && combobox)
-            await page.Keyboard.PressAsync("Enter");
+            await page.Page.Keyboard.PressAsync("Enter");
         if (pick is not null)
             await pick.ClickAsync();
         await page.WaitForTimeoutAsync(300);
@@ -417,7 +490,7 @@ public sealed partial class BrowserSubmitter
     /// <summary>The option to click for an answer, or null while the menu has nothing usable:
     /// an exact match, else the shortest option that starts with the answer, else one that
     /// contains it, else (open autocompletes only) the first suggestion.</summary>
-    private static async Task<ILocator?> BestOptionAsync(IPage page, ILocator control, string answer, bool fixedSet)
+    private static async Task<ILocator?> BestOptionAsync(IFrame page, ILocator control, string answer, bool fixedSet)
     {
         // Prefer the listbox the control says it owns; otherwise any option that is on screen.
         var owned = await control.GetAttributeAsync("aria-controls");
@@ -491,7 +564,7 @@ public sealed partial class BrowserSubmitter
     /// value; a combobox reports through the hidden required input or selected-value element
     /// its widget keeps, and a widget that exposes neither is taken at its input's word.
     /// </summary>
-    private static async Task<List<(string Key, string Label)>> RequiredEmptyAsync(IPage page)
+    private static async Task<List<(string Key, string Label)>> RequiredEmptyAsync(IFrame page)
     {
         try
         {
@@ -566,7 +639,7 @@ public sealed partial class BrowserSubmitter
 
     /// <summary>Greenhouse's security-code prompt: one box per character, ids <c>security-input-N</c>,
     /// under "A verification code was sent to …".</summary>
-    private static async Task<bool> HasSecurityCodePromptAsync(IPage page)
+    private static async Task<bool> HasSecurityCodePromptAsync(IFrame page)
     {
         try
         {
@@ -580,7 +653,7 @@ public sealed partial class BrowserSubmitter
 
     /// <summary>Type the code into the first box; the widget advances a box per character. True
     /// when every box ended up holding a character of the code.</summary>
-    private static async Task<bool> EnterSecurityCodeAsync(IPage page, string code)
+    private static async Task<bool> EnterSecurityCodeAsync(IFrame page, string code)
     {
         try
         {
@@ -589,7 +662,7 @@ public sealed partial class BrowserSubmitter
             var n = await boxes.CountAsync();
             if (n == 0) return false;
             await boxes.First.ClickAsync();
-            await page.Keyboard.TypeAsync(code, new() { Delay = 40 });
+            await page.Page.Keyboard.TypeAsync(code, new() { Delay = 40 });
             await page.WaitForTimeoutAsync(400);
             var typed = "";
             for (var i = 0; i < n; i++) typed += await boxes.Nth(i).InputValueAsync();
@@ -607,7 +680,7 @@ public sealed partial class BrowserSubmitter
     }
 
     /// <summary>Does the page have anything a person could type into or pick from?</summary>
-    private static async Task<bool> HasFillableControlsAsync(IPage page)
+    private static async Task<bool> HasFillableControlsAsync(IFrame page)
     {
         try
         {
@@ -628,7 +701,7 @@ public sealed partial class BrowserSubmitter
     /// controls, and error-styled helper text. Short leaf text only — never a wrapper that
     /// contains a control — so what comes back reads like "Select a country", not the form.
     /// </summary>
-    private static async Task<List<string>> ValidationErrorsAsync(IPage page)
+    private static async Task<List<string>> ValidationErrorsAsync(IFrame page)
     {
         try
         {
@@ -658,7 +731,7 @@ public sealed partial class BrowserSubmitter
 
     /// <summary>After the click, is a text field we filled empty again? A form that re-mounts
     /// itself instead of submitting looks exactly like this.</summary>
-    private static async Task<bool> FormResetAsync(IPage page, AgentPacket packet, List<string> mapped)
+    private static async Task<bool> FormResetAsync(IFrame page, AgentPacket packet, List<string> mapped)
     {
         foreach (var q in packet.Questions.Where(q => q.Type == PacketQuestion.Text && mapped.Contains(q.Id)))
         {
@@ -679,7 +752,7 @@ public sealed partial class BrowserSubmitter
     /// with the text/select paths. False when it is one and nothing matched, so a
     /// required question still lands in <c>unmapped</c> rather than passing silently.
     /// </summary>
-    private static async Task<bool?> SetChoiceAsync(IPage page, PacketQuestion q, string answer)
+    private static async Task<bool?> SetChoiceAsync(IFrame page, PacketQuestion q, string answer)
     {
         var id = Unprefixed(q.Id);
         var radios = page.Locator($"input[type=radio][name='{id}']");
@@ -730,7 +803,7 @@ public sealed partial class BrowserSubmitter
     private static string Unprefixed(string id) =>
         id.StartsWith("std:", StringComparison.Ordinal) ? id[4..] : id;
 
-    private static async Task<ILocator?> LocateAsync(IPage page, PacketQuestion q)
+    private static async Task<ILocator?> LocateAsync(IFrame page, PacketQuestion q)
     {
         var id = Unprefixed(q.Id);
         var candidates = new List<ILocator>();
@@ -741,6 +814,14 @@ public sealed partial class BrowserSubmitter
         candidates.Add(page.Locator($"[name='{id}']").First);
         candidates.Add(page.Locator($"[name$='[{id}]']").First);
         candidates.Add(page.Locator($"[name*='{id}']").First);
+        // Last: a label that is nothing but text above the box — no <label for>, no aria —
+        // which is how a good part of the long tail writes its forms. The control whose
+        // nearest preceding text starts with the question's label.
+        if (q.Label.Length > 0)
+            candidates.Add(page.Locator(
+                "xpath=//*[self::input or self::textarea or self::select][not(@type='hidden')]"
+                + "[preceding::*[normalize-space(text())!=''][1][starts-with(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+                + $"{XPathLiteral(q.Label.Trim().TrimEnd('*').Trim().ToLowerInvariant())})]]").First);
         foreach (var c in candidates)
         {
             try
@@ -765,7 +846,7 @@ public sealed partial class BrowserSubmitter
     /// click. Better a refused submission than an application sent with no résumé on it.
     /// </summary>
     private static async Task<bool> AttachResumeAsync(
-        IPage page, PacketQuestion q, (byte[] Bytes, string Name) pdf, string resumeText)
+        IFrame page, PacketQuestion q, (byte[] Bytes, string Name) pdf, string resumeText)
     {
         var payload = new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes };
         var id = Unprefixed(q.Id);
@@ -805,7 +886,7 @@ public sealed partial class BrowserSubmitter
     /// manually buttons, so leaving the failed upload staged hides the very escape hatch we
     /// need next. Best effort — a board with nothing to clear is left exactly as it was.
     /// </summary>
-    private static async Task ClearStagedResumeAsync(IPage page)
+    private static async Task ClearStagedResumeAsync(IFrame page)
     {
         try
         {
@@ -837,7 +918,7 @@ public sealed partial class BrowserSubmitter
     }
 
     /// <summary>The page's single file input, or null when there is none or more than one.</summary>
-    private static async Task<ILocator?> OnlyFileInputAsync(IPage page)
+    private static async Task<ILocator?> OnlyFileInputAsync(IFrame page)
     {
         try
         {
@@ -852,7 +933,7 @@ public sealed partial class BrowserSubmitter
     /// path that works where the uploader will not take a file, and it needs no file chooser —
     /// which matters, because a chooser cannot be driven over the remote browser connection.
     /// </summary>
-    private static async Task<bool> EnterResumeManuallyAsync(IPage page, string resumeText)
+    private static async Task<bool> EnterResumeManuallyAsync(IFrame page, string resumeText)
     {
         if (string.IsNullOrWhiteSpace(resumeText)) return false;
         var manually = new Regex(@"enter manually|paste|type it|enter text|manual", RegexOptions.IgnoreCase);
@@ -890,7 +971,7 @@ public sealed partial class BrowserSubmitter
     /// résumé's (the first such button on the page is the résumé's, and taking it is how a
     /// letter would land in the wrong box). Found from the section's label forward.
     /// </summary>
-    private static async Task<bool> EnterCoverLetterAsync(IPage page, string letter)
+    private static async Task<bool> EnterCoverLetterAsync(IFrame page, string letter)
     {
         try
         {
@@ -915,7 +996,7 @@ public sealed partial class BrowserSubmitter
     /// now names it, and no uploader error is on screen. The uploader is asynchronous, so give
     /// it a moment before deciding.
     /// </summary>
-    private static async Task<bool> ResumeTookAsync(IPage page, string fileName)
+    private static async Task<bool> ResumeTookAsync(IFrame page, string fileName)
     {
         // Poll rather than sleep once. The input reports its file immediately while the board's
         // uploader is still working, so a single early look says "attached" and a later one says
@@ -951,7 +1032,7 @@ public sealed partial class BrowserSubmitter
     /// submission, so anything inside <c>.grecaptcha-badge</c> must NOT count — only a challenge
     /// a person has to touch (the v2 checkbox, hCaptcha, Turnstile).
     /// </summary>
-    private static async Task<bool> HasCaptchaAsync(IPage page)
+    private static async Task<bool> HasCaptchaAsync(IFrame page)
     {
         try
         {
@@ -983,7 +1064,7 @@ public sealed partial class BrowserSubmitter
     /// comes first — so every real run clicked the anchor, waited, and reported "Submit was
     /// clicked but no confirmation text was recognised" while no request ever left the page.
     /// </summary>
-    private static async Task<ILocator?> FindSubmitAsync(IPage page)
+    private static async Task<ILocator?> FindSubmitAsync(IFrame page)
     {
         var candidates = new[]
         {
@@ -1003,6 +1084,11 @@ public sealed partial class BrowserSubmitter
         return null;
     }
 
+    /// <summary>A string as an XPath literal — quotes of either kind survive.</summary>
+    private static string XPathLiteral(string s) =>
+        !s.Contains('\'') ? $"'{s}'" : !s.Contains('"') ? $"\"{s}\""
+        : "concat(" + string.Join(", \"'\", ", s.Split('\'').Select(part => $"'{part}'")) + ")";
+
     private static string CssEscape(string id) => Regex.Replace(id, @"([^a-zA-Z0-9_-])", "\\$1");
 
     /// <summary>Requests that are never the application: analytics beacons, the captcha's own
@@ -1011,7 +1097,7 @@ public sealed partial class BrowserSubmitter
         Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog", RegexOptions.IgnoreCase);
 
     /// <summary>The page's visible text, or "" if it can't be read — never throws.</summary>
-    private static async Task<string> BodyTextAsync(IPage page)
+    private static async Task<string> BodyTextAsync(IFrame page)
     {
         try { return await page.InnerTextAsync("body"); }
         catch (PlaywrightException) { return ""; }

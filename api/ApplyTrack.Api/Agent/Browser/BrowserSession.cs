@@ -171,19 +171,45 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return Reg(host) == Reg(original);
     }
 
+    private const string AnyFieldSelector = "input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select";
+
+    /// <summary>Is a form control on screen — in the page, or in any frame it embeds?</summary>
+    public static async Task<bool> AnyFieldVisibleAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try { if (await frame.Locator(AnyFieldSelector).First.IsVisibleAsync()) return true; }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return false;
+    }
+
+    /// <summary>Wait, up to <paramref name="timeoutMs"/>, for a form control to appear anywhere
+    /// in the page. True when one did. Forms that arrive late are the rule, not the exception:
+    /// Ashby fetches its form after the page is idle, Comeet loads it into an iframe on Apply.</summary>
+    public static async Task<bool> WaitForFieldAsync(IPage page, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (true)
+        {
+            if (await AnyFieldVisibleAsync(page)) return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            await page.WaitForTimeoutAsync(500);
+        }
+    }
+
     /// <summary>Some boards hide the form behind an "Apply" button; press it when no field is visible yet.</summary>
     private static async Task RevealFormAsync(IPage page)
     {
-        var anyField = page.Locator("input[type=file], input[type=text], input[type=email], textarea").First;
-        if (await anyField.IsVisibleAsync()) return;
+        // A moment for a form that renders itself after load, before deciding it is hidden.
+        if (await WaitForFieldAsync(page, 3_000)) return;
         var apply = page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply", RegexOptions.IgnoreCase) }).First;
         if (!await apply.IsVisibleAsync())
             apply = page.GetByRole(AriaRole.Link, new() { NameRegex = new Regex(@"^apply", RegexOptions.IgnoreCase) }).First;
         if (await apply.IsVisibleAsync())
         {
             await apply.ClickAsync();
-            try { await anyField.WaitForAsync(new() { Timeout = 10_000 }); }
-            catch (TimeoutException) { /* judged below by what maps */ }
+            await WaitForFieldAsync(page, 10_000); // judged below by what maps
         }
     }
 

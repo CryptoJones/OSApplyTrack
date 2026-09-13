@@ -4,6 +4,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Data;
 using Microsoft.AspNetCore.Builder;
@@ -113,6 +114,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/closed", () => Results.Content(
             "<html><body><h1>Current openings at Acme</h1>"
             + "<p>The job you are looking for is no longer open.</p></body></html>", "text/html"));
+        // Comeet's shape: the posting page has only an "Apply for this job" button, and the
+        // click loads the form into an iframe. Nothing fillable ever lives in the top document.
+        _fixture.MapGet("/jobs/framed", () => Results.Content(FramedHtml, "text/html"));
+        _fixture.MapGet("/jobs/framed-form", () => Results.Content(FormHtml, "text/html"));
+        // Ashby's shape: the form is fetched after the page is idle, and asks for one Name.
+        _fixture.MapGet("/jobs/late-name", () => Results.Content(LateNameHtml, "text/html"));
+        // A form whose labels are plain text above each box — no <label for>, no aria.
+        _fixture.MapGet("/jobs/text-labels", () => Results.Content(TextLabelsHtml, "text/html"));
+        // A page with no form on it at all.
+        _fixture.MapGet("/jobs/blank", () => Results.Content(
+            "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -154,6 +166,44 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="question_7">I accept the privacy policy</label>
           <input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />
           <button id="submit_app" type="submit">Submit Application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string FramedHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <p>Description of the job.</p>
+        <button type="button" id="open" onclick="const f=document.createElement('iframe');f.src='/jobs/framed-form';f.style.width='700px';f.style.height='900px';document.getElementById('slot').appendChild(f);this.remove()">Apply for this job</button>
+        <div id="slot"></div>
+        </body></html>
+        """;
+
+    private const string LateNameHtml = """
+        <html><body>
+        <h1>Developer Experience Engineer</h1>
+        <div id="slot"><p>Fetching application form</p></div>
+        <script>
+          setTimeout(() => { document.getElementById('slot').innerHTML = `
+            <form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="_systemfield_name">Name *</label><input id="_systemfield_name" name="_systemfield_name" required />
+              <label for="_systemfield_email">Email *</label><input id="_systemfield_email" name="_systemfield_email" type="email" required />
+              <label for="resume">Resume *</label><input id="resume" name="resume" type="file" />
+              <button type="submit">Submit Application</button>
+            </form>`; }, 1500);
+        </script>
+        </body></html>
+        """;
+
+    private const string TextLabelsHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <form method="post" action="/apply" enctype="multipart/form-data">
+          <div class="field"><div class="caption">First name *</div><input name="f_1" required /></div>
+          <div class="field"><div class="caption">Last name *</div><input name="f_2" required /></div>
+          <div class="field"><div class="caption">Email *</div><input name="f_3" type="email" required /></div>
+          <div class="field"><div class="caption">Resume *</div><input name="resume" type="file" /></div>
+          <button type="submit">Submit application</button>
         </form>
         </body></html>
         """;
@@ -541,6 +591,14 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         },
     };
 
+    /// <summary>A non-Greenhouse packet: the standard set every long-tail form gets.</summary>
+    private static AgentPacket StandardPacket() => new()
+    {
+        ApplicationName = "acme-engineer.md", Provider = "unknown",
+        Questions = PacketBuilder.StandardQuestions(),
+        Answers = new() { ["std:first_name"] = "Ada", ["std:last_name"] = "Byte", ["std:email"] = "ada@example.com" },
+    };
+
     private BrowserSubmitter Submitter() =>
         new(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 },
             NullLogger<BrowserSubmitter>.Instance);
@@ -559,6 +617,62 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal(6, outcome.Mapped.Count);
         Assert.NotNull(outcome.Screenshot);
         Assert.True(outcome.Screenshot!.Length > 1000);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_form_loaded_into_an_iframe_on_apply_is_found_filled_and_submitted()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/framed", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(dry.Filled, dry.Error);
+        Assert.Equal(6, dry.Mapped.Count);
+        Assert.Empty(dry.Unmapped);
+        Assert.Empty(_posts);
+
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/framed", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(real.Submitted, real.Error);
+        Assert.Contains("Thank you", real.Confirmation);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada", post["job_application[first_name]"]);
+        Assert.Equal($"resume.pdf:{Pdf.Length}", post["resume:file"]);
+    }
+
+    [SkippableFact]
+    public async Task A_form_fetched_after_load_with_one_name_box_gets_first_and_last_together()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/late-name", StandardPacket(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada Byte", post["_systemfield_name"]);
+        Assert.Equal("ada@example.com", post["_systemfield_email"]);
+        Assert.Contains("std:first_name", outcome.Mapped);
+        Assert.Contains("std:last_name", outcome.Mapped);
+        Assert.Empty(outcome.Unmapped);
+    }
+
+    [SkippableFact]
+    public async Task A_form_whose_labels_are_only_text_above_the_boxes_still_maps()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/text-labels", StandardPacket(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada", post["f_1"]);
+        Assert.Equal("Byte", post["f_2"]);
+        Assert.Equal("ada@example.com", post["f_3"]);
+    }
+
+    [SkippableFact]
+    public async Task A_page_with_no_form_is_a_failed_dry_run_not_a_clean_one()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/blank", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Empty(outcome.Mapped);
+        Assert.Contains("no application form was found", outcome.Error);
         Assert.Empty(_posts);
     }
 
