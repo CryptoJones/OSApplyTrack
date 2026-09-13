@@ -21,14 +21,19 @@ public static class AgentEndpoints
     public static void MapAgentEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/api/agent-settings", async (AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
-            Results.Ok(View(await repo.GetAsync(), options, browser)));
+            Results.Ok(View(await repo.GetAsync(), options, browser, await repo.IsAllowedAsync())));
 
         app.MapPut("/api/agent-settings", async (
             JsonElement payload, AgentSettingsRepo repo, AgentOptions options, BrowserOptions browser) =>
         {
             var settings = AgentSettings.FromJson(payload);
+            var allowed = await repo.IsAllowedAsync();
+            // Standing answers save for anyone (they feed hand-run verdicts too); the switch
+            // itself is the operator's to grant.
+            if (settings.Enabled && !allowed)
+                throw new AppForbiddenException(NotAllowed);
             await repo.UpsertAsync(settings);
-            return Results.Ok(View(await repo.GetAsync(), options, browser));
+            return Results.Ok(View(await repo.GetAsync(), options, browser, allowed));
         });
 
         app.MapGet("/api/agent-events", async (AgentEventRepo repo, int? limit) =>
@@ -55,8 +60,13 @@ public static class AgentEndpoints
         }).RequireRateLimiting("draft");
     }
 
-    private static object View(AgentSettings s, AgentOptions options, BrowserOptions browser) => new
+    public const string NotAllowed =
+        "auto-apply isn't enabled for this account — the operator adds accounts to the allowlist";
+
+    private static object View(AgentSettings s, AgentOptions options, BrowserOptions browser, bool allowed) => new
     {
+        // Whether the operator has allowed this account to use auto-apply at all.
+        allowed,
         enabled = s.Enabled,
         dry_run = s.DryRun,
         min_fit_score = s.MinFitScore,

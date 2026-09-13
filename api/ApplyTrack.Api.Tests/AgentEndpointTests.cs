@@ -6,6 +6,8 @@ using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Llm;
+using Dapper;
+using Npgsql;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -120,6 +122,31 @@ public class AgentEndpointTests : IAsyncLifetime
         var again = await ReadJson(await _client.GetAsync("/api/agent-settings"));
         Assert.Equal("555-0100", again.GetProperty("phone").GetString());
         Assert.Equal("United States", again.GetProperty("country").GetString());
+    }
+
+    [Fact]
+    public async Task An_account_off_the_operators_allowlist_cannot_switch_the_agent_on()
+    {
+        // Every test tenant is allowlisted by default; this one is not.
+        var (tenant, sid) = await TestAuth.SeedSessionAsync(_pg.ConnectionString);
+        using var _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("Cookie", $"{AuthCookie.Name}={sid}");
+        var before = await ReadJson(await _client.GetAsync("/api/agent-settings"));
+        Assert.True(before.GetProperty("allowed").GetBoolean());
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+        await TestAuth.DisallowAgentAsync(conn, tenant);
+
+        var view = await ReadJson(await _client.GetAsync("/api/agent-settings"));
+        Assert.False(view.GetProperty("allowed").GetBoolean());
+        var refused = await _client.PutAsync("/api/agent-settings", Json("""{"enabled":true}"""));
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+        Assert.Contains("allowlist", (await ReadJson(refused)).GetProperty("detail").GetString());
+        // Standing answers still save; the switch stays off.
+        var ok = await _client.PutAsync("/api/agent-settings", Json("""{"enabled":false,"phone":"555-0199"}"""));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("555-0199", (await ReadJson(ok)).GetProperty("phone").GetString());
+        Assert.False((await ReadJson(ok)).GetProperty("enabled").GetBoolean());
     }
 
     [Fact]

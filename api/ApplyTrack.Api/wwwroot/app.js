@@ -1891,8 +1891,9 @@ function agentMarkup(s, events) {
       </p>
 
       <div class="mt-5">
+        ${s.allowed === false ? `<p class="packet-flag mb-2">Auto-apply isn't enabled for this account. The operator of this instance adds accounts to its allowlist; until then the standing answers below still save and you can evaluate a lead by hand from its sheet.</p>` : ""}
         <label class="source-row">
-          <input id="a-enabled" type="checkbox"${s.enabled ? " checked" : ""} />
+          <input id="a-enabled" type="checkbox"${s.enabled ? " checked" : ""}${s.allowed === false ? " disabled" : ""} />
           <span>Enable the agent for this account</span>
         </label>
         <p class="field-help">Off by default. On, the worker judges your best unjudged leads on every pass.</p>

@@ -366,8 +366,11 @@ public sealed class AgentWorker : BackgroundService
         {
             // The one privileged, cross-tenant query — the same fan-out shape as the
             // poller's _active_tenant_ids. Everything below runs through tenant-scoped repos.
+            // Enabled by the tenant AND allowed by the operator: an account outside the
+            // allowlist is never judged, whatever it switched on.
             tenants = (await conn.QueryAsync<long>(
-                "SELECT tenant_id FROM agent_settings WHERE enabled ORDER BY tenant_id")).ToArray();
+                "SELECT s.tenant_id FROM agent_settings s JOIN agent_allowlist a ON a.tenant_id = s.tenant_id "
+                + "WHERE s.enabled ORDER BY s.tenant_id")).ToArray();
         }
 
         var judged = 0;

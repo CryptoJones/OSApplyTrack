@@ -44,11 +44,21 @@ internal static class TestAuth
         return (tenantId, sid);
     }
 
-    public static Task<long> EnsureUserAsync(NpgsqlConnection conn, string email) =>
-        conn.ExecuteScalarAsync<long>(
+    /// <summary>A fresh user, allowed to use auto-apply (the operator's allowlist row) unless
+    /// a test takes that away with <see cref="DisallowAgentAsync"/>.</summary>
+    public static async Task<long> EnsureUserAsync(NpgsqlConnection conn, string email)
+    {
+        var id = await conn.ExecuteScalarAsync<long>(
             "INSERT INTO users (email) VALUES (@email) "
             + "ON CONFLICT (email) DO UPDATE SET status = users.status RETURNING id",
             new { email });
+        await conn.ExecuteAsync("INSERT INTO agent_allowlist (tenant_id, note) VALUES (@id, 'test') ON CONFLICT DO NOTHING", new { id });
+        return id;
+    }
+
+    /// <summary>Take the tenant off the operator's auto-apply allowlist.</summary>
+    public static Task<int> DisallowAgentAsync(NpgsqlConnection conn, long tenantId) =>
+        conn.ExecuteAsync("DELETE FROM agent_allowlist WHERE tenant_id = @t", new { t = tenantId });
 
     public static string UniqueEmail() => $"test-{Guid.NewGuid():N}@example.com";
 }

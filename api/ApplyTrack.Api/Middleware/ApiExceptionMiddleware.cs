@@ -36,6 +36,10 @@ public sealed class ApiExceptionMiddleware
         {
             await WriteDetail(context, StatusCodes.Status409Conflict, ex.Message);
         }
+        catch (AppForbiddenException ex)
+        {
+            await WriteDetail(context, StatusCodes.Status403Forbidden, ex.Message);
+        }
         catch (AppValidationException ex)
         {
             await WriteDetail(context, StatusCodes.Status400BadRequest, ex.Message);

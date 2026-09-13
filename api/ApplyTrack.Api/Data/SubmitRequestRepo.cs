@@ -92,6 +92,7 @@ public static class SubmitQueue
             WHERE id = (
                 SELECT id FROM submit_requests
                 WHERE done_at IS NULL
+                  AND tenant_id IN (SELECT tenant_id FROM agent_allowlist)
                   AND (claimed_at IS NULL OR claimed_at < now() - interval '15 minutes')
                 ORDER BY requested_at
                 FOR UPDATE SKIP LOCKED
