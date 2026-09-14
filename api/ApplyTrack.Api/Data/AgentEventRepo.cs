@@ -25,6 +25,8 @@ public sealed class AgentEventRepo
         public const string Verdict = "verdict";
         /// <summary>The agent could not reach a decision (no model, unusable output, fetch failure).</summary>
         public const string Error = "error";
+        /// <summary>The browser signed in to MyGreenhouse and kept a fresh session for the poller (#221).</summary>
+        public const string PortalSession = "portal_session";
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)

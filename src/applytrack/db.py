@@ -28,7 +28,7 @@ import psycopg
 from applytrack import secrets
 from applytrack.criteria import Criteria
 from applytrack.importer import _FIELD_COLUMNS, row_params
-from applytrack.mygreenhouse import ACCOUNT_HOSTS, Mailbox, PortalAccount
+from applytrack.mygreenhouse import ACCOUNT_HOSTS, PortalAccount
 from applytrack.store import AppFields, filename_for
 
 # A plain INSERT (not the importer's upsert): a slug already present is a genuine
@@ -45,8 +45,14 @@ _MAX_NAME_ATTEMPTS = 50
 
 # Column order mirrors search_profiles; the keys match Criteria.from_dict's dict.
 _PROFILE_COLUMNS = (
-    "keywords", "default_lane", "min_fit_score", "remote_only",
-    "exclude_locations", "sources", "ats_boards", "rss_feeds",
+    "keywords",
+    "default_lane",
+    "min_fit_score",
+    "remote_only",
+    "exclude_locations",
+    "sources",
+    "ats_boards",
+    "rss_feeds",
 )
 _PROFILE_SQL = f"""
 SELECT {", ".join(_PROFILE_COLUMNS)}
@@ -106,23 +112,6 @@ class PollRepo:
                 (sealed, expires_at if session else None, self._t, list(ACCOUNT_HOSTS)),
             )
 
-    def mailbox(self) -> Mailbox | None:
-        """The tenant's IMAP mailbox from Settings · Notifications, password unsealed — or None."""
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT host, port, username, password_ciphertext FROM mailbox_settings "
-                "WHERE tenant_id = %s AND enabled",
-                (self._t,),
-            )
-            row = cur.fetchone()
-        if row is None or not row[0] or not row[2] or not row[3]:
-            return None
-        try:
-            password = secrets.unseal(row[3], secrets.master_key())
-        except secrets.SealError:
-            return None
-        return Mailbox(host=row[0], port=int(row[1] or 993), username=row[2], password=password)
-
     def iter_existing(self) -> Iterator[tuple[str, str, str]]:
         """Yield ``(link, company, role)`` for every application already stored.
 
@@ -140,9 +129,7 @@ class PollRepo:
     def blacklist_companies(self) -> list[str]:
         """Return the tenant's blacklisted company keys (already normalized in SQL)."""
         with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT company FROM blacklist WHERE tenant_id = %s", (self._t,)
-            )
+            cur.execute("SELECT company FROM blacklist WHERE tenant_id = %s", (self._t,))
             return [row[0] for row in cur.fetchall()]
 
     def load_seen(self) -> tuple[set[str], set[str]]:
@@ -154,9 +141,7 @@ class PollRepo:
         urls: set[str] = set()
         slugs: set[str] = set()
         with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT kind, key FROM seen WHERE tenant_id = %s", (self._t,)
-            )
+            cur.execute("SELECT kind, key FROM seen WHERE tenant_id = %s", (self._t,))
             for kind, key in cur.fetchall():
                 (urls if kind == "url" else slugs).add(key)
         return urls, slugs

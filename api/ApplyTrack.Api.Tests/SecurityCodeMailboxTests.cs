@@ -30,6 +30,14 @@ public class SecurityCodeMailboxTests
         Assert.Equal("HpEq0DVP", ImapSecurityCodeSource.ExtractCode("Copy and paste this code into the security code field on your application: HpEq0DVP After you enter the code, resubmit your application."));
 
     [Fact]
+    public void Mygreenhouses_sign_in_wording_yields_the_code_between_the_stars()
+    {
+        Assert.Equal("szo8ve06", ImapSecurityCodeSource.ExtractCode("Hi Aaron,\n\nYour security code is:\n\n******** szo8ve06 ********\n\nEnter this code on the sign-in page."));
+        Assert.Equal("szo8ve06", ImapSecurityCodeSource.ExtractSignIn("Your security code is: **** szo8ve06 ****\n\nhttps://my.greenhouse.io/users/sign_in", "my.greenhouse.io"));
+        Assert.Null(ImapSecurityCodeSource.ExtractCode("Your security code is expiring soon."));
+    }
+
+    [Fact]
     public void Prose_without_a_code_yields_nothing()
     {
         Assert.Null(ImapSecurityCodeSource.ExtractCode("Thank you for applying to the AI Engineer role at Aperia!\n\nRegards,\nGreenhouse\n"));

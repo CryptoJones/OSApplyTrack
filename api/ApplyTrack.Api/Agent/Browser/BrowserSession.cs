@@ -254,6 +254,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return false;
     }
 
+    /// <summary>The cookies the context holds for <paramref name="url"/> — how a signed-in
+    /// portal session is read back off the browser (#221).</summary>
+    public Task<IReadOnlyList<BrowserContextCookiesResult>> CookiesAsync(string url) => _context.CookiesAsync([url]);
+
     public async Task<byte[]?> ScreenshotAsync()
     {
         try { return await Page.ScreenshotAsync(new() { FullPage = true, Type = ScreenshotType.Png }); }

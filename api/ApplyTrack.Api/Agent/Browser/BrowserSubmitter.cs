@@ -860,6 +860,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             await boxes.First.ClickAsync();
             await page.Page.Keyboard.TypeAsync(code, new() { Delay = 40 });
             await page.WaitForTimeoutAsync(400);
+            // A widget that submits itself on the last character has moved on by now: the
+            // boxes are gone, and that is the code taken, not a failure to type it (#221).
+            if (await boxes.CountAsync() == 0) return true;
             var typed = "";
             for (var i = 0; i < n; i++) typed += await boxes.Nth(i).InputValueAsync();
             if (typed.Equals(code, StringComparison.OrdinalIgnoreCase)) return true;
@@ -1034,7 +1037,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         + "input[name*='code' i]:visible, input[id*='code' i]:visible, input[placeholder*='code' i]:visible, input[aria-label*='code' i]:visible, "
         + "input[name*='otp' i]:visible, input[id*='otp' i]:visible";
 
-    private static async Task<bool> HasSignInCodeBoxAsync(IFrame frame)
+    internal static async Task<bool> HasSignInCodeBoxAsync(IFrame frame)
     {
         try { return await frame.Locator(CodeBoxSelector).CountAsync() > 0; }
         catch (PlaywrightException) { return false; }
@@ -1042,7 +1045,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
     /// <summary>Type the relayed code — into one box per character, or the one box — and press
     /// on. A widget that submits itself on the last character is left to it.</summary>
-    private static async Task<bool> EnterSignInCodeAsync(IPage page, string code)
+    internal static async Task<bool> EnterSignInCodeAsync(IPage page, string code)
     {
         foreach (var frame in page.Frames)
         {

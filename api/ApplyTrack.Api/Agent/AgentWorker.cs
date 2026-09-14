@@ -45,6 +45,15 @@ public sealed class AgentWorker : BackgroundService
     private readonly ILogger<AgentWorker> _log;
     private readonly ISecurityCodeSource? _codes;
     private readonly INotifier? _telegram;
+    private readonly IPortalSessionRenewer? _portal;
+    // When each tenant's MyGreenhouse renewal was last tried: a failed try emailed a code,
+    // and the next one waits (#221).
+    private readonly Dictionary<long, DateTime> _portalAttempts = [];
+
+    /// <summary>A MyGreenhouse session is renewed this long before it runs out.</summary>
+    public static readonly TimeSpan PortalRenewAhead = TimeSpan.FromDays(2);
+    /// <summary>After a renewal attempt, the next for the same tenant waits this long.</summary>
+    public static readonly TimeSpan PortalRetry = TimeSpan.FromHours(6);
     // This container's name: the quadlet/compose service name, or the pod's hostname.
     private readonly string _workerId = Environment.MachineName;
 
@@ -52,10 +61,12 @@ public sealed class AgentWorker : BackgroundService
         string connectionString, AgentOptions options, LlmOptions llmOptions,
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
         PacketReadyNotifier notifier, BrowserOptions browser, IBrowserSubmitter submitter,
-        ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null)
+        ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null,
+        IPortalSessionRenewer? portal = null)
     {
         _codes = codes;
         _telegram = telegram;
+        _portal = portal ?? (browser.IsConfigured ? new PortalSessionRenewer(browser, loggers.CreateLogger<PortalSessionRenewer>()) : null);
         var csb = new NpgsqlConnectionStringBuilder(connectionString)
         {
             MaxPoolSize = Math.Max(1, options.MaxPoolSize),
@@ -97,6 +108,7 @@ public sealed class AgentWorker : BackgroundService
         {
             try
             {
+                await RenewPortalSessionsAsync(stoppingToken);
                 await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -632,6 +644,60 @@ public sealed class AgentWorker : BackgroundService
             judged += await RunTenantAsync(tenantId, ct);
         }
         return judged;
+    }
+
+    /// <summary>
+    /// Keep every tenant's MyGreenhouse session alive for the poller (#221): where the kept
+    /// session is missing, cleared by a bounce, or due to run out, the browser signs in as
+    /// the board account (the security code read from the tenant's mailbox) and the fresh
+    /// cookie is sealed onto the account row. Needs a browser and a mailbox reader; a tenant
+    /// is tried at most once per <see cref="PortalRetry"/>. Public for tests.
+    /// </summary>
+    public async Task<int> RenewPortalSessionsAsync(CancellationToken ct)
+    {
+        if (_portal is null || _codes is null) return 0;
+        long[] tenants;
+        await using (var conn = await _db.OpenConnectionAsync(ct))
+            tenants = (await conn.QueryAsync<long>(BoardAccountRepo.PortalRenewalDueSql,
+                new { hosts = BoardAccountRepo.PortalHosts, ahead = PortalRenewAhead })).ToArray();
+        var renewed = 0;
+        foreach (var tenantId in tenants)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_portalAttempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
+                continue;
+            _portalAttempts[tenantId] = DateTime.UtcNow;
+            await using var conn = await _db.OpenConnectionAsync(ct);
+            var accounts = new BoardAccountRepo(conn, tenantId, _protector, _loggers.CreateLogger<BoardAccountRepo>());
+            var events = new AgentEventRepo(conn, tenantId);
+            var portal = await accounts.PortalAsync();
+            if (portal is null) continue;
+            var mailbox = await new MailboxSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
+            if (mailbox is null)
+            {
+                _log.LogWarning("tenant {TenantId}: MyGreenhouse session for {Email} needs renewing and there is no mailbox to read the code from", tenantId, portal.Username);
+                await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
+                    new { reason = $"MyGreenhouse: the session for {portal.Username} needs renewing and there is no mailbox to read the security code from — save one under Settings · Notifications" });
+                continue;
+            }
+            try
+            {
+                var fresh = await _portal.RenewAsync(portal.Username,
+                    (since, token) => _codes.FindCodeAsync(mailbox, portal.Username, "Greenhouse", since, token, "my.greenhouse.io"), ct);
+                await accounts.SavePortalSessionAsync(portal.Host, fresh.Cookie, fresh.ExpiresAt);
+                await events.RecordAsync(AgentEventRepo.Kinds.PortalSession, "",
+                    new { host = portal.Host, username = portal.Username, expires_at = fresh.ExpiresAt });
+                _log.LogInformation("tenant {TenantId}: MyGreenhouse session renewed for {Email} until {Until:u}", tenantId, portal.Username, fresh.ExpiresAt);
+                renewed++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning("tenant {TenantId}: MyGreenhouse session renewal failed: {Reason}", tenantId, ex.Message);
+                await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
+                    new { reason = "MyGreenhouse session renewal failed: " + ex.Message });
+            }
+        }
+        return renewed;
     }
 
     private async Task<int> RunTenantAsync(long tenantId, CancellationToken ct)

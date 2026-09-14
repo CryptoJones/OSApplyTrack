@@ -44,6 +44,12 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
     [GeneratedRegex(@"(?m)^[ \t]*(?=[A-Za-z0-9]{6,12}[ \t]*\r?$)(?=[A-Za-z0-9]*\d|[A-Za-z0-9]+[A-Z])([A-Za-z0-9]{6,12})[ \t]*\r?$")]
     private static partial Regex BareLine();
 
+    // MyGreenhouse's sign-in mail (#221): "Your security code is:" then the code on a line
+    // of its own between runs of asterisks. Six to ten characters with at least one digit,
+    // so "code is expiring" never qualifies.
+    [GeneratedRegex(@"\bcode\s+is\b[^A-Za-z0-9]{0,80}(?=[A-Za-z]*\d)([A-Za-z0-9]{6,10})\b", RegexOptions.IgnoreCase)]
+    private static partial Regex CodeIs();
+
     [GeneratedRegex(@"security code", RegexOptions.IgnoreCase)]
     private static partial Regex SecurityCodeSubject();
 
@@ -53,6 +59,8 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         if (string.IsNullOrWhiteSpace(text)) return null;
         var m = Labelled().Match(text);
         if (m.Success) return m.Groups[1].Value;
+        var c = CodeIs().Match(text);
+        if (c.Success) return c.Groups[1].Value;
         var b = BareLine().Match(text);
         return b.Success ? b.Groups[1].Value : null;
     }

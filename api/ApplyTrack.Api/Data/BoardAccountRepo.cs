@@ -12,6 +12,9 @@ namespace ApplyTrack.Api.Data;
 /// <summary>The client-safe view of one board account: never the password, only whether one is stored.</summary>
 public sealed record BoardAccountView(string Host, string Username, bool HasPassword, DateTimeOffset UpdatedAt);
 
+/// <summary>The tenant's MyGreenhouse sign-in (#218) and whether a session is kept for it (#221).</summary>
+public sealed record PortalAccount(string Host, string Username, bool HasSession, DateTimeOffset? SessionExpiresAt);
+
 /// <summary>A board account the browser can sign in with: host, username, decrypted password.</summary>
 public sealed record BoardAccount(string Host, string Username, string Password)
 {
@@ -50,6 +53,17 @@ public sealed record BoardAccount(string Host, string Username, string Password)
 /// </summary>
 public sealed class BoardAccountRepo
 {
+    /// <summary>Board-account hosts that mean the candidate's MyGreenhouse sign-in — the same
+    /// list the poller reads (<c>mygreenhouse.ACCOUNT_HOSTS</c>).</summary>
+    public static readonly string[] PortalHosts = ["greenhouse.io", "my.greenhouse.io"];
+
+    /// <summary>The one privileged, cross-tenant query the agent's pass runs (#221): tenants
+    /// whose MyGreenhouse account has no kept session, or one that runs out within
+    /// <c>@ahead</c>. Everything after it goes through the tenant-scoped repo.</summary>
+    public const string PortalRenewalDueSql =
+        "SELECT DISTINCT tenant_id FROM board_accounts WHERE host = ANY(@hosts) AND username <> '' "
+        + "AND (session_ciphertext = '' OR session_expires_at IS NULL OR session_expires_at < now() + @ahead) ORDER BY tenant_id";
+
     private readonly IDbConnection _conn;
     private readonly long _t;
     private readonly SecretProtector _protector;
@@ -120,6 +134,35 @@ public sealed class BoardAccountRepo
                  updated_at = now()
              """,
             new { t = _t, host, username = username.Trim(), ciphertext });
+    }
+
+    /// <summary>The tenant's MyGreenhouse account, or null when none is saved.</summary>
+    public async Task<PortalAccount?> PortalAsync()
+    {
+        var row = await _conn.QueryFirstOrDefaultAsync<(string Host, string Username, bool HasSession, DateTime? ExpiresAt)>(
+            "SELECT host, username, session_ciphertext <> '' AS hassession, session_expires_at FROM board_accounts "
+            + "WHERE tenant_id = @t AND host = ANY(@hosts) ORDER BY host LIMIT 1",
+            new { t = _t, hosts = PortalHosts });
+        if (row.Username is not { Length: > 0 }) return null;
+        return new PortalAccount(row.Host, row.Username, row.HasSession,
+            row.ExpiresAt is { } e ? new DateTimeOffset(DateTime.SpecifyKind(e, DateTimeKind.Utc)) : null);
+    }
+
+    /// <summary>Keep a portal session on the account row, sealed the way the poller reads it
+    /// (<c>applytrack.secrets</c> unseals the same format). An empty session clears it.</summary>
+    public async Task SavePortalSessionAsync(string host, string session, DateTimeOffset? expiresAt)
+    {
+        var sealed_ = "";
+        if (session.Length > 0)
+        {
+            if (!_protector.Available)
+                throw new AppValidationException("this instance can't store a portal session (operator must set APPLYTRACK_SECRETS_KEY)");
+            sealed_ = _protector.Protect(session);
+        }
+        await _conn.ExecuteAsync(
+            "UPDATE board_accounts SET session_ciphertext = @cipher, session_expires_at = @expires, updated_at = now() "
+            + "WHERE tenant_id = @t AND host = @host",
+            new { t = _t, host = BoardAccount.Normalize(host), cipher = sealed_, expires = session.Length > 0 ? expiresAt : null });
     }
 
     public async Task<bool> DeleteAsync(string host) =>

@@ -215,9 +215,7 @@ def run_all_tenants(
                 tid,
             )
         except Exception:  # noqa: BLE001 - one lock failure must not abort the run
-            logger.warning(
-                "poll lock acquisition failed for tenant %s", tid, exc_info=True
-            )
+            logger.warning("poll lock acquisition failed for tenant %s", tid, exc_info=True)
 
     # Build the per-tenant repo + profile up front: this is where each tenant's
     # WHERE tenant_id scoping is fixed for the rest of the run. A tenant whose
@@ -238,9 +236,7 @@ def run_all_tenants(
                 logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
 
         if gathered is None:
-            gathered = _gather_by_source(
-                profiles.values(), limit_per_source, ats_only=ats_only
-            )
+            gathered = _gather_by_source(profiles.values(), limit_per_source, ats_only=ats_only)
 
         for tid in pollable_tenant_ids:
             if tid not in repos:
@@ -267,15 +263,15 @@ def run_all_tenants(
                 try:
                     _release_tenant_poll_lock(conn, tid)
                 except Exception:  # noqa: BLE001 - release the remaining locks
-                    logger.warning(
-                        "poll lock release failed for tenant %s", tid, exc_info=True
-                    )
+                    logger.warning("poll lock release failed for tenant %s", tid, exc_info=True)
 
 
 def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
-    """One tenant's MyGreenhouse listings (#218): sign in by emailed code when the kept
-    session is missing or bounced, keep the new one, search. Every failure is logged
-    and yields an empty bucket — the rest of the poll goes on."""
+    """One tenant's MyGreenhouse listings (#218), searched with the session the agent's
+    browser keeps on the board-account row (#221). The poller never signs in itself: the
+    portal answers a plain client's request for a security code with a redirect and no
+    mail, so a missing or bounced session is cleared here and left for the agent to
+    renew. Every failure is logged and yields an empty bucket — the rest of the poll goes on."""
     account_of = getattr(repo, "portal_account", None)
     if account_of is None:
         return []
@@ -287,38 +283,29 @@ def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[List
                 "add one under Settings · Agent · Board accounts"
             )
             return []
+        keep = getattr(repo, "save_portal_session", None)
+        if not account.session_fresh:
+            logger.info(
+                "mygreenhouse: no live session for %s — waiting for the agent's browser to "
+                "sign in and keep one (#221)",
+                account.email,
+            )
+            return []
         with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
             portal = mygreenhouse.Portal(client, account)
-
-            mailbox_of = getattr(repo, "mailbox", None)
-            keep = getattr(repo, "save_portal_session", None)
-
-            def sign_in() -> None:
-                mailbox = mailbox_of() if mailbox_of is not None else None
-                if mailbox is None:
-                    raise mygreenhouse.NeedsSignIn(
-                        "no mailbox to read the security code from — save one under "
-                        "Settings · Notifications"
-                    )
-                session = portal.sign_in(lambda sent: mygreenhouse.read_code(mailbox, sent))
-                if keep is not None:
-                    keep(session, mygreenhouse.session_expiry())
-                logger.info("mygreenhouse: signed in as %s", account.email)
-
-            if not account.session_fresh:
-                sign_in()
             try:
                 return mygreenhouse.fetch_listings(
                     portal, profile.keywords, remote_only=profile.remote_only, limit=limit
                 )
             except mygreenhouse.NeedsSignIn:
-                if account.session_fresh:
-                    logger.info("mygreenhouse: the kept session was bounced; signing in again")
-                    sign_in()
-                    return mygreenhouse.fetch_listings(
-                        portal, profile.keywords, remote_only=profile.remote_only, limit=limit
-                    )
-                raise
+                logger.info(
+                    "mygreenhouse: the kept session for %s was bounced; cleared for the "
+                    "agent's browser to renew (#221)",
+                    account.email,
+                )
+                if keep is not None:
+                    keep("", None)
+                return []
     except Exception:  # noqa: BLE001 - one tenant's portal must not abort the poll
         logger.warning("poll source mygreenhouse failed", exc_info=True)
         return []
