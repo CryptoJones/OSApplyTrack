@@ -26,6 +26,7 @@ from typing import Protocol
 import httpx
 import psycopg
 
+from applytrack import mygreenhouse
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.db import PollRepo
 from applytrack.linkcheck import BROWSER_HEADERS
@@ -246,6 +247,13 @@ def run_all_tenants(
                 continue  # setup failed above; its empty result is already recorded
             try:
                 listings = _select_for_profile(gathered, profiles[tid])
+                # A signed-in source is the tenant's own, never shared: gathered here,
+                # under a per-tenant key, only for a tenant that turned it on (#218).
+                if profiles[tid].sources.get(mygreenhouse.SOURCE) and not ats_only:
+                    key = f"{mygreenhouse.SOURCE}:{tid}"
+                    if key not in gathered:
+                        gathered[key] = _gather_portal(repos[tid], profiles[tid], limit_per_source)
+                    listings = [*listings, *gathered[key]]
                 results[tid] = score_and_stage(
                     repos[tid], profiles[tid], listings, verify_links=verify_links
                 )
@@ -262,6 +270,58 @@ def run_all_tenants(
                     logger.warning(
                         "poll lock release failed for tenant %s", tid, exc_info=True
                     )
+
+
+def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+    """One tenant's MyGreenhouse listings (#218): sign in by emailed code when the kept
+    session is missing or bounced, keep the new one, search. Every failure is logged
+    and yields an empty bucket — the rest of the poll goes on."""
+    account_of = getattr(repo, "portal_account", None)
+    if account_of is None:
+        return []
+    try:
+        account = account_of()
+        if account is None:
+            logger.warning(
+                "mygreenhouse is on but no board account for greenhouse.io is saved — "
+                "add one under Settings · Agent · Board accounts"
+            )
+            return []
+        with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
+            portal = mygreenhouse.Portal(client, account)
+
+            mailbox_of = getattr(repo, "mailbox", None)
+            keep = getattr(repo, "save_portal_session", None)
+
+            def sign_in() -> None:
+                mailbox = mailbox_of() if mailbox_of is not None else None
+                if mailbox is None:
+                    raise mygreenhouse.NeedsSignIn(
+                        "no mailbox to read the security code from — save one under "
+                        "Settings · Notifications"
+                    )
+                session = portal.sign_in(lambda sent: mygreenhouse.read_code(mailbox, sent))
+                if keep is not None:
+                    keep(session, mygreenhouse.session_expiry())
+                logger.info("mygreenhouse: signed in as %s", account.email)
+
+            if not account.session_fresh:
+                sign_in()
+            try:
+                return mygreenhouse.fetch_listings(
+                    portal, profile.keywords, remote_only=profile.remote_only, limit=limit
+                )
+            except mygreenhouse.NeedsSignIn:
+                if account.session_fresh:
+                    logger.info("mygreenhouse: the kept session was bounced; signing in again")
+                    sign_in()
+                    return mygreenhouse.fetch_listings(
+                        portal, profile.keywords, remote_only=profile.remote_only, limit=limit
+                    )
+                raise
+    except Exception:  # noqa: BLE001 - one tenant's portal must not abort the poll
+        logger.warning("poll source mygreenhouse failed", exc_info=True)
+        return []
 
 
 def drain_requests(
