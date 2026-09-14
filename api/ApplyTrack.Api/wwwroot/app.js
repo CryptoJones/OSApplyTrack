@@ -1655,7 +1655,7 @@ async function deleteApp(name) {
 // BUILTIN_SOURCES. The /api/criteria payload always carries all of them.
 const SOURCES = [
   "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
-  "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse",
+  "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse", "linkedin",
 ];
 const SOURCE_LABEL = {
   remotive: "Remotive",
@@ -1667,6 +1667,7 @@ const SOURCE_LABEL = {
   workanywhere: "WorkAnywhere.pro",
   hn_whoishiring: "HN “Who is hiring”",
   mygreenhouse: "MyGreenhouse (signed in — needs a board account for greenhouse.io and your mailbox)",
+  linkedin: "LinkedIn (your own account — a board account for linkedin.com with its password; only postings whose Apply leads to the employer's site, Easy Apply skipped)",
 };
 const ATS_PROVIDERS = ["greenhouse", "lever", "paylocity"];
 // Paylocity boards are keyed by the company's recruiting GUID, not a name slug, and
@@ -2273,7 +2274,11 @@ function agentMarkup(s, events) {
         the account you created on their careers site the first time you applied. Save that
         sign-in here and the browser signs in with it when Apply leads there, then fills and
         submits the application as usual. The password is write-only and stored encrypted.
-        The browser never creates accounts.
+        The browser never creates accounts. A <strong>LinkedIn</strong> account saved here
+        (site <span class="mono">linkedin.com</span>, with its password) turns on the
+        <strong>LinkedIn</strong> source under Criteria: the browser signs in as you, keeps
+        the session, and the poller searches with it — you may have to tap Yes in the
+        LinkedIn app the first time, and the moo will say so.
       </p>
       <ul id="board-accounts" class="agent-log" aria-labelledby="board-accounts-heading">
         ${(s.board_accounts || []).length ? s.board_accounts.map((a) => `

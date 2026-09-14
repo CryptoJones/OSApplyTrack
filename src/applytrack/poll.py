@@ -103,6 +103,9 @@ AGGREGATOR_HOSTS = frozenset({
     "remoteok.com", "remoteok.io", "remotive.com", "remotive.io", "jobicy.com",
     "arbeitnow.com", "weworkremotely.com", "remotefirstjobs.com", "workanywhere.pro",
     "news.ycombinator.com",
+    # A LinkedIn posting is a listing of the employer's (#233): its offsite Apply link
+    # is the lead's ``apply_link`` and what gets stored; Easy Apply ones are never staged.
+    "linkedin.com",
 })
 
 _APPLY_ANCHOR_RE = re.compile(

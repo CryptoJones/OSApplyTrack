@@ -26,7 +26,7 @@ from typing import Protocol
 import httpx
 import psycopg
 
-from applytrack import mygreenhouse
+from applytrack import linkedin, mygreenhouse
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.db import PollRepo
 from applytrack.linkcheck import BROWSER_HEADERS
@@ -250,6 +250,13 @@ def run_all_tenants(
                     if key not in gathered:
                         gathered[key] = _gather_portal(repos[tid], profiles[tid], limit_per_source)
                     listings = [*listings, *gathered[key]]
+                if profiles[tid].sources.get(linkedin.SOURCE) and not ats_only:
+                    key = f"{linkedin.SOURCE}:{tid}"
+                    if key not in gathered:
+                        gathered[key] = _gather_linkedin(
+                            repos[tid], profiles[tid], limit_per_source
+                        )
+                    listings = [*listings, *gathered[key]]
                 results[tid] = score_and_stage(
                     repos[tid], profiles[tid], listings, verify_links=verify_links
                 )
@@ -308,6 +315,56 @@ def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[List
                 return []
     except Exception:  # noqa: BLE001 - one tenant's portal must not abort the poll
         logger.warning("poll source mygreenhouse failed", exc_info=True)
+        return []
+
+
+def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+    """One tenant's LinkedIn listings (#233): the offsite-apply postings behind the
+    keyword searches, with the employer's link. Signed in with the session the agent's
+    browser keeps on the board-account row when there is a live one; LinkedIn's guest
+    search otherwise. A bounced session is cleared for the agent to renew. Every failure
+    is logged and yields an empty bucket — the rest of the poll goes on."""
+    account_of = getattr(repo, "linkedin_account", None)
+    try:
+        account = account_of() if account_of is not None else None
+        keep = getattr(repo, "save_linkedin_session", None)
+        if account is None:
+            logger.info(
+                "linkedin is on with no board account for linkedin.com — searching as a guest "
+                "(rate-limited); save one under Settings · Agent · Board accounts"
+            )
+        elif not account.session_fresh:
+            logger.info(
+                "linkedin: no live session for %s — searching as a guest until the agent's "
+                "browser signs in and keeps one",
+                account.email,
+            )
+            account = None
+        seen_url = getattr(repo, "seen_url", None) or (lambda _url: False)
+
+        def remember(url: str) -> None:
+            from applytrack.poll import _norm_url
+
+            repo.mark_seen(_norm_url(url), "")
+
+        with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
+            li = linkedin.Client(client, account)
+            try:
+                return linkedin.fetch_listings(
+                    li, profile.keywords, remote_only=profile.remote_only, limit=limit,
+                    already_seen=seen_url, remember=remember,
+                )
+            except linkedin.NeedsSignIn:
+                logger.info(
+                    "linkedin: the kept session for %s was bounced; cleared for the agent's "
+                    "browser to renew",
+                    account.email if account else "?",
+                )
+                if keep is not None and account is not None:
+                    keep("", None)
+                return []
+    except Exception:  # noqa: BLE001 - one tenant's LinkedIn must not abort the poll
+        logger.warning("poll source linkedin failed", exc_info=True)
         return []
 
 

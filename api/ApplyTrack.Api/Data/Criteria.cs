@@ -51,7 +51,7 @@ public sealed class Criteria
     public static readonly string[] BuiltinSources =
     [
         "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
-        "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse",
+        "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse", "linkedin",
     ];
 
     public static readonly string[] AtsProviders = ["greenhouse", "lever", "paylocity"];

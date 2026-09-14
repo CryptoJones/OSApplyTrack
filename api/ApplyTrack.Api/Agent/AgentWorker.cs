@@ -46,6 +46,10 @@ public sealed class AgentWorker : BackgroundService
     private readonly ISecurityCodeSource? _codes;
     private readonly INotifier? _telegram;
     private readonly IPortalSessionRenewer? _portal;
+    private readonly ILinkedInSessionRenewer? _linkedin;
+    // When each tenant's LinkedIn renewal was last tried (#233): one that stopped on the
+    // app tap or a PIN waits before the next.
+    private readonly Dictionary<long, DateTime> _linkedinAttempts = [];
     // When each tenant's MyGreenhouse renewal was last tried: a failed try emailed a code,
     // and the next one waits (#221).
     private readonly Dictionary<long, DateTime> _portalAttempts = [];
@@ -62,11 +66,12 @@ public sealed class AgentWorker : BackgroundService
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
         PacketReadyNotifier notifier, BrowserOptions browser, IBrowserSubmitter submitter,
         ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null,
-        IPortalSessionRenewer? portal = null)
+        IPortalSessionRenewer? portal = null, ILinkedInSessionRenewer? linkedin = null)
     {
         _codes = codes;
         _telegram = telegram;
         _portal = portal ?? (browser.IsConfigured ? new PortalSessionRenewer(browser, loggers.CreateLogger<PortalSessionRenewer>()) : null);
+        _linkedin = linkedin ?? (browser.IsConfigured ? new LinkedInSessionRenewer(browser, loggers.CreateLogger<LinkedInSessionRenewer>()) : null);
         var csb = new NpgsqlConnectionStringBuilder(connectionString)
         {
             MaxPoolSize = Math.Max(1, options.MaxPoolSize),
@@ -109,6 +114,7 @@ public sealed class AgentWorker : BackgroundService
             try
             {
                 await RenewPortalSessionsAsync(stoppingToken);
+                await RenewLinkedInSessionsAsync(stoppingToken);
                 await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -695,6 +701,65 @@ public sealed class AgentWorker : BackgroundService
                 _log.LogWarning("tenant {TenantId}: MyGreenhouse session renewal failed: {Reason}", tenantId, ex.Message);
                 await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
                     new { reason = "MyGreenhouse session renewal failed: " + ex.Message });
+            }
+        }
+        return renewed;
+    }
+
+    /// <summary>
+    /// Keep every tenant's LinkedIn session alive for the poller (#233): where the kept
+    /// session is missing, cleared by a bounce, or due to run out, the browser signs in with
+    /// the board account's password (a PIN read from the tenant's mailbox, a tap in the
+    /// LinkedIn app asked for by a moo) and the fresh cookies are sealed onto the account
+    /// row. Needs a browser; a tenant is tried at most once per <see cref="PortalRetry"/>.
+    /// Public for tests.
+    /// </summary>
+    public async Task<int> RenewLinkedInSessionsAsync(CancellationToken ct)
+    {
+        if (_linkedin is null) return 0;
+        long[] tenants;
+        await using (var conn = await _db.OpenConnectionAsync(ct))
+            tenants = (await conn.QueryAsync<long>(BoardAccountRepo.PortalRenewalDueSql,
+                new { hosts = BoardAccountRepo.LinkedInHosts, ahead = PortalRenewAhead })).ToArray();
+        var renewed = 0;
+        foreach (var tenantId in tenants)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_linkedinAttempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
+                continue;
+            _linkedinAttempts[tenantId] = DateTime.UtcNow;
+            await using var conn = await _db.OpenConnectionAsync(ct);
+            var accounts = new BoardAccountRepo(conn, tenantId, _protector, _loggers.CreateLogger<BoardAccountRepo>());
+            var events = new AgentEventRepo(conn, tenantId);
+            var account = await accounts.LinkedInAsync();
+            if (account is null) continue;
+            var target = BoardAccount.For(await accounts.TargetsAsync(), account.Host);
+            if (target is null || target.Password.Length == 0)
+            {
+                _log.LogWarning("tenant {TenantId}: LinkedIn session for {User} needs renewing and the board account has no password", tenantId, account.Username);
+                await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
+                    new { reason = $"LinkedIn: the session for {account.Username} needs renewing and the board account has no password — save it under Settings · Agent · Board accounts" });
+                continue;
+            }
+            var mailbox = await new MailboxSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
+            var notifications = new NotificationSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<NotificationSettingsRepo>());
+            Func<DateTimeOffset, CancellationToken, Task<string?>>? readCode = mailbox is null || _codes is null ? null
+                : (since, token) => _codes.FindCodeAsync(mailbox, account.Username, "LinkedIn", since, token, "linkedin.com");
+            try
+            {
+                var fresh = await _linkedin.RenewAsync(target.Username, target.Password, readCode,
+                    (text, token) => _notifier.SendAsync(notifications, text, token), ct);
+                await accounts.SavePortalSessionAsync(account.Host, fresh.Cookie, fresh.ExpiresAt);
+                await events.RecordAsync(AgentEventRepo.Kinds.PortalSession, "",
+                    new { host = account.Host, username = account.Username, expires_at = fresh.ExpiresAt });
+                _log.LogInformation("tenant {TenantId}: LinkedIn session renewed for {User} until {Until:u}", tenantId, account.Username, fresh.ExpiresAt);
+                renewed++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning("tenant {TenantId}: LinkedIn session renewal failed: {Reason}", tenantId, ex.Message);
+                await events.RecordAsync(AgentEventRepo.Kinds.Error, "",
+                    new { reason = "LinkedIn session renewal failed: " + ex.Message });
             }
         }
         return renewed;

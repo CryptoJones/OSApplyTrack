@@ -25,7 +25,7 @@ from collections.abc import Iterator
 
 import psycopg
 
-from applytrack import secrets
+from applytrack import linkedin, secrets
 from applytrack.criteria import Criteria
 from applytrack.importer import _FIELD_COLUMNS, row_params
 from applytrack.mygreenhouse import ACCOUNT_HOSTS, PortalAccount
@@ -82,14 +82,14 @@ class PollRepo:
             return Criteria()
         return Criteria.from_dict(dict(zip(_PROFILE_COLUMNS, row, strict=True)))
 
-    def portal_account(self) -> PortalAccount | None:
-        """The tenant's MyGreenhouse sign-in (a board account for greenhouse.io) with the
-        session kept for it, unsealed — or None when there is no such account (#218)."""
+    def _account(self, hosts: tuple[str, ...]) -> tuple[str, str, object] | None:
+        """``(username, session_plaintext, session_expires_at)`` of the tenant's board
+        account on one of ``hosts``, the session unsealed — or None when there is none."""
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT host, username, session_ciphertext, session_expires_at "
                 "FROM board_accounts WHERE tenant_id = %s AND host = ANY(%s)",
-                (self._t, list(ACCOUNT_HOSTS)),
+                (self._t, list(hosts)),
             )
             row = cur.fetchone()
         if row is None or not row[1]:
@@ -100,17 +100,57 @@ class PollRepo:
                 session = secrets.unseal(row[2], secrets.master_key())
             except secrets.SealError:
                 session = ""
-        return PortalAccount(email=row[1], session=session, session_expires_at=row[3])
+        return row[1], session, row[3]
 
-    def save_portal_session(self, session: str, expires_at: object) -> None:
-        """Keep the portal session sealed on the board-account row (blank clears it)."""
+    def _save_session(self, hosts: tuple[str, ...], session: str, expires_at: object) -> None:
         sealed = secrets.seal(session, secrets.master_key()) if session else ""
         with self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE board_accounts SET session_ciphertext = %s, session_expires_at = %s, "
                 "updated_at = now() WHERE tenant_id = %s AND host = ANY(%s)",
-                (sealed, expires_at if session else None, self._t, list(ACCOUNT_HOSTS)),
+                (sealed, expires_at if session else None, self._t, list(hosts)),
             )
+
+    def portal_account(self) -> PortalAccount | None:
+        """The tenant's MyGreenhouse sign-in (a board account for greenhouse.io) with the
+        session kept for it, unsealed — or None when there is no such account (#218)."""
+        found = self._account(ACCOUNT_HOSTS)
+        if found is None:
+            return None
+        email, session, expires = found
+        return PortalAccount(email=email, session=session, session_expires_at=expires)  # type: ignore[arg-type]
+
+    def save_portal_session(self, session: str, expires_at: object) -> None:
+        """Keep the portal session sealed on the board-account row (blank clears it)."""
+        self._save_session(ACCOUNT_HOSTS, session, expires_at)
+
+    def linkedin_account(self) -> linkedin.LinkedInAccount | None:
+        """The tenant's LinkedIn sign-in (a board account for linkedin.com) with the
+        session kept for it, unsealed — or None when there is no such account (#233)."""
+        found = self._account(linkedin.ACCOUNT_HOSTS)
+        if found is None:
+            return None
+        email, session, expires = found
+        return linkedin.LinkedInAccount(email=email, session=session, session_expires_at=expires)  # type: ignore[arg-type]
+
+    def save_linkedin_session(self, session: str, expires_at: object) -> None:
+        """Keep the LinkedIn session sealed on the board-account row (blank clears it)."""
+        self._save_session(linkedin.ACCOUNT_HOSTS, session, expires_at)
+
+    def seen_url(self, url: str) -> bool:
+        """Is this listing URL already in the tenant's ledger? A source that pays a
+        request per listing asks before reading one (#233)."""
+        from applytrack.poll import _norm_url
+
+        key = _norm_url(url)
+        if not key:
+            return False
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM seen WHERE tenant_id = %s AND kind = 'url' AND key = %s LIMIT 1",
+                (self._t, key),
+            )
+            return cur.fetchone() is not None
 
     def iter_existing(self) -> Iterator[tuple[str, str, str]]:
         """Yield ``(link, company, role)`` for every application already stored.

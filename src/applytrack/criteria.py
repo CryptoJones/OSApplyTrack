@@ -27,6 +27,9 @@ BUILTIN_SOURCES = (
     # Greenhouse's candidate portal, signed in with the tenant's own account (#218):
     # per tenant, never shared, off by default.
     "mygreenhouse",
+    # LinkedIn, signed in with the tenant's own account (#233): the employer's posting
+    # behind each offsite-apply listing, Easy Apply skipped. Per tenant, off by default.
+    "linkedin",
 )
 
 # ATS providers the board adder understands (public boards, no auth).

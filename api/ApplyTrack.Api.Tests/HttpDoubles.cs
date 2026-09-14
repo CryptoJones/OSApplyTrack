@@ -114,6 +114,21 @@ internal sealed class FakePortalRenewer(Func<string, ApplyTrack.Api.Agent.Browse
     }
 }
 
+/// <summary>The LinkedIn sign-in without a browser (#233): hands back a session, or throws.</summary>
+internal sealed class FakeLinkedInRenewer(Func<string, ApplyTrack.Api.Agent.Browser.PortalSession> renew) : ApplyTrack.Api.Agent.Browser.ILinkedInSessionRenewer
+{
+    public List<(string User, string Password, bool Mailbox)> Attempts { get; } = [];
+    public List<string> Moos { get; } = [];
+
+    public async Task<ApplyTrack.Api.Agent.Browser.PortalSession> RenewAsync(string username, string password,
+        Func<DateTimeOffset, CancellationToken, Task<string?>>? readCode, Func<string, CancellationToken, Task>? notify, CancellationToken ct)
+    {
+        Attempts.Add((username, password, readCode is not null));
+        if (notify is not null) { await notify("tap", ct); Moos.Add("tap"); }
+        return renew(username);
+    }
+}
+
 /// <summary>A mailbox that answers (or fails) on cue, standing in for IMAP.</summary>
 internal sealed class FakeCodeSource(Func<string?> find) : ISecurityCodeSource
 {

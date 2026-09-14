@@ -72,6 +72,20 @@ public sealed class PacketReadyNotifier
         }
     }
 
+    /// <summary>A plain moo to the tenant, not about any one application: true when it was
+    /// sent, false when the tenant has no Telegram target or the send failed.</summary>
+    public async Task<bool> SendAsync(NotificationSettingsRepo settings, string text, CancellationToken ct)
+    {
+        var target = await settings.GetTargetAsync();
+        if (target is null) return false;
+        try { await _notifier.SendAsync(target.BotToken, target.ChatId, text, ct); return true; }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _log.LogWarning("notification failed: {Reason}", ex.Message);
+            return false;
+        }
+    }
+
     /// <summary>The 🐮. Pure, for tests.</summary>
     public static string BuildMessage(string company, string role, string? link, Moment moment = Moment.Ready, string detail = "")
     {

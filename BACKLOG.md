@@ -45,6 +45,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#112 — A dropped submit request leaves no trace anywhere](https://github.com/CryptoJones/OSApplyTrack/issues/112)
 - [x] [#201 — Mobile: the Ready list will not scroll — swiping down past the bulk bar rubber-bands and Safari refreshes the page](https://github.com/CryptoJones/OSApplyTrack/issues/201) (fixed in 1.31.0)
 - [x] [#114 — A crashed browser submission leaves no evidence at all](https://github.com/CryptoJones/OSApplyTrack/issues/114)
+- [x] [#233 — LinkedIn as a signed-in discovery source: search with the candidate's own account, store only the employer's posting, skip Easy Apply](https://github.com/CryptoJones/OSApplyTrack/issues/233) (shipped in 1.38.0: the `linkedin` source searches the tenant's keywords through the endpoints LinkedIn's own web app uses, with the session the agent's browser keeps on the `linkedin.com` board account — password sign-in, the app tap asked for by a moo and waited on, the emailed PIN read from the mailbox, the cookies sealed for 300 days; every offsite-apply posting is staged with the employer's link, Easy Apply ones are remembered and skipped, the ledger is asked before a posting is read; LinkedIn's guest search is the fallback with no session; `linkedin.com` is an aggregator host in both runtimes)
 
 ## Agentic auto-apply
 

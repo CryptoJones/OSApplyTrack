@@ -34,7 +34,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
         BrowserOptions? browser = null, JobPageFetcher? fetcher = null,
         IBrowserSubmitter? submitter = null, ISecurityCodeSource? codes = null, INotifier? telegram = null,
-        AgentOptions? options = null, IPortalSessionRenewer? portal = null)
+        AgentOptions? options = null, IPortalSessionRenewer? portal = null, ILinkedInSessionRenewer? linkedin = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), fetcher ?? new JobPageFetcher(),
@@ -55,7 +55,7 @@ public class AgentWorkerTests(PostgresFixture pg)
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
             Protector, evaluator, builder, ready, browserOptions,
             submitter ?? new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance,
-            codes, telegram, portal);
+            codes, telegram, portal, linkedin);
     }
 
     private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true, bool allowed = true)
@@ -152,6 +152,74 @@ public class AgentWorkerTests(PostgresFixture pg)
         var reasons = (await conn.QueryAsync<string>(
             "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
         Assert.Contains(reasons, r => r.Contains("Settings · Notifications"));
+    }
+
+    // A tenant with a LinkedIn account (and no MyGreenhouse one: the renewal query is
+    // cross-tenant, so a stray portal row here would show up in the portal tests above).
+    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedLinkedInTenantAsync(string? password, bool mailbox = true)
+    {
+        var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+        var t = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
+        await new BoardAccountRepo(conn, t, Protector, NullLogger<BoardAccountRepo>.Instance).UpsertAsync("linkedin.com", "ada@example.com", password);
+        if (mailbox)
+            await new MailboxSettingsRepo(conn, t, Protector, NullLogger<MailboxSettingsRepo>.Instance)
+                .UpsertAsync(true, "imap.example.com", 993, "ada@example.com", true, "app-pw");
+        return (conn, t);
+    }
+
+    [Fact]
+    public async Task A_linkedin_account_with_a_password_is_signed_in_once_and_the_cookies_kept_sealed()
+    {
+        var (conn, t) = await SeedLinkedInTenantAsync("hunter2");
+        await using var _ = conn;
+        var session = LinkedInSessionRenewer.Encode("AQEDA-fresh", "ajax:1");
+        var renewer = new FakeLinkedInRenewer(_ => new PortalSession(session, DateTimeOffset.UtcNow.AddDays(300)));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            codes: new FakeCodeSource(() => null), linkedin: renewer);
+
+        Assert.Equal(1, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Equal([("ada@example.com", "hunter2", true)], renewer.Attempts);   // the mailbox is offered for a PIN
+        var (cipher, expires) = await conn.QuerySingleAsync<(string, DateTime?)>(
+            "SELECT session_ciphertext, session_expires_at FROM board_accounts WHERE tenant_id = @t AND host = 'linkedin.com'", new { t });
+        Assert.Equal(session, Protector.Unprotect(cipher));
+        Assert.InRange(expires!.Value, DateTime.UtcNow.AddDays(299), DateTime.UtcNow.AddDays(301));
+        Assert.Contains(("", AgentEventRepo.Kinds.PortalSession), await EventsAsync(conn, t));
+        // Fresh now: nothing is due, and the account is not signed in again.
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Single(renewer.Attempts);
+    }
+
+    [Fact]
+    public async Task A_linkedin_account_without_a_password_is_reported_and_never_tried()
+    {
+        var (conn, t) = await SeedLinkedInTenantAsync(null, mailbox: false);
+        await using var _ = conn;
+        var renewer = new FakeLinkedInRenewer(_ => throw new PortalRenewalException("never"));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), linkedin: renewer);
+
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Empty(renewer.Attempts);
+        var reasons = (await conn.QueryAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
+        Assert.Contains(reasons, r => r.Contains("no password"));
+    }
+
+    [Fact]
+    public async Task A_linkedin_renewal_that_stopped_on_the_app_tap_is_recorded_and_not_retried_at_once()
+    {
+        var (conn, t) = await SeedLinkedInTenantAsync("hunter2", mailbox: false);
+        await using var _ = conn;
+        var renewer = new FakeLinkedInRenewer(_ => throw new PortalRenewalException("LinkedIn waited 240 s for the tap in the LinkedIn app and none came"));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), linkedin: renewer);
+
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Single(renewer.Attempts);
+        Assert.False(renewer.Attempts[0].Mailbox);   // no mailbox: no PIN reader offered
+        var reasons = (await conn.QueryAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
+        Assert.Contains(reasons, r => r.Contains("tap in the LinkedIn app"));
     }
 
     private static async Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>
