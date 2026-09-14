@@ -7,6 +7,11 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 
 ## Security and stability
 
+- [ ] [#228 — [SEC] Magic-link sign-in is broken on the live instance: POST /api/auth/request returns 500 for every valid email](https://github.com/CryptoJones/OSApplyTrack/issues/228)
+- [ ] [#229 — [SEC] Session cookie issued without Secure flag: app layer does not see the request as HTTPS behind the TLS proxy](https://github.com/CryptoJones/OSApplyTrack/issues/229)
+- [ ] [#230 — [SEC] Duplicate and conflicting security headers emitted by both edge and app](https://github.com/CryptoJones/OSApplyTrack/issues/230)
+- [ ] [#231 — [SEC] DNS-rebinding TOCTOU in the IMAP mailbox host guard](https://github.com/CryptoJones/OSApplyTrack/issues/231)
+- [ ] [#232 — [SEC] Minor information disclosure: build version, DB status, and nginx version on unauthenticated surfaces](https://github.com/CryptoJones/OSApplyTrack/issues/232)
 - [x] [#51 — Close the Python poller link-check DNS rebinding gap](https://github.com/CryptoJones/OSApplyTrack/issues/51)
 - [x] [#49 — Restrict forwarded-header trust to configured proxies](https://github.com/CryptoJones/OSApplyTrack/issues/49)
 - [x] [#50 — Add global JSON body caps and per-field/cardinality limits](https://github.com/CryptoJones/OSApplyTrack/issues/50)
