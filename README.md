@@ -693,6 +693,26 @@ your keywords (capped) a page each plus the newest postings, `remote` only when 
 profile is remote-only, and every listing links to the employer's own Greenhouse
 board, which the packet builder reads through the Job Board API as usual.
 
+**LinkedIn, your own account — the employer's posting, never Easy Apply.** LinkedIn
+lists more of the market than any one board, but its postings come in two kinds:
+**Easy Apply** (the application stays inside LinkedIn) and **offsite apply** (Apply
+leads to the employer's careers site or ATS). The **LinkedIn** source in Settings ·
+Criteria (off by default) wants the second kind only: it searches your keywords (a
+page each, postings from the last day, `remote` when your profile is), reads where
+each matching posting's Apply leads, and stages the lead with the **employer's
+posting** as its link — the same rule every aggregator gets. Easy Apply-only postings
+are skipped and remembered, and a posting the ledger already knows is never read
+again, so the account's request budget stays small. Save a **board account for
+`linkedin.com`** with its password (Settings · Agent · Board accounts): the **agent's
+browser** signs in as you — LinkedIn's official API only opens job search to approved
+partners — and keeps the year-long session sealed on the row, renewing it well before
+it runs out or whenever LinkedIn bounces it. A sign-in from a device LinkedIn has not
+seen is challenged: a **tap in the LinkedIn app** (the moo asks you for it and the
+browser waits a few minutes) or an emailed PIN (read from your mailbox). With no
+account, or no kept session yet, the source falls back to LinkedIn's guest job
+search — the approach [JobSpy](https://github.com/speedyapply/JobSpy) uses — which
+needs no sign-in but is rate-limited hard.
+
 **Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
 schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are
 **discovered read-only in the browser** — the agent visits the form one hop past

@@ -56,6 +56,9 @@ public sealed class BoardAccountRepo
     /// <summary>Board-account hosts that mean the candidate's MyGreenhouse sign-in — the same
     /// list the poller reads (<c>mygreenhouse.ACCOUNT_HOSTS</c>).</summary>
     public static readonly string[] PortalHosts = ["greenhouse.io", "my.greenhouse.io"];
+    /// <summary>Board-account hosts that mean the candidate's LinkedIn sign-in (#233) — the
+    /// same list the poller reads (<c>linkedin.ACCOUNT_HOSTS</c>).</summary>
+    public static readonly string[] LinkedInHosts = ["linkedin.com", "www.linkedin.com"];
 
     /// <summary>The one privileged, cross-tenant query the agent's pass runs (#221): tenants
     /// whose MyGreenhouse account has no kept session, or one that runs out within
@@ -137,12 +140,19 @@ public sealed class BoardAccountRepo
     }
 
     /// <summary>The tenant's MyGreenhouse account, or null when none is saved.</summary>
-    public async Task<PortalAccount?> PortalAsync()
+    public Task<PortalAccount?> PortalAsync() => AccountOnAsync(PortalHosts);
+
+    /// <summary>The tenant's LinkedIn account (#233), or null when none is saved.</summary>
+    public Task<PortalAccount?> LinkedInAsync() => AccountOnAsync(LinkedInHosts);
+
+    /// <summary>The tenant's board account on one of <paramref name="hosts"/> — a signed-in
+    /// discovery source's — with whether a session is kept for it, or null.</summary>
+    public async Task<PortalAccount?> AccountOnAsync(string[] hosts)
     {
         var row = await _conn.QueryFirstOrDefaultAsync<(string Host, string Username, bool HasSession, DateTime? ExpiresAt)>(
             "SELECT host, username, session_ciphertext <> '' AS hassession, session_expires_at FROM board_accounts "
             + "WHERE tenant_id = @t AND host = ANY(@hosts) ORDER BY host LIMIT 1",
-            new { t = _t, hosts = PortalHosts });
+            new { t = _t, hosts });
         if (row.Username is not { Length: > 0 }) return null;
         return new PortalAccount(row.Host, row.Username, row.HasSession,
             row.ExpiresAt is { } e ? new DateTimeOffset(DateTime.SpecifyKind(e, DateTimeKind.Utc)) : null);

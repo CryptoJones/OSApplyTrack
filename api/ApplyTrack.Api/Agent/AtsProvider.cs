@@ -45,6 +45,9 @@ public static partial class AtsProvider
     [
         "remoteok.com", "remoteok.io", "remotive.com", "remotive.io", "jobicy.com", "arbeitnow.com",
         "weworkremotely.com", "remotefirstjobs.com", "workanywhere.pro", "news.ycombinator.com",
+        // A LinkedIn posting is a listing of the employer's (#233): the poller stores the
+        // employer's link; one it could not resolve is apply-by-hand like any aggregator's.
+        "linkedin.com",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]
