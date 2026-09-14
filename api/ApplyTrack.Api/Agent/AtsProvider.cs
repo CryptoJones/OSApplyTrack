@@ -48,6 +48,9 @@ public static partial class AtsProvider
         // A LinkedIn posting is a listing of the employer's (#233): the poller stores the
         // employer's link; one it could not resolve is apply-by-hand like any aggregator's.
         "linkedin.com",
+        // Jobright reposts employers' openings with its own "send my profile" flow in place
+        // of a form (#238).
+        "jobright.ai",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]

@@ -23,6 +23,7 @@ public class AtsProviderTests
     [InlineData("https://weworkremotely.com/remote-jobs/acme-senior-engineer", "auto:weworkremotely", AtsProvider.Aggregator)]
     [InlineData("https://news.ycombinator.com/item?id=41234567", "auto:hn", AtsProvider.Aggregator)]
     [InlineData("https://www.linkedin.com/jobs/view/4464862474", "auto:linkedin", AtsProvider.Aggregator)]
+    [InlineData("https://jobright.ai/jobs/info/b2b_1769670052353_604?utm_source=5012", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://careers.stryker.com/software-engineer-cloud/job/62F1?source=LinkedIn", "auto:linkedin", AtsProvider.Unknown)]
     [InlineData("https://www.assuresoft.com/careers/senior-engineer?gh_jid=4567890", "auto:remoteok", AtsProvider.Greenhouse)]
     [InlineData("https://boards.greenhouse.io/acme/jobs/123", "", AtsProvider.Greenhouse)]
