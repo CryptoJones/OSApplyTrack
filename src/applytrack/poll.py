@@ -106,6 +106,9 @@ AGGREGATOR_HOSTS = frozenset({
     # A LinkedIn posting is a listing of the employer's (#233): its offsite Apply link
     # is the lead's ``apply_link`` and what gets stored; Easy Apply ones are never staged.
     "linkedin.com",
+    # Jobright reposts employers' openings on LinkedIn and elsewhere with its own
+    # "send my profile" flow in place of a form (#238).
+    "jobright.ai",
 })
 
 _APPLY_ANCHOR_RE = re.compile(

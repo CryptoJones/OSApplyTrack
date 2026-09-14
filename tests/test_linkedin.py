@@ -290,6 +290,7 @@ def test_a_linkedin_lead_is_stored_with_the_employers_link(monkeypatch) -> None:
     from applytrack.linkcheck import LinkStatus
 
     assert is_aggregator_link("https://www.linkedin.com/jobs/view/4464862474")
+    assert is_aggregator_link("https://jobright.ai/jobs/info/b2b_1769670052353_604")  # #238
 
     class _Client:
         def close(self) -> None:
