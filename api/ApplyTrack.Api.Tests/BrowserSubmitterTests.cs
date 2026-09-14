@@ -871,6 +871,11 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <label for="68:_txtFld">* Legal Last Name</label><input id="68:_txtFld" name="lastName" value="Lovelace" required />
             <label for="72:_txtFld">* Primary Phone</label><input id="72:_txtFld" name="cellPhone" value="5712975406" required />
             <label for="80:_txtFld">* Email Address</label><input id="80:_txtFld" name="contactEmail" value="ada@example.com" required />
+            <label for="lang">* Language Preference</label>
+            <select id="lang" name="languagePreference" required><option value="">No Selection</option><option selected>English</option><option>French</option></select>
+            <label for="89:_input">Country</label>
+            <input id="89:_input" role="combobox" aria-owns="90:_listSelect" aria-required="true" value="United States" autocomplete="off" />
+            <ul id="90:_listSelect" role="listbox" style="display:none"><li role="option">United States</li><li role="option">Canada</li></ul>
           </div>
           <button type="button" id="446:topBar" aria-expanded="false" aria-controls="sec-job">Job-Specific Information</button>
           <div id="sec-job" style="display:none">
@@ -2036,14 +2041,30 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
     private static readonly BoardAccount[] SfAccount = [new("127.0.0.1", "ada@example.com", "Sekrit-9$")];
 
+    /// <summary>The standard packet plus two questions the account already answered on the form,
+    /// with the packet holding a different guess for each (#216).</summary>
+    private static AgentPacket SfPacket()
+    {
+        var p = Packet();
+        p.Questions.Add(new("111:_input", "Language Preference", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        p.Questions.Add(new("89:_input", "Country", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        p.Answers["111:_input"] = "Spanish";
+        p.Answers["89:_input"] = "Mexico";
+        return p;
+    }
+
     [SkippableFact]
     public async Task With_a_saved_board_account_the_browser_signs_in_opens_the_folded_sections_and_applies()
     {
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
-        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", Packet(), (Pdf, "resume.pdf"), dryRun: false, accounts: SfAccount);
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", SfPacket(), (Pdf, "resume.pdf"), dryRun: false, accounts: SfAccount);
         Assert.True(outcome.Submitted, outcome.Error);
         var sent = Assert.Single(_posts);
         Assert.Equal("Ada", sent["firstName"]);
+        // The pickers the account had already filled were left as they were, and counted.
+        Assert.Equal("English", sent["languagePreference"]);
+        Assert.Contains("111:_input", outcome.Mapped);
+        Assert.Contains("89:_input", outcome.Mapped);
         Assert.Equal("Yes", sent["q2"]);
         Assert.False(string.IsNullOrWhiteSpace(sent["q3"]));
         // The résumé the account already holds counted as attached; nothing was uploaded.

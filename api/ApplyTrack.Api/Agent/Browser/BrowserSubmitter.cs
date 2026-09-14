@@ -200,6 +200,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 }
                 if (!packet.Answers.TryGetValue(q.Id, out var answer) || string.IsNullOrWhiteSpace(answer))
                     continue;
+                // A picker the candidate's account already filled — SuccessFactors renders
+                // Country, State, Education Type and the rest from the profile — is left as it
+                // stands: the account's data is the truth, and driving the packet's guess into
+                // it cleared two of Kiewit's required pickers and refused the click (#216).
+                if (await PrefilledPickerAsync(form, q))
+                {
+                    mapped.Add(q.Id);
+                    continue;
+                }
                 if (await FillAsync(form, q, answer)) mapped.Add(q.Id);
                 else if (q.Required) unmapped.Add(q.Id);
             }
@@ -600,8 +609,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// contains it, else (open autocompletes only) the first suggestion.</summary>
     private static async Task<ILocator?> BestOptionAsync(IFrame page, ILocator control, string answer, bool fixedSet)
     {
-        // Prefer the listbox the control says it owns; otherwise any option that is on screen.
+        // Prefer the listbox the control says it owns (aria-controls, or SuccessFactors'
+        // aria-owns); otherwise any option that is on screen.
         var owned = await control.GetAttributeAsync("aria-controls");
+        if (string.IsNullOrWhiteSpace(owned)) owned = await control.GetAttributeAsync("aria-owns");
         var options = !string.IsNullOrWhiteSpace(owned)
             ? page.Locator($"#{CssEscape(owned)} [role=option]:visible")
             : page.Locator("[role=option]:visible");
@@ -1322,6 +1333,22 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             catch (PlaywrightException) { /* try the next */ }
         }
         return null;
+    }
+
+    /// <summary>Is the question's control a select or combobox that already holds a value?</summary>
+    private static async Task<bool> PrefilledPickerAsync(IFrame page, PacketQuestion q)
+    {
+        try
+        {
+            var control = await LocateAsync(page, q);
+            if (control is null || await IsEmptyAsync(control)) return false;
+            var tag = (await control.EvaluateAsync<string>("el => el.tagName")).ToLowerInvariant();
+            if (tag == "select")
+                return await control.EvaluateAsync<bool>("el => el.selectedIndex > 0 || (el.value || '').trim().length > 0");
+            return await IsComboboxAsync(control);
+        }
+        catch (PlaywrightException) { return false; }
+        catch (TimeoutException) { return false; }
     }
 
     /// <summary>Nothing typed or chosen in the control yet. A widget with no readable value
