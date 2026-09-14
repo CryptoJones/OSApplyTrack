@@ -79,7 +79,10 @@ public sealed partial class AnswerBankRepo
     /// and the two name fields whatever the form called them (#200).
     /// </summary>
     public static bool Bankable(PacketQuestion q) =>
-        (q.Kind == PacketQuestion.Custom || AnswerDrafter.NameField(q) is not null)
+        // Custom screening questions, the two name fields (#200), and the demographic
+        // questions — gender, race, veteran and disability status — which are the person's
+        // own to answer once here and never the model's to guess (#224).
+        (q.Kind is PacketQuestion.Custom or PacketQuestion.Eeo || AnswerDrafter.NameField(q) is not null)
         && q.Type != PacketQuestion.File && KeyFor(q).Length > 0;
 
     private sealed record Row(
@@ -210,6 +213,32 @@ public sealed partial class AnswerBankRepo
                 source = answer.Length > 0 ? AnswerBankEntry.Human : AnswerBankEntry.Agent,
             });
         return affected > 0;
+    }
+
+    /// <summary>
+    /// Make an answer the person's for a question they met on a packet — filing the
+    /// question first when the bank has not seen it (a demographic question on a packet
+    /// built before such questions were banked, #224). Non-blank only.
+    /// </summary>
+    public async Task PinAsync(PacketQuestion q, string answer, string applicationName)
+    {
+        answer = answer.Trim();
+        if (answer.Length == 0 || !Bankable(q)) return;
+        await _conn.ExecuteAsync(
+            """
+            INSERT INTO answer_bank (tenant_id, key, label, help, type, options, answer_ciphertext, source, first_application)
+            VALUES (@t, @key, @label, @help, @type, @options::jsonb, @answer, @human, @app)
+            ON CONFLICT (tenant_id, key) DO UPDATE SET
+                answer_ciphertext = EXCLUDED.answer_ciphertext,
+                source            = EXCLUDED.source,
+                updated_at        = now()
+            """,
+            new
+            {
+                t = _t, key = KeyFor(q), label = q.Label, help = q.Help, type = q.Type,
+                options = System.Text.Json.JsonSerializer.Serialize(q.Options), answer = Seal(answer),
+                human = AnswerBankEntry.Human, app = Slug.Normalize(applicationName),
+            });
     }
 
     public async Task<bool> DeleteAsync(string key) =>

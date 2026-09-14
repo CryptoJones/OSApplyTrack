@@ -27,7 +27,7 @@ public static class PacketEndpoints
         app.MapPut("/api/apps/{name}/packet", async (
             string name, JsonElement payload,
             [FromQuery(Name = "expected_version")] string? expectedVersion,
-            AgentPacketRepo packets) =>
+            AgentPacketRepo packets, AnswerBankRepo bank) =>
         {
             var answers = new Dictionary<string, string>();
             if (payload.ValueKind == JsonValueKind.Object
@@ -37,7 +37,15 @@ public static class PacketEndpoints
                 foreach (var p in a.EnumerateObject())
                     answers[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() ?? "" : "";
             }
-            return Results.Ok(await packets.UpdateAnswersAsync(name, answers, expectedVersion));
+            var saved = await packets.UpdateAnswersAsync(name, answers, expectedVersion);
+            // A demographic answer typed on one packet is the person's answer everywhere: it
+            // goes to the answer bank as theirs, so every later packet carries it (#224).
+            foreach (var q in saved.Questions)
+            {
+                if (q.Kind != PacketQuestion.Eeo || !answers.TryGetValue(q.Id, out var own)) continue;
+                await bank.PinAsync(q, own ?? "", name);
+            }
+            return Results.Ok(saved);
         });
 
         // Prepare now: judge the lead (reusing a recorded verdict unless ?force=true),

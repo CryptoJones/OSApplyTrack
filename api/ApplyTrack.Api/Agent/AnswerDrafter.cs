@@ -88,7 +88,15 @@ public sealed partial class AnswerDrafter
         foreach (var q in questions)
         {
             if (q.Kind == PacketQuestion.Eeo)
-                continue; // never answered, never flagged
+            {
+                // Never the model's to answer and never flagged — but the person's own saved
+                // answer (Settings · Answers, or typed once on a packet) goes on every form
+                // that offers the same option; one this form words differently stays blank (#224).
+                if (pinned is not null && pinned.TryGetValue(AnswerBankRepo.KeyFor(q), out var own) && own.Length > 0
+                    && FitToOptions(q, own).Answer is { } fitted)
+                    answers[q.Id] = fitted;
+                continue;
+            }
             if (q.Type == PacketQuestion.File)
                 continue; // attached at submit (résumé) — not a text answer
             // The person's own answer to this question, from the answer bank, wins over

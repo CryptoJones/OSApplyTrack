@@ -59,7 +59,7 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         Assert.True(AnswerBankRepo.Bankable(Salary));
         Assert.True(AnswerBankRepo.Bankable(Name));      // the two name fields are the exception (#200)
         Assert.Equal(AnswerBankRepo.FirstNameKey, AnswerBankRepo.KeyFor(Name));
-        Assert.False(AnswerBankRepo.Bankable(Gender));
+        Assert.True(AnswerBankRepo.Bankable(Gender));    // the person's own, answered once (#224)
         Assert.False(AnswerBankRepo.Bankable(new PacketQuestion("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard)));
     }
 
@@ -77,7 +77,7 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         }, "acme-engineer.md");
 
         var entries = await bank.ListAsync();
-        Assert.Equal(["describe a system you scaled", "first name", "salary requirements"], entries.Select(e => e.Key).Order().ToArray());
+        Assert.Equal(["describe a system you scaled", "first name", "gender", "salary requirements"], entries.Select(e => e.Key).Order().ToArray());
         // The name row is filed under its own label, not the form's, and listed first.
         Assert.Equal("first name", entries[0].Key);
         Assert.Equal("First name", entries[0].Label);
@@ -153,9 +153,9 @@ public class AnswerBankTests(PostgresFixture pg) : IAsyncLifetime
         var first = await builder.BuildAsync(rec, verdict, inputs, scope);
         Assert.Equal("MODEL DRAFT", first.Answers["question_3"]);
         var keys = (await bank.ListAsync()).Select(e => e.Key).Order().ToArray();
-        // The three custom questions and the two name fields; the other standard fields
-        // and the hidden tracker never.
-        Assert.Equal(["are you legally authorized to work in the united states", "describe a system you scaled", "first name", "last name", "linkedin profile"], keys);
+        // The three custom questions, the two name fields and the demographic question (#224);
+        // the other standard fields and the hidden tracker never.
+        Assert.Equal(["are you legally authorized to work in the united states", "describe a system you scaled", "first name", "gender", "last name", "linkedin profile"], keys);
         Assert.Equal("Byte", (await bank.GetAsync(AnswerBankRepo.LastNameKey))!.Answer);
         Assert.Equal("MODEL DRAFT", (await bank.GetAsync("describe a system you scaled"))!.Answer);
 
