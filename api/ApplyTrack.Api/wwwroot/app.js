@@ -327,9 +327,13 @@ function renderPipeline() {
   });
   const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
   if (total) parts.push(`<span class="pipe-total"><span class="n">${total}</span>total</span>`);
+  // The label is the door to the submit queue: what the worker will drain, and what
+  // each request turns into when it does (submit, dry run, rebuild, or dropped).
   pipelineEl.innerHTML = `
-    <span class="pipeline-label" aria-hidden="true">Pipeline</span>
+    <button type="button" id="pipeline-btn" class="pipeline-label" aria-pressed="${state.mode === "pipeline"}"
+      title="Open the submit queue">Pipeline</button>
     ${parts.join("") || `<span class="pipeline-empty">No applications yet</span>`}`;
+  pipelineEl.querySelector("#pipeline-btn").addEventListener("click", () => openPipeline());
   pipelineEl.querySelectorAll(".pipe-stat[data-status]").forEach((el) => {
     el.addEventListener("click", () => {
       state.filterStatus = state.filterStatus === el.dataset.status ? "" : el.dataset.status;
@@ -337,6 +341,162 @@ function renderPipeline() {
       renderPipeline();
       renderSidebar();
     });
+  });
+}
+
+// The strip button reads as pressed only while the Pipeline view holds the pane.
+function syncPipelineButton() {
+  const btn = document.getElementById("pipeline-btn");
+  if (btn) btn.setAttribute("aria-pressed", String(state.mode === "pipeline"));
+}
+
+// ---- Pipeline view ----------------------------------------------------------
+// The submit queue as the worker drains it (oldest request first), with what each
+// request will turn into when claimed, plus the Ready packets a dry-run flip or
+// "Submit all clean" would queue. Refreshes itself every 15 s — the worker's own
+// cadence — while it holds the pane.
+
+let pipelineGen = 0;
+const PIPELINE_REFRESH_MS = 15000;
+
+async function openPipeline({ focus = true } = {}) {
+  const gen = ++pipelineGen;
+  state.mode = "pipeline";
+  state.current = null;
+  showDetailPane();
+  syncPipelineButton();
+  renderSidebar();
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Submit queue</div>
+        <h1>Pipeline</h1>
+        <p id="pipeline-summary" aria-live="polite">Loading the queue…</p>
+      </header>
+      <div id="pipeline-body"></div>
+    </div>`;
+  document.title = "Pipeline | ApplyTrack";
+  await loadPipeline(gen);
+  if (focus) focusView("h1");
+}
+
+async function loadPipeline(gen) {
+  if (gen !== pipelineGen || state.mode !== "pipeline") return;
+  let data;
+  try {
+    data = await api("GET", "/api/pipeline");
+  } catch (e) {
+    const body = document.getElementById("pipeline-body");
+    if (body && gen === pipelineGen) body.innerHTML = `<div class="packet-flag">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  if (gen !== pipelineGen || state.mode !== "pipeline") return;
+  renderPipelineView(data);
+  setTimeout(() => loadPipeline(gen), PIPELINE_REFRESH_MS);
+}
+
+const PHASE_LABEL = {
+  queued: "Queued", running: "Running now", awaiting_code: "Waiting for your security code", stale: "Stale claim — will be retried",
+};
+const WILL_LABEL = { submit: "Will submit", dry_run: "Dry run only", prepare: "Rebuild, then dry run", drop: "Will be dropped" };
+const WILL_TONE = { submit: "ok", dry_run: "warn", prepare: "warn", drop: "bad" };
+
+function pipelineRowTitle(r) {
+  return `${escapeHtml(r.company)}${r.role ? ` · ${escapeHtml(r.role)}` : ""}`;
+}
+
+function renderPipelineView(data) {
+  const summaryEl = document.getElementById("pipeline-summary");
+  const body = document.getElementById("pipeline-body");
+  if (!summaryEl || !body) return;
+  const s = data.summary || {};
+  const queue = Array.isArray(data.queue) ? data.queue : [];
+  const ready = Array.isArray(data.ready) ? data.ready : [];
+  const bits = [];
+  if (s.will_submit) bits.push(`${s.will_submit} will submit`);
+  if (s.dry_runs) bits.push(`${s.dry_runs} dry run${s.dry_runs === 1 ? "" : "s"}`);
+  if (s.prepares) bits.push(`${s.prepares} rebuild${s.prepares === 1 ? "" : "s"}`);
+  if (s.awaiting_code) bits.push(`${s.awaiting_code} waiting for a code`);
+  if (s.drops) bits.push(`${s.drops} will be dropped`);
+  summaryEl.textContent = queue.length
+    ? `${queue.length} queued — ${bits.join(", ")}.`
+    : "The queue is empty. Nothing is waiting for the worker.";
+
+  const seen = data.worker_last_seen ? new Date(data.worker_last_seen) : null;
+  const health = [];
+  health.push(data.worker_running
+    ? `<span class="link-status ok">Worker running</span>`
+    : `<span class="link-status bad">No worker</span>`);
+  health.push(data.browser_available
+    ? `<span class="link-status ok">Browser available</span>`
+    : `<span class="link-status bad">No browser</span>`);
+  health.push(data.dry_run
+    ? `<span class="link-status warn">Dry run only is ON — nothing submits for real</span>`
+    : `<span class="link-status ok">Real submissions ON</span>`);
+  if (!data.allowed) health.push(`<span class="link-status bad">Auto-apply not enabled for this account</span>`);
+
+  const queueRows = queue.map((r) => `
+    <tr>
+      <td class="mono">${r.position}</td>
+      <td><button type="button" class="link-button" data-open="${escapeHtml(r.name)}">${pipelineRowTitle(r)}</button>
+        <div class="field-help">${escapeHtml(r.provider)}${r.last_evidence ? ` · last: ${escapeHtml(r.last_evidence.replace("_", " "))}` : ""}</div></td>
+      <td>${escapeHtml(new Date(r.requested_at).toLocaleString())}</td>
+      <td><span class="pipe-phase pipe-phase-${escapeHtml(r.phase)}">${escapeHtml(PHASE_LABEL[r.phase] || r.phase)}</span>
+        ${r.phase === "awaiting_code" && r.code_received ? `<div class="field-help">code received — finishing</div>` : ""}</td>
+      <td><span class="link-status ${WILL_TONE[r.will] || "warn"}">${escapeHtml(WILL_LABEL[r.will] || r.will)}</span>
+        ${r.then_submit ? `<div class="field-help">then submits for real if clean</div>` : ""}
+        ${r.reason ? `<div class="field-help">${escapeHtml(r.reason)}</div>` : ""}</td>
+    </tr>`).join("");
+
+  const readyRows = ready.map((r) => `
+    <li class="pipe-ready${r.promotable ? " promotable" : ""}">
+      <button type="button" class="link-button" data-open="${escapeHtml(r.name)}">${pipelineRowTitle(r)}</button>
+      <span class="field-help">${escapeHtml(r.holding)}</span>
+    </li>`).join("");
+
+  body.innerHTML = `
+    <div class="pipe-health" role="group" aria-label="Agent status">${health.join(" ")}</div>
+    <h2 class="mt-4">Submit queue</h2>
+    <p class="field-help">In the order the worker will take them. It claims one every 15 seconds and runs the browser on it.</p>
+    ${queue.length ? `
+    <div class="table-scroll">
+      <table class="pipeline-table">
+        <caption class="sr-only">Queued submit requests, oldest first</caption>
+        <thead><tr><th scope="col">#</th><th scope="col">Application</th><th scope="col">Requested</th><th scope="col">State</th><th scope="col">When drained</th></tr></thead>
+        <tbody>${queueRows}</tbody>
+      </table>
+    </div>` : `<p class="empty-result">Nothing is queued. Queue a packet from the Ready lane, or from an application's Submit button.</p>`}
+    <h2 class="mt-4">Ready, not queued</h2>
+    <p class="field-help">Packets parked in Ready and what is holding each one.${
+      s.promotable ? ` <strong>${s.promotable} clean</strong> — ${data.dry_run
+        ? "they queue for real once Dry run only is turned off in Settings · Agent."
+        : "Submit all clean queues them now."}` : ""}</p>
+    ${ready.length ? `<ul class="pipe-ready-list">${readyRows}</ul>` : `<p class="empty-result">Nothing is parked in Ready.</p>`}
+    ${s.promotable && !data.dry_run && data.allowed && data.browser_available
+      ? `<div class="mt-3"><button type="button" id="pipeline-submit-clean" class="btn btn-primary">Submit all clean (${s.promotable})</button></div>` : ""}
+    ${data.dry_run ? `<div class="mt-3"><button type="button" id="pipeline-open-agent" class="btn btn-ghost">Open Settings · Agent</button></div>` : ""}`;
+
+  body.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
+  const agentBtn = document.getElementById("pipeline-open-agent");
+  if (agentBtn) agentBtn.addEventListener("click", () => openSettings("agent"));
+  const cleanBtn = document.getElementById("pipeline-submit-clean");
+  if (cleanBtn) cleanBtn.addEventListener("click", async () => {
+    const ok = await confirmAction({
+      title: "Submit every clean packet?",
+      message: `The browser will click Submit for real on ${s.promotable} application${s.promotable === 1 ? "" : "s"} whose dry run was clean.`,
+      confirmLabel: "Submit all clean",
+    });
+    if (!ok) return;
+    cleanBtn.disabled = true;
+    try {
+      const r = await api("POST", "/api/ready/actions", { action: "submit", all_clean: true });
+      toast(`${(r.done || []).length} queued for submission.`);
+      const gen = ++pipelineGen;
+      await loadPipeline(gen);
+    } catch (e) {
+      toast(e.message);
+      cleanBtn.disabled = false;
+    }
   });
 }
 
@@ -499,6 +659,7 @@ function renderSidebar() {
 
 function renderEmpty() {
   state.mode = "empty";
+  syncPipelineButton();
   state.current = null;
   showListPane({ restoreFocus: false });
   document.title = "Applications | ApplyTrack";
@@ -524,6 +685,7 @@ async function openApp(name) {
     state.current = name;
     state.currentVersion = data.version || "";
     state.mode = "view";
+    syncPipelineButton();
     renderSidebar();
     renderView(data);
     showDetailPane();
@@ -1331,6 +1493,7 @@ function gatherFields() {
 
 function openEdit(data) {
   state.mode = "edit";
+  syncPipelineButton();
   contentEl.innerHTML = formMarkup(data.fields, { isNew: false });
   wireForm({ isNew: false });
   document.title = `Edit ${data.fields.company || stem(data.filename)} | ApplyTrack`;
@@ -1339,6 +1502,7 @@ function openEdit(data) {
 
 function openNew() {
   state.mode = "new";
+  syncPipelineButton();
   state.current = null;
   showDetailPane();
   renderSidebar();
@@ -1422,6 +1586,7 @@ function wireForm({ isNew }) {
 
 function openRaw(data) {
   state.mode = "raw";
+  syncPipelineButton();
   contentEl.innerHTML = `
     <article class="sheet">
       <div class="view-header">
@@ -2608,6 +2773,7 @@ async function openSettings(tab, focusSelectedTab = false) {
   if (SETTINGS_TABS.some(([k]) => k === tab)) state.settingsTab = tab;
   const gen = ++settingsGen;
   state.mode = "settings";
+  syncPipelineButton();
   state.current = null;
   showDetailPane();
   renderSidebar();

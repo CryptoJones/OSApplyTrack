@@ -25,8 +25,20 @@ public sealed partial class BrowserSession : IAsyncDisposable
         "workable.com", "breezy.hr", "smartrecruiters.com", "join.com",
     ];
 
-    [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested)", RegexOptions.IgnoreCase)]
+    // Localised too: join.com renders its posting in the employer's language, so the
+    // real Apply on a French posting is "Postuler maintenant" (#210).
+    [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested|postuler\b|(?:jetzt )?bewerben|aplicar\b|solicitar\b|candidat)", RegexOptions.IgnoreCase)]
     private static partial Regex ApplyTrigger();
+
+    /// <summary>
+    /// A control that only LOOKS like the way in: "Apply later", "Send me the link",
+    /// "Remind me", a job-alert subscription. join.com puts an email box and an
+    /// "Apply later" submit on every posting page; clicking it emails the candidate the
+    /// posting's own link and sends no application (#210). Never the Apply trigger,
+    /// never the Submit button — here and in <see cref="BrowserSubmitter"/>.
+    /// </summary>
+    [GeneratedRegex(@"later|plus tard|später|spaeter|más tarde|mais tarde|remind|send (?:me )?(?:the |a )?link|envoyer|subscribe|alert|newsletter", RegexOptions.IgnoreCase)]
+    public static partial Regex LaterWords();
 
     // Cookie-consent banners (#202): the well-known managers by their own ids first, then
     // any visible button that reads as "accept" inside a box that calls itself a cookie,
@@ -287,10 +299,14 @@ public sealed partial class BrowserSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Does the page show something that reads as an <i>application</i> form — a file or
-    /// email input, a textarea, or at least two text boxes — rather than merely a control?
-    /// A posting page's job-search box is one text input, and taking it for the form is
-    /// how Workable's job finder was never asked to reveal its real one (#180).
+    /// Does the page show something that reads as an <i>application</i> form — a file
+    /// input, a textarea, or at least two text-like boxes (email counts as one) — rather
+    /// than merely a control? A posting page's job-search box is one text input, and
+    /// taking it for the form is how Workable's job finder was never asked to reveal its
+    /// real one (#180). A lone email box is not a form either: join.com's posting page
+    /// carries one for "Apply later", and taking it for the form is how the agent never
+    /// clicked Apply, typed the candidate's email into it, and had the board email the
+    /// posting's link back instead of an application (#210).
     /// </summary>
     private static async Task<bool> ApplicationFormVisibleAsync(IPage page)
     {
@@ -307,8 +323,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
                         const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
                         if (type === 'file') return true;
                         if (!shown(el)) continue;
-                        if (type === 'email' || el.tagName === 'TEXTAREA') return true;
-                        if (type === 'text' || type === 'tel' || type === 'url' || type === 'select') texts++;
+                        if (el.tagName === 'TEXTAREA') return true;
+                        if (type === 'text' || type === 'email' || type === 'tel' || type === 'url' || type === 'select') texts++;
                         if (texts >= 2) return true;
                       }
                       return false;
@@ -346,8 +362,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
         ILocator? apply = null;
         foreach (var candidate in new[]
                  {
-                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).First,
-                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).First,
+                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }).First,
+                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }).First,
                  })
         {
             try { if (await candidate.IsVisibleAsync()) { apply = candidate; break; } }

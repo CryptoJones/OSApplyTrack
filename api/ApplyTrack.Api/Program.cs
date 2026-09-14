@@ -361,6 +361,7 @@ app.MapAnswersEndpoints();
 app.MapNotificationsEndpoints();
 app.MapSubmitEndpoints();
 app.MapReadyEndpoints();
+app.MapPipelineEndpoints();
 
 app.Run();
 
