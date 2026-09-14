@@ -683,9 +683,12 @@ and the poller can pull from it as the **MyGreenhouse** source in Settings ·
 Criteria (off by default). It needs two things you already may have: a **board
 account for `greenhouse.io`** (Settings · Agent · Board accounts — username only,
 the portal has no password) and **your mailbox** (Settings · Notifications), because
-the portal signs you in by emailing a security code. The poller asks for the code,
-reads it from the mailbox, and keeps the fortnight-long session sealed on the
-board-account row, so the code is read once in a while, not every poll. It searches
+the portal signs you in by emailing a security code. The **agent's browser** does
+that sign-in — the portal only sends the mail for a real browser's click — reads
+the code from the mailbox, and keeps the fortnight-long session sealed on the
+board-account row; it renews it two days before it runs out, and again whenever
+the portal bounces it, so the code is read once in a while, not every poll. The
+poller only searches with the kept session. It searches
 your keywords (capped) a page each plus the newest postings, `remote` only when your
 profile is remote-only, and every listing links to the employer's own Greenhouse
 board, which the packet builder reads through the Job Board API as usual.

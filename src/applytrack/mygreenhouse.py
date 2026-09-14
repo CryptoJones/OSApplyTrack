@@ -4,10 +4,10 @@
 
 Signed in, ``my.greenhouse.io/jobs/search`` lists the newest postings across every
 Greenhouse board, searchable and filterable. Sign-in is passwordless: the portal
-emails a security code to the candidate's address, which this reads from the
-tenant's own mailbox (the IMAP one Settings · Notifications holds). The session
-cookie lasts a fortnight and is kept sealed on the tenant's board-account row,
-so the code is read once in a while, not every poll.
+emails a security code to the candidate's address. The .NET agent's browser does
+that sign-in (#221) — the portal never sends the mail for a plain client's request —
+and keeps the fortnight-long session cookie sealed on the tenant's board-account
+row; this searches with it, and clears it when the portal bounces it.
 
 Everything the portal returns links to the employer's own Greenhouse board
 (``job-boards.greenhouse.io/{token}/jobs/{id}``), which the packet builder already
@@ -16,20 +16,14 @@ reads through the Job Board API.
 
 from __future__ import annotations
 
-import contextlib
-import email
-import email.utils
 import html
-import imaplib
 import json
 import logging
 import re
-import time
 import urllib.parse
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email.header import decode_header
 from typing import Any
 
 import httpx
@@ -44,28 +38,17 @@ SOURCE = "mygreenhouse"
 ACCOUNT_HOSTS = ("greenhouse.io", "my.greenhouse.io")
 #: How long a fresh session is trusted before it is re-checked against the portal.
 SESSION_DAYS = 13
-#: How long to wait for the emailed code.
-CODE_WAIT_SECONDS = 180
 #: Queries per poll from the tenant's keywords (one page each), on top of the
 #: unfiltered newest-postings pages.
 MAX_KEYWORD_QUERIES = 10
 BROWSE_PAGES = 2
 
-_CODE_RE = re.compile(r"code\s+is[^0-9A-Za-z]{0,80}([A-Za-z0-9]{6,10})\b", re.IGNORECASE)
 _CSRF_RE = re.compile(r'<meta\s+name="csrf-token"\s+content="([^"]+)"', re.IGNORECASE)
 _PAGE_RE = re.compile(r'data-page="([^"]+)"')
 
 
 class NeedsSignIn(Exception):
     """The portal did not accept the session."""
-
-
-@dataclass
-class Mailbox:
-    host: str
-    port: int
-    username: str
-    password: str
 
 
 @dataclass
@@ -81,76 +64,6 @@ class PortalAccount:
         return bool(self.session) and (
             self.session_expires_at is None or self.session_expires_at > datetime.now(timezone.utc)
         )
-
-
-def read_code(
-    mailbox: Mailbox,
-    since: float,
-    *,
-    wait: int = CODE_WAIT_SECONDS,
-    sleep: Callable[[float], None] = time.sleep,
-    imap_factory: Callable[[str, int], imaplib.IMAP4] | None = None,
-) -> str | None:
-    """Poll the candidate's mailbox for the MyGreenhouse security code mailed after ``since``.
-
-    Read-only, newest first, only mail from Greenhouse dated after the send (a
-    20 s grace for clocks): the portal issues a fresh code per send and the older
-    one is void, so an earlier mail is never the answer.
-    """
-    deadline = time.time() + wait
-    day = time.strftime("%d-%b-%Y", time.gmtime(since - 86400))
-    while True:
-        try:
-            client = (imap_factory or imaplib.IMAP4_SSL)(mailbox.host, mailbox.port)
-            try:
-                client.login(mailbox.username, mailbox.password)
-                client.select("INBOX", readonly=True)
-                _, data = client.search(None, f'(SINCE "{day}" FROM "greenhouse")')
-                for uid in reversed((data[0] or b"").split()[-8:]):
-                    _, msgdata = client.fetch(uid, "(RFC822)")
-                    first = msgdata[0] if msgdata else None
-                    payload = b""
-                    if isinstance(first, tuple) and isinstance(first[1], bytes):
-                        payload = first[1]
-                    code = code_in_message(payload, since)
-                    if code:
-                        return code
-            finally:
-                with contextlib.suppress(Exception):  # logout is best effort
-                    client.logout()
-        except Exception:  # noqa: BLE001 - a mailbox hiccup is retried until the deadline
-            logger.warning("mygreenhouse: mailbox read failed", exc_info=True)
-        if time.time() >= deadline:
-            return None
-        sleep(8)
-
-
-def code_in_message(raw: bytes, since: float) -> str | None:
-    """The security code in one mail, when it is Greenhouse's and dated after ``since``."""
-    if not raw:
-        return None
-    msg = email.message_from_bytes(raw)
-    try:
-        sent = email.utils.parsedate_to_datetime(msg["Date"] or "").timestamp()
-    except (TypeError, ValueError):
-        sent = 0.0
-    if sent < since - 20:
-        return None
-    subject = "".join(
-        part.decode(charset or "utf-8", "replace") if isinstance(part, bytes) else part
-        for part, charset in decode_header(msg["Subject"] or "")
-    )
-    if "greenhouse" not in subject.lower() and "code" not in subject.lower():
-        return None
-    body = ""
-    for part in msg.walk():
-        if part.get_content_type() in ("text/plain", "text/html"):
-            payload = part.get_payload(decode=True)
-            if isinstance(payload, bytes):
-                body += payload.decode(part.get_content_charset() or "utf-8", "replace")
-    text = html.unescape(re.sub(r"<[^>]+>", " ", body))
-    m = _CODE_RE.search(text)
-    return m.group(1) if m else None
 
 
 class Portal:
@@ -210,31 +123,6 @@ class Portal:
         h.update(partial)
         return h
 
-    def sign_in(self, code_source: Callable[[float], str | None]) -> str:
-        """Sign in as the account's email: ask for the code, take it from ``code_source``
-        (called with the moment the request went out), submit it. Returns the session."""
-        self._page("/users/sign_in")
-        sent = time.time()
-        r = self._client.post(
-            BASE + "/users/sign_in",
-            json={"email": self._account.email, "job_board": None},
-            headers=self._inertia_headers(**{"Content-Type": "application/json"}),
-        )
-        if r.status_code >= 400:
-            raise NeedsSignIn(f"the portal refused the sign-in request ({r.status_code})")
-        code = code_source(sent)
-        if not code:
-            raise NeedsSignIn("no security code arrived in the mailbox in time")
-        self._page("/users/sign_in")  # a fresh CSRF token for the second post
-        r = self._client.post(
-            BASE + "/users/submit_code",
-            json={"code": code, "email": self._account.email, "time_zone": "UTC"},
-            headers=self._inertia_headers(**{"Content-Type": "application/json"}),
-        )
-        if r.status_code >= 400 or not self.session:
-            raise NeedsSignIn(f"the portal refused the security code ({r.status_code})")
-        return self.session
-
     def search(
         self, query: str, *, page: int = 1, remote_only: bool = False
     ) -> tuple[list[dict[str, Any]], bool]:
@@ -248,10 +136,12 @@ class Portal:
         if remote_only:
             pairs.append(("work_type[]", "remote"))
         params = httpx.QueryParams(pairs)
-        headers = self._inertia_headers(**{
-            "X-Inertia-Partial-Component": "jobs",
-            "X-Inertia-Partial-Data": "jobPosts,moreResultsAvailable,page",
-        })
+        headers = self._inertia_headers(
+            **{
+                "X-Inertia-Partial-Component": "jobs",
+                "X-Inertia-Partial-Data": "jobPosts,moreResultsAvailable,page",
+            }
+        )
         r = self._client.get(BASE + "/jobs/search", params=params, headers=headers)
         if r.status_code == 409:  # the app shipped a new build: take its version and retry once
             self._page("/jobs/search")

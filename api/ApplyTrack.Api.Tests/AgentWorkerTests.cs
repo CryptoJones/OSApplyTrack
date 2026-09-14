@@ -34,7 +34,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
         BrowserOptions? browser = null, JobPageFetcher? fetcher = null,
         IBrowserSubmitter? submitter = null, ISecurityCodeSource? codes = null, INotifier? telegram = null,
-        AgentOptions? options = null)
+        AgentOptions? options = null, IPortalSessionRenewer? portal = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), fetcher ?? new JobPageFetcher(),
@@ -55,7 +55,7 @@ public class AgentWorkerTests(PostgresFixture pg)
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
             Protector, evaluator, builder, ready, browserOptions,
             submitter ?? new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance,
-            codes, telegram);
+            codes, telegram, portal);
     }
 
     private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true, bool allowed = true)
@@ -79,6 +79,79 @@ public class AgentWorkerTests(PostgresFixture pg)
         await apps.CreateAsync(new AppFields { Company = "Junk", Role = "Engineer", Score = "high" });
         await apps.CreateAsync(new AppFields { Company = "Applied", Role = "Engineer", Score = "95", Status = "applied" });
         return (conn, t);
+    }
+
+    /// <summary>A tenant with a MyGreenhouse board account and, unless told otherwise, a mailbox (#221).</summary>
+    private async Task<(NpgsqlConnection Conn, long Tenant)> SeedPortalTenantAsync(bool mailbox = true)
+    {
+        var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+        var t = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
+        await new BoardAccountRepo(conn, t, Protector, NullLogger<BoardAccountRepo>.Instance).UpsertAsync("greenhouse.io", "ada@example.com", null);
+        if (mailbox)
+            await new MailboxSettingsRepo(conn, t, Protector, NullLogger<MailboxSettingsRepo>.Instance)
+                .UpsertAsync(true, "imap.example.com", 993, "ada@example.com", true, "app-pw");
+        return (conn, t);
+    }
+
+    private static Task<(string Cipher, DateTime? Expires)> PortalRowAsync(NpgsqlConnection conn, long t) =>
+        conn.QuerySingleAsync<(string, DateTime?)>(
+            "SELECT session_ciphertext, session_expires_at FROM board_accounts WHERE tenant_id = @t AND host = 'greenhouse.io'", new { t });
+
+    [Fact]
+    public async Task A_portal_account_without_a_session_is_signed_in_once_and_the_session_kept_sealed()
+    {
+        var (conn, t) = await SeedPortalTenantAsync();
+        await using var _ = conn;
+        var renewer = new FakePortalRenewer(_ => new PortalSession("sess-fresh", DateTimeOffset.UtcNow.AddDays(13)));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            codes: new FakeCodeSource(() => null), portal: renewer);
+
+        Assert.Equal(1, await worker.RenewPortalSessionsAsync(CancellationToken.None));
+        Assert.Equal(["ada@example.com"], renewer.Emails);
+        var (cipher, expires) = await PortalRowAsync(conn, t);
+        Assert.Equal("sess-fresh", Protector.Unprotect(cipher));
+        Assert.NotNull(expires);
+        Assert.InRange(expires!.Value, DateTime.UtcNow.AddDays(12), DateTime.UtcNow.AddDays(14));
+        Assert.Contains(("", AgentEventRepo.Kinds.PortalSession), await EventsAsync(conn, t));
+        // Fresh now: nothing is due, and the account is not signed in again.
+        Assert.Equal(0, await worker.RenewPortalSessionsAsync(CancellationToken.None));
+        Assert.Single(renewer.Emails);
+    }
+
+    [Fact]
+    public async Task A_failed_renewal_is_recorded_and_not_retried_within_the_hour()
+    {
+        var (conn, t) = await SeedPortalTenantAsync();
+        await using var _ = conn;
+        var renewer = new FakePortalRenewer(_ => throw new PortalRenewalException("no security code arrived in the mailbox"));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            codes: new FakeCodeSource(() => null), portal: renewer);
+
+        Assert.Equal(0, await worker.RenewPortalSessionsAsync(CancellationToken.None));
+        Assert.Equal(0, await worker.RenewPortalSessionsAsync(CancellationToken.None));
+        Assert.Single(renewer.Emails);   // one try; the next waits for PortalRetry
+        var (cipher, _) = await PortalRowAsync(conn, t);
+        Assert.Equal("", cipher);
+        var reasons = (await conn.QueryAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
+        Assert.Contains(reasons, r => r.Contains("no security code arrived"));
+    }
+
+    [Fact]
+    public async Task Without_a_mailbox_the_renewal_says_so_and_never_asks_the_portal_for_a_code()
+    {
+        var (conn, t) = await SeedPortalTenantAsync(mailbox: false);
+        await using var _ = conn;
+        var renewer = new FakePortalRenewer(_ => new PortalSession("never", DateTimeOffset.UtcNow));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            codes: new FakeCodeSource(() => null), portal: renewer);
+
+        Assert.Equal(0, await worker.RenewPortalSessionsAsync(CancellationToken.None));
+        Assert.Empty(renewer.Emails);
+        var reasons = (await conn.QueryAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
+        Assert.Contains(reasons, r => r.Contains("Settings · Notifications"));
     }
 
     private static async Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>

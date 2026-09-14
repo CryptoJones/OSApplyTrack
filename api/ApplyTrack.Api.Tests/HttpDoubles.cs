@@ -102,6 +102,18 @@ internal sealed class FakeSubmitter(
         new(true, true, link, "Thank you for applying!", null, [], ["std:first_name", "std:email"], "");
 }
 
+/// <summary>The MyGreenhouse sign-in without a browser (#221): hands back a session, or throws.</summary>
+internal sealed class FakePortalRenewer(Func<string, ApplyTrack.Api.Agent.Browser.PortalSession> renew) : ApplyTrack.Api.Agent.Browser.IPortalSessionRenewer
+{
+    public List<string> Emails { get; } = [];
+
+    public Task<ApplyTrack.Api.Agent.Browser.PortalSession> RenewAsync(string email, Func<DateTimeOffset, CancellationToken, Task<string?>> readCode, CancellationToken ct)
+    {
+        Emails.Add(email);
+        return Task.FromResult(renew(email));
+    }
+}
+
 /// <summary>A mailbox that answers (or fails) on cue, standing in for IMAP.</summary>
 internal sealed class FakeCodeSource(Func<string?> find) : ISecurityCodeSource
 {
