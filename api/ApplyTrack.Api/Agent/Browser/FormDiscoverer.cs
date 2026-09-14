@@ -82,7 +82,7 @@ public sealed partial class FormDiscoverer
         var seen = new Dictionary<string, string>();   // key → the label it was first seen with
         foreach (var c in controls)
         {
-            var label = c.Label.Trim().TrimEnd('*').Trim();
+            var label = PacketQuestion.CleanLabel(c.Label);
             // A control with neither name nor id — Comeet's custom questions — is keyed by its
             // label; the submitter finds it by that label, and the required-empty sweep
             // reports it under the same key.
@@ -164,7 +164,7 @@ public sealed partial class FormDiscoverer
           const starred = (el) => {
             for (let a = el.parentElement, i = 0; a && a !== document.body && i < 12; a = a.parentElement, i++) {
               const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
-              if (l) return /\*\s*$/.test((l.innerText || '').trim());
+              if (l) return /^\s*\*|\*\s*$/.test((l.innerText || '').trim());
             }
             return false;
           };
@@ -176,7 +176,7 @@ public sealed partial class FormDiscoverer
             if (type !== 'file' && !visible(el)) continue;
             // The careers site's own job search and job-alert boxes are not questions (#214).
             if (widget(el)) continue;
-            const required = el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(labelFor(el)) || starred(el);
+            const required = el.required || el.getAttribute('aria-required') === 'true' || /^\s*\*|\*\s*$/.test(labelFor(el)) || starred(el);
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               const grp = seenRadio.get(name);

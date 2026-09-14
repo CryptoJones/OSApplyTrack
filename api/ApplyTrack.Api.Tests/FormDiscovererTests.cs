@@ -201,8 +201,11 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             ("inputId", "", "City", "input", "text", false, []),
             ("inputId", "", "State/Province", "input", "text", false, []),
             ("inputId", "", "State/Province", "input", "text", false, []),
+            // SuccessFactors' starred label, as its text arrives: the star is not part of it (#222).
+            ("89:_input", "", "*\n Country", "input", "text", true, []),
         ]);
-        Assert.Equal(6, qs.Count);
+        Assert.Contains(qs, q => q.Id == "89:_input" && q.Label == "Country" && q.Required);
+        Assert.Equal(7, qs.Count);
         Assert.Equal(("inputId", "City"), (qs[4].Id, qs[4].Label));
         Assert.Equal(("State/Province", "State/Province"), (qs[5].Id, qs[5].Label));
         // No name, no id: keyed by the label (Comeet's custom questions); nothing at all is dropped.

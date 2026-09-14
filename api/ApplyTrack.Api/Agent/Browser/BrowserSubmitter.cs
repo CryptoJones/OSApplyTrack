@@ -286,7 +286,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     SignInError + "; apply via Copy answers and open the posting");
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
-                    await HasFillableControlsAsync(form)
+                    AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame))
+                        ? "the board says this account already applied to this posting — nothing to send; mark it applied"
+                            + (session.SignedInAs is { } acct ? $" (signed in at {acct.Host} as {acct.Username})" : "")
+                    : await HasFillableControlsAsync(form)
                         ? "nothing on this form could be filled — the packet's questions match none of its fields"
                         : "no application form was found on the page — nothing to fill"
                           + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : "")
@@ -524,8 +527,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static PacketQuestion? FindQuestion(AgentPacket packet, string key, string label) =>
         packet.Questions.FirstOrDefault(x => Unprefixed(x.Id).Equals(key, StringComparison.OrdinalIgnoreCase))
         ?? packet.Questions.FirstOrDefault(x => key.EndsWith("-" + Unprefixed(x.Id), StringComparison.OrdinalIgnoreCase))
-        ?? (label.Length == 0 ? null
-            : packet.Questions.FirstOrDefault(x => x.Label.Trim().TrimEnd('*').Trim().Equals(label, StringComparison.OrdinalIgnoreCase)));
+        ?? (PacketQuestion.CleanLabel(label) is { Length: > 0 } clean
+            ? packet.Questions.FirstOrDefault(x => PacketQuestion.CleanLabel(x.Label).Equals(clean, StringComparison.OrdinalIgnoreCase))
+            : null);
 
     /// <summary>Find the control for a question — by accessible name first, then by the
     /// ATS field name — and set it. False when nothing visible matched.</summary>
@@ -620,8 +624,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // aria-owns); otherwise any option that is on screen.
         var owned = await control.GetAttributeAsync("aria-controls");
         if (string.IsNullOrWhiteSpace(owned)) owned = await control.GetAttributeAsync("aria-owns");
+        // By attribute, never by "#id": SuccessFactors numbers its widgets ("298:_listSelect")
+        // and an id selector cannot start with a digit, so the escaped form threw and the
+        // menu was never read — the pinned answer was typed and never chosen (#222).
         var options = !string.IsNullOrWhiteSpace(owned)
-            ? page.Locator($"#{CssEscape(owned)} [role=option]:visible")
+            ? page.Locator($"[id={Quote(owned)}] [role=option]:visible")
             : page.Locator("[role=option]:visible");
         IReadOnlyList<string> texts;
         try { texts = await options.AllInnerTextsAsync(); }
@@ -629,16 +636,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (texts.Count == 0) return null;
         var want = answer.Trim();
         var norm = texts.Select(t => t.Replace('\n', ' ').Trim()).ToList();
+        // The menu's own "No Selection" / "Select…" row is a placeholder, not a choice: never
+        // the first suggestion, and never a match for an answer it merely contains.
+        var real = norm.Select((t, n) => (t, n)).Where(x => !Placeholder().IsMatch(x.t)).ToList();
         var i = norm.FindIndex(t => t.Equals(want, StringComparison.OrdinalIgnoreCase));
         if (i < 0)
         {
-            var starts = norm.Select((t, n) => (t, n))
+            var starts = real
                 .Where(x => x.t.StartsWith(want, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(x => x.t.Length).ToList();
             if (starts.Count > 0) i = starts[0].n;
         }
-        if (i < 0) i = norm.FindIndex(t => t.Contains(want, StringComparison.OrdinalIgnoreCase));
-        if (i < 0 && !fixedSet) i = 0;
+        if (i < 0) i = real.FirstOrDefault(x => x.t.Contains(want, StringComparison.OrdinalIgnoreCase), (t: "", n: -1)).n;
+        if (i < 0 && !fixedSet && real.Count > 0) i = real[0].n;
         return i < 0 ? null : options.Nth(i);
     }
 
@@ -715,11 +725,22 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
             const wrap = el.closest('label'); if (wrap) return wrap.innerText;
             const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
+            // The row's own label when the page never tied it to the control — the same rule
+            // discovery names the field by, so the sweep and the packet agree on it. SuccessFactors'
+            // Acknowledgement checkbox has a <label for=""> beside it and nothing else (#222).
+            for (let a = el.parentElement, i = 0; a && a !== document.body && i < 12; a = a.parentElement, i++) {
+              const controls = [...a.querySelectorAll('input, select, textarea')]
+                .filter(c => !['hidden', 'submit', 'button', 'reset', 'image'].includes((c.getAttribute('type') || '').toLowerCase()) && (c === el || visible(c)));
+              if (controls.length > 1) break;
+              const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
+              if (l) return l.innerText.trim();
+            }
             return el.getAttribute('placeholder') || '';
           };
           const out = []; const seen = new Set();
           const add = (key, label) => {
-            label = (label || '').replace(/\*\s*$/, '').trim();
+            // A required star at either end is decoration: "* Country" is Country (#222).
+            label = (label || '').replace(/^\s*\*\s*/, '').replace(/\*\s*$/, '').replace(/\s+/g, ' ').trim();
             key = (key || label).trim();
             if (!key || seen.has(key)) return;
             seen.add(key); out.push({ key, label });
@@ -1266,14 +1287,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             return false;
         }
 
-        var box = page.Locator($"input[type=checkbox]#{CssEscape(id)}, input[type=checkbox][name='{id}']").First;
+        var boxSelector = $"input[type=checkbox][id={Quote(id)}], input[type=checkbox][name={Quote(id)}]";
+        var box = page.Locator(boxSelector).First;
+        var want = Affirmative(answer);
         try
         {
             if (await box.CountAsync() == 0) return null;
-            await box.SetCheckedAsync(Affirmative(answer));
+            await box.SetCheckedAsync(want);
             return true;
         }
-        catch (PlaywrightException) { return false; }
+        catch (PlaywrightException)
+        {
+            // A widget that re-renders its box on click (SuccessFactors' Acknowledgement) leaves
+            // Playwright reading the detached one and reporting the click "did not change its
+            // state" — the box on the page is what counts. Read it fresh, and press once more
+            // by hand if it still disagrees (#222).
+            try
+            {
+                var fresh = page.Locator(boxSelector).First;
+                if (await fresh.CountAsync() == 0) return false;
+                if (await fresh.IsCheckedAsync() == want) return true;
+                await fresh.ClickAsync(new() { Force = true, Timeout = 3_000 });
+                await page.WaitForTimeoutAsync(300);
+                return await page.Locator(boxSelector).First.IsCheckedAsync() == want;
+            }
+            catch (PlaywrightException) { return false; }
+        }
     }
 
     /// <summary>The visible text tied to one radio/checkbox — its own label, or the one wrapping it.</summary>
@@ -1303,15 +1342,18 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static async Task<ILocator?> LocateAsync(IFrame page, PacketQuestion q)
     {
         var id = Unprefixed(q.Id);
-        var label = q.Label.Trim().TrimEnd('*').Trim();
+        // The label as a person reads it: SuccessFactors writes "*\u00a0Country" and the packet
+        // kept the star, so no label ever matched and every field lived or died by its id —
+        // which the board renumbers per render (#222).
+        var label = PacketQuestion.CleanLabel(q.Label);
         var candidates = new List<ILocator>();
         if (label.Length > 0)
-            candidates.Add(page.GetByLabel(new Regex(@"^\s*" + Regex.Escape(label) + @"\s*\*?\s*$", RegexOptions.IgnoreCase)));
-        candidates.Add(page.Locator($"#{CssEscape(id)}"));
-        candidates.Add(page.Locator($"[id$='-{id}']"));
-        candidates.Add(page.Locator($"[name='{id}']"));
-        candidates.Add(page.Locator($"[name$='[{id}]']"));
-        candidates.Add(page.Locator($"[name*='{id}']"));
+            candidates.Add(page.GetByLabel(new Regex(@"^\s*\*?\s*" + Regex.Escape(label).Replace(@"\ ", @"\s+") + @"\s*\*?\s*$", RegexOptions.IgnoreCase)));
+        candidates.Add(page.Locator($"[id={Quote(id)}]"));
+        candidates.Add(page.Locator($"[id$={Quote("-" + id)}]"));
+        candidates.Add(page.Locator($"[name={Quote(id)}]"));
+        candidates.Add(page.Locator($"[name$={Quote("[" + id + "]")}]"));
+        candidates.Add(page.Locator($"[name*={Quote(id)}]"));
         if (label.Length > 0)
             candidates.Add(page.GetByLabel(label, new() { Exact = false }));
         // Last: a label that is nothing but text above the box — no <label for>, no aria —
@@ -1324,20 +1366,25 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 + $"{XPathLiteral(label.ToLowerInvariant())})]]"));
         foreach (var c in candidates)
         {
-            try
+            int count;
+            try { count = Math.Min(await c.CountAsync(), 6); }
+            catch (PlaywrightException) { continue; }
+            ILocator? usable = null;
+            for (var i = 0; i < count; i++)
             {
-                var count = Math.Min(await c.CountAsync(), 6);
-                ILocator? usable = null;
-                for (var i = 0; i < count; i++)
+                var nth = c.Nth(i);
+                // Judged one at a time: a match that is not a form control (the picker's own
+                // button carries the same aria-label as its input on SuccessFactors) throws on
+                // "is it editable", and used to take the input found before it down with it.
+                try
                 {
-                    var nth = c.Nth(i);
                     if (!await nth.IsVisibleAsync() || !await nth.IsEditableAsync()) continue;
                     usable ??= nth;
                     if (await IsEmptyAsync(nth)) return nth;
                 }
-                if (usable is not null) return usable;
+                catch (PlaywrightException) { /* not a control; the next match */ }
             }
-            catch (PlaywrightException) { /* try the next */ }
+            if (usable is not null) return usable;
         }
         return null;
     }
@@ -1385,7 +1432,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var id = Unprefixed(q.Id);
         var candidates = new ILocator?[]
         {
-            page.Locator($"input[type=file]#{CssEscape(id)}").First,
+            page.Locator($"input[type=file][id={Quote(id)}]").First,
             page.Locator($"input[type=file][name*='{id}']").First,
             page.Locator("input[type=file][name*='resume' i], input[type=file][id*='resume' i]").First,
             // Only when the form has exactly one file input can "the file input" mean the
@@ -1669,7 +1716,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static bool IsCoverLetter(PacketQuestion q) =>
         q.Id.Contains("cover", StringComparison.OrdinalIgnoreCase) || q.Label.Contains("cover letter", StringComparison.OrdinalIgnoreCase);
 
-    private static string CssEscape(string id) => Regex.Replace(id, @"([^a-zA-Z0-9_-])", "\\$1");
+    /// <summary>A value quoted for a CSS attribute selector: <c>[id="89:_input"]</c>. Attribute
+    /// selectors take any id, where <c>#id</c> cannot start with a digit however it is escaped.</summary>
+    private static string Quote(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+
+    [GeneratedRegex(@"^\s*(?:no selection|none selected|select(?:\s+one|\s+an option|\.{3}|…)?|-+\s*select\s*-+|please (?:select|choose)(?:\s+one)?|choose(?:\s+one)?)\s*[.…:]?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex Placeholder();
+
+    [GeneratedRegex(@"you (?:have )?already applied|already applied for this (?:position|job|role)|you(?:'ve| have) already (?:submitted|sent) (?:an|your) application|application already (?:exists|submitted)", RegexOptions.IgnoreCase)]
+    private static partial Regex AlreadyApplied();
 
     /// <summary>Requests that are never the application: analytics beacons, the captcha's own
     /// traffic, and the résumé uploader's trip to object storage.</summary>

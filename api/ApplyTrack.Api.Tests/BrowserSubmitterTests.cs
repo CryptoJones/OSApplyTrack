@@ -175,10 +175,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapPost("/jobs/sf/signin", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
-            return form["username"] == "ada@example.com" && form["password"] == "Sekrit-9$"
-                ? Results.Redirect("/jobs/sf/app") : Results.Redirect("/jobs/sf/signin?error=1");
+            if (form["password"] != "Sekrit-9$") return Results.Redirect("/jobs/sf/signin?error=1");
+            return form["username"].ToString() switch
+            {
+                "ada@example.com" => Results.Redirect("/jobs/sf/app"),
+                // The candidate who applied by hand: the board shows a notice, not the form (#222).
+                "again@example.com" => Results.Redirect("/jobs/sf/applied"),
+                _ => Results.Redirect("/jobs/sf/signin?error=1"),
+            };
         });
         _fixture.MapGet("/jobs/sf/app", () => Results.Content(SfApplicationHtml, "text/html"));
+        _fixture.MapGet("/jobs/sf/applied", () => Results.Content(
+            "<html><body><form name=\"keywordsearch\" role=\"search\"><input type=\"text\" name=\"q\" placeholder=\"Search by Keyword\" /></form>"
+            + "<h1>Career Opportunities: Sr AI Engineer</h1><p>You already applied for this position.</p><a href=\"/jobs\">Back to Job Listings</a></body></html>", "text/html"));
         // A posting whose Apply button never becomes clickable (Fuse Energy).
         _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
         // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
@@ -873,9 +882,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <label for="80:_txtFld">* Email Address</label><input id="80:_txtFld" name="contactEmail" value="ada@example.com" required />
             <label for="lang">* Language Preference</label>
             <select id="lang" name="languagePreference" required><option value="">No Selection</option><option selected>English</option><option>French</option></select>
-            <label for="89:_input">Country</label>
-            <input id="89:_input" role="combobox" aria-owns="90:_listSelect" aria-required="true" value="United States" autocomplete="off" />
-            <ul id="90:_listSelect" role="listbox" style="display:none"><li role="option">United States</li><li role="option">Canada</li></ul>
+            <!-- SuccessFactors' paginated picklist, as Kiewit renders it (#222): a starred label
+                 ("*&nbsp;Country"), a combobox input beside a button with the same aria-label,
+                 the option list built only when the box is clicked, and a blur that empties any
+                 text that is not one of the options. -->
+            <label for="89:_input"><span aria-hidden="true">*</span>&nbsp;Country</label>
+            <span class="sfCascadingPicklist"><input id="89:_input" name="country" aria-label="Country" role="combobox" aria-owns="90:_listSelect" aria-required="true" value="United States" autocomplete="off" placeholder="No Selection" />
+            <button type="button" aria-label="Country" tabindex="-1" id="89:_selectButton"></button></span>
           </div>
           <button type="button" id="446:topBar" aria-expanded="false" aria-controls="sec-job">Job-Specific Information</button>
           <div id="sec-job" style="display:none">
@@ -883,6 +896,20 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <select id="q2" name="q2" required><option value="">Select</option><option>Yes</option><option>No</option></select>
             <label for="q3">* Describe a system you scaled.</label>
             <textarea id="q3" name="q3" required></textarea>
+            <label for="297:_input"><span aria-hidden="true">*</span>&nbsp;How did you hear about this opportunity?</label>
+            <span class="sfCascadingPicklist"><input id="297:_input" name="hearAbout" aria-label="How did you hear about this opportunity?" role="combobox" aria-owns="298:_listSelect" aria-required="true" autocomplete="off" placeholder="No Selection" />
+            <button type="button" aria-label="How did you hear about this opportunity?" tabindex="-1"></button></span>
+            <label for="315:_input"><span aria-hidden="true">*</span>&nbsp;Have you ever worked for Kiewit or one if its subsidiary Companies?</label>
+            <span class="sfCascadingPicklist"><input id="315:_input" name="workedBefore" aria-label="Have you ever worked for Kiewit or one if its subsidiary Companies?" role="combobox" aria-owns="316:_listSelect" aria-required="true" autocomplete="off" placeholder="No Selection" />
+            <button type="button" aria-label="Have you ever worked for Kiewit or one if its subsidiary Companies?" tabindex="-1"></button></span>
+            <!-- Two job-specific boxes the board gives the same name (#222). -->
+            <label for="360:_txtFld"><span aria-hidden="true">*</span>&nbsp;Please list your number of years of professional software engineering experience</label>
+            <input id="360:_txtFld" name="-1" type="text" aria-required="true" />
+            <label for="364:_txtFld"><span aria-hidden="true">*</span>&nbsp;Please list your number of years of experience building production AI services, AI platforms, or reusable AI infrastructure</label>
+            <input id="364:_txtFld" name="-1" type="text" aria-required="true" />
+            <!-- The Acknowledgement: a label tied to nothing, a checkbox the widget re-renders on click. -->
+            <div class="RCMFormField"><label for=""><span aria-hidden="true">*</span>&nbsp;Acknowledgement</label>
+              <div><input type="checkbox" id="344:" name="app_ApplicantStatementConfirmation" aria-required="true" /> I certify that the information provided is true.</div></div>
           </div>
         </form>
         <div class="footer-bar"><span id="447:_backToListing" role="button" tabindex="0">View Profile</span> <span id="447:_saveBtn" role="button" tabindex="0">Save</span> <span id="447:_submitBtn" role="button" tabindex="0">Apply</span></div>
@@ -891,6 +918,37 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" id="confirm-no">Cancel</button> <button type="button" id="confirm-yes">Yes</button>
         </div>
         <script>
+          const lists = {
+            '90:_listSelect': ['No Selection', 'United States', 'Canada', 'Mexico'],
+            '298:_listSelect': ['No Selection', 'Advertisement', 'College Career Fair/Event', 'Company Website', 'Employee Referral', 'Job Board', 'Kiewit Recruiter Contacted Me'],
+            '316:_listSelect': ['No Selection', 'Yes', 'No'],
+          };
+          for (const input of document.querySelectorAll('input[role=combobox][aria-owns]')) {
+            const owns = input.getAttribute('aria-owns');
+            const open = () => {
+              let ul = document.getElementById(owns);
+              if (ul) return;
+              ul = document.createElement('ul'); ul.id = owns; ul.setAttribute('role', 'listbox');
+              for (const text of lists[owns]) {
+                const li = document.createElement('li'); li.setAttribute('role', 'option');
+                const a = document.createElement('a'); a.textContent = text; li.appendChild(a);
+                li.addEventListener('mousedown', e => e.preventDefault());
+                li.addEventListener('click', () => { input.value = text === 'No Selection' ? '' : text; input.title = input.value; ul.remove(); });
+                ul.appendChild(li);
+              }
+              input.parentElement.appendChild(ul);
+            };
+            input.addEventListener('click', open);
+            input.addEventListener('keydown', open);
+            input.addEventListener('blur', () => { const ul = document.getElementById(owns); if (ul) ul.remove();
+              if (!lists[owns].includes(input.value) || input.value === 'No Selection') { input.value = ''; input.classList.add('invalidInput'); } });
+          }
+          document.getElementById('344:').addEventListener('click', e => {
+            // The widget swaps its box for a fresh one: the element that was clicked stays as it was.
+            e.preventDefault();
+            const old = e.target; const fresh = old.cloneNode(); fresh.checked = !old.checked; old.replaceWith(fresh);
+            fresh.addEventListener('click', ev => { ev.preventDefault(); const f2 = fresh.cloneNode(); f2.checked = !fresh.checked; fresh.replaceWith(f2); });
+          });
           for (const bar of document.querySelectorAll('[id$="topBar"]')) bar.addEventListener('click', () => {
             const open = bar.getAttribute('aria-expanded') === 'true';
             bar.setAttribute('aria-expanded', String(!open));
@@ -2050,6 +2108,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         p.Questions.Add(new("89:_input", "Country", true, PacketQuestion.Text, [], PacketQuestion.Standard));
         p.Answers["111:_input"] = "Spanish";
         p.Answers["89:_input"] = "Mexico";
+        // Discovered on an earlier render, when the board numbered these 301 and 319; the
+        // page now says 297 and 315. Labels as discovery stored them, star and all (#222).
+        p.Questions.Add(new("301:_input", "*\n How did you hear about this opportunity?", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        p.Questions.Add(new("319:_input", "*\n Have you ever worked for Kiewit or one if its subsidiary Companies?", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        p.Questions.Add(new("-1", "*\n Please list your number of years of professional software engineering experience", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        p.Questions.Add(new("*\n Please list your number of years of experience building production AI services, AI platforms, or reusable AI infrastructure",
+            "*\n Please list your number of years of experience building production AI services, AI platforms, or reusable AI infrastructure", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        p.Questions.Add(new("app_ApplicantStatementConfirmation", "*\n Acknowledgement", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        p.Answers["301:_input"] = "Job Board";
+        p.Answers["319:_input"] = "No";
+        p.Answers["-1"] = "25";
+        p.Answers["*\n Please list your number of years of experience building production AI services, AI platforms, or reusable AI infrastructure"] = "1";
+        p.Answers["app_ApplicantStatementConfirmation"] = "Yes";
         return p;
     }
 
@@ -2070,8 +2141,29 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // The résumé the account already holds counted as attached; nothing was uploaded.
         Assert.Contains("resume", outcome.Mapped);
         Assert.Equal("", sent["resume:file"]);
+        // The pickers discovered under other numbers were found by their labels and the pinned
+        // answers chosen from the menus; the Acknowledgement box is checked though the widget
+        // swapped it under the click; the two boxes named "-1" each got their own answer (#222).
+        Assert.Equal("United States", sent["country"]);
+        Assert.Equal("Job Board", sent["hearAbout"]);
+        Assert.Equal("No", sent["workedBefore"]);
+        Assert.Equal("on", sent["app_ApplicantStatementConfirmation"]);
+        Assert.Equal("25,1", sent["-1"]);
         Assert.Empty(outcome.Unmapped);
         Assert.Empty(_laterPosts);
+    }
+
+    [SkippableFact]
+    public async Task An_account_that_already_applied_is_told_so_not_that_no_form_was_found()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", SfPacket(), (Pdf, "resume.pdf"), dryRun: true,
+            accounts: [new("127.0.0.1", "again@example.com", "Sekrit-9$")]);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("already applied", outcome.Error);
+        Assert.Contains("again@example.com", outcome.Error);
+        Assert.Empty(_posts);
     }
 
     [SkippableFact]
