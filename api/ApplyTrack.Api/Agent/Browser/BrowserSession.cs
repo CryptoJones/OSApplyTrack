@@ -475,40 +475,49 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 return;
             }
         }
-        var opened = await Task.WhenAny(popup.Task, Task.Delay(1_500));
-        _context.Page -= OnPage;
-        if (opened == popup.Task)
-        {
-            Page = popup.Task.Result;
-            try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
-            catch (TimeoutException) { /* judged by what renders */ }
-            catch (PlaywrightException) { /* ditto */ }
-            await DismissConsentAsync(Page);
-        }
-        // What Apply led to: the form, or the board's sign-in first (#216), or nothing.
+        // What Apply led to: the form, or the board's sign-in first (#216), or a sign-up wall
+        // (#235), or nothing. A new tab is adopted whenever it arrives within the wait: Alignerr's
+        // Apply opens its sign-in in a new tab only after a round trip, later than the moment
+        // after the click, and a run that kept watching the posting saw nothing (#235).
         var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (true)
+        var adopted = false;
+        try
         {
-            // A field on screen settles it — and only then is the sign-in question asked, so a
-            // page still mid-navigation cannot answer "no sign-in" a moment before it renders one.
-            if (await AnyFieldVisibleAsync(Page))
+            while (true)
             {
-                if (await SignInFormVisibleAsync(Page)) await TrySignInAsync();
-                return;
+                if (!adopted && popup.Task.IsCompletedSuccessfully)
+                {
+                    adopted = true;
+                    Page = popup.Task.Result;
+                    try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
+                    catch (TimeoutException) { /* judged by what renders */ }
+                    catch (PlaywrightException) { /* ditto */ }
+                    await DismissConsentAsync(Page);
+                    deadline = DateTime.UtcNow.AddSeconds(10);
+                }
+                // A field on screen settles it — and only then is the sign-in question asked, so a
+                // page still mid-navigation cannot answer "no sign-in" a moment before it renders one.
+                if (await AnyFieldVisibleAsync(Page))
+                {
+                    if (await SignInFormVisibleAsync(Page)) await TrySignInAsync();
+                    return;
+                }
+                // Alignerr and its kind: Apply opens an account sign-up that only offers "Continue
+                // with Google / LinkedIn" — no username box, no form, nothing the browser can fill or
+                // sign in to. Name it, rather than "no form appeared", so the person knows what is
+                // behind Apply.
+                var providers = await SocialSignUpWallAsync(Page);
+                if (providers.Count > 0)
+                {
+                    RevealNote = SocialWallNote(Page.Url, providers);
+                    return;
+                }
+                if (DateTime.UtcNow >= deadline) break;
+                await Page.WaitForTimeoutAsync(500);
             }
-            if (DateTime.UtcNow >= deadline) break;
-            await Page.WaitForTimeoutAsync(500);
         }
+        finally { _context.Page -= OnPage; }
         var refused = Refused;
-        // Alignerr and its kind: Apply opens an account sign-up that only offers "Continue with
-        // Google / LinkedIn" — no username box, no form, nothing the browser can fill or sign in
-        // to. Name it, rather than "no form appeared", so the person knows what is behind Apply.
-        var providers = await SocialSignUpWallAsync(Page);
-        if (providers.Count > 0)
-        {
-            RevealNote = SocialWallNote(Page.Url, providers);
-            return;
-        }
         RevealNote = refused.Count > 0
             ? AccountOnlyAts(refused[0]) is { } ats
                 ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting"
