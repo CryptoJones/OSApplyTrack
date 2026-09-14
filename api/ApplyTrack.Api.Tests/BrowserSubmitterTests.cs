@@ -169,6 +169,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // and "Continue with Google / LinkedIn" — no form, no username box.
         _fixture.MapGet("/jobs/widgets-sso", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/sso-wall"), "text/html"));
         _fixture.MapGet("/jobs/sso-wall", () => Results.Content(SsoWallHtml, "text/html"));
+        // The same wall in a new tab that only shows its content after a round trip (Alignerr, #235).
+        _fixture.MapGet("/jobs/widgets-sso-late", () => Results.Content(WidgetsHtml.Replace("href=\"APPLY_HREF\"", "href=\"#\" onclick=\"const w = window.open('', '_blank'); setTimeout(() => { w.location = '/jobs/sso-wall'; }, 3000); return false;\""), "text/html"));
         _fixture.MapGet("/jobs/widgets-account", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
         // SAP SuccessFactors' way in (#216): the career-site posting, Apply now to the board's
         // sign-in, and behind it the application as an accordion — documents already on the
@@ -2100,6 +2102,16 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("Copy answers and open", outcome.Error);
         Assert.DoesNotContain("no form appeared", outcome.Error);
         Assert.Empty(outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_sign_up_wall_that_opens_in_a_new_tab_after_a_pause_is_still_named()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/widgets-sso-late", Packet(), null, dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.Contains("only signs candidates up through Google, LinkedIn", outcome.Error);
         Assert.Empty(_posts);
     }
 
