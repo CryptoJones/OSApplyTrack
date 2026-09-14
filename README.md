@@ -56,6 +56,7 @@ telemetry, no SaaS.
 - [The discovery poller](#the-discovery-poller)
 - [Cover letters](#cover-letters)
 - [The agent](#the-agent)
+  - [The pipeline view](#the-pipeline-view)
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
 - [Accessibility](#accessibility)
@@ -217,6 +218,13 @@ rate-limited) and fills the still-empty fields from the page's
 schema.org `JobPosting` JSON-LD, falling back to OpenGraph/`<title>` heuristics.
 Fields you already typed are never overwritten.
 
+**Pipeline queue inspection.** Click the **PIPELINE** label in the dashboard status
+strip at any time to open the **Pipeline view**. It inspects the live submit queue in
+the exact FIFO claim order the worker uses, previews what the worker will do
+(`submit`, `dry_run`, `prepare`, or `drop`) and why, highlights Ready packets
+that are ready for auto-promotion, and offers an immediate **Submit all clean**
+action. It live-refreshes every 15 seconds while open.
+
 ## Configuration
 
 All configuration is environment variables (see [`.env.example`](./.env.example)):
@@ -336,8 +344,8 @@ killing the process:
 | `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, `prepare` (rebuild first), timestamps. |
-| `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed` / `awaiting_code`), `url`, `confirmation`, `detail` (a dry run's carries `needs_you[]` — the required questions the person still has to answer, by label; empty means clean), `has_screenshot`. |
-| `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback). **202** when a run is waiting, **409** when none is; the run types it in and clicks Submit again. Replying to the 🔐 Telegram moo with the code does the same thing without the app. |
+| `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed` / `awaiting_code`), `url`, `confirmation`, `detail` (a dry run's carries `needs_you[]` — the required questions the person still has to answer, by label; empty means clean; an `awaiting_code` row carries `recipient` and `sign_in` — true when the run is parked on a board's email sign-in rather than Greenhouse's security code), `has_screenshot`. |
+| `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback); or, for a run parked on a board's **email sign-in** (join.com), the code *or the whole link* the board emailed — a link must be http(s), and the browser follows it only onto the board's own site. **202** when a run is waiting, **409** when none is; the run types the code in (or opens the link) and carries on. Replying to the 🔐 Telegram moo with the code or the link does the same thing without the app. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
 
@@ -365,6 +373,15 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `resume_profiles` | Per-tenant résumé brief — the facts the cover-letter drafter feeds the LLM. |
 | `llm_settings` | Per-tenant LLM endpoint, model, cover-letter toggle, and multi-line signature; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
 | `cover_letters` | Generated cover letters, one per application (`FK → applications ON DELETE CASCADE`). |
+| `agent_settings` | Per-tenant agent automation configuration: on/off toggle, `dry_run` switch, fit-score floor, run/day caps, standing eligibility answers, salary period/currency, and preferred country. |
+| `agent_events` | Append-only audit log of agent fit judgements, run outcomes, and errors, keyed to the tenant (`tenant_id`) so deleting an application preserves the audit trail. |
+| `agent_packets` | Prepared application packets: detected ATS provider, discovered questions, drafted answers, human review checklist, posting excerpt, and packet version. |
+| `submit_requests` | FIFO queue for browser execution jobs (`submit`, `dry_run`, `prepare`) claimed by worker containers with `FOR UPDATE SKIP LOCKED`. |
+| `agent_evidence` | Browser execution artifacts: screenshots, page confirmation text, validation issues, labels for questions needing human intervention (`needs_you`), and parked states (`awaiting_code`). |
+| `notification_settings` | Per-tenant notification credentials: encrypted Telegram bot token, chat ID, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
+| `agent_allowlist` | Operator-managed database table allowlisting tenant accounts permitted to use auto-apply automation. |
+| `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
+| `answer_bank` | Reusable repository of screening questions and answers across job forms, tracking `human` vs `agent` source, occurrence counts, and timestamps. |
 
 Account deletion relies on `ON DELETE CASCADE` foreign keys (migrations
 `0005`/`0006`/`0009`): one `DELETE FROM users` removes every dependent row.
@@ -525,10 +542,16 @@ packet, and the application moves to **ready** — the queue of things waiting f
   letter) and the copy-and-open path.
 - **The answers.** Name, email, phone, links, work authorization, sponsorship,
   clearance and salary come straight from your résumé and **Settings · Agent** and
-  never reach the model. The screening questions go to the model in one call,
+  never reach the model. Salary expectations include an explicit period (`salary_period`:
+  `annual` / `monthly` / `hourly`) and currency (`salary_currency`: `USD`, `EUR`, …);
+  the drafter converts within the same currency (e.g. annual ÷ 12 for monthly,
+  ÷ 2080 for hourly) and strictly refuses cross-currency asks. Standard profile
+  fields (name, email, phone, links) are refreshed dynamically from your profile at
+  form-fill time, so editing your contact info updates all pending applications
+  without needing a rebuild. The screening questions go to the model in one call,
   grounded strictly in your résumé brief and the posting; anything it can't answer
   from those facts is left blank and **flagged for you**, never invented. EEO /
-  demographic questions are never answered at all.
+  demographic questions and CAPTCHA boxes are never answered at all.
 - **The cover letter** is drafted (if you allow it) and stored as usual.
 - **Review, then apply.** The application sheet shows the packet with every answer
   editable, an alert listing what still needs you (Submit stays blocked until it's
@@ -541,6 +564,20 @@ packet, and the application moves to **ready** — the queue of things waiting f
   and the agent uses your words on every later form that asks the same question — no
   model call, and a wrong answer is corrected once instead of per application. New
   questions land there as packets are built, blank when the agent had no answer.
+  - **Editable first/last names:** Name splitting keeps middle initials out of the
+    last name ("Aaron K. Clark" → First: "Aaron", Last: "Clark"). First Name and Last
+    Name are first-class rows in the Answer Bank, seeded from your résumé, pinnable
+    as `human` source, and honored on every subsequent form.
+  - **Apply to Ready packets:** Clicking **Apply to Ready packets**
+    (`POST /api/answers/{key}/apply`) immediately writes your saved answer into every
+    existing Ready packet asking that question, updating them without a model call.
+  - **Web component & label discovery:** On complex forms (e.g. Zoho Recruit),
+    discovery inspects up to 12 DOM ancestor levels for component attributes
+    (`label`, `data-label`, `*-prop-label`) and row labels, detects required asterisks
+    (`*`), and disambiguates controls that share generic IDs. Questions whose label
+    is merely an opaque ID are never sent to the model (required ones become human-review
+    items, optional ones stay blank), and social profile fields (LinkedIn, Facebook, X)
+    only take matching links from your profile.
 
 **The moo.** **Settings · Notifications** takes your own Telegram bot token
 (write-only, encrypted with `APPLYTRACK_SECRETS_KEY` like the LLM key) and chat id.
@@ -553,7 +590,12 @@ one case: when a run is parked on Greenhouse's emailed security code and there i
 no mailbox to read it from, the 🔐 moo asks for the code and the worker reads the
 bot's inbox (`getUpdates`, no webhook) until you **reply to the moo with it** — from
 the configured chat only, 4–16 letters and digits, the same shape the app's paste
-box takes. Nothing else sent to the bot is acted on.
+box takes. The same park serves a board that **signs you in by email before it
+shows its form** (join.com): a real Submit types your address, presses Continue,
+and the 🔐 moo asks for the code — or the link — the board emailed; either one,
+replied or pasted, takes the run on to the form in the same browser session. A
+link is followed only onto the board's own site. Nothing else sent to the bot is
+acted on.
 
 **Step 4 — the browser fills it in; you click Apply.** With a browser container
 configured, a prepared packet gets a **dry run** automatically: the browser opens
@@ -571,16 +613,42 @@ tick, so nothing proven sits in Ready waiting to be revisited. A submission is
 recognised by its confirmation text, recorded with a screenshot, marks the
 application **applied**, and moos ✅.
 
-The Ready lane is worked in bulk: filter the list to **Ready** and each card gets
-a checkbox, with **Prepare selected**, **Submit selected**, **Pass selected** and
-**Submit all clean** above the list — one request per action, so the rate limit
-applies to the batch rather than to each packet. **Prepare** always runs where the
-browser is: the api hands the build to the worker, which discovers the real form,
-drafts the answers, and goes straight on to the dry run. At fill time the standard
-fields (name, email, phone, links) are re-read from your profile, so a changed
-email reaches every built packet without a rebuild; and **Apply to Ready packets**
-in **Settings · Answers** writes a saved answer into every Ready packet that asks
-the question, no model involved.
+- **Bulk Ready lane:** Filter the list to **Ready** and each card gets a checkbox,
+  with **Prepare selected**, **Submit selected**, **Pass selected** and **Submit all
+  clean** in a top toolbar — one request per action (`POST /api/ready/actions`), so
+  rate limits apply to the batch rather than per application.
+- **Queued prepare:** `POST /api/apps/{name}/packet/prepare` delegates to the worker
+  (`prepare: true` in `submit_requests`) when the browser is on the agent container,
+  running form discovery, drafting, and dry run in a single claim.
+- **Consent banner dismissal:** Cookie-consent overlays (OneTrust, Cookiebot, Zoho,
+  Workable, and generic "Accept all" boxes) are clicked away before Apply, on new
+  tabs opened by Apply, and before filling the form.
+- **Attach verification & error recovery:** With a PDF on hand, a failed attach
+  always marks the field unmapped and refuses the click. The submitter monitors for
+  2.5 seconds after attach to catch asynchronous uploader errors (e.g. Greenhouse
+  `uploadFile` exceptions), sweeps `[role=group][aria-required]` containers, and
+  falls back to the "Enter manually" textarea if the form still requires a résumé.
+- **Worker heartbeat:** The agent worker runs a dedicated 30-second heartbeat timer
+  updating `agent_workers`, exposing `worker_running` and `worker_last_seen` in
+  Settings · Agent so wedged or disconnected workers are immediately visible.
+
+### The pipeline view
+
+Click the **PIPELINE** label in the dashboard status strip to open the **Pipeline view**
+modal. It provides full transparency into the background automation queue and
+worker decision logic:
+
+- **Queue in claim order:** Lists every pending submit request for the tenant in the
+  exact FIFO order the worker claims them (oldest first).
+- **Pre-evaluated gates:** Previews what the worker will do for each request
+  (`submit`, `dry_run`, `prepare`, or `drop`) and why (e.g. *Dry run only is on in
+  Settings · Agent*, missing answers, allowlist state), along with its current `phase`
+  (`queued`, `running`, `awaiting_code`, `stale`) and `then_submit` auto-promotion flag.
+- **Ready packets status:** Lists Ready packets not currently queued and what is
+  holding each (`holding`: `promotable`, `needs_you`, `unmapped`, `errored`).
+- **Submit all clean:** An immediate button to queue real submissions for all clean
+  Ready packets currently waiting on promotion.
+- **Auto-refresh:** Live-polls and refreshes every 15 seconds while open.
 
 ATS submission APIs are not available to applicants (Greenhouse/Lever/Ashby all
 require an employer key), so browser form-fill is the only general mechanism — and
@@ -609,7 +677,10 @@ schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are
 the posting (Lever's `/apply`, Ashby's `/application`, Workable's `…/j/{id}/apply/`,
 Breezy's `/p/{id}/apply`; SmartRecruiters and join.com open theirs behind the
 Apply click, which is followed, new tab included, and bounded so a button that
-never wakes up is a named reason rather than a timeout), enumerates every control
+never wakes up is a named reason rather than a timeout — and join.com's sits
+behind an email sign-in besides, so a dry run stops there and says so, while a
+real Submit signs in as you and parks for the emailed code or link, see the moo
+above), enumerates every control
 by its accessible name (field name, type, options, required), never types, never
 clicks — and the result is the same question list Greenhouse's API gives, so the
 answer drafter and the submitter need no per-ATS code. A company careers page
@@ -617,7 +688,21 @@ that embeds a Greenhouse job (`?gh_jid=`) has its board token read off the page,
 so it takes the API path. A lead whose link is a **job aggregator's listing**
 (remoteOK, Remotive, We Work Remotely, …) has no form on it: the poller follows
 the listing's Apply to the employer's posting and stores that; one it could not
-resolve is prepared and mooed as apply-by-hand, never run. Anything else is the **long tail**:
+resolve is prepared and mooed as apply-by-hand, never run.
+
+- **"Apply later" trap avoidance:** Boards like join.com render a side "Apply later"
+  box (one email input + submit) that simply emails the link to the applicant. The
+  agent requires at least two text-like controls before treating a container as an
+  application form, never takes anything matching "later / send me the link / remind /
+  subscribe / alert" (in EN, FR, DE, ES, PT) as the Apply trigger or Submit button,
+  and ignores side forms during required-field sweeps. Localized Apply buttons
+  (*Postuler*, *Bewerben*, *Aplicar*, *Solicitar*, *Candidat…*) are recognized.
+- **Provider re-detection & closed postings:** The ATS provider is re-evaluated from
+  the URL at submit time so newly supported ATS boards are handled without recreating
+  packets. Postings returning HTTP 404 or 410 are cleanly reported as "gone" / closed
+  rather than failing as "no form found".
+
+Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
 field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
 doesn't know* in Settings · Agent. **Workday stays manual, permanently** — applying
@@ -751,13 +836,17 @@ value.
 The web interface targets **WCAG 2.2 Level AA**. It provides semantic screen-reader
 navigation, complete keyboard operation, visible focus, labeled controls, live status
 announcements, reduced-motion and high-contrast modes, light/dark/system colors,
-adjustable 100%/125%/150% text size, comfortable or compact spacing, and responsive
-reflow through 400% browser zoom. The **Settings · Accessibility** panel detects system
-preferences before sign-in and lets each browser override color, contrast, motion,
-text size, and density. Preferences are stored only in the current browser.
+adjustable 100%/125%/150% text size, comfortable or compact spacing, responsive
+reflow through 400% browser zoom, and mobile touch scroll containment (`overscroll-behavior: contain`)
+so swipe gestures scroll the application list without triggering browser pull-to-refresh.
+Dialogs and drawers (such as Settings and the Pipeline view) follow standard ARIA modal
+semantics (`role="dialog"`, accessible titles, focus trapping, Escape dismissal).
+The **Settings · Accessibility** panel detects system preferences before sign-in and
+lets each browser override color, contrast, motion, text size, and density. Preferences
+are stored only in the current browser.
 
 Pull requests run Playwright and axe-core checks against login, application, editor,
-settings, validation, and responsive workflows. See the
+pipeline drawer, settings, validation, and responsive workflows. See the
 [accessibility statement and manual test matrix](docs/accessibility.md), or use the
 Accessibility problem issue template to report a barrier without sharing private data.
 

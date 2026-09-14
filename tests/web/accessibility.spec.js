@@ -645,7 +645,7 @@ test("the Pipeline button opens the submit queue and says what each request will
   await expect(page.locator("#pipeline-summary")).toContainText("2 queued — 1 will submit, 1 dry run, 1 waiting for a code.");
   const table = page.getByRole("table", { name: "Queued submit requests, oldest first" });
   await expect(table.getByRole("row")).toHaveCount(3);
-  await expect(table).toContainText("Waiting for your security code");
+  await expect(table).toContainText("Waiting for the code the board emailed you");
   await expect(table).toContainText("Will submit");
   await expect(table).toContainText("Dry run only is on in Settings · Agent");
   await expect(page.getByText("Dry run only is ON — nothing submits for real")).toBeVisible();

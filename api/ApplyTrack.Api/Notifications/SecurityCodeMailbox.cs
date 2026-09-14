@@ -16,8 +16,11 @@ namespace ApplyTrack.Api.Notifications;
 /// <summary>Where a parked run gets the security code the board emailed the candidate.</summary>
 public interface ISecurityCodeSource
 {
-    /// <summary>The newest code in the mailbox for this company sent after <paramref name="since"/>, or null.</summary>
-    Task<string?> FindCodeAsync(MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct);
+    /// <summary>The newest code in the mailbox for this company sent after <paramref name="since"/>, or null.
+    /// With <paramref name="boardHost"/> set, the run is parked on a board's email sign-in (#210)
+    /// and the mail is the board's, not the company's: the answer is the sign-in link on that
+    /// host, or the code, whichever the mail carries.</summary>
+    Task<string?> FindCodeAsync(MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct, string boardHost = "");
 
     /// <summary>Connect, sign in, open the inbox: the message count, or an exception with the reason.</summary>
     Task<int> TestAsync(MailboxTarget target, CancellationToken ct);
@@ -62,22 +65,87 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         return first.Length == 0 || subject.Contains(first, StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<string?> FindCodeAsync(MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct)
+    // A sign-in mail's subject, when the sender's domain does not already give it away.
+    [GeneratedRegex(@"code|link|sign.?in|log.?in|verify|verification|confirm|continue|anmeld|connexion|inicia|acceso", RegexOptions.IgnoreCase)]
+    private static partial Regex SignInSubject();
+
+    [GeneratedRegex(@"https?://[^\s<>""'\)\]]+", RegexOptions.IgnoreCase)]
+    private static partial Regex AnyLink();
+
+    // The link that signs the candidate in, told from the footer's: it carries a token or
+    // says what it is for.
+    [GeneratedRegex(@"token|code|otp|verif|auth|login|log-in|signin|sign-in|magic|confirm|session|continue", RegexOptions.IgnoreCase)]
+    private static partial Regex SignInLinkWords();
+
+    [GeneratedRegex(@"unsubscribe|preferences|privacy|terms|imprint|impressum|help|support|settings|notification", RegexOptions.IgnoreCase)]
+    private static partial Regex FooterLinkWords();
+
+    // "Your code is 482913", "Code: 482913", "enter 482913" — a short run of digits near the word.
+    [GeneratedRegex(@"(?:code|otp|pin)\D{0,40}?(\d{4,8})\b|\b(\d{4,8})\D{0,20}(?:is your|as your|est votre|ist ihr) .{0,20}code", RegexOptions.IgnoreCase)]
+    private static partial Regex DigitCode();
+
+    /// <summary>Does this host belong to the board — the same host, or a subdomain of it, or
+    /// the same registrable domain (two-label approximation)?</summary>
+    public static bool OnBoard(string host, string boardHost)
+    {
+        host = host.Trim().TrimStart('.').ToLowerInvariant();
+        boardHost = boardHost.Trim().ToLowerInvariant();
+        if (boardHost.StartsWith("www.", StringComparison.Ordinal)) boardHost = boardHost[4..];
+        if (host.StartsWith("www.", StringComparison.Ordinal)) host = host[4..];
+        if (host.Length == 0 || boardHost.Length == 0) return false;
+        if (host == boardHost || host.EndsWith("." + boardHost, StringComparison.Ordinal)) return true;
+        static string Reg(string h) { var p = h.Split('.'); return p.Length <= 2 ? h : string.Join('.', p[^2..]); }
+        return Reg(host) == Reg(boardHost);
+    }
+
+    /// <summary>
+    /// What a board's sign-in mail hands the run (#210): the sign-in link on the board's own
+    /// host — one that carries a token or names its purpose, never the footer's privacy or
+    /// unsubscribe links — else the code the mail spells out. A link is preferred when both
+    /// are there: it signs the candidate in whatever the page is showing. Null when the mail
+    /// carries neither. Public for tests.
+    /// </summary>
+    public static string? ExtractSignIn(string text, string boardHost)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        foreach (Match m in AnyLink().Matches(text))
+        {
+            var raw = m.Value.TrimEnd('.', ',', ';', ':');
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out var u) || !OnBoard(u.Host, boardHost)) continue;
+            var tail = u.PathAndQuery;
+            if (FooterLinkWords().IsMatch(tail)) continue;
+            if (SignInLinkWords().IsMatch(tail)) return raw;
+        }
+        var code = ExtractCode(text);
+        if (code is not null) return code;
+        var d = DigitCode().Match(text);
+        return d.Success ? (d.Groups[1].Success ? d.Groups[1].Value : d.Groups[2].Value) : null;
+    }
+
+    public async Task<string?> FindCodeAsync(MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct, string boardHost = "")
     {
         using var client = await OpenAsync(target, ct);
         // IMAP's SINCE is a date, not a time: ask for the day and filter by time below.
-        var query = SearchQuery.DeliveredAfter(since.UtcDateTime.Date.AddDays(-1)).And(SearchQuery.SubjectContains("code"));
+        var signIn = boardHost.Trim().Length > 0;
+        SearchQuery query = SearchQuery.DeliveredAfter(since.UtcDateTime.Date.AddDays(-1));
+        if (!signIn) query = query.And(SearchQuery.SubjectContains("code"));
         var uids = await client.Inbox.SearchAsync(query, ct);
         foreach (var uid in uids.Reverse())
         {
             var msg = await client.Inbox.GetMessageAsync(uid, ct);
             if (msg.Date < since.AddMinutes(-2)) continue;
-            if (!SubjectMatches(msg.Subject ?? "", company)) continue;
+            if (signIn)
+            {
+                // The board's mail, by its sender — or by a subject that says sign-in.
+                var fromBoard = msg.From.Mailboxes.Any(a => OnBoard(a.Address.Split('@').LastOrDefault() ?? "", boardHost));
+                if (!fromBoard && !SignInSubject().IsMatch(msg.Subject ?? "")) continue;
+            }
+            else if (!SubjectMatches(msg.Subject ?? "", company)) continue;
             if (recipient.Length > 0 && !msg.To.Mailboxes.Any(a => a.Address.Equals(recipient, StringComparison.OrdinalIgnoreCase))
                 && !msg.Cc.Mailboxes.Any(a => a.Address.Equals(recipient, StringComparison.OrdinalIgnoreCase)))
                 continue;
             var text = msg.TextBody ?? StripHtml(msg.HtmlBody ?? "");
-            var code = ExtractCode(text);
+            var code = signIn ? ExtractSignIn(text, boardHost) : ExtractCode(text);
             if (code is not null) return code;
         }
         await client.DisconnectAsync(true, ct);

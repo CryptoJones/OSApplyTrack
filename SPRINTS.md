@@ -13,6 +13,11 @@ Status legend: ✅ done · 🚧 in progress · ⬜ not started
 | **Step 3** | Per-user search profiles (Python poller reads them) | ✅ done |
 | **Step 4** | Per-tenant cron + `seen` table (Python worker, fetch-once-per-run) | ✅ done |
 | **Step 5** | Self-host packaging + data export/delete (replaces billing) | ✅ done |
+| **Step 6** | Encryption at rest, operator allowlist & captcha code fallback (v1.26–v1.27) | ✅ done |
+| **Step 7** | Answer bank, two-way Telegram codes & worker heartbeats (v1.28–v1.29) | ✅ done |
+| **Step 8** | Ready lane in bulk, queued prepare & salary unit conversions (v1.30) | ✅ done |
+| **Step 9** | Mobile list scroll, cookie consent, editable name fields & upload verifications (v1.31) | ✅ done |
+| **Step 10** | Pipeline view & "Apply later" trap prevention (v1.32) | ✅ done |
 
 ## Step 0 — done
 
@@ -173,6 +178,62 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   The generic adapter (fill by label, refuse to click on an unmapped required
   field) is behind the per-tenant `long_tail` opt-in (0023). Workday stays
   manual, permanently: detected, packet prepared, routed to copy-and-open.
+- ✅ **Step 6 — Encryption at rest, operator allowlist & captcha code fallback** (#117, #156, #165, #166; v1.26–v1.27):
+  Sensitive columns sealed with AES-256-GCM at rest (résumés, cover letters, packet
+  answers, evidence screenshots, tenant API keys, bot tokens). Production audit closed
+  out with first confirmed end-to-end Greenhouse submission. Auto-apply gated per account
+  by `agent_allowlist` table (operator opt-in only). Greenhouse 428 captcha fallback:
+  browser session parks, records `awaiting_code`, moos via Telegram, and finishes when
+  candidate submits code via `POST /api/apps/{name}/security-code`.
+- ✅ **Step 7 — Answer bank, two-way Telegram codes & worker heartbeats** (#170, #172, #173, #174, #175, #178, #181; v1.28–v1.29):
+  **Answer Bank** (`answer_bank` table, `GET/PUT/DELETE /api/answers`, Settings · Answers):
+  reusable screening questions and answers across forms, editable once, reused everywhere
+  without model calls. **Two-way Telegram replies**: candidate replies directly to the
+  🔐 Telegram moo with the security code; worker polls Telegram updates to resume parked
+  browser runs. **IMAP Mailbox code reader**: parked runs read Greenhouse security codes
+  directly from an IMAP mailbox (`mailbox_settings`). **Worker heartbeat registry**:
+  `agent_workers` table records worker heartbeats so API knows when browser-capable
+  workers are available. Form discovery handles iframes, late renders, single Name boxes,
+  and text-only labels.
+- ✅ **Step 8 — Ready lane in bulk, queued prepare & salary unit conversions** (#180, #183–#192, #194; v1.30.0):
+  **Bulk Ready lane**: Card checkboxes and bulk action toolbar (**Prepare selected**,
+  **Submit selected**, **Pass selected**, **Submit all clean**; `POST /api/ready/actions`).
+  **Promotion after the flip (`ReadyPromoter`)**: turning dry-run off promotes all clean
+  Ready packets immediately and on each worker pass. **Queued prepare**:
+  `POST /api/apps/{name}/packet/prepare` delegates to worker (`prepare: true`) to run
+  discovery, drafting, and dry run in one claim where the browser is. **Salary unit &
+  currency conversions**: standing answers support `salary_period` (`annual`, `monthly`,
+  `hourly`) and `salary_currency`, converting within currency (annual ÷ 12, annual ÷ 2080)
+  and refusing cross-currency. **Aggregator link resolution**: poller follows aggregator
+  listings (RemoteOK, Remotive, We Work Remotely) to employer postings, marking unresolved
+  postings `aggregator`. **Heartbeat timer**: independent 30-second timer for worker
+  heartbeat; UI shows "Worker last seen...". **Parked run test harness**:
+  `IBrowserSubmitter` seam and worker-level tests for parked-on-code, Telegram reply,
+  and mailbox paths.
+- ✅ **Step 9 — Mobile list scroll, cookie consent, editable name fields & upload verifications** (#195, #199, #200–#205, #206, #207, #209; v1.30.1–v1.31.2):
+  **Mobile scroll & touch**: dedicated scroll container with `overscroll-behavior: contain`
+  prevents pull-to-refresh swipe interference on mobile Safari (#201). **Terms checkbox sizing**:
+  Sign-in terms of service checkbox sized to 1.25rem with flex label wrapping (#199).
+  **Editable first/last names**: name parser strips middle initials from last name ("Aaron K. Clark" →
+  First: "Aaron", Last: "Clark"); First Name and Last Name become first-class rows in Answer
+  Bank, honored during fill-time profile refresh (#200). **Cookie consent dismissal**:
+  automatic dismissal of OneTrust, Cookiebot, Zoho, Workable, and "Accept all" dialogs
+  before Apply, on new tabs, and before form fill (#202). **Provider re-detection & closed postings**:
+  ATS provider re-evaluated at submit time; HTTP 404/410 reported as "gone" rather than
+  "no form found" (#203). **Résumé attach verification**: failed attach treated as unmapped;
+  submitter observes 2.5s for late `uploadFile` errors; sweeps `[role=group][aria-required]`
+  wrapper elements; retries "Enter manually" (#195, #205). **Web component deep discovery (Zoho Recruit)**:
+  inspects up to 12 ancestor levels for `label`, `data-label`, or row labels; detects
+  required stars (`*`); disambiguates shared IDs; unlabelled questions and captchas never
+  sent to LLM; social profiles mapped strictly (#207).
+- ✅ **Step 10 — Pipeline view & "Apply later" trap prevention** (#210, #211, #212; v1.32.0):
+  **Pipeline View**: clicking PIPELINE label in dashboard strip opens live submit queue
+  drawer (`GET /api/pipeline`), evaluating worker gates in advance (phase, will do, reason,
+  then_submit flag), Ready holding reasons, and "Submit all clean", auto-refreshing
+  every 15 seconds. **"Apply later" trap prevention**: ignores lone email boxes as application
+  forms; ignores buttons matching "later / send me the link / remind / subscribe / alert"
+  across English, French, German, Spanish, and Portuguese; recognizes email sign-in gates
+  vs clean dry runs.
 
 ## Backlog / ideas
 
@@ -186,28 +247,19 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   success/error bodies as full strings. Switch to `ResponseHeadersRead`, enforce
   a content-length ceiling, and stream with a hard byte cap before JSON parsing or
   error-detail logging.
-- ⬜ **Security: restrict forwarded-header trust** (issue #49) — `UseForwardedHeaders` accepts
-  `X-Forwarded-For` / `X-Forwarded-Proto` from any hop so direct Kestrel exposure
-  can spoof rate-limit partitions and HTTPS detection. Add configured
-  `KnownProxies` / `KnownIPNetworks` or an explicit reverse-proxy mode.
-- ⬜ **Security/stability: add API request and field limits** (issue #50) — only scrape/import
-  have body limits today. Add global JSON body caps plus per-field/per-list
-  ceilings for applications, criteria keywords/excludes/ATS boards, résumé
+- ✅ **Security: restrict forwarded-header trust** (issue #49) — `UseForwardedHeaders` accepts
+  `X-Forwarded-For` / `X-Forwarded-Proto` only from configured `KnownProxies` / `KnownIPNetworks`.
+- ✅ **Security/stability: add API request and field limits** (issue #50) — global JSON body caps
+  plus per-field/per-list ceilings for applications, criteria keywords/excludes/ATS boards, résumé
   sections, links, and highlights.
-- ⬜ **Security: make Python link-check SSRF guard connect by validated IP** (issue #51) — the
-  poller checks DNS answers before `httpx` connects by hostname, leaving a DNS
-  rebinding TOCTOU window. Port the API scraper's connect-by-validated-IP pattern
-  to `applytrack.linkcheck`.
-- ⬜ **Scalability/stability: serialize tenant poll runs** (issue #52) — the fast drain loop
-  and full poll loop can overlap for the same tenant. Add a per-tenant
-  `pg_try_advisory_lock` or poll lease so one tenant/source set is processed only
-  once at a time across containers.
-- ⬜ **Deployment hardening: split dev compose from production defaults** (issue #53) —
-  Compose publishes Postgres on the host and runtime images do not set non-root
-  users. Add a hardened profile/compose file or docs with non-root containers,
-  no DB host port, `cap_drop`, and read-only filesystem where practical.
-- ⬜ **Scalability: paginate/delta-refresh applications** (issue #54) — `/api/apps` and the SPA
-  refresh path load every application and rerender the full sidebar. Add
-  pagination/search or updated-since/ETag-style deltas before team-scale usage.
+- ✅ **Security: make Python link-check SSRF guard connect by validated IP** (issue #51) — the
+  poller connects by validated IP address to close the DNS rebinding TOCTOU window.
+- ✅ **Scalability/stability: serialize tenant poll runs** (issue #52) — per-tenant advisory
+  lock serializes overlapping fast drain and scheduled poll passes.
+- ✅ **Deployment hardening: split dev compose from production defaults** (issue #53) —
+  hardened `docker-compose.production.yml` with non-root containers, no DB host port,
+  `cap_drop`, and read-only root filesystems.
+- ✅ **Scalability: paginate/delta-refresh applications** (issue #54) — `/api/apps` supports
+  ETags / `If-None-Match` returning `304 Not Modified` for fast, low-overhead list validation.
 - ⬜ **`tailscale serve` front-end** — rainy-day: serve over Tailscale instead of a
   self-signed TLS + reverse proxy (see the `plan.md` appendix).

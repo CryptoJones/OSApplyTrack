@@ -121,6 +121,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         });
         // join.com's page behind Apply: an email box and Continue — a sign-in, not a form.
         _fixture.MapGet("/jobs/sign-in", () => Results.Content(SignInGateHtml, "text/html"));
+        // The whole of join.com's way in (#210): the posting with its Apply-later trap, Apply now
+        // to the email sign-in, Continue, then a code box the emailed code goes into — or a
+        // "check your inbox" with nothing to type, and the emailed link opens the form.
+        _fixture.MapGet("/jobs/sign-in-code", () => Results.Content(SignInPostingHtml.Replace("MODE", "code"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-link", () => Results.Content(SignInPostingHtml.Replace("MODE", "link"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-code/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "code"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-link/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "link"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-code/form", (string email) => Results.Content(SignedInFormHtml.Replace("EMAIL", email), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-link/verify", (string token) => token == "abc123"
+            ? Results.Content(SignedInFormHtml.Replace("EMAIL", "ada@example.com"), "text/html")
+            : Results.Content("<html><body><h1>This link has expired.</h1></body></html>", "text/html"));
         // A posting taken down outright: Greenhouse's 404 page, no gone-notice, no form.
         _fixture.MapGet("/jobs/gone", () => Results.Content(
             "<html><head><title>Page not found</title></head><body><h1>Page not found</h1>"
@@ -632,6 +643,70 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string SignInPostingHtml = """
+        <html><body>
+        <h1>Founding Engineer</h1>
+        <div id="apply-window">
+          <button type="button" data-testid="ApplyButton" onclick="location.href='/jobs/sign-in-MODE/auth'">Apply now</button>
+        </div>
+        <p>The posting, at length.</p>
+        <div data-testid="ApplyLater">
+          <p>No time right now? Apply later.</p><p>We will send a link to this job to your email.</p>
+          <form method="post" action="/apply-later">
+            <input id="ApplyLaterEmail" name="email" type="email" placeholder="E-mail" required />
+            <button type="submit" data-testid="ApplyLaterSubmitButton">Apply later</button>
+          </form>
+        </div>
+        </body></html>
+        """;
+
+    private const string SignInAuthHtml = """
+        <html><body>
+        <h1>Founding Engineer</h1>
+        <div id="step-email">
+          <label for="email">Your email address</label><input id="email" name="email" type="email" data-testid="CandidateEmail" />
+          <button type="button" id="continue" data-testid="ContinueButton">Continue</button>
+          <button type="button" data-testid="GoogleIdentityButton">Continue with Google</button>
+        </div>
+        <div id="step-code" style="display:none">
+          <p>We emailed a 6-digit code to <span id="to"></span>. Enter it to continue.</p>
+          <label for="otp">Code</label><input id="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6" />
+          <button type="button" id="verify">Verify</button>
+          <p id="bad" class="error" style="display:none">That code is not right.</p>
+        </div>
+        <div id="step-link" style="display:none">
+          <p>Check your inbox — we sent a link to <span id="to2"></span>. Click it to continue your application.</p>
+        </div>
+        <script>
+          document.getElementById('continue').addEventListener('click', () => {
+            const email = document.getElementById('email').value;
+            setTimeout(() => {
+              document.getElementById('step-email').style.display = 'none';
+              if ('MODE' === 'code') { document.getElementById('to').textContent = email; document.getElementById('step-code').style.display = 'block'; }
+              else { document.getElementById('to2').textContent = email; document.getElementById('step-link').style.display = 'block'; }
+            }, 700);
+          });
+          document.getElementById('verify').addEventListener('click', () => {
+            if (document.getElementById('otp').value === '482913') location.href = '/jobs/sign-in-code/form?email=' + encodeURIComponent(document.getElementById('email').value);
+            else document.getElementById('bad').style.display = 'block';
+          });
+        </script>
+        </body></html>
+        """;
+
+    private const string SignedInFormHtml = """
+        <html><body>
+        <h1>Founding Engineer</h1>
+        <p>Signed in as EMAIL</p>
+        <form id="real" method="post" action="/apply">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <label for="last_name">Last Name</label><input id="last_name" name="job_application[last_name]" />
+          <label for="email">Email</label><input id="email" name="job_application[email]" type="email" value="EMAIL" />
+          <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
     private const string SignInGateHtml = """
         <html><body>
         <h1>Founding Engineer</h1>
@@ -1026,7 +1101,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             Answers = new() { ["first_name"] = "Ada" },
         };
         var askedFor = "";
-        Task<string?> Relay(string recipient, CancellationToken _) { askedFor = recipient; return Task.FromResult<string?>("ieg0pxwr"); }
+        Task<string?> Relay(CodeRequest ask, CancellationToken _) { askedFor = ask.Recipient; Assert.False(ask.SignIn); return Task.FromResult<string?>("ieg0pxwr"); }
 
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/security-code", packet, null, dryRun: false, awaitSecurityCode: Relay);
 
@@ -1134,6 +1209,83 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Filled);
         Assert.False(outcome.Submitted);
         Assert.Contains("sign-in", outcome.Error);
+        Assert.Contains("signs in as ada@example.com", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    private static AgentPacket JoinPacket() => new()
+    {
+        ApplicationName = "piston-founding-engineer.md", Provider = "join",
+        Questions =
+        [
+            new("std:first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("std:last_name", "Last Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("std:email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+        ],
+        Answers = new() { ["std:first_name"] = "Ada", ["std:last_name"] = "Lovelace", ["std:email"] = "ada@example.com" },
+    };
+
+    [SkippableFact]
+    public async Task A_sign_in_code_the_board_emails_is_relayed_and_the_run_goes_on_to_the_form_behind_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        CodeRequest? asked = null;
+        Task<string?> Relay(CodeRequest ask, CancellationToken _) { asked = ask; return Task.FromResult<string?>(" 482913 "); }
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-code", JoinPacket(), null, dryRun: false, awaitSecurityCode: Relay);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.NotNull(asked);
+        Assert.True(asked!.SignIn);
+        Assert.Equal("ada@example.com", asked.Recipient);
+        var sent = Assert.Single(_posts);
+        Assert.Equal("Ada", sent["job_application[first_name]"]);
+        Assert.Equal("Lovelace", sent["job_application[last_name]"]);
+        Assert.Equal("ada@example.com", sent["job_application[email]"]);
+        Assert.Empty(_laterPosts);
+    }
+
+    [SkippableFact]
+    public async Task A_sign_in_link_the_board_emails_is_opened_in_the_same_session_and_the_form_behind_it_is_submitted()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        CodeRequest? asked = null;
+        Task<string?> Relay(CodeRequest ask, CancellationToken _) { asked = ask; return Task.FromResult<string?>($"{_fixtureUrl}/jobs/sign-in-link/verify?token=abc123"); }
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-link", JoinPacket(), null, dryRun: false, awaitSecurityCode: Relay);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.True(asked!.SignIn);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+        Assert.Empty(_laterPosts);
+    }
+
+    [SkippableFact]
+    public async Task A_relayed_sign_in_link_off_the_boards_site_is_never_followed()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-link", JoinPacket(), null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>("https://evil.example/steal?token=abc123"));
+
+        Assert.False(outcome.Submitted);
+        Assert.False(outcome.Filled);
+        Assert.Contains("off the board's site", outcome.Error);
+        Assert.Contains("evil.example", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_sign_in_nobody_relays_ends_the_run_naming_the_address_with_nothing_submitted()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-code", JoinPacket(), null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>(null));
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("sign-in code to ada@example.com", outcome.Error);
+        Assert.Contains("run Submit again", outcome.Error);
         Assert.Empty(_posts);
     }
 

@@ -258,6 +258,13 @@ public class SubmitEndpointTests : IAsyncLifetime
         var id = await conn.ExecuteScalarAsync<long>("SELECT id FROM submit_requests WHERE tenant_id = @t AND application_name = @n", new { t = tenant, n = name });
         Assert.Equal("IEG0pxWr", await SubmitQueue.SecurityCodeAsync(conn, id));
 
+        // A run parked on a board's email sign-in (#210) takes the emailed link too — http(s) only.
+        var notALink = await client.PostAsync($"/api/apps/{name}/security-code", Json("""{"code":"ftp://join.com/x"}"""));
+        Assert.Equal(HttpStatusCode.BadRequest, notALink.StatusCode);
+        var link = await client.PostAsync($"/api/apps/{name}/security-code", Json("""{"code":" https://join.com/apply/verify?token=abc123 "}"""));
+        Assert.Equal(HttpStatusCode.Accepted, link.StatusCode);
+        Assert.Equal("https://join.com/apply/verify?token=abc123", await SubmitQueue.SecurityCodeAsync(conn, id));
+
         // A fresh request forgets the old code.
         await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE id = @id", new { id });
         Assert.True(await new SubmitRequestRepo(conn, tenant).EnqueueAsync(name, dryRun: true));

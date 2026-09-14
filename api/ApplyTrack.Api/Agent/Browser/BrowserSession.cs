@@ -256,7 +256,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
         && req.Headers.TryGetValue("content-type", out var ct)
         && ct.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase);
 
-    private static bool HostAllowed(string host, string original)
+    public static bool HostAllowed(string host, string original)
     {
         host = host.ToLowerInvariant();
         original = original.ToLowerInvariant();
@@ -308,7 +308,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// clicked Apply, typed the candidate's email into it, and had the board email the
     /// posting's link back instead of an application (#210).
     /// </summary>
-    private static async Task<bool> ApplicationFormVisibleAsync(IPage page)
+    public static async Task<bool> ApplicationFormVisibleAsync(IPage page)
     {
         foreach (var frame in page.Frames)
         {
@@ -336,7 +336,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return false;
     }
 
-    private static async Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
+    public static async Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (true)
@@ -355,7 +355,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// opens the form in a new tab (Workable, SmartRecruiters) hands that tab over as
     /// <see cref="Page"/>; the route guard already holds it to the same site.
     /// </summary>
-    private async Task RevealFormAsync()
+    public async Task RevealFormAsync()
     {
         // A moment for a form that renders itself after load, before deciding it is hidden.
         if (await WaitForApplicationFormAsync(Page, 3_000)) return;

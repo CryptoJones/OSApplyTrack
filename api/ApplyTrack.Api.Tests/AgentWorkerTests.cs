@@ -623,9 +623,9 @@ public class AgentWorkerTests(PostgresFixture pg)
     private static FakeSubmitter CodeGate() => new((link, _, dry, awaitCode, ct) =>
         dry ? Task.FromResult(FakeSubmitter.Clean(link)) : RealRunAsync(link, awaitCode!, ct));
 
-    private static async Task<SubmitOutcome> RealRunAsync(string link, Func<string, CancellationToken, Task<string?>> awaitCode, CancellationToken ct)
+    private static async Task<SubmitOutcome> RealRunAsync(string link, Func<CodeRequest, CancellationToken, Task<string?>> awaitCode, CancellationToken ct)
     {
-        var code = await awaitCode("ada@example.com", ct);
+        var code = await awaitCode(new CodeRequest("ada@example.com"), ct);
         if (code == Code) return FakeSubmitter.Submitted(link);
         return new SubmitOutcome(true, false, link, "", null, [], ["std:first_name"],
             code is null

@@ -41,6 +41,10 @@ public sealed class PacketReadyNotifier
         /// it — the human has minutes to reply with it or paste it into the app. Always news,
         /// never claimed.</summary>
         Code,
+        /// <summary>The board signs the candidate in by email before it shows its form (join.com,
+        /// #210): a code or a link is in their mailbox and the run is parked on it. Always
+        /// news, never claimed.</summary>
+        SignIn,
     }
 
     public async Task NotifyAsync(
@@ -51,8 +55,8 @@ public sealed class PacketReadyNotifier
         var target = await settings.GetTargetAsync();
         if (target is null)
             return;
-        // Ready and Filled share the one claim per packet build; Submitted and Code are always news.
-        if (moment is not (Moment.Submitted or Moment.Code) && !await packets.TryClaimNotificationAsync(applicationName))
+        // Ready and Filled share the one claim per packet build; Submitted, Code and SignIn are always news.
+        if (moment is not (Moment.Submitted or Moment.Code or Moment.SignIn) && !await packets.TryClaimNotificationAsync(applicationName))
             return;
 
         var text = BuildMessage(company, role, DeepLink(_publicBaseUrl, applicationName), moment, detail);
@@ -87,6 +91,7 @@ public sealed class PacketReadyNotifier
             Moment.Filled => $"🐮 moo — {subject} is filled in and ready for you to click Apply",
             Moment.Submitted => $"✅ {subject} was submitted",
             Moment.Code => $"🔐 {subject}: the board emailed a security code to {(detail.Length > 0 ? detail : "you")} — reply here with the code (or paste it in the app) within a few minutes to finish",
+            Moment.SignIn => $"🔐 {subject}: the board signs you in by email first — it sent a code or a link to {(detail.Length > 0 ? detail : "you")}; reply here with the code, or paste the link (or do either in the app), within a few minutes and the agent finishes the application",
             _ => $"🐮 moo — {subject} is ready to submit",
         };
         return link is null ? text : text + "\n" + link;
