@@ -37,9 +37,13 @@ public sealed partial class FormDiscoverer
     private sealed record Control(
         string Id, string Name, string Label, string Tag, string Type, bool Required, List<string> Options);
 
+    /// <param name="preScreen">Answers a pre-screening step's questions so discovery can go
+    /// through it to the real form (Paycor asks about sponsorship on a page of radios and a
+    /// Continue before it shows the form, #239). Null leaves any such gate in place — the old
+    /// behaviour, which read the gate's questions as if they were the form's.</param>
     /// <summary>The form's questions, or null when the page had no fillable form.</summary>
     public async Task<List<PacketQuestion>?> DiscoverAsync(string link, CancellationToken ct = default,
-        IReadOnlyList<BoardAccount>? accounts = null)
+        IReadOnlyList<BoardAccount>? accounts = null, Func<PacketQuestion, string?>? preScreen = null)
     {
         await using var session = await BrowserSession.OpenAsync(_options, link, ct, accounts);
         // The form is often not there yet (Ashby fetches it after the page is idle) and often
@@ -52,8 +56,28 @@ public sealed partial class FormDiscoverer
             _log.LogInformation("discovery at {Link}: {Reason}", link, session.RevealNote.Length > 0 ? session.RevealNote : "the page is a sign-in");
             return null;
         }
+        // A pre-screening step before the form — a page of radio/checkbox questions and a
+        // Continue (#239): answer it from the tenant's standing answers and go through to the
+        // real form, so the packet describes that form and not the gate. The gate's questions
+        // lead the packet's list, so the person can see and correct what was answered for them.
+        var gate = preScreen is not null
+            ? await BrowserSubmitter.AdvancePreScreenAsync(session.Page, preScreen, _log)
+            : [];
+        var questions = new List<PacketQuestion>();
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var q in gate.Concat(await ReadQuestionsAsync(session.Page, _log)))
+            if (seenKeys.Add(q.Id))
+                questions.Add(q);
+        return questions.Count == 0 ? null : questions;
+    }
+
+    /// <summary>Every fillable control on a page already open, top document first, mapped to
+    /// questions — the read <see cref="DiscoverAsync"/> does, exposed so a pre-screening step
+    /// can be read off the page the submitter is already on (#239).</summary>
+    public static async Task<List<PacketQuestion>> ReadQuestionsAsync(IPage page, ILogger? log = null)
+    {
         var controls = new List<Control>();
-        foreach (var frame in session.Page.Frames)
+        foreach (var frame in page.Frames)
         {
             JsonElement raw;
             try
@@ -62,14 +86,13 @@ public sealed partial class FormDiscoverer
             }
             catch (PlaywrightException ex)
             {
-                _log.LogInformation("discovery at {Link}: {Reason}", link, ex.Message.Split('\n')[0]);
+                log?.LogInformation("enumerate: {Reason}", ex.Message.Split('\n')[0]);
                 continue;
             }
             controls.AddRange(JsonSerializer.Deserialize<List<Control>>(raw.GetRawText(),
                 new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? []);
         }
-        var questions = Map(controls);
-        return questions.Count == 0 ? null : questions;
+        return Map(controls);
     }
 
     /// <summary>Turn raw controls into questions. Public for tests.</summary>

@@ -134,6 +134,26 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // A consent banner that arrived with the form, or after the page went idle, would
             // sit over every field and make the first fill time out (#202).
             await BrowserSession.DismissConsentAsync(page);
+            // A pre-screening step before the form — Paycor asks "Will you require sponsorship?"
+            // on a page of radios and a Continue, and the reveal, finding no form and no Apply,
+            // dead-ended at "no Apply button or link on the page" (#239). Answer the step from the
+            // packet and press Continue through to the form. What it advanced past is already
+            // answered, so those questions count mapped and are not sought again on the form.
+            foreach (var live in await AdvancePreScreenAsync(page, live =>
+                         FindQuestion(packet, live.Id, live.Label) is { } q && packet.Answers.TryGetValue(q.Id, out var a) ? a : null,
+                         _log))
+                if (FindQuestion(packet, live.Id, live.Label) is { } q && !mapped.Contains(q.Id))
+                    mapped.Add(q.Id);
+            // Still on the step: a required question had no answer to give. Name it and stop,
+            // rather than fall through to "nothing on this form could be filled" — which reads
+            // as a broken packet rather than a gate the person can clear by hand (#239).
+            if (await IsPreScreenAsync(page))
+            {
+                screenshot = await session.ScreenshotAsync();
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "this page is a pre-screening step (a question and Continue) before the form, and a required "
+                    + "question could not be answered from your saved answers — set it in Settings · Agent, or apply via Copy answers and open the posting");
+            }
             // Then find the form — which is not always in the page. Comeet's "Apply for this job"
             // loads it into a cross-origin iframe; Ashby fetches it after the page has gone idle
             // ("Fetching application form" was the whole of one dry run's screenshot). Every
@@ -165,6 +185,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             foreach (var q in packet.Questions)
             {
                 ct.ThrowIfCancellationRequested();
+                // Already answered on a pre-screening step the run advanced past (#239): its
+                // field is behind us, not on this form, so do not seek it here and mark it unmapped.
+                if (mapped.Contains(q.Id)) continue;
                 // A demographic question is filled only with the person's own saved answer;
                 // with none it stays blank, and it never counts as unmapped (#224).
                 if (q.Kind == PacketQuestion.Eeo)
@@ -1213,6 +1236,111 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   return live.length > 0 && live.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
                 }
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+
+    /// <summary>Every visible, enabled, fillable control on the page is a radio or a checkbox
+    /// (and there is one): the shape of a pre-screening step, where the only thing to do is
+    /// answer a question or two and press Continue. A text, email, select or file box means it
+    /// is (part of) the form, not a gate, so it is left to the normal fill (#239).</summary>
+    private static async Task<bool> OnlyChoiceFieldsAsync(IFrame page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>(OnlyChoiceScript);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private static readonly string OnlyChoiceScript = """
+                () => {
+                  const widget = __WIDGET__;
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  const live = [...document.querySelectorAll('input, select, textarea')].filter(el => {
+                    const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
+                    return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type) && !el.disabled && !widget(el) && shown(el);
+                  });
+                  return live.length > 0 && live.every(el => { const t = (el.getAttribute('type') || '').toLowerCase(); return t === 'radio' || t === 'checkbox'; });
+                }
+                """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+
+    /// <summary>The frame that is a pre-screening step — its visible fillable controls are all
+    /// radio/checkbox and it carries a Continue/Next button — or null when no frame is (#239).</summary>
+    private static async Task<IFrame?> PreScreenFrameAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            if (!await OnlyChoiceFieldsAsync(frame)) continue;
+            if (await FindContinueAsync(frame) is not null) return frame;
+        }
+        return null;
+    }
+
+    /// <summary>Is the page a pre-screening step (a question and Continue before the form)?
+    /// Read by the reveal so a page it finds no form and no Apply on is named for what it is
+    /// rather than "no Apply button or link on the page" (#239).</summary>
+    internal static async Task<bool> IsPreScreenAsync(IPage page) => await PreScreenFrameAsync(page) is not null;
+
+    /// <summary>
+    /// Some boards gate the application behind a pre-screening step: a page whose only controls
+    /// are radio/checkbox questions and a Continue button — Paycor's SubmitResume asks "Will you
+    /// now or in the future require sponsorship?" before it shows the form. The reveal found no
+    /// form and no Apply and the run dead-ended at "no Apply button or link on the page" (#239).
+    /// Read the step's questions, answer each from <paramref name="answer"/> (the packet's own
+    /// answers on a submit; the deterministic set during discovery), press Continue, and go round
+    /// again until the form is on screen — bounded, since a step whose required question has no
+    /// answer stops rather than pressing Continue into validation or past the form. Returns the
+    /// questions it answered and advanced past, so a submit counts them mapped and a discovered
+    /// packet carries them.
+    /// </summary>
+    public static async Task<List<PacketQuestion>> AdvancePreScreenAsync(
+        IPage page, Func<PacketQuestion, string?> answer, ILogger log, int maxSteps = 5)
+    {
+        var advanced = new List<PacketQuestion>();
+        for (var step = 0; step < maxSteps; step++)
+        {
+            if (await BrowserSession.ApplicationFormVisibleAsync(page)) break;
+            var frame = await PreScreenFrameAsync(page);
+            if (frame is null) break;                    // not (or no longer) a pre-screening step
+            var questions = await FormDiscoverer.ReadQuestionsAsync(page, log);
+            var toSet = new List<(PacketQuestion Q, string A)>();
+            foreach (var q in questions)
+            {
+                if (q.Kind == PacketQuestion.Eeo || q.Type == PacketQuestion.File) continue;
+                var a = answer(q);
+                if (!string.IsNullOrWhiteSpace(a)) { toSet.Add((q, a!)); continue; }
+                if (q.Required)
+                {
+                    // A required question this step cannot answer: pressing Continue would fail
+                    // the step's own validation, and a step that let it through would carry us
+                    // past a form we never filled. Stop and let the caller report it — the
+                    // screenshot shows the step, and the reveal has named it.
+                    log.LogInformation("pre-screen: no answer for required \"{Label}\" — not advancing", q.Label);
+                    return advanced;
+                }
+            }
+            foreach (var (q, a) in toSet)
+                if (await FillAsync(frame, q, a)) advanced.Add(q);
+            var go = await FindContinueAsync(frame);
+            if (go is null) break;
+            var textBefore = await BodyTextAsync(page.MainFrame);
+            var urlBefore = page.Url;
+            try { await go.ClickAsync(new() { Timeout = 5_000 }); }
+            catch (PlaywrightException) { break; }
+            catch (TimeoutException) { break; }
+            // Wait for the step to give way to the form or the next step, then dismiss any
+            // consent banner the new page brought with it before it is read again.
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (await BrowserSession.ApplicationFormVisibleAsync(page)) break;
+                if (page.Url != urlBefore) break;
+                if (await BodyTextAsync(page.MainFrame) != textBefore) break;
+                await page.WaitForTimeoutAsync(400);
+            }
+            await BrowserSession.DismissConsentAsync(page);
+        }
+        return advanced;
+    }
 
     /// <summary>
     /// The validation messages the form is showing: alerts, the descriptions of invalid

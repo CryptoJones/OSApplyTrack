@@ -196,6 +196,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             + "<h1>Career Opportunities: Sr AI Engineer</h1><p>You already applied for this position.</p><a href=\"/jobs\">Back to Job Listings</a></body></html>", "text/html"));
         // A posting whose Apply button never becomes clickable (Fuse Energy).
         _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
+        // Paycor's SubmitResume: a pre-screening step (a sponsorship radio and Continue) before
+        // the real form, which Continue navigates to (#239).
+        _fixture.MapGet("/jobs/prescreen", () => Results.Content(PreScreenHtml, "text/html"));
         // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
         // Apply link is there, but nothing gets clicked through the overlay (#202).
         _fixture.MapGet("/jobs/consent", () => Results.Content(ConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
@@ -1030,6 +1033,40 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <button type="button" disabled>Apply</button>
         </body></html>
         """;
+
+    // Paycor's recruitingbypaycor.com/SubmitResume: the page opens on a sponsorship question
+    // with only radios and a Continue, and the form is behind it. Continue navigates to the
+    // real form only once a choice is made — so a run that reaches the form proved it answered
+    // the gate (#239).
+    private const string PreScreenHtml = """
+        <html><body>
+        <h1>Senior Engineer</h1>
+        <p>In order to apply for this position, please answer the questions below.</p>
+        <form id="prescreen" onsubmit="return false">
+          <fieldset><legend>Will you now or in the future require sponsorship for employment visa status?</legend>
+            <label for="sp_yes">Yes</label><input id="sp_yes" type="radio" name="sponsorship" value="Yes" required />
+            <label for="sp_no">No</label><input id="sp_no" type="radio" name="sponsorship" value="No" required />
+          </fieldset>
+          <button type="button" id="continue">Continue</button>
+        </form>
+        <script>
+          document.getElementById('continue').addEventListener('click', () => {
+            if (document.querySelector('input[name=sponsorship]:checked')) location.href = '/jobs/1';
+          });
+        </script>
+        </body></html>
+        """;
+
+    /// <summary>The standard form packet plus the pre-screening sponsorship question, keyed by
+    /// the gate radio's own name, as discovery banks it (#239).</summary>
+    private static AgentPacket PreScreenPacket()
+    {
+        var packet = Packet();
+        packet.Questions.Insert(0, new("sponsorship", "Will you now or in the future require sponsorship for employment visa status?",
+            true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["sponsorship"] = "No";
+        return packet;
+    }
 
     private static AgentPacket ReactSelectPacket() => new()
     {
@@ -2255,6 +2292,53 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("no application form was found", outcome.Error);
         Assert.Contains("the Apply button did not respond within 5 s", outcome.Error);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_pre_screening_step_is_answered_and_the_form_behind_it_is_reached()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Paycor opens on a sponsorship radio and a Continue; the run used to dead-end at "no
+        // Apply button or link on the page" (#239). It now answers the gate from the packet,
+        // presses Continue, and fills the form behind it.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/prescreen", PreScreenPacket(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.False(outcome.Submitted);
+        Assert.Empty(outcome.Unmapped);
+        // The gate's sponsorship answer plus the six on the form it led to.
+        Assert.Contains("sponsorship", outcome.Mapped);
+        Assert.Equal(7, outcome.Mapped.Count);
+        Assert.EndsWith("/jobs/1", outcome.Url);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_pre_screening_step_with_no_answer_to_give_is_named_not_read_as_a_formless_page()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The sponsorship question is required and the packet has no answer for it: the run
+        // must name the step rather than say the packet matched no fields (#239).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/prescreen", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("pre-screening step", outcome.Error);
+        Assert.EndsWith("/jobs/prescreen", outcome.Url);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task Discovery_goes_through_a_pre_screening_step_and_reads_the_form_behind_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        // With an answer for the gate, discovery goes through to the real form and reads both
+        // the gate's question and the form's fields.
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/prescreen",
+            preScreen: q => q.Label.Contains("sponsorship", StringComparison.OrdinalIgnoreCase) ? "No" : null);
+        Assert.NotNull(questions);
+        Assert.Contains(questions!, q => q.Label.Contains("sponsorship", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(questions!, q => q.Label.Contains("legally authorized", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(questions!, q => q.Label.Contains("Describe a system", StringComparison.OrdinalIgnoreCase));
     }
 
     [SkippableFact]

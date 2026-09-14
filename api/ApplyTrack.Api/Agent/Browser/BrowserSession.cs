@@ -441,7 +441,13 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
         if (apply is null)
         {
-            RevealNote = await AnyFieldVisibleAsync(Page) ? "" : "no Apply button or link on the page";
+            // A page whose only controls are radio/checkbox questions and a Continue is a
+            // pre-screening step, not a formless dead end — name it, so a run that cannot
+            // advance it (no answer to hand) says what is in the way (#239).
+            RevealNote = await AnyFieldVisibleAsync(Page) ? ""
+                : await BrowserSubmitter.IsPreScreenAsync(Page)
+                    ? "the page is a pre-screening step (a question and Continue) before the application form"
+                    : "no Apply button or link on the page";
             return;
         }
 
