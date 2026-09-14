@@ -102,12 +102,24 @@ public sealed partial class PacketBuilder
             questions = job.Questions;
             greenhouseContent = job.ContentHtml;
         }
-        else if (_browser.IsConfigured && f.Link.Length > 0 && provider != AtsProvider.Greenhouse
-                 && AtsProvider.BrowserCanSubmit(provider, inputs.Settings.LongTail))
+        // The person's standing answers, read once: they win over everything the drafter
+        // deterministically or the model would say, and they answer a pre-screening step so
+        // discovery can go through it to the real form (#239).
+        var pinned = await scope.Bank.PinnedAsync();
+        if (questions is null && _browser.IsConfigured && f.Link.Length > 0 && provider != AtsProvider.Greenhouse
+            && AtsProvider.BrowserCanSubmit(provider, inputs.Settings.LongTail))
         {
             try
             {
-                questions = await _discoverer.DiscoverAsync(AtsProvider.ApplyUrl(f.Link, provider), ct, inputs.Accounts);
+                // A pre-screening step's questions are the sponsorship/authorization kind the
+                // drafter answers deterministically; a location or posting excerpt it does not
+                // need, so the gate context leaves them empty.
+                var gateCtx = new AnswerContext(inputs.Resume, inputs.Settings, inputs.Email, "", "");
+                questions = await _discoverer.DiscoverAsync(AtsProvider.ApplyUrl(f.Link, provider), ct, inputs.Accounts,
+                    q => q.Kind == PacketQuestion.Eeo || q.Type == PacketQuestion.File ? null
+                        : pinned.TryGetValue(AnswerBankRepo.KeyFor(q), out var mine) && mine.Length > 0
+                            ? AnswerDrafter.FitToOptions(q, mine).Answer
+                            : AnswerDrafter.Deterministic(q, gateCtx).Answer);
             }
             catch (Exception ex) when (ex is AppValidationException or Microsoft.Playwright.PlaywrightException or TimeoutException)
             {
@@ -140,7 +152,7 @@ public sealed partial class PacketBuilder
         // deterministic set, then the model; and every screening question this form asked
         // goes into the bank with the answer it got, so the person can see and correct it.
         var ctx = new AnswerContext(inputs.Resume, inputs.Settings, inputs.Email, letter, excerpt);
-        var (answers, review) = await _answers.DraftAsync(questions, ctx, inputs.Cfg, ct, await scope.Bank.PinnedAsync());
+        var (answers, review) = await _answers.DraftAsync(questions, ctx, inputs.Cfg, ct, pinned);
         await scope.Bank.RecordAsync(questions, answers, rec.Name);
 
         var packet = new AgentPacket
