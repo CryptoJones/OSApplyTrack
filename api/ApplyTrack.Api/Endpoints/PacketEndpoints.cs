@@ -47,7 +47,7 @@ public static class PacketEndpoints
             string name, bool? force,
             ApplicationRepo apps, AgentSettingsRepo agentSettings, AgentEventRepo events,
             ResumeRepo resumes, CriteriaRepo criteria, LlmSettingsRepo llm, LlmOptions instance,
-            CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications,
+            CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications, BoardAccountRepo boardAccounts,
             UserRepo users, Auth.TenantContext tenant, AnswerBankRepo bank,
             LeadEvaluator evaluator, PacketBuilder builder, PacketReadyNotifier notifier,
             BrowserAvailability browser, SubmitRequestRepo queue,
@@ -101,7 +101,8 @@ public static class PacketEndpoints
             var (_, _, _, lettersEnabled) = await llm.GetViewAsync();
             var email = (await users.GetAsync(tenant.TenantId))?.Email ?? "";
             var inputs = new PacketInputs(
-                resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
+                resume, settings, email, await llm.GetCoverLetterSignatureAsync(), lettersEnabled, cfg,
+                await boardAccounts.TargetsAsync());
             var packet = await builder.BuildAsync(rec, verdict, inputs,
                 new PacketScope(apps, letters, packets, events, bank), ct);
             // With a browser that may drive this ATS — here, or on a worker that has

@@ -38,7 +38,8 @@ public interface IBrowserSubmitter
     Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null);
+        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null,
+        IReadOnlyList<BoardAccount>? accounts = null);
 }
 
 /// <summary>
@@ -51,7 +52,7 @@ public interface IBrowserSubmitter
 /// </summary>
 public sealed partial class BrowserSubmitter : IBrowserSubmitter
 {
-    [GeneratedRegex(@"thank you|thanks for applying|application (?:has been |was )?(?:submitted|received|sent)|we(?:'ve| have) received your application|successfully (?:submitted|applied)|your application is in", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"thank you|thanks for applying|application (?:has been |was |is )?(?:submitted|received|sent|complete)|we(?:'ve| have) received your application|successfully (?:submitted|applied)|your application is in|you have applied", RegexOptions.IgnoreCase)]
     private static partial Regex Confirmation();
 
     // A closed posting: the apply URL redirects to the board or shows a gone-notice. Matching
@@ -90,15 +91,18 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// code after Submit, or a board's sign-in code or link before the form (#210); returns
     /// what the human handed over, or null when nothing arrived in time. Null disables both:
     /// a dry run stops and reports instead of parking.</param>
+    /// <param name="accounts">The candidate's own sign-ins on account-only ATSs (SAP SuccessFactors,
+    /// #216): the session signs in with the one for the host Apply leads to.</param>
     public async Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null)
+        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null,
+        IReadOnlyList<BoardAccount>? accounts = null)
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
 
-        await using var session = await BrowserSession.OpenAsync(_options, AtsProvider.ApplyUrl(link, packet.Provider), ct);
+        await using var session = await BrowserSession.OpenAsync(_options, AtsProvider.ApplyUrl(link, packet.Provider), ct, accounts);
         var page = session.Page;
         var mapped = new List<string>();
         var unmapped = new List<string>();
@@ -136,6 +140,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // locator and page script below runs against this frame, not the top document.
             var form = await FormFrameAsync(page);
 
+            // The board's sign-in is still on screen: no account covered it, or the one that did
+            // was refused. The session already wrote down why (#216). Nothing here is the form.
+            if (await BrowserSession.SignInFormVisibleAsync(page))
+                return new SubmitOutcome(false, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
+                    session.RevealNote.Length > 0 ? session.RevealNote
+                        : "this page is the board's sign-in, not the application form — save the account under Settings · Agent · Board accounts, or apply via Copy answers and open the posting");
+
             // A page whose only fillable control is an email box is not the form, it is the
             // board's sign-in: join.com's Apply leads to "Your email address / Continue" and
             // shows its form to nobody who is not signed in (#210). A dry run stops here and
@@ -144,7 +155,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // and the run carries on in this same session to the form the board now shows.
             if (await OnlyEmailFieldsAsync(form))
             {
-                var stopped = await SignInAsync(session, form, packet, awaitSecurityCode, ct);
+                var stopped = await SignInAsync(session, form, packet, awaitSecurityCode, ct, accounts);
                 if (stopped is not null)
                     return stopped with { Url = session.Page.Url, Screenshot = await session.ScreenshotAsync() };
                 page = session.Page;
@@ -158,7 +169,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     continue;
                 if (q.Type == PacketQuestion.File)
                 {
-                    if (IsResume(q) && resumePdf is { } pdf)
+                    if (IsResume(q) && await ResumeOnFileAsync(form))
+                    {
+                        // The candidate's account already holds a résumé and the form shows it
+                        // (SuccessFactors: "Upload Resume · resume.pdf · Edit document", #216).
+                        // Nothing to attach; the field is satisfied as it stands.
+                        mapped.Add(q.Id);
+                    }
+                    else if (IsResume(q) && resumePdf is { } pdf)
                     {
                         // With a PDF on hand the résumé is required for the click whatever the
                         // API said: Greenhouse's Job Board API lists GitLab's résumé as optional
@@ -255,7 +273,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     await HasFillableControlsAsync(form)
                         ? "nothing on this form could be filled — the packet's questions match none of its fields"
                         : "no application form was found on the page — nothing to fill"
-                          + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : ""));
+                          + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : "")
+                          + (session.SignedInAs is { } who ? $" (signed in at {who.Host} as {who.Username})" : ""));
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
             if (unmapped.Count > 0)
@@ -312,6 +331,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var text = "";
             Match m = Match.Empty;
             List<string> complaints = [];
+            var confirmedDialog = false;
             async Task WaitForVerdictAsync(bool stopAtCodePrompt)
             {
                 complaints = [];
@@ -321,6 +341,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     text = await BodyTextAsync(form);
                     m = Confirmation().Match(text);
                     if (m.Success) break;
+                    // "Are you sure you want to apply?" — a board that asks once more before it
+                    // sends. Answered once, and only inside a dialog the click opened (#216).
+                    if (!confirmedDialog && i >= 1 && await ConfirmDialogAsync(page))
+                    {
+                        confirmedDialog = true;
+                        continue;
+                    }
                     if (stopAtCodePrompt && await HasSecurityCodePromptAsync(form)) break;
                     complaints = await ValidationErrorsAsync(form);
                     if (complaints.Count > 0) break;
@@ -867,11 +894,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// would do.
     /// </summary>
     private static async Task<SubmitOutcome?> SignInAsync(BrowserSession session, IFrame form, AgentPacket packet,
-        Func<CodeRequest, CancellationToken, Task<string?>>? relay, CancellationToken ct)
+        Func<CodeRequest, CancellationToken, Task<string?>>? relay, CancellationToken ct, IReadOnlyList<BoardAccount>? accounts = null)
     {
         var page = session.Page;
         static SubmitOutcome Stop(string why) => new(false, false, "", "", null, [], [], why);
-        var email = CandidateEmail(packet);
+        // The address to sign in as: a board account saved for this host (one with no password
+        // is exactly "sign me in by emailed code with this address", #216), else the packet's email.
+        var host = Uri.TryCreate(page.Url, UriKind.Absolute, out var signInAt) ? signInAt.Host : "";
+        var email = BoardAccount.For(accounts, host)?.Username is { Length: > 0 } saved && saved.Contains('@')
+            ? saved : CandidateEmail(packet);
         if (relay is null)
             return Stop(SignInError + (email.Length > 0
                 ? $" — Submit (not a dry run) signs in as {email} and asks you for the code or link the board emails"
@@ -1029,6 +1060,65 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             catch (PlaywrightException) { /* next */ }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Does the form already hold the candidate's résumé — a file name under a résumé
+    /// heading with the board's Download / Edit / Replace / Remove control beside it, and no
+    /// empty file input waiting there? SuccessFactors keeps the document on the candidate's
+    /// account and shows it on every application (#216).
+    /// </summary>
+    private static async Task<bool> ResumeOnFileAsync(IFrame page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => {
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  const heads = [...document.querySelectorAll('label, legend, h1, h2, h3, h4, h5, dt, th, span, div, p, strong, b')]
+                    .filter(el => shown(el) && el.children.length <= 2 && /^\s*\*?\s*(?:upload (?:your )?|attach (?:your )?)?(?:resume|résumé|cv|curriculum vitae)\b/i.test((el.innerText || '').trim()));
+                  for (const h of heads) {
+                    let a = h;
+                    for (let i = 0; i < 5 && a && a !== document.body; i++, a = a.parentElement) {
+                      const t = (a.innerText || '');
+                      if (!/\.(?:pdf|docx?|rtf|txt|odt)\b/i.test(t)) continue;
+                      if (!/download|edit document|replace|remove|delete|last modified|uploaded/i.test(t)) continue;
+                      const emptyFile = [...a.querySelectorAll('input[type=file]')].some(f => shown(f) && !f.files.length);
+                      if (!emptyFile) return true;
+                    }
+                  }
+                  return false;
+                }
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    [GeneratedRegex(@"^\s*(?:yes|ok|okay|confirm|continue|apply|submit|proceed|i agree|agree|accept|send)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ConfirmWords();
+
+    /// <summary>A dialog the Submit click opened, asking once more: press its confirming
+    /// button. True when one was pressed.</summary>
+    private static async Task<bool> ConfirmDialogAsync(IPage page)
+    {
+        try
+        {
+            var dialogs = page.Locator("[role=dialog], [role=alertdialog], .modal, .ui-dialog, [class*='dialog' i]");
+            var n = Math.Min(await dialogs.CountAsync(), 6);
+            for (var i = 0; i < n; i++)
+            {
+                var d = dialogs.Nth(i);
+                if (!await d.IsVisibleAsync()) continue;
+                var btn = d.GetByRole(AriaRole.Button, new() { NameRegex = ConfirmWords() }).First;
+                if (await btn.CountAsync() == 0 || !await btn.IsVisibleAsync()) continue;
+                await btn.ClickAsync(new() { Timeout = 3_000 });
+                return true;
+            }
+        }
+        catch (PlaywrightException) { /* no dialog after all */ }
+        catch (TimeoutException) { /* it closed itself */ }
+        return false;
     }
 
     /// <summary>Does the page have anything a person could type into or pick from? The careers
@@ -1507,12 +1597,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var candidates = new[]
         {
             page.Locator("#submit_app").First,
+            // SuccessFactors' Apply is a span, not a button: …:_submitBtn (#216).
+            page.Locator("[id$='_submitBtn']").Filter(notLater).First,
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Last,
             page.Locator("button[type=submit], input[type=submit]").Filter(notLater).Last,
             page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            // Last of all, a lone "Apply" anywhere on a page that has a form: the accordion
+            // boards put theirs in a footer bar outside any <form>.
+            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
         };
         foreach (var c in candidates)
         {

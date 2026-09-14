@@ -223,8 +223,9 @@ public sealed class AgentWorker : BackgroundService
         var resume = await new ResumeRepo(conn, tenantId, _protector).GetAsync();
         var (_, _, _, lettersEnabled) = await llmSettings.GetViewAsync();
         var email = (await new UserRepo(conn).GetAsync(tenantId))?.Email ?? "";
+        var accounts = await new BoardAccountRepo(conn, tenantId, _protector, _log).TargetsAsync();
         var inputs = new PacketInputs(
-            resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg);
+            resume, settings, email, await llmSettings.GetCoverLetterSignatureAsync(), lettersEnabled, cfg, accounts);
         var scope = new PacketScope(apps, new CoverLetterRepo(conn, tenantId, _protector),
             new AgentPacketRepo(conn, tenantId, _protector), events, new AnswerBankRepo(conn, tenantId, _protector));
         var notifications = new NotificationSettingsRepo(
@@ -473,7 +474,9 @@ public sealed class AgentWorker : BackgroundService
         try
         {
             outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText, coverLetter,
-                dryRun ? null : AwaitSecurityCodeAsync);
+                dryRun ? null : AwaitSecurityCodeAsync,
+                // The candidate's own sign-ins on account-only ATSs (SAP SuccessFactors, #216).
+                await new BoardAccountRepo(conn, t, _protector, _log).TargetsAsync());
         }
         // Catch EVERYTHING except cancellation. This filter used to name three types --
         // AppValidationException, PlaywrightException, TimeoutException -- which quietly

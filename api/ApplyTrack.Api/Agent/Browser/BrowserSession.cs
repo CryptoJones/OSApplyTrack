@@ -98,6 +98,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
     private readonly IBrowser _browser;
     private readonly IBrowserContext _context;
     private readonly List<string> _refused = [];
+    private IReadOnlyList<BoardAccount> _accounts = [];
+
+    /// <summary>The account the session signed in with, when Apply led to a sign-in (#216); null otherwise.</summary>
+    public BoardAccount? SignedInAs { get; private set; }
 
     /// <summary>The page the form is on. Usually the one opened at the link; the popup an
     /// Apply link opened in a new tab when there was one.</summary>
@@ -118,7 +122,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
         Page = page;
     }
 
-    public static async Task<BrowserSession> OpenAsync(BrowserOptions options, string link, CancellationToken ct)
+    /// <param name="accounts">The candidate's own sign-ins on account-only ATSs (#216). A top-level
+    /// navigation onto one of their hosts is allowed, and a password page on one of them is
+    /// signed in to, so the form behind it can be reached.</param>
+    public static async Task<BrowserSession> OpenAsync(BrowserOptions options, string link, CancellationToken ct,
+        IReadOnlyList<BoardAccount>? accounts = null)
     {
         if (!options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -146,7 +154,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
         });
         context.SetDefaultTimeout(Math.Max(5_000, options.TimeoutSeconds * 1000 / 6));
         var page = await context.NewPageAsync();
-        var session = new BrowserSession(playwright, browser, context, page);
+        var session = new BrowserSession(playwright, browser, context, page) { _accounts = accounts ?? [] };
         var allowedHost = target.Host;
         await context.RouteAsync("**/*", async route =>
         {
@@ -170,7 +178,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
             // that hosts its form are fine); sub-resources are left alone so the form
             // can load its scripts and styles. Any top-level frame in the context — the
             // tab an Apply link opens is held to the same rule as the first page.
-            if (req.IsNavigationRequest && req.Frame.ParentFrame is null && !HostAllowed(u.Host, allowedHost))
+            if (req.IsNavigationRequest && req.Frame.ParentFrame is null && !HostAllowed(u.Host, allowedHost)
+                && BoardAccount.For(session._accounts, u.Host) is null)
             {
                 lock (session._refused) session._refused.Add(u.Host);
                 await route.AbortAsync();
@@ -184,6 +193,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
         session.Status = response?.Status ?? 0;
         await DismissConsentAsync(page);
         await session.RevealFormAsync();
+        // A form that arrives folded — SuccessFactors' application is an accordion of
+        // sections, every one but the first collapsed — is opened before anyone reads it.
+        await ExpandSectionsAsync(session.Page);
         return session;
     }
 
@@ -409,6 +421,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// </summary>
     public async Task RevealFormAsync()
     {
+        // The link itself may be the board's sign-in (a direct career*.successfactors.com link).
+        if (await SignInFormVisibleAsync(Page) && !await TrySignInAsync()) return;
         // A moment for a form that renders itself after load, before deciding it is hidden.
         if (await WaitForApplicationFormAsync(Page, 3_000)) return;
         ILocator? apply = null;
@@ -467,15 +481,210 @@ public sealed partial class BrowserSession : IAsyncDisposable
             catch (PlaywrightException) { /* ditto */ }
             await DismissConsentAsync(Page);
         }
-        if (!await WaitForFieldAsync(Page, 10_000))
+        // What Apply led to: the form, or the board's sign-in first (#216), or nothing.
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
         {
-            var refused = Refused;
-            RevealNote = refused.Count > 0
-                ? AccountOnlyAts(refused[0]) is { } ats
-                    ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — this one is yours by Copy answers and open the posting"
-                    : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
-                : "Apply was clicked but no form appeared within 10 s";
+            // A field on screen settles it — and only then is the sign-in question asked, so a
+            // page still mid-navigation cannot answer "no sign-in" a moment before it renders one.
+            if (await AnyFieldVisibleAsync(Page))
+            {
+                if (await SignInFormVisibleAsync(Page)) await TrySignInAsync();
+                return;
+            }
+            if (DateTime.UtcNow >= deadline) break;
+            await Page.WaitForTimeoutAsync(500);
         }
+        var refused = Refused;
+        RevealNote = refused.Count > 0
+            ? AccountOnlyAts(refused[0]) is { } ats
+                ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting"
+                : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
+            : "Apply was clicked but no form appeared within 10 s";
+    }
+
+    // The board's own sign-in: a password box beside a username or email box. Never a
+    // widget's, and never taken for the application form.
+    private static readonly string SignInFormScript = """
+        () => {
+          const widget = __WIDGET__;
+          const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+          const pw = [...document.querySelectorAll('input[type=password]')].some(shown);
+          if (!pw) return false;
+          return [...document.querySelectorAll('input[type=text], input[type=email], input:not([type])')].some(el => shown(el) && !widget(el));
+        }
+        """.Replace("__WIDGET__", WidgetJs);
+
+    /// <summary>Is the page showing a sign-in (a password box with a username box)?</summary>
+    public static async Task<bool> SignInFormVisibleAsync(IPage page) => await SignInFormStateAsync(page) == true;
+
+    /// <summary>The same, but null when the page cannot be read (mid-navigation).</summary>
+    private static async Task<bool?> SignInFormStateAsync(IPage page)
+    {
+        try { return await page.MainFrame.EvaluateAsync<bool>(SignInFormScript); }
+        catch (PlaywrightException) { return null; }
+    }
+
+    [GeneratedRegex(@"^\s*(?:sign in|log ?in|login|continue|submit|next|weiter|anmelden|connexion|se connecter|iniciar sesi[oó]n|entrar)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex SignInWords();
+
+    /// <summary>
+    /// Sign in to the board with the candidate's own account for this host (#216): type the
+    /// username and password, press Sign In, and wait for the password box to go. True when
+    /// the page moved on; false — with the reason in <see cref="RevealNote"/> — when there is
+    /// no account for this host or the board refused the sign-in. Never creates an account.
+    /// </summary>
+    private async Task<bool> TrySignInAsync()
+    {
+        var host = Uri.TryCreate(Page.Url, UriKind.Absolute, out var here) ? here.Host : "";
+        var account = BoardAccount.For(_accounts, host);
+        var ats = AccountOnlyAts(host);
+        if (account is null)
+        {
+            RevealNote = $"Apply leads to a sign-in at {host}{(ats is null ? "" : $" ({ats})")} and no account is saved for it — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting";
+            return false;
+        }
+        if (account.Password.Length == 0)
+        {
+            RevealNote = $"the sign-in at {host} asks for a password and the account saved for it ({account.Username}) has none — add it under Settings · Agent · Board accounts";
+            return false;
+        }
+        try
+        {
+            // The username box, best name first — a CSS list is matched in DOM order, and the
+            // careers site's search box comes before the sign-in on the page. Never a widget's.
+            const string notWidget = ":not([type='search']):not([name*='search' i]):not([id*='search' i]):not([placeholder*='search' i]):not([class*='search' i])";
+            ILocator? userBox = null;
+            foreach (var sel in new[]
+                     {
+                         "#username", "input[name='username']", "input[autocomplete='username']", "input[type='email']",
+                         "input[name*='user' i]", "input[name*='email' i]", "input[id*='email' i]", "input[type='text']",
+                     })
+            {
+                var c = Page.Locator(sel + notWidget);
+                var n = Math.Min(await c.CountAsync(), 6);
+                for (var i = 0; i < n && userBox is null; i++)
+                    if (await c.Nth(i).IsVisibleAsync() && await c.Nth(i).IsEditableAsync()) userBox = c.Nth(i);
+                if (userBox is not null) break;
+            }
+            var pass = Page.Locator("input[type='password']:visible").First;
+            if (userBox is null || await pass.CountAsync() == 0)
+            {
+                RevealNote = $"the sign-in at {host} has no username or password box the browser can find";
+                return false;
+            }
+            await userBox.FillAsync(account.Username, new() { Timeout = 5_000 });
+            await pass.FillAsync(account.Password, new() { Timeout = 5_000 });
+            var notIdp = new LocatorFilterOptions { HasNotTextRegex = new Regex(@"google|linkedin|apple|microsoft|facebook|forgot|create|register", RegexOptions.IgnoreCase) };
+            ILocator? go = null;
+            foreach (var c in new[]
+                     {
+                         Page.GetByRole(AriaRole.Button, new() { NameRegex = SignInWords() }).Filter(notIdp).First,
+                         Page.Locator("form button[type=submit], form input[type=submit], button[type=submit], input[type=submit]").Filter(notIdp).First,
+                     })
+            {
+                try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync()) { go = c; break; } }
+                catch (PlaywrightException) { /* next */ }
+            }
+            var urlBefore = Page.Url;
+            string textBefore;
+            try { textBefore = await Page.InnerTextAsync("body"); } catch (PlaywrightException) { textBefore = ""; }
+            if (go is not null) await go.ClickAsync(new() { Timeout = 5_000 });
+            else await pass.PressAsync("Enter");
+            // What the board answered: the sign-in gone (signed in), or still there on a page
+            // that changed (refused, with its complaint), or unchanged until the deadline. A
+            // page that cannot be read mid-navigation answers nothing and is asked again.
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            var signedIn = false;
+            await Page.WaitForTimeoutAsync(800);
+            while (DateTime.UtcNow < deadline)
+            {
+                var state = await SignInFormStateAsync(Page);
+                if (state == false) { signedIn = true; break; }
+                if (state == true)
+                {
+                    string text;
+                    try { text = await Page.InnerTextAsync("body"); } catch (PlaywrightException) { text = textBefore; }
+                    if (Page.Url != urlBefore || text != textBefore) break;
+                }
+                await Page.WaitForTimeoutAsync(500);
+            }
+            if (!signedIn)
+            {
+                var complaint = await Page.EvaluateAsync<string>("""
+                    () => [...document.querySelectorAll('[role=alert], .error, .errorMessage, [class*="error" i], [class*="invalid" i]')]
+                      .map(e => (e.innerText || '').trim()).filter(t => t && t.length < 240).join('; ').slice(0, 240)
+                    """);
+                RevealNote = $"the sign-in at {host} as {account.Username} was refused" + (complaint.Length > 0 ? $": {complaint}" : "") + " — check the saved password under Settings · Agent · Board accounts";
+                return false;
+            }
+            SignedInAs = account;
+            try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
+            catch (TimeoutException) { /* judged by what renders */ }
+            catch (PlaywrightException) { /* ditto */ }
+            await DismissConsentAsync(Page);
+            await WaitForFieldAsync(Page, 10_000);
+            return true;
+        }
+        catch (PlaywrightException ex)
+        {
+            RevealNote = $"signing in at {host} failed: " + ex.Message.Split('\n')[0];
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            RevealNote = $"the sign-in at {host} did not respond";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Open every collapsed section of a form that arrives folded — SuccessFactors' accordion
+    /// (<c>…:topBar</c> headers), or any disclosure button whose region holds form controls.
+    /// Navigation menus, which also carry <c>aria-expanded</c>, are left alone.
+    /// </summary>
+    public static async Task ExpandSectionsAsync(IPage page)
+    {
+        try
+        {
+            for (var round = 0; round < 3; round++)
+            {
+                var ids = await page.MainFrame.EvaluateAsync<string[]>("""
+                    () => {
+                      const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                      const out = [];
+                      let i = 0;
+                      for (const el of document.querySelectorAll('[aria-expanded="false"]')) {
+                        if (!shown(el)) continue;
+                        const controls = el.getAttribute('aria-controls');
+                        const region = controls ? document.getElementById(controls) : null;
+                        const isTopBar = /topBar$/i.test(el.id || '');
+                        const holdsForm = region && region.querySelector('input, select, textarea');
+                        if (!isTopBar && !holdsForm) continue;
+                        if (!el.id) el.id = 'at-expand-' + (i++);
+                        out.push(el.id);
+                      }
+                      return out;
+                    }
+                    """);
+                if (ids.Length == 0) return;
+                foreach (var id in ids)
+                {
+                    // Scrolled into view and clicked through whatever floats over it: SuccessFactors'
+                    // sticky footer bar sat over two of Kiewit's section headers and a plain click
+                    // timed out on both.
+                    var bar = page.Locator($"[id=\"{id}\"]");
+                    try { await bar.ScrollIntoViewIfNeededAsync(new() { Timeout = 2_000 }); } catch (PlaywrightException) { } catch (TimeoutException) { }
+                    try { await bar.ClickAsync(new() { Timeout = 3_000, Force = true }); }
+                    catch (PlaywrightException) { /* next */ }
+                    catch (TimeoutException) { /* next */ }
+                    await page.WaitForTimeoutAsync(700);
+                }
+            }
+        }
+        catch (PlaywrightException) { /* a page mid-navigation: nothing to open */ }
     }
 
     public async ValueTask DisposeAsync()
