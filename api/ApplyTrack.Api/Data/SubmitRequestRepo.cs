@@ -77,6 +77,35 @@ public sealed class SubmitRequestRepo
         return r is null ? null : new SubmitRequestView(r.DryRun, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), Utc(r.DoneAt), r.Prepare);
     }
 
+    /// <summary>One pending request as the Pipeline view lists it: the row joined to its
+    /// application, in the order the worker will claim it (oldest request first).</summary>
+    public sealed record PendingView(
+        string ApplicationName, string Company, string Role, string Status, string Link,
+        bool DryRun, bool Prepare, DateTimeOffset RequestedAt, DateTimeOffset? ClaimedAt, bool CodeReceived);
+
+    private sealed record PendingRow(
+        string ApplicationName, string Company, string Role, string Status, string Link,
+        bool DryRun, bool Prepare, DateTime RequestedAt, DateTime? ClaimedAt, bool CodeReceived);
+
+    /// <summary>Every request still pending (queued or claimed, not done), oldest first —
+    /// the same order <see cref="SubmitQueue.ClaimNextAsync"/> drains them in.</summary>
+    public async Task<IReadOnlyList<PendingView>> PendingAsync()
+    {
+        var rows = await _conn.QueryAsync<PendingRow>(
+            """
+            SELECT r.application_name AS applicationname, a.company, a.role, a.status, a.link,
+                   r.dry_run AS dryrun, r.prepare, r.requested_at AS requestedat, r.claimed_at AS claimedat,
+                   r.security_code <> '' AS codereceived
+            FROM submit_requests r
+            JOIN applications a ON a.tenant_id = r.tenant_id AND a.name = r.application_name
+            WHERE r.tenant_id = @t AND r.done_at IS NULL
+            ORDER BY r.requested_at, r.id
+            """,
+            new { t = _t });
+        return rows.Select(r => new PendingView(r.ApplicationName, r.Company, r.Role, r.Status, r.Link,
+            r.DryRun, r.Prepare, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), r.CodeReceived)).ToList();
+    }
+
     /// <summary>The applications with a request still pending (queued or claimed, not done).</summary>
     public async Task<HashSet<string>> PendingNamesAsync() =>
         (await _conn.QueryAsync<string>(

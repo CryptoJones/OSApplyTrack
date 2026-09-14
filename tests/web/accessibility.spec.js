@@ -75,6 +75,29 @@ const appliedDetail = {
   },
 };
 
+// The submit queue as GET /api/pipeline reports it: one real click, one dry run parked
+// on a security code, and a clean Ready packet waiting on the dry-run switch.
+const pipeline = {
+  allowed: true, enabled: true, dry_run: true, long_tail: false,
+  worker_running: true, worker_last_seen: "2026-09-13T21:00:00Z", browser_available: true,
+  queue: [
+    { position: 1, name: application.filename, company: application.company, role: application.role, status: "ready",
+      link: "https://boards.greenhouse.io/example/jobs/1", provider: "greenhouse", requested_at: "2026-09-13T20:58:00Z",
+      claimed_at: "2026-09-13T20:59:00Z", phase: "awaiting_code", code_received: false, will: "submit", then_submit: false,
+      reason: "", blocking_review: 0, last_evidence: "awaiting_code", last_evidence_at: "2026-09-13T20:59:30Z" },
+    { position: 2, name: applications[1].filename, company: applications[1].company, role: applications[1].role, status: "ready",
+      link: "https://jobs.lever.co/meridian/1", provider: "lever", requested_at: "2026-09-13T21:00:00Z",
+      claimed_at: null, phase: "queued", code_received: false, will: "dry_run", then_submit: false,
+      reason: "Dry run only is on in Settings · Agent", blocking_review: 0, last_evidence: "", last_evidence_at: null },
+  ],
+  ready: [
+    { name: appliedApp.filename, company: appliedApp.company, role: appliedApp.role, link: "https://example.com/jobs/2",
+      provider: "unknown", last_evidence: "dry_run", clean: true, promotable: true, blocking_review: 0,
+      holding: "clean dry run; waiting for Dry run only to be turned off" },
+  ],
+  summary: { queued: 2, will_submit: 1, dry_runs: 1, prepares: 0, drops: 0, awaiting_code: 1, promotable: 1 },
+};
+
 async function mockApi(page) {
   // The header's version badge reads /health, which is outside the /api/ prefix.
   await page.route("**/health", async (route) => {
@@ -124,6 +147,7 @@ async function mockApi(page) {
       salary_expectation: "", phone: "", worker_running: false,
     };
     else if (path === "/api/agent-events") body = [];
+    else if (path === "/api/pipeline") body = pipeline;
     else if (path === "/api/notifications") body = {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
     };
@@ -610,4 +634,26 @@ test("the Ready lane offers bulk actions on the selection and submits them in on
   const req = await sent;
   expect(req.postDataJSON()).toEqual({ action: "submit", names: [application.filename] });
   await expect(page.locator("#toast")).toContainText("1 queued for a dry run");
+});
+
+test("the Pipeline button opens the submit queue and says what each request will do", async ({ page }) => {
+  const button = page.getByRole("button", { name: "Pipeline" });
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  await button.click();
+  await expect(page.getByRole("heading", { name: "Pipeline", level: 1 })).toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#pipeline-summary")).toContainText("2 queued — 1 will submit, 1 dry run, 1 waiting for a code.");
+  const table = page.getByRole("table", { name: "Queued submit requests, oldest first" });
+  await expect(table.getByRole("row")).toHaveCount(3);
+  await expect(table).toContainText("Waiting for your security code");
+  await expect(table).toContainText("Will submit");
+  await expect(table).toContainText("Dry run only is on in Settings · Agent");
+  await expect(page.getByText("Dry run only is ON — nothing submits for real")).toBeVisible();
+  await expect(page.getByText("clean dry run; waiting for Dry run only to be turned off")).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  // A queued row opens its application; leaving the view un-presses the strip button.
+  await table.getByRole("button", { name: "Example Co · Senior Engineer" }).click();
+  await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-pressed", "false");
 });

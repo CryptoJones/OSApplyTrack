@@ -711,13 +711,41 @@ h3 { font-size: 1.15rem; letter-spacing: -0.02em; }
 .pipeline-label {
   flex: 0 0 auto;
   margin-right: 0.4rem;
+  min-height: 2.35rem;
+  padding: 0.36rem 0.6rem;
   color: var(--text-subtle);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
   font-family: var(--font-mono);
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  cursor: pointer;
 }
+.pipeline-label:hover { color: var(--text); background: var(--surface); border-color: var(--border); }
+.pipeline-label[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+/* The Pipeline view: the submit queue and what each request turns into. */
+.pipe-health { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.link-status.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); }
+.table-scroll { overflow-x: auto; }
+.pipeline-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.pipeline-table th, .pipeline-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.pipeline-table th { font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.pipe-phase { font-weight: 650; }
+.pipe-phase-running, .pipe-phase-awaiting_code { color: var(--accent); }
+.pipe-phase-stale { color: var(--warning); }
+.link-button { padding: 0; color: var(--accent); background: none; border: 0; font: inherit; font-weight: 650; text-align: left; cursor: pointer; text-decoration: underline; }
+.link-button:hover { color: var(--accent-hover); }
+.pipe-ready-list { margin: 0.5rem 0 0; padding: 0; list-style: none; }
+.pipe-ready { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+.pipe-ready.promotable { border-left: 3px solid var(--success); padding-left: 0.6rem; }
 .pipe-stat {
   position: relative;
   min-height: 2.35rem;

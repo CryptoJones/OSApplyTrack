@@ -87,6 +87,27 @@ public sealed class AgentEvidenceRepo
             JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone())).ToList();
     }
 
+    /// <summary>The newest piece of evidence for each of the named applications, without
+    /// bytes — what the Pipeline view labels a queued request by (parked on a security
+    /// code, last dry run clean or not). Applications with no evidence are absent.</summary>
+    public async Task<IReadOnlyDictionary<string, (string Kind, JsonElement Detail, DateTimeOffset CreatedAt)>> LatestPerApplicationAsync(
+        IEnumerable<string> names)
+    {
+        var list = names.Select(Slug.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        if (list.Length == 0) return new Dictionary<string, (string, JsonElement, DateTimeOffset)>(StringComparer.Ordinal);
+        var rows = await _conn.QueryAsync<(string Name, string Kind, string Detail, DateTime CreatedAt)>(
+            """
+            SELECT DISTINCT ON (application_name) application_name, kind, detail::text, created_at
+            FROM agent_evidence
+            WHERE tenant_id = @t AND application_name = ANY(@names)
+            ORDER BY application_name, created_at DESC, id DESC
+            """,
+            new { t = _t, names = list });
+        return rows.ToDictionary(r => r.Name, r => (r.Kind,
+            JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone(),
+            new DateTimeOffset(DateTime.SpecifyKind(r.CreatedAt, DateTimeKind.Utc))), StringComparer.Ordinal);
+    }
+
     /// <summary>
     /// A dry run that proved the form can be finished unattended: the kind is
     /// <see cref="Kinds.DryRun"/>, no required field went unmapped, nothing errored. This
