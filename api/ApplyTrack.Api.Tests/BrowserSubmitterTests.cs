@@ -35,6 +35,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     private WebApplication? _fixture;
     private string _fixtureUrl = "";
     private readonly List<Dictionary<string, string>> _posts = [];
+    private readonly List<Dictionary<string, string>> _laterPosts = [];
 
     public async Task InitializeAsync()
     {
@@ -108,6 +109,18 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Greenhouse's posting page: an "Apply" button above the description that only
         // scrolls to the form, and the real "Submit application" at the bottom of it.
         _fixture.MapGet("/jobs/anchor", () => Results.Content(ApplyAnchorHtml, "text/html"));
+        // join.com's posting page (#210): an "Apply later" email box with its own submit,
+        // and the real form only behind "Apply now". Clicking Apply later emails the
+        // candidate the posting's link and sends no application.
+        _fixture.MapGet("/jobs/apply-later", () => Results.Content(ApplyLaterHtml, "text/html"));
+        _fixture.MapPost("/apply-later", async (HttpRequest req) =>
+        {
+            var form = await req.ReadFormAsync();
+            lock (_laterPosts) _laterPosts.Add(form.ToDictionary(kv => kv.Key, kv => kv.Value.ToString()));
+            return Results.Content("<html><body><p>We sent the link to your email.</p></body></html>", "text/html");
+        });
+        // join.com's page behind Apply: an email box and Continue — a sign-in, not a form.
+        _fixture.MapGet("/jobs/sign-in", () => Results.Content(SignInGateHtml, "text/html"));
         // A posting taken down outright: Greenhouse's 404 page, no gone-notice, no form.
         _fixture.MapGet("/jobs/gone", () => Results.Content(
             "<html><head><title>Page not found</title></head><body><h1>Page not found</h1>"
@@ -597,6 +610,39 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string ApplyLaterHtml = """
+        <html><body>
+        <h1>Founding Engineer</h1>
+        <div id="apply-window">
+          <button type="button" data-testid="ApplyButton" onclick="document.getElementById('real').style.display='block'">Apply now</button>
+        </div>
+        <p>The posting, at length.</p>
+        <div data-testid="ApplyLater">
+          <p>No time right now? Apply later.</p><p>We will send a link to this job to your email.</p>
+          <form method="post" action="/apply-later">
+            <input id="ApplyLaterEmail" name="email" type="email" placeholder="E-mail" required />
+            <button type="submit" data-testid="ApplyLaterSubmitButton">Apply later</button>
+          </form>
+        </div>
+        <form id="real" method="post" action="/apply" style="display:none">
+          <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
+          <label for="email">Email</label><input id="email" name="job_application[email]" type="email" />
+          <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string SignInGateHtml = """
+        <html><body>
+        <h1>Founding Engineer</h1>
+        <form>
+          <label for="email">Your email address</label><input id="email" name="email" type="email" data-testid="CandidateEmail" />
+          <button type="button" data-testid="ContinueButton">Continue</button>
+          <button type="button" data-testid="GoogleIdentityButton">Continue with Google</button>
+        </form>
+        </body></html>
+        """;
+
     private const string ApplyAnchorHtml = """
         <html><body>
         <h1>Senior Engineer</h1>
@@ -1046,6 +1092,49 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task Apply_later_is_never_the_form_nor_the_button_the_real_form_behind_Apply_is()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "piston-founding-engineer.md", Provider = "join",
+            Questions =
+            [
+                new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            ],
+            Answers = new() { ["first_name"] = "Ada", ["email"] = "ada@example.com" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/apply-later", packet, null, dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var sent = Assert.Single(_posts);
+        Assert.Equal("Ada", sent["job_application[first_name]"]);
+        Assert.Equal("ada@example.com", sent["job_application[email]"]);
+        Assert.Empty(_laterPosts);
+    }
+
+    [SkippableFact]
+    public async Task An_email_sign_in_behind_Apply_is_reported_as_such_not_as_a_clean_dry_run()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "piston-founding-engineer.md", Provider = "join",
+            Questions = [new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["email"] = "ada@example.com" },
+        };
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in", packet, null, dryRun: true);
+
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("sign-in", outcome.Error);
+        Assert.Empty(_posts);
     }
 
     [SkippableFact]

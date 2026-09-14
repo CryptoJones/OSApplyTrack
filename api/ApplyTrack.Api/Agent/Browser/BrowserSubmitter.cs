@@ -217,6 +217,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // and a run that would have clicked Submit on an empty application.
             // Likewise a page with no form on it at all: that used to pass as a clean dry run
             // ("filled", zero mapped) and moo the human to come and click Apply on nothing.
+            // A page whose only fillable control is an email box is a sign-in, not the form:
+            // join.com's Apply leads to "your email address / Continue" (a code follows) and
+            // never shows a form to an anonymous visitor. One mapped field there would read as
+            // a clean dry run, promote itself, and click Submit on a page that has none (#210).
+            if (await OnlyEmailFieldsAsync(form))
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "this page is an email sign-in, not the application form — the board wants the candidate signed in before it shows one; apply via Copy answers and open the posting");
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     await HasFillableControlsAsync(form)
@@ -687,10 +694,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             const input = g.querySelector('input[type=file]');
             if (input && !input.disabled) addFile(g, input, labelFor(g));
           }
+          // A side form — join.com's "Apply later" box, a newsletter signup — is one whose
+          // fillable controls are all email inputs while another form on the page has more
+          // than that. Its required email is not the application's business (#210).
+          const fillable = f => [...f.querySelectorAll('input, select, textarea')].filter(c => {
+            const t = (c.getAttribute('type') || (c.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
+            return !['hidden', 'submit', 'button', 'reset', 'image'].includes(t) && !c.disabled;
+          });
+          const emailOnly = f => { const cs = fillable(f); return cs.length > 0 && cs.every(c => (c.getAttribute('type') || '').toLowerCase() === 'email'); };
+          const realFormExists = [...document.querySelectorAll('form')].some(f => !emailOnly(f) && fillable(f).length > 0);
+          const sideForm = el => { const f = el.closest('form'); return !!f && realFormExists && emailOnly(f); };
           for (const el of document.querySelectorAll('input, select, textarea')) {
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
             if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
+            if (sideForm(el)) continue;
             if (type === 'file') {
               // Not gated on the input being visible: uploaders keep theirs off screen behind
               // a styled Attach button.
@@ -775,6 +793,26 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                   return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
                 })
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>Every visible, enabled, fillable control on the page is an email box (and there is one).</summary>
+    private static async Task<bool> OnlyEmailFieldsAsync(IFrame page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => {
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  const live = [...document.querySelectorAll('input, select, textarea')].filter(el => {
+                    const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
+                    return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type) && !el.disabled && shown(el);
+                  });
+                  return live.length > 0 && live.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
+                }
                 """);
         }
         catch (PlaywrightException) { return false; }
@@ -1203,15 +1241,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// </summary>
     private static async Task<ILocator?> FindSubmitAsync(IFrame page)
     {
+        // Nothing that reads as "later" is ever the button (#210): join.com's "Apply later"
+        // is a type=submit on the posting page, and as the last one in the document it was
+        // exactly what the generic fallbacks picked.
+        var notLater = new LocatorFilterOptions { HasNotTextRegex = BrowserSession.LaterWords() };
         var candidates = new[]
         {
             page.Locator("#submit_app").First,
-            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Last,
-            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Last,
-            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Last,
-            page.Locator("form button[type=submit], form input[type=submit]").Last,
-            page.Locator("button[type=submit], input[type=submit]").Last,
-            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Last,
+            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            page.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Last,
+            page.Locator("button[type=submit], input[type=submit]").Filter(notLater).Last,
+            page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
         };
         foreach (var c in candidates)
         {
