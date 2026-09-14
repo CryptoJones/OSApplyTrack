@@ -28,6 +28,16 @@ public sealed record PacketQuestion(
     /// <summary>Label and helper text together — what a human actually reads before answering.</summary>
     public string FullPrompt => Help.Length == 0 ? Label : $"{Label} ({Help})";
 
+    /// <summary>A label as a person reads it: no required star at either end, one space between
+    /// words. SuccessFactors renders "<c>*&amp;nbsp;Country</c>" and its label text arrives as
+    /// "*\n Country"; the packet, the locator and the required-empty sweep all compare this form.</summary>
+    public static string CleanLabel(string label)
+    {
+        var s = System.Text.RegularExpressions.Regex.Replace((label ?? "").Trim(), @"\s+", " ");
+        s = s.TrimStart('*', ' ').TrimEnd('*', ' ').Trim();
+        return s;
+    }
+
     public const string Text = "text";
     public const string Textarea = "textarea";
     public const string Select = "select";
