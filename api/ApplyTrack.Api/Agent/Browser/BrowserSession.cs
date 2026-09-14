@@ -40,6 +40,44 @@ public sealed partial class BrowserSession : IAsyncDisposable
     [GeneratedRegex(@"later|plus tard|später|spaeter|más tarde|mais tarde|remind|send (?:me )?(?:the |a )?link|envoyer|subscribe|alert|newsletter", RegexOptions.IgnoreCase)]
     public static partial Regex LaterWords();
 
+    /// <summary>
+    /// A JavaScript predicate, <c>(el) => bool</c>, for a control that is a page widget and
+    /// never part of an application form: the careers site's job search (keyword, location,
+    /// the facet selects) and its job-alert / subscribe box. SAP SuccessFactors career sites
+    /// put both on every posting page, and counting them as "the form" is how the agent never
+    /// pressed Apply now on Kiewit's posting and discovered "Search by Keyword" as a question
+    /// (#214). Spliced into every page script that enumerates controls, so all of them agree.
+    /// </summary>
+    public const string WidgetJs = """
+        (el) => {
+          const a = (e, n) => (e.getAttribute(n) || '').toLowerCase();
+          if (a(el, 'type') === 'search') return true;
+          const own = [a(el, 'name'), a(el, 'id'), a(el, 'placeholder'), a(el, 'aria-label'), a(el, 'class')].join(' ');
+          // "search" as its own word or suffix (keywordsearch, locationsearch, columnized-search),
+          // never inside another word (research_area); the alert box by its own field names.
+          if (/(?:^|[^a-z])(?:search|keyword)|(?:location|job|keyword)search|createnewalert|(?:^|[^a-z])frequency(?:$|[^a-z])|job.?alert|subscribe/.test(own)) return true;
+          return !!el.closest('[role=search], form[action*="search" i], form[class*="search" i], form[id*="search" i], form[name*="search" i], '
+            + 'form[action*="subscribe" i], form[class*="subscribe" i], form[id*="subscribe" i], form[name*="subscribe" i], '
+            + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i]');
+        }
+        """;
+
+    /// <summary>
+    /// The name of an applicant-tracking system that only takes applications from a
+    /// signed-in candidate account (email + password), for a host Apply led to — or null.
+    /// The browser never creates accounts, so such a posting is the person's by Copy answers
+    /// and open, and the run says so instead of "the browser refuses to follow" (#214).
+    /// </summary>
+    public static string? AccountOnlyAts(string host)
+    {
+        host = (host ?? "").ToLowerInvariant();
+        if (host.EndsWith("successfactors.com") || host.EndsWith("successfactors.eu") || host.EndsWith("sapsf.com") || host.EndsWith("sapsf.eu"))
+            return "SAP SuccessFactors";
+        if (host.EndsWith("myworkdayjobs.com") || host.EndsWith("myworkdaysite.com"))
+            return "Workday";
+        return null;
+    }
+
     // Cookie-consent banners (#202): the well-known managers by their own ids first, then
     // any visible button that reads as "accept" inside a box that calls itself a cookie,
     // consent or privacy notice. Zoho Recruit and Workable's job finder both put an
@@ -271,14 +309,23 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return Reg(host) == Reg(original);
     }
 
-    private const string AnyFieldSelector = "input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select";
+    private static readonly string AnyFieldScript = """
+        () => {
+          const widget = __WIDGET__;
+          const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+          return [...document.querySelectorAll('input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select')]
+            .some(el => !widget(el) && (el.getAttribute('type') === 'file' || shown(el)));
+        }
+        """.Replace("__WIDGET__", WidgetJs);
 
-    /// <summary>Is a form control on screen — in the page, or in any frame it embeds?</summary>
+    /// <summary>Is a form control on screen — in the page, or in any frame it embeds? A
+    /// search or job-alert widget's controls never count (#214).</summary>
     public static async Task<bool> AnyFieldVisibleAsync(IPage page)
     {
         foreach (var frame in page.Frames)
         {
-            try { if (await frame.Locator(AnyFieldSelector).First.IsVisibleAsync()) return true; }
+            try { if (await frame.EvaluateAsync<bool>(AnyFieldScript)) return true; }
             catch (PlaywrightException) { /* a frame mid-navigation */ }
         }
         return false;
@@ -306,7 +353,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// real one (#180). A lone email box is not a form either: join.com's posting page
     /// carries one for "Apply later", and taking it for the form is how the agent never
     /// clicked Apply, typed the candidate's email into it, and had the board email the
-    /// posting's link back instead of an application (#210).
+    /// posting's link back instead of an application (#210). Nor are the careers site's
+    /// job-search and job-alert widgets, which SuccessFactors puts on every posting (#214).
     /// </summary>
     public static async Task<bool> ApplicationFormVisibleAsync(IPage page)
     {
@@ -314,12 +362,21 @@ public sealed partial class BrowserSession : IAsyncDisposable
         {
             try
             {
-                if (await frame.EvaluateAsync<bool>("""
+                if (await frame.EvaluateAsync<bool>(ApplicationFormScript)) return true;
+            }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return false;
+    }
+
+    private static readonly string ApplicationFormScript = """
                     () => {
+                      const widget = __WIDGET__;
                       const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                         return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
                       let texts = 0;
                       for (const el of document.querySelectorAll('input, textarea, select')) {
+                        if (widget(el)) continue;
                         const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
                         if (type === 'file') return true;
                         if (!shown(el)) continue;
@@ -329,12 +386,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       }
                       return false;
                     }
-                    """)) return true;
-            }
-            catch (PlaywrightException) { /* a frame mid-navigation */ }
-        }
-        return false;
-    }
+                    """.Replace("__WIDGET__", WidgetJs);
 
     public static async Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
     {
@@ -419,7 +471,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
         {
             var refused = Refused;
             RevealNote = refused.Count > 0
-                ? $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
+                ? AccountOnlyAts(refused[0]) is { } ats
+                    ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — this one is yours by Copy answers and open the posting"
+                    : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
                 : "Apply was clicked but no form appeared within 10 s";
         }
     }

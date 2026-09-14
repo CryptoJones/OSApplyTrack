@@ -20,6 +20,10 @@ public static partial class AtsProvider
     public const string Lever = "lever";
     public const string Ashby = "ashby";
     public const string Workday = "workday";
+    /// <summary>SAP SuccessFactors: the employer-branded career site (Career Site Builder) shows the
+    /// posting, and Apply leads to career*.successfactors.com, which only takes applications from
+    /// a signed-in candidate account — the Workday class, never driven (#214).</summary>
+    public const string SuccessFactors = "successfactors";
     public const string Workable = "workable";
     public const string Breezy = "breezy";
     public const string SmartRecruiters = "smartrecruiters";
@@ -97,6 +101,9 @@ public static partial class AtsProvider
             return Ashby;
         if (host.EndsWith("myworkdayjobs.com") || host.EndsWith("myworkdaysite.com"))
             return Workday;
+        if (host.EndsWith("successfactors.com") || host.EndsWith("successfactors.eu")
+            || host.EndsWith("sapsf.com") || host.EndsWith("sapsf.eu") || host.EndsWith("jobs2web.com"))
+            return SuccessFactors;
         if (host.EndsWith("workable.com"))
             return Workable;
         if (host.EndsWith("breezy.hr"))
@@ -151,16 +158,16 @@ public static partial class AtsProvider
     }
 
     /// <summary>
-    /// Whether the browser may drive this provider's form. Workday never: applying
-    /// needs an account with the employer's tenant, email verification and a
-    /// multi-step wizard — the honest outcome is copy-and-open. An aggregator's listing
-    /// never: there is no form on it. The unknown long tail only with the tenant's
-    /// explicit opt-in.
+    /// Whether the browser may drive this provider's form. Workday and SuccessFactors never:
+    /// applying needs a candidate account with the employer's tenant (a password, email
+    /// verification, a multi-step wizard) — the honest outcome is copy-and-open. An
+    /// aggregator's listing never: there is no form on it. The unknown long tail only with
+    /// the tenant's explicit opt-in.
     /// </summary>
     public static bool BrowserCanSubmit(string provider, bool longTailOptIn) => provider switch
     {
         Greenhouse or Lever or Ashby or Workable or Breezy or SmartRecruiters or Join => true,
-        Workday or Aggregator => false,
+        Workday or SuccessFactors or Aggregator => false,
         _ => longTailOptIn,
     };
 

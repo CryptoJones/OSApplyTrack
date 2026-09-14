@@ -114,8 +114,9 @@ public sealed partial class FormDiscoverer
     // Runs in the page: every visible, enabled control with its accessible name.
     // Radio groups collapse to one control keyed by name with the labels as options;
     // hidden/submit/button inputs are skipped.
-    private const string EnumerateScript = """
+    private static readonly string EnumerateScript = """
         () => {
+          const widget = __WIDGET__;
           const out = [];
           const seenRadio = new Map();
           const labelFor = (el) => {
@@ -166,6 +167,8 @@ public sealed partial class FormDiscoverer
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
             if (el.disabled || el.readOnly) continue;
             if (type !== 'file' && !visible(el)) continue;
+            // The careers site's own job search and job-alert boxes are not questions (#214).
+            if (widget(el)) continue;
             const required = el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(labelFor(el)) || starred(el);
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
@@ -181,5 +184,5 @@ public sealed partial class FormDiscoverer
           }
           return out;
         }
-        """;
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 }

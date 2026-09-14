@@ -797,14 +797,15 @@ function renderView(data) {
 // the human's: "Copy answers and open the posting" works for every ATS.
 
 const PACKET_PROVIDER_LABEL = {
-  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workday: "Workday", workable: "Workable",
+  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workday: "Workday", successfactors: "SAP SuccessFactors", workable: "Workable",
   breezy: "Breezy", smartrecruiters: "SmartRecruiters", join: "join.com", aggregator: "job aggregator listing",
   unknown: "unknown ATS",
 };
 // The ATSs the browser drives without the long-tail opt-in (mirrors AtsProvider.BrowserCanSubmit).
 const BROWSER_PROVIDERS = ["greenhouse", "lever", "ashby", "workable", "breezy", "smartrecruiters", "join"];
-// Never driven: Workday needs an employer account; an aggregator's listing has no form on it.
-const MANUAL_PROVIDERS = ["workday", "aggregator"];
+// Never driven: Workday and SuccessFactors need a candidate account with the employer; an
+// aggregator's listing has no form on it.
+const MANUAL_PROVIDERS = ["workday", "successfactors", "aggregator"];
 
 function packetSection(data) {
   const p = data.packet;
@@ -840,6 +841,8 @@ function packetSection(data) {
   const manualNote = url && (p.provider === "aggregator" || (state.browserAvailable && !browserCan))
     ? `<p class="field-help mt-2">${p.provider === "workday"
         ? "Workday needs an account with the employer, so this one is yours to submit — copy the answers and open the posting."
+        : p.provider === "successfactors"
+        ? "SuccessFactors only takes applications from a signed-in candidate account, so this one is yours to submit — copy the answers and open the posting."
         : p.provider === "aggregator"
         ? "This link is a job aggregator's listing, not the employer's form, so the agent never runs the browser at it. Open the posting, follow its Apply to the employer, and paste the answers there."
         : "The agent doesn't know this ATS. Turn on the long tail in Settings · Agent to let the browser try, or copy the answers and open the posting."}</p>`

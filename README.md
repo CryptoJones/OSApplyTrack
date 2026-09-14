@@ -705,10 +705,14 @@ resolve is prepared and mooed as apply-by-hand, never run.
 Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
 field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
-doesn't know* in Settings · Agent. **Workday stays manual, permanently** — applying
-needs an account with the employer's tenant, email verification and a multi-step
-wizard — so it is detected, the packet is prepared, and the sheet routes you to
-copy-and-open. That is the honest outcome, not a gap. The agent never guesses on
+doesn't know* in Settings · Agent. **Workday and SAP SuccessFactors stay manual,
+permanently** — applying needs a candidate account with the employer's tenant (a
+password, email verification, a multi-step wizard) — so they are detected, the
+packet is prepared, and the sheet routes you to copy-and-open. A SuccessFactors
+career site on the employer's own domain (Kiewit's, say) is not knowable from the
+link: the browser learns it when Apply now leads to `career*.successfactors.com`,
+and the run says so. The careers site's own job-search and job-alert boxes are
+never mistaken for the form. That is the honest outcome, not a gap. The agent never guesses on
 EEO/demographic questions, file fields other than the résumé, or any answer the
 model wasn't confident about — those block Submit until you resolve them.
 
