@@ -109,6 +109,10 @@ AGGREGATOR_HOSTS = frozenset({
     # Jobright reposts employers' openings on LinkedIn and elsewhere with its own
     # "send my profile" flow in place of a form (#238).
     "jobright.ai",
+    # Sundayy lists employers' openings and its Apply is an ad-monetised redirect chain
+    # (sundayy.com -> thebigjobsite.com -> appcast.io -> lensa.com) through more
+    # aggregators, never a form; all three job-board hosts are apply-by-hand (#243).
+    "sundayy.com", "thebigjobsite.com", "lensa.com",
 })
 
 _APPLY_ANCHOR_RE = re.compile(
