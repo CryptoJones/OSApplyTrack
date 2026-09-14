@@ -658,8 +658,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (PlaywrightException) { return []; }
     }
 
-    private const string RequiredEmptyScript = """
+    private static readonly string RequiredEmptyScript = """
         () => {
+          const widget = __WIDGET__;
           const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
           const labelFor = el => {
@@ -731,6 +732,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           const realFormExists = [...document.querySelectorAll('form')].some(f => !emailOnly(f) && fillable(f).length > 0);
           const sideForm = el => { const f = el.closest('form'); return !!f && realFormExists && emailOnly(f); };
           for (const el of document.querySelectorAll('input, select, textarea')) {
+            if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
             if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
@@ -763,7 +765,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           }
           return out;
         }
-        """;
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
     /// <summary>Greenhouse's security-code prompt: one box per character, ids <c>security-input-N</c>,
     /// under "A verification code was sent to …".</summary>
@@ -1029,42 +1031,51 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return null;
     }
 
-    /// <summary>Does the page have anything a person could type into or pick from?</summary>
+    /// <summary>Does the page have anything a person could type into or pick from? The careers
+    /// site's search and job-alert widgets do not count (#214).</summary>
     private static async Task<bool> HasFillableControlsAsync(IFrame page)
     {
         try
         {
-            return await page.EvaluateAsync<bool>("""
-                () => [...document.querySelectorAll('input, select, textarea')].some(el => {
-                  const type = (el.getAttribute('type') || 'text').toLowerCase();
-                  if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled) return false;
-                  const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
-                  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-                })
-                """);
+            return await page.EvaluateAsync<bool>(HasFillableScript);
         }
         catch (PlaywrightException) { return false; }
     }
+
+    private static readonly string HasFillableScript = """
+                () => {
+                  const widget = __WIDGET__;
+                  return [...document.querySelectorAll('input, select, textarea')].some(el => {
+                    const type = (el.getAttribute('type') || 'text').toLowerCase();
+                    if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled || widget(el)) return false;
+                    const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+                  });
+                }
+                """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
     /// <summary>Every visible, enabled, fillable control on the page is an email box (and there is one).</summary>
     private static async Task<bool> OnlyEmailFieldsAsync(IFrame page)
     {
         try
         {
-            return await page.EvaluateAsync<bool>("""
+            return await page.EvaluateAsync<bool>(OnlyEmailScript);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private static readonly string OnlyEmailScript = """
                 () => {
+                  const widget = __WIDGET__;
                   const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
                   const live = [...document.querySelectorAll('input, select, textarea')].filter(el => {
                     const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
-                    return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type) && !el.disabled && shown(el);
+                    return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type) && !el.disabled && !widget(el) && shown(el);
                   });
                   return live.length > 0 && live.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
                 }
-                """);
-        }
-        catch (PlaywrightException) { return false; }
-    }
+                """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
     /// <summary>
     /// The validation messages the form is showing: alerts, the descriptions of invalid

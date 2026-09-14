@@ -25,6 +25,11 @@ public class AtsProviderTests
     [InlineData("https://www.assuresoft.com/careers/senior-engineer?gh_jid=4567890", "auto:remoteok", AtsProvider.Greenhouse)]
     [InlineData("https://boards.greenhouse.io/acme/jobs/123", "", AtsProvider.Greenhouse)]
     [InlineData("https://jobs.lever.co/acme/1234-abcd", "", AtsProvider.Lever)]
+    [InlineData("https://career4.successfactors.com/careers?company=Kiewit", "", AtsProvider.SuccessFactors)]
+    [InlineData("https://jobs.sapsf.eu/career?company=acme", "", AtsProvider.SuccessFactors)]
+    // A SuccessFactors career site on the employer's own domain is not knowable from the link:
+    // the browser learns it when Apply leads to career*.successfactors.com (#214).
+    [InlineData("https://kiewitcareers.kiewit.com/job/Omaha-Sr-AI-Engineer-NE-68046/1410311300/", "", AtsProvider.Unknown)]
     [InlineData("https://careers.example.com/jobs/1", "", AtsProvider.Unknown)]
     public void Detects_the_long_tail_boards_and_the_aggregators(string link, string source, string expected) =>
         Assert.Equal(expected, AtsProvider.Detect(link, source));
@@ -50,6 +55,7 @@ public class AtsProviderTests
         foreach (var p in new[] { AtsProvider.Greenhouse, AtsProvider.Lever, AtsProvider.Ashby, AtsProvider.Workable, AtsProvider.Breezy, AtsProvider.SmartRecruiters, AtsProvider.Join })
             Assert.True(AtsProvider.BrowserCanSubmit(p, longTailOptIn: false), p);
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Workday, longTailOptIn: true));
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.SuccessFactors, longTailOptIn: true));
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Aggregator, longTailOptIn: true));
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Unknown, longTailOptIn: false));
         Assert.True(AtsProvider.BrowserCanSubmit(AtsProvider.Unknown, longTailOptIn: true));

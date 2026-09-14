@@ -161,6 +161,11 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Workable's job finder: a search box on the posting page, and an Apply link to the
         // form on another page of the same site (#180).
         _fixture.MapGet("/jobs/search-first", () => Results.Content(SearchFirstHtml, "text/html"));
+        // A SuccessFactors career site's posting (Kiewit, #214): a keyword/location job search
+        // and a job-alert box on the page, the form behind "Apply now »" — on the same site
+        // here; on the real one it leads to career4.successfactors.com's sign-in.
+        _fixture.MapGet("/jobs/widgets", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/1"), "text/html"));
+        _fixture.MapGet("/jobs/widgets-account", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
         // A posting whose Apply button never becomes clickable (Fuse Energy).
         _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
         // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
@@ -794,6 +799,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <h3>Additional questions</h3>
           <label for="li_req">LinkedIn profile *</label><input id="li_req" name="li_req" required />
           <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string WidgetsHtml = """
+        <html><body>
+        <form class="form-inline jobAlertsSearchForm" name="keywordsearch" method="get" action="/search/" role="search">
+          <input type="text" class="keywordsearch-q columnized-search" name="q" placeholder="Search by Keyword" aria-label="Search by Keyword" />
+          <input type="text" class="keywordsearch-locationsearch columnized-search" name="locationsearch" placeholder="Search by Location" aria-label="Search by Location" />
+          <select name="optionsFacetsDD_location" class="optionsFacet-select"><option value="">Location</option><option>Omaha</option></select>
+          <input type="submit" class="btn keywordsearch-button" value="Search Jobs" />
+        </form>
+        <h1>Sr AI Engineer</h1>
+        <a class="btn btn-primary apply dialogApplyBtn" href="APPLY_HREF">Apply now »</a>
+        <p>The posting, at length.</p>
+        <form id="emailsubscribe" class="emailsubscribe-form form-inline" method="post" action="/talentcommunity/subscribe/">
+          <label for="j_idt90">Select how often (in days) to receive an alert:</label>
+          <input id="j_idt90" type="number" class="form-control subscribe-frequency" name="frequency" required min="1" max="99" value="7" />
+          <input id="emailsubscribe-button" class="btn emailsubscribe-button" value="Create Alert" type="submit" />
         </form>
         </body></html>
         """;
@@ -1896,6 +1920,42 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.EndsWith("/apply", new Uri(outcome.Url).AbsolutePath);
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_job_search_and_a_job_alert_box_are_not_the_form_and_apply_now_is_followed_to_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/widgets", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+        Assert.DoesNotContain("frequency", outcome.Unmapped);
+        Assert.DoesNotContain("locationsearch", outcome.Mapped);
+    }
+
+    [SkippableFact]
+    public async Task Apply_that_leads_to_an_account_only_ats_is_named_as_such_and_nothing_is_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/widgets-account", Packet(), null, dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("SAP SuccessFactors", outcome.Error);
+        Assert.Contains("signed-in candidate account", outcome.Error);
+        Assert.Empty(outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_job_search_and_a_job_alert_box_are_not_discovered_as_questions()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/widgets");
+        Assert.NotNull(questions);
+        Assert.Contains(questions!, q => q.Label.Contains("First Name", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(questions!, q => q.Id == "q" || q.Id == "locationsearch" || q.Id == "j_idt90" || q.Label.Contains("alert", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/widgets-account"));
     }
 
     [SkippableFact]

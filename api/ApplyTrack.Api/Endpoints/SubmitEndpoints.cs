@@ -23,6 +23,7 @@ public static class SubmitEndpoints
     public static string CannotDrive(string provider) => provider switch
     {
         AtsProvider.Workday => "Workday needs an account with the employer — apply via Copy answers and open the posting",
+        AtsProvider.SuccessFactors => "SuccessFactors needs a candidate account with the employer — apply via Copy answers and open the posting",
         AtsProvider.Aggregator => "this link is a job aggregator's listing, not the employer's form — open the posting, follow its Apply to the employer, and use Copy answers there",
         _ => "this ATS isn't one the agent knows — turn on the long tail in Settings · Agent, or apply via Copy answers and open the posting",
     };
