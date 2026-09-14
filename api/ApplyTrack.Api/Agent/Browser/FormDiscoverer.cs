@@ -72,7 +72,7 @@ public sealed partial class FormDiscoverer
     private static List<PacketQuestion> Map(List<Control> controls)
     {
         var questions = new List<PacketQuestion>();
-        var seen = new HashSet<string>();
+        var seen = new Dictionary<string, string>();   // key → the label it was first seen with
         foreach (var c in controls)
         {
             var label = c.Label.Trim().TrimEnd('*').Trim();
@@ -80,7 +80,17 @@ public sealed partial class FormDiscoverer
             // label; the submitter finds it by that label, and the required-empty sweep
             // reports it under the same key.
             var key = c.Name.Length > 0 ? c.Name : c.Id.Length > 0 ? c.Id : label;
-            if (key.Length == 0 || !seen.Add(key)) continue;
+            if (key.Length == 0) continue;
+            // The same control read twice (two frames, a re-render) collapses. A repeated
+            // key under a DIFFERENT label is another box that is keyed by its label rather
+            // than dropped: Zoho's City, State/Province and Zip all carry id="inputId", and
+            // only City survived (#207). The submitter finds the others by their label.
+            if (seen.TryGetValue(key, out var firstLabel))
+            {
+                if (label.Length == 0 || label == firstLabel || seen.ContainsKey(label)) continue;
+                key = label;
+            }
+            seen[key] = label;
             var type = (c.Tag, c.Type) switch
             {
                 ("textarea", _) => PacketQuestion.Textarea,
@@ -115,7 +125,40 @@ public sealed partial class FormDiscoverer
             if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
             const wrap = el.closest('label'); if (wrap) return wrap.innerText;
             const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
+            // A label the page never associated with its control. Zoho Recruit's form is
+            // web components: the input has no id, no <label for>, no aria — but the
+            // component around it names the field in an attribute (cx-prop-label="Country")
+            // and the row above it carries a plain <label>. Without this every Zoho field
+            // came back labelled by its opaque name (rec-form_5042…), the model guessed
+            // answers for boxes it could not see, and certifications went into LinkedIn (#207).
+            // Deep: Zoho's City box sits nine wrappers below its component.
+            for (let a = el.parentElement, i = 0; a && a !== document.body && i < 12; a = a.parentElement, i++) {
+              for (const attr of a.attributes) {
+                // label / data-label / cx-prop-label — not aria-label (a group's name, not the
+                // field's), not a framework binding (lt-prop-label="value") or a prefix ("@").
+                if (!/^(?:label|data-label|[\w-]*prop-label)$/i.test(attr.name)) continue;
+                const v = attr.value.trim();
+                if (v && /[A-Za-z]/.test(v) && !/^[a-z_]+$/.test(v)) return v;
+              }
+              // The row's own <label> counts only while this is the row's one control:
+              // one level higher and it would be the first label of the whole form. A label
+              // with no letters in it is decoration (the "@" before a Twitter handle).
+              const controls = [...a.querySelectorAll('input, select, textarea')]
+                .filter(c => !['hidden', 'submit', 'button', 'reset', 'image'].includes((c.getAttribute('type') || '').toLowerCase()) && (c === el || visible(c)));
+              if (controls.length > 1) break;
+              const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
+              if (l) return l.innerText.trim();
+            }
             return el.getAttribute('placeholder') || el.getAttribute('name') || '';
+          };
+          // The required star when it sits in the row's <label> rather than on the control or
+          // in the label the component names itself by ("Last Name" + <span>*</span>).
+          const starred = (el) => {
+            for (let a = el.parentElement, i = 0; a && a !== document.body && i < 12; a = a.parentElement, i++) {
+              const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
+              if (l) return /\*\s*$/.test((l.innerText || '').trim());
+            }
+            return false;
           };
           const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
           for (const el of document.querySelectorAll('input, select, textarea')) {
@@ -123,7 +166,7 @@ public sealed partial class FormDiscoverer
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
             if (el.disabled || el.readOnly) continue;
             if (type !== 'file' && !visible(el)) continue;
-            const required = el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(labelFor(el));
+            const required = el.required || el.getAttribute('aria-required') === 'true' || /\*\s*$/.test(labelFor(el)) || starred(el);
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               const grp = seenRadio.get(name);
