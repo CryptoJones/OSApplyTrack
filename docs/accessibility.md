@@ -10,10 +10,13 @@ OSApplyTrack targets the Web Content Accessibility Guidelines (WCAG) 2.2 at Leve
 - Reflow at 400% browser zoom and layouts that remain usable with the app's 150% text setting.
 - System preference detection before sign-in. Explicit choices are stored only in the current browser.
 - Visible focus, 44px minimum targets, text labels for statuses, and no information conveyed by color alone.
+- Mobile touch and gesture scroll containment (`overscroll-behavior: contain`) so swiping within the application list remains contained without triggering page rubber-banding or browser pull-to-refresh gestures.
+- Modal dialogs and drawers (including Settings and the Pipeline view) implement standard ARIA modal semantics (`role="dialog"`, `aria-labelledby`, focus management and trapping, backdrop dismissal, and Escape key dismissal).
+- Flexible, accessible form controls: explicitly sized checkbox targets (e.g. the sign-in Terms of Service checkbox and bulk Ready-lane selectors) paired with responsive text spans that prevent word-per-line wrapping distortion and ensure reliable touch interaction.
 
 ## Verification matrix
 
-Automated Playwright and axe-core checks cover login, the application list and detail view, editing, validation, every settings section, responsive navigation, and preference modes on every pull request.
+Automated Playwright and axe-core checks cover login, the application list and detail view, editing, validation, every settings section, the Pipeline queue view modal, bulk lane selection, responsive navigation, and preference modes on every pull request.
 
 Before a release that materially changes the interface, manually verify current versions of:
 

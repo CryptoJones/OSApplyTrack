@@ -78,7 +78,7 @@ internal static class Responders
 /// seam scripted per run, so the parked-on-code path and the queue's promotion rules run
 /// against the test Postgres without Playwright (#192).</summary>
 internal sealed class FakeSubmitter(
-    Func<string, ApplyTrack.Api.Data.AgentPacket, bool, Func<string, CancellationToken, Task<string?>>?, CancellationToken,
+    Func<string, ApplyTrack.Api.Data.AgentPacket, bool, Func<ApplyTrack.Api.Agent.Browser.CodeRequest, CancellationToken, Task<string?>>?, CancellationToken,
         Task<ApplyTrack.Api.Agent.Browser.SubmitOutcome>> run) : ApplyTrack.Api.Agent.Browser.IBrowserSubmitter
 {
     public List<(string Link, bool DryRun, Dictionary<string, string> Answers)> Runs { get; } = [];
@@ -86,7 +86,7 @@ internal sealed class FakeSubmitter(
     public Task<ApplyTrack.Api.Agent.Browser.SubmitOutcome> RunAsync(
         string link, ApplyTrack.Api.Data.AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null)
+        Func<ApplyTrack.Api.Agent.Browser.CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null)
     {
         lock (Runs) Runs.Add((link, dryRun, new Dictionary<string, string>(packet.Answers)));
         return run(link, packet, dryRun, awaitSecurityCode, ct);
@@ -106,7 +106,7 @@ internal sealed class FakeCodeSource(Func<string?> find) : ISecurityCodeSource
 {
     public int Calls { get; private set; }
 
-    public Task<string?> FindCodeAsync(ApplyTrack.Api.Data.MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct)
+    public Task<string?> FindCodeAsync(ApplyTrack.Api.Data.MailboxTarget target, string recipient, string company, DateTimeOffset since, CancellationToken ct, string boardHost = "")
     {
         Calls++;
         return Task.FromResult(find());

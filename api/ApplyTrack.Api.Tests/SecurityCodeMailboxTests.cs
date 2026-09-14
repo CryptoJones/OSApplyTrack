@@ -36,6 +36,48 @@ public class SecurityCodeMailboxTests
         Assert.Null(ImapSecurityCodeSource.ExtractCode(""));
     }
 
+    private const string JoinCodeText = """
+        Hi Ada,
+
+        Your code is 482913
+
+        Enter it on the page to continue your application at Piston.
+
+        join.com · https://join.com/privacy · https://join.com/unsubscribe?u=1
+        """;
+
+    private const string JoinLinkText = """
+        Hi Ada,
+
+        Click here to continue your application: https://join.com/apply/verify?token=abc123.
+
+        Or copy this code: 482913
+
+        join.com · https://join.com/privacy · https://join.com/unsubscribe?u=1
+        """;
+
+    [Fact]
+    public void A_sign_in_mails_code_is_read_when_it_has_no_link_to_offer() =>
+        Assert.Equal("482913", ImapSecurityCodeSource.ExtractSignIn(JoinCodeText, "join.com"));
+
+    [Fact]
+    public void A_sign_in_mails_link_on_the_boards_host_is_preferred_and_the_footers_links_never_taken()
+    {
+        Assert.Equal("https://join.com/apply/verify?token=abc123", ImapSecurityCodeSource.ExtractSignIn(JoinLinkText, "join.com"));
+        Assert.Equal("https://join.com/apply/verify?token=abc123", ImapSecurityCodeSource.ExtractSignIn(JoinLinkText, "www.join.com"));
+        // A link on some other host is never the answer, whatever it says.
+        Assert.Equal("482913", ImapSecurityCodeSource.ExtractSignIn(JoinLinkText.Replace("join.com/apply", "evil.example/apply"), "join.com"));
+        Assert.Null(ImapSecurityCodeSource.ExtractSignIn("Welcome! https://join.com/privacy https://join.com/help", "join.com"));
+    }
+
+    [Theory]
+    [InlineData("mail.join.com", "join.com", true)]
+    [InlineData("join.com", "www.join.com", true)]
+    [InlineData("notjoin.com", "join.com", false)]
+    [InlineData("evil.example", "join.com", false)]
+    public void The_boards_host_covers_its_subdomains_and_nothing_else(string host, string board, bool expected) =>
+        Assert.Equal(expected, ImapSecurityCodeSource.OnBoard(host, board));
+
     [Theory]
     [InlineData("Security code for your application to Aperia", "Aperia", true)]
     [InlineData("Security code for your application to GitLab", "GitLab Inc.", true)]

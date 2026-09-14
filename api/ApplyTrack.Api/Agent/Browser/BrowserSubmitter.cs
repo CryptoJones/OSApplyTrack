@@ -21,6 +21,15 @@ public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false);
 
+/// <summary>
+/// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the
+/// address the board emailed. <see cref="SignIn"/> is false for Greenhouse's security
+/// code after Submit and true for a board that signs the candidate in by email before it
+/// shows the form (join.com, #210) — there the reply may be the emailed code <i>or</i> the
+/// emailed link, and the browser follows a link only onto the board's own site.
+/// </summary>
+public sealed record CodeRequest(string Recipient, bool SignIn = false);
+
 /// <summary>The one browser-run seam: what the worker calls, and what a worker-level test
 /// can stand in for without a browser (#192).</summary>
 public interface IBrowserSubmitter
@@ -29,7 +38,7 @@ public interface IBrowserSubmitter
     Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null);
+        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null);
 }
 
 /// <summary>
@@ -76,13 +85,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// <param name="coverLetter">The drafted letter, for a form whose cover letter is a file
     /// field: it goes in through that field's own "Enter manually" box. Empty means a required
     /// cover-letter file stays unmapped.</param>
-    /// <param name="awaitSecurityCode">Called with the address the board emailed a security
-    /// code to when the form asks for one after Submit; returns the code the human handed
-    /// over, or null when none arrived in time. Null disables the second phase.</param>
+    /// <param name="awaitSecurityCode">Called with the address the board emailed when the run
+    /// has to park on something only the candidate's mailbox holds — Greenhouse's security
+    /// code after Submit, or a board's sign-in code or link before the form (#210); returns
+    /// what the human handed over, or null when nothing arrived in time. Null disables both:
+    /// a dry run stops and reports instead of parking.</param>
     public async Task<SubmitOutcome> RunAsync(
         string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<string, CancellationToken, Task<string?>>? awaitSecurityCode = null)
+        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null)
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -124,6 +135,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // ("Fetching application form" was the whole of one dry run's screenshot). Every
             // locator and page script below runs against this frame, not the top document.
             var form = await FormFrameAsync(page);
+
+            // A page whose only fillable control is an email box is not the form, it is the
+            // board's sign-in: join.com's Apply leads to "Your email address / Continue" and
+            // shows its form to nobody who is not signed in (#210). A dry run stops here and
+            // says so. A real run signs in as the candidate and parks the way the Greenhouse
+            // security code does — the person relays the code, or the link, the board emailed,
+            // and the run carries on in this same session to the form the board now shows.
+            if (await OnlyEmailFieldsAsync(form))
+            {
+                var stopped = await SignInAsync(session, form, packet, awaitSecurityCode, ct);
+                if (stopped is not null)
+                    return stopped with { Url = session.Page.Url, Screenshot = await session.ScreenshotAsync() };
+                page = session.Page;
+                form = await FormFrameAsync(page);
+            }
 
             foreach (var q in packet.Questions)
             {
@@ -217,13 +243,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // and a run that would have clicked Submit on an empty application.
             // Likewise a page with no form on it at all: that used to pass as a clean dry run
             // ("filled", zero mapped) and moo the human to come and click Apply on nothing.
-            // A page whose only fillable control is an email box is a sign-in, not the form:
-            // join.com's Apply leads to "your email address / Continue" (a code follows) and
-            // never shows a form to an anonymous visitor. One mapped field there would read as
-            // a clean dry run, promote itself, and click Submit on a page that has none (#210).
+            // A page whose only fillable control is an email box is a sign-in, not the form
+            // (#210). The sign-in phase above handles the one the page opened with; this catches
+            // a page that turned into one under the fill. One mapped field there would read as
+            // a clean dry run, promote itself, and click Submit on a page that has none.
             if (await OnlyEmailFieldsAsync(form))
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
-                    "this page is an email sign-in, not the application form — the board wants the candidate signed in before it shows one; apply via Copy answers and open the posting");
+                    SignInError + "; apply via Copy answers and open the posting");
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     await HasFillableControlsAsync(form)
@@ -315,7 +341,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 if (awaitSecurityCode is null)
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         $"the board emailed a security code to {(recipient.Length > 0 ? recipient : "the candidate")} and this run cannot take one — finish it with Copy answers and open");
-                var code = await awaitSecurityCode(recipient, ct);
+                var code = await awaitSecurityCode(new CodeRequest(recipient), ct);
                 if (string.IsNullOrWhiteSpace(code))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         $"the board emailed a security code to {(recipient.Length > 0 ? recipient : "the candidate")} and none was entered in time — run Submit again and paste the code when it arrives");
@@ -779,6 +805,228 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         }
         catch (PlaywrightException) { return false; }
         catch (TimeoutException) { return false; }
+    }
+
+    private const string SignInError =
+        "this page is an email sign-in, not the application form — the board wants the candidate signed in before it shows one";
+
+    /// <summary>What the page did after Continue on the sign-in.</summary>
+    private enum SignInStep
+    {
+        /// <summary>Nothing changed: the click did not land or the board ignored it.</summary>
+        Nothing,
+        /// <summary>The application form itself — the email was all the board wanted.</summary>
+        Form,
+        /// <summary>A box for the code the board emailed.</summary>
+        Code,
+        /// <summary>"Check your inbox": the board emailed a link and shows nothing to type into.</summary>
+        Link,
+    }
+
+    // The button that moves a sign-in on: Continue, Next, Send code, Verify, Sign in — in the
+    // languages the boards render in. Never an identity provider's ("Continue with Google").
+    [GeneratedRegex(@"^\s*(?:continue|next|proceed|send(?: me)?(?: the| a| my)? (?:code|link|e-?mail)|get (?:the |a |my )?code|sign in|log ?in|submit|verify|confirm|weiter|fortfahren|absenden|bestätigen|anmelden|continuer|suivant|vérifier|valider|connexion|continuar|siguiente|enviar|verificar|confirmar)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex ContinueWords();
+
+    [GeneratedRegex(@"google|linkedin|apple|microsoft|facebook|github|xing|indeed|passkey|\bsso\b", RegexOptions.IgnoreCase)]
+    private static partial Regex IdentityProviders();
+
+    // The board's word that the mail is on its way — with nothing on the page to type into,
+    // it emailed a link.
+    [GeneratedRegex(@"we(?:'ve| have)? (?:just )?(?:sent|e-?mailed)|check your (?:inbox|e-?mail|mail)|(?:link|code|e-?mail) (?:has been |was )?sent|sent (?:you )?(?:a|an|the) (?:link|e-?mail|code|message)|magic link|envoy[ée]|gesendet|geschickt|enviado|enviamos", RegexOptions.IgnoreCase)]
+    private static partial Regex MailSent();
+
+    /// <summary>A relayed reply that is the emailed link rather than a code.</summary>
+    public static bool IsLink(string reply) => Regex.IsMatch(reply.Trim(), @"^https?://\S+$", RegexOptions.IgnoreCase);
+
+    /// <summary>The address to sign in as: the packet's email answer, else any answer shaped like one.</summary>
+    public static string CandidateEmail(AgentPacket packet)
+    {
+        static bool Shaped(string v) => Regex.IsMatch(v.Trim(), @"^[^\s@]+@[^\s@]+\.[^\s@]+$");
+        foreach (var q in packet.Questions)
+        {
+            if (q.Type == PacketQuestion.File) continue;
+            var id = Unprefixed(q.Id);
+            if (id != "email" && !id.EndsWith("_email", StringComparison.Ordinal)
+                && !q.Label.Contains("email", StringComparison.OrdinalIgnoreCase) && !q.Label.Contains("e-mail", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (packet.Answers.TryGetValue(q.Id, out var v) && Shaped(v)) return v.Trim();
+        }
+        return packet.Answers.Values.FirstOrDefault(Shaped)?.Trim() ?? "";
+    }
+
+    /// <summary>
+    /// Sign in by email on a board that shows its form only to a signed-in candidate (#210):
+    /// type the candidate's address, press Continue, and park for what the board emailed —
+    /// a code, typed into the box the page now shows, or a link, opened in this same session
+    /// (only onto the board's own site). Null when the application form is on screen after
+    /// it; otherwise the outcome that says why the run stopped, screenshot to be added by
+    /// the caller. Without a relay (a dry run) it stops at once and says what a real Submit
+    /// would do.
+    /// </summary>
+    private static async Task<SubmitOutcome?> SignInAsync(BrowserSession session, IFrame form, AgentPacket packet,
+        Func<CodeRequest, CancellationToken, Task<string?>>? relay, CancellationToken ct)
+    {
+        var page = session.Page;
+        static SubmitOutcome Stop(string why) => new(false, false, "", "", null, [], [], why);
+        var email = CandidateEmail(packet);
+        if (relay is null)
+            return Stop(SignInError + (email.Length > 0
+                ? $" — Submit (not a dry run) signs in as {email} and asks you for the code or link the board emails"
+                : "; apply via Copy answers and open the posting"));
+        if (email.Length == 0)
+            return Stop(SignInError + ", and the packet has no email address to sign in with");
+
+        var box = form.Locator("input[type=email]:visible").First;
+        var textBefore = await BodyTextAsync(form);
+        var urlBefore = page.Url;
+        try
+        {
+            await box.FillAsync(email, new() { Timeout = 5_000 });
+            var go = await FindContinueAsync(form);
+            if (go is not null) await go.ClickAsync(new() { Timeout = 5_000 });
+            else await box.PressAsync("Enter");
+        }
+        catch (PlaywrightException ex) { return Stop(SignInError + "; signing in failed: " + ex.Message.Split('\n')[0]); }
+        catch (TimeoutException) { return Stop(SignInError + "; the sign-in's Continue did not respond"); }
+
+        var step = await AfterContinueAsync(page, textBefore, urlBefore);
+        if (step == SignInStep.Form) return null;
+        if (step == SignInStep.Nothing)
+            return Stop(SignInError + "; Continue was pressed but the page did not change — check the screenshot");
+
+        var reply = (await relay(new CodeRequest(email, SignIn: true), ct) ?? "").Trim();
+        var what = step == SignInStep.Code ? "code" : "link";
+        if (reply.Length == 0)
+            return Stop($"the board emailed a sign-in {what} to {email} and none was relayed in time — run Submit again and paste the {what} when it arrives");
+        if (IsLink(reply))
+        {
+            if (!Uri.TryCreate(reply, UriKind.Absolute, out var u) || (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps)
+                || !Uri.TryCreate(urlBefore, UriKind.Absolute, out var here) || !BrowserSession.HostAllowed(u.Host, here.Host))
+                return Stop($"the relayed sign-in link points off the board's site ({(Uri.TryCreate(reply, UriKind.Absolute, out var o) ? o.Host : reply)}) — the browser will not follow it");
+            try { await page.GotoAsync(u.ToString(), new() { Timeout = 20_000, WaitUntil = WaitUntilState.DOMContentLoaded }); }
+            catch (PlaywrightException ex) { return Stop("the sign-in link could not be opened: " + ex.Message.Split('\n')[0]); }
+            catch (TimeoutException) { return Stop("the sign-in link did not load within 20 s"); }
+            await BrowserSession.DismissConsentAsync(page);
+        }
+        else if (!await EnterSignInCodeAsync(page, reply))
+            return Stop("the sign-in code could not be entered — if the email carries a link instead, run Submit again and paste that");
+
+        // The form, or the posting again with the candidate now signed in and Apply to press.
+        if (!await BrowserSession.WaitForApplicationFormAsync(page, 15_000))
+        {
+            await session.RevealFormAsync();
+            page = session.Page;
+            if (!await BrowserSession.WaitForApplicationFormAsync(page, 5_000))
+            {
+                var complaints = await ValidationErrorsAsync(page.MainFrame);
+                return Stop($"the sign-in {what} was taken but no application form followed"
+                    + (complaints.Count > 0 ? " (" + string.Join("; ", complaints) + ")" : "")
+                    + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : "") + " — check the screenshot");
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Watch the page for up to twelve seconds after Continue and say what it became.</summary>
+    private static async Task<SignInStep> AfterContinueAsync(IPage page, string textBefore, string urlBefore)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(12);
+        var changed = false;
+        while (true)
+        {
+            foreach (var frame in page.Frames)
+                if (await HasSignInCodeBoxAsync(frame)) return SignInStep.Code;
+            if (await BrowserSession.ApplicationFormVisibleAsync(page)) return SignInStep.Form;
+            var text = await BodyTextAsync(page.MainFrame);
+            changed |= page.Url != urlBefore || text != textBefore;
+            if (MailSent().IsMatch(text) && !await EmailBoxShownAsync(page))
+                return SignInStep.Link;
+            if (DateTime.UtcNow >= deadline)
+                // Something happened and it was not a form or a code box: the board is telling
+                // the candidate to look in their mailbox in words this does not know. Park.
+                return changed && !await EmailBoxShownAsync(page) ? SignInStep.Link : SignInStep.Nothing;
+            await page.WaitForTimeoutAsync(500);
+        }
+    }
+
+    /// <summary>Is the sign-in's own email box still on screen? False mid-navigation too.</summary>
+    private static async Task<bool> EmailBoxShownAsync(IPage page)
+    {
+        try { return await page.MainFrame.Locator("input[type=email]:visible").First.IsVisibleAsync(); }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private const string CodeBoxSelector =
+        "input[autocomplete='one-time-code']:visible, input[inputmode='numeric']:visible, input[maxlength='1']:visible, "
+        + "input[name*='code' i]:visible, input[id*='code' i]:visible, input[placeholder*='code' i]:visible, input[aria-label*='code' i]:visible, "
+        + "input[name*='otp' i]:visible, input[id*='otp' i]:visible";
+
+    private static async Task<bool> HasSignInCodeBoxAsync(IFrame frame)
+    {
+        try { return await frame.Locator(CodeBoxSelector).CountAsync() > 0; }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>Type the relayed code — into one box per character, or the one box — and press
+    /// on. A widget that submits itself on the last character is left to it.</summary>
+    private static async Task<bool> EnterSignInCodeAsync(IPage page, string code)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                if (!await HasSignInCodeBoxAsync(frame)) continue;
+                var perCharacter = frame.Locator("input[maxlength='1']:visible");
+                if (await perCharacter.CountAsync() >= 4)
+                {
+                    if (!await EnterSecurityCodeAsync(frame, code)) return false;
+                }
+                else
+                {
+                    var single = frame.Locator(CodeBoxSelector).First;
+                    await single.FillAsync(code, new() { Timeout = 5_000 });
+                }
+                await frame.WaitForTimeoutAsync(600);
+                var go = await FindContinueAsync(frame);
+                if (go is not null)
+                {
+                    try { await go.ClickAsync(new() { Timeout = 5_000 }); }
+                    catch (PlaywrightException) { /* the widget already moved on */ }
+                    catch (TimeoutException) { /* ditto */ }
+                }
+                else
+                {
+                    try { await frame.Locator(CodeBoxSelector).Last.PressAsync("Enter", new() { Timeout = 2_000 }); }
+                    catch (PlaywrightException) { /* gone: it submitted itself */ }
+                    catch (TimeoutException) { /* ditto */ }
+                }
+                return true;
+            }
+            catch (PlaywrightException) { /* next frame */ }
+            catch (TimeoutException) { return false; }
+        }
+        return false;
+    }
+
+    /// <summary>The sign-in's Continue / Verify / Send code button — never an identity
+    /// provider's, never anything that reads as "later".</summary>
+    private static async Task<ILocator?> FindContinueAsync(IFrame frame)
+    {
+        var notLater = new LocatorFilterOptions { HasNotTextRegex = BrowserSession.LaterWords() };
+        var notIdp = new LocatorFilterOptions { HasNotTextRegex = IdentityProviders() };
+        var candidates = new[]
+        {
+            frame.GetByRole(AriaRole.Button, new() { NameRegex = ContinueWords() }).Filter(notLater).Filter(notIdp).First,
+            frame.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Filter(notIdp).First,
+            frame.Locator("button[type=submit], input[type=submit]").Filter(notLater).Filter(notIdp).First,
+        };
+        foreach (var c in candidates)
+        {
+            try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync() && await c.IsEnabledAsync()) return c; }
+            catch (PlaywrightException) { /* next */ }
+        }
+        return null;
     }
 
     /// <summary>Does the page have anything a person could type into or pick from?</summary>

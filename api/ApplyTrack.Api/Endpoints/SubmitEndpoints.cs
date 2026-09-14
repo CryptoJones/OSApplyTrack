@@ -69,15 +69,20 @@ public static class SubmitEndpoints
                 statusCode: queued ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
         }).RequireRateLimiting("draft");
 
-        // The security code the board emailed the candidate, for the run parked on it.
+        // The security code the board emailed the candidate, for the run parked on it — or,
+        // for a run parked on a board's email sign-in (join.com, #210), the code or the link
+        // the board emailed. A link must be http(s); the browser follows it only onto the
+        // board's own site.
         app.MapPost("/api/apps/{name}/security-code", async (string name, JsonElement payload, SubmitRequestRepo queue, AgentSettingsRepo settings) =>
         {
             if (!await settings.IsAllowedAsync())
                 throw new AppForbiddenException(AgentEndpoints.NotAllowed);
             var code = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String
                 ? (c.GetString() ?? "").Trim() : "";
-            if (code.Length is < 4 or > 16 || !code.All(char.IsLetterOrDigit))
-                throw new AppValidationException("the code is 4–16 letters and digits, as the email shows it");
+            var isLink = code.Length <= 2048 && Uri.TryCreate(code, UriKind.Absolute, out var link)
+                && (link.Scheme == Uri.UriSchemeHttp || link.Scheme == Uri.UriSchemeHttps) && !code.Any(char.IsWhiteSpace);
+            if (!isLink && (code.Length is < 4 or > 16 || !code.All(char.IsLetterOrDigit)))
+                throw new AppValidationException("the code is 4–16 letters and digits, as the email shows it — or, for a sign-in, the whole link from the email");
             if (!await queue.SetSecurityCodeAsync(name, code))
                 throw new AppConflictException("no run is waiting for a code on this application — run Submit again and paste the code when the next email arrives");
             return Results.Json(new { accepted = true }, statusCode: StatusCodes.Status202Accepted);

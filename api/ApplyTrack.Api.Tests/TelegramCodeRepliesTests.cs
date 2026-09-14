@@ -23,7 +23,10 @@ public class TelegramCodeRepliesTests
     [InlineData("abc", null)]
     [InlineData("toolongtobeacodeatall1", null)]
     [InlineData("", null)]
-    public void Only_a_bare_code_or_a_code_after_a_colon_counts(string text, string? expected) =>
+    [InlineData("https://join.com/apply/verify?token=abc123", "https://join.com/apply/verify?token=abc123")]
+    [InlineData("here you go: https://join.com/apply/verify?token=abc123.", "https://join.com/apply/verify?token=abc123")]
+    [InlineData("HTTP://JOIN.COM/x", "HTTP://JOIN.COM/x")]
+    public void Only_a_bare_code_or_a_code_after_a_colon_or_the_emailed_link_counts(string text, string? expected) =>
         Assert.Equal(expected, TelegramCodeReplies.CodeIn(text));
 
     [Fact]

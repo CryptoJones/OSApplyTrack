@@ -396,7 +396,7 @@ async function loadPipeline(gen) {
 }
 
 const PHASE_LABEL = {
-  queued: "Queued", running: "Running now", awaiting_code: "Waiting for your security code", stale: "Stale claim — will be retried",
+  queued: "Queued", running: "Running now", awaiting_code: "Waiting for the code the board emailed you", stale: "Stale claim — will be retried",
 };
 const WILL_LABEL = { submit: "Will submit", dry_run: "Dry run only", prepare: "Rebuild, then dry run", drop: "Will be dropped" };
 const WILL_TONE = { submit: "ok", dry_run: "warn", prepare: "warn", drop: "bad" };
@@ -964,20 +964,27 @@ async function loadEvidence(name) {
   // A dry run either proved the form can be finished unattended or stopped on questions
   // only the person can answer; the label says which, and names them (#190).
   const kindLabel = (e) => {
+    if (e.kind === "awaiting_code" && e.detail && e.detail.sign_in) return "Waiting for your sign-in code or link";
     if (e.kind !== "dry_run") return KIND[e.kind] || e.kind;
     const needs = (e.detail && e.detail.needs_you) || [];
     return needs.length ? `Filled (dry run) · ${needs.length} need${needs.length === 1 ? "s" : ""} you` : "Filled (dry run) · clean";
   };
   // The run is parked on the board's security-code prompt: the code it emailed goes here.
+  // Or on the board's email sign-in (join.com, #210): then the code OR the whole link from
+  // the email does, and the box takes either.
   const parked = items[0].kind === "awaiting_code" ? items[0] : null;
+  const signIn = !!(parked && parked.detail && parked.detail.sign_in);
+  const recipient = parked && parked.detail && parked.detail.recipient ? ` to ${escapeHtml(parked.detail.recipient)}` : "";
   out.innerHTML = `
     <h4 class="mt-4">What the browser saw</h4>
     ${parked ? `
     <form id="security-code-form" class="packet-flag mt-2" aria-live="polite">
-      <label class="field-label" for="security-code">The board emailed a security code${parked.detail && parked.detail.recipient ? ` to ${escapeHtml(parked.detail.recipient)}` : ""}. Paste it here within a few minutes, or reply to the Telegram moo with it:</label>
+      <label class="field-label" for="security-code">${signIn
+        ? `The board signs you in by email before it shows its form: it sent a code or a link${recipient}. Paste the code — or the whole link — here within a few minutes, or reply to the Telegram moo with it:`
+        : `The board emailed a security code${recipient}. Paste it here within a few minutes, or reply to the Telegram moo with it:`}</label>
       <div class="flex gap-2 mt-1">
-        <input id="security-code" class="field-input mono" autocomplete="one-time-code" inputmode="text" maxlength="16" pattern="[A-Za-z0-9]{4,16}" required />
-        <button class="btn btn-primary" type="submit">Send code</button>
+        <input id="security-code" class="field-input mono" autocomplete="one-time-code" inputmode="text" ${signIn ? `maxlength="2048"` : `maxlength="16" pattern="[A-Za-z0-9]{4,16}"`} required />
+        <button class="btn btn-primary" type="submit">${signIn ? "Send code or link" : "Send code"}</button>
       </div>
     </form>` : ""}
     <ul class="agent-log">${items.map((e) => `

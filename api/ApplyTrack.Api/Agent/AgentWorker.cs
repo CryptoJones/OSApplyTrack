@@ -383,28 +383,35 @@ public sealed class AgentWorker : BackgroundService
         // when there is no mailbox to read: with one, the human never needs to know. Once
         // it has gone out, a reply to it with the code counts the same as the paste — the
         // phone-in-hand path for anyone whose mail the app cannot read (#168).
-        async Task<string?> AwaitSecurityCodeAsync(string recipient, CancellationToken token)
+        // The same park serves a board that signs the candidate in by email before it shows
+        // its form (join.com, #210): there the reply is the emailed code or the emailed link,
+        // the moo says so, and the mailbox is read for the board's mail rather than the
+        // company's.
+        async Task<string?> AwaitSecurityCodeAsync(CodeRequest ask, CancellationToken token)
         {
+            var recipient = ask.Recipient;
+            var boardHost = ask.SignIn && Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var posting) ? posting.Host : "";
             var since = DateTimeOffset.UtcNow.AddMinutes(-1);
             var mailbox = _codes is null ? null
                 : await new MailboxSettingsRepo(conn, t, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
             await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.AwaitingCode, rec.Fields.Link, "",
-                new { recipient, dry_run = false, mailbox = mailbox is not null }, null);
+                new { recipient, dry_run = false, mailbox = mailbox is not null, sign_in = ask.SignIn }, null);
             await events.RecordAsync(AgentEvidenceRepo.Kinds.AwaitingCode, rec.Name,
-                new { recipient, mailbox = mailbox is not null, rec.Fields.Company, rec.Fields.Role });
+                new { recipient, mailbox = mailbox is not null, sign_in = ask.SignIn, rec.Fields.Company, rec.Fields.Role });
             TelegramCodeReplies? replies = null;
             async Task MooAndListenAsync()
             {
                 // Replies dated before the moo (a 15 s grace for clock skew) are never a code.
                 var mooed = DateTimeOffset.UtcNow.AddSeconds(-15);
                 await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, token,
-                    PacketReadyNotifier.Moment.Code, recipient);
+                    ask.SignIn ? PacketReadyNotifier.Moment.SignIn : PacketReadyNotifier.Moment.Code, recipient);
                 var target = _telegram is null ? null : await notifications.GetTargetAsync();
                 replies = target is null ? null : new TelegramCodeReplies(_telegram!, target, mooed, _log);
             }
             if (mailbox is null)
                 await MooAndListenAsync();
-            _log.LogInformation("{Name}: parked — the board emailed a security code to {Recipient}{How}", rec.Name, recipient,
+            _log.LogInformation("{Name}: parked — the board emailed a {What} to {Recipient}{How}", rec.Name,
+                ask.SignIn ? "sign-in code or link" : "security code", recipient,
                 mailbox is not null ? "; reading the mailbox for it" : replies is not null ? "; mooed, reading Telegram replies for it" : "; mooed");
             var wait = Math.Max(1, _options.SecurityCodeWaitSeconds);
             var deadline = DateTime.UtcNow.AddSeconds(wait);
@@ -442,10 +449,10 @@ public sealed class AgentWorker : BackgroundService
                 {
                     try
                     {
-                        var code = await _codes!.FindCodeAsync(mailbox, recipient, rec.Fields.Company, since, token);
+                        var code = await _codes!.FindCodeAsync(mailbox, recipient, rec.Fields.Company, since, token, boardHost);
                         if (code is not null)
                         {
-                            _log.LogInformation("{Name}: security code read from the mailbox", rec.Name);
+                            _log.LogInformation("{Name}: {What} read from the mailbox", rec.Name, ask.SignIn ? "sign-in code or link" : "security code");
                             return code;
                         }
                     }
