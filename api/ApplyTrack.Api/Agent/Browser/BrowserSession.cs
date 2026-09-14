@@ -500,11 +500,66 @@ public sealed partial class BrowserSession : IAsyncDisposable
             await Page.WaitForTimeoutAsync(500);
         }
         var refused = Refused;
+        // Alignerr and its kind: Apply opens an account sign-up that only offers "Continue with
+        // Google / LinkedIn" — no username box, no form, nothing the browser can fill or sign in
+        // to. Name it, rather than "no form appeared", so the person knows what is behind Apply.
+        var providers = await SocialSignUpWallAsync(Page);
+        if (providers.Count > 0)
+        {
+            RevealNote = SocialWallNote(Page.Url, providers);
+            return;
+        }
         RevealNote = refused.Count > 0
             ? AccountOnlyAts(refused[0]) is { } ats
                 ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting"
                 : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
             : "Apply was clicked but no form appeared within 10 s";
+    }
+
+    // A sign-up wall that is only identity providers: the visible "Continue / Sign in / Sign
+    // up with <provider>" buttons or links, when nothing else on the page can be typed into.
+    private const string SocialWallScript = """
+        () => {
+          const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+          const typed = [...document.querySelectorAll('input[type=text], input[type=email], input[type=password], input:not([type]), textarea, select')].some(shown);
+          if (typed) return [];
+          const re = /^\s*(?:continue|sign\s*in|sign\s*up|log\s*in|register|join)\s+(?:with|using|via)\s+(google|linkedin|apple|microsoft|github|facebook|okta)\b/i;
+          const found = [];
+          for (const el of document.querySelectorAll('button, a, [role=button]')) {
+            if (!shown(el)) continue;
+            const m = re.exec((el.innerText || el.getAttribute('aria-label') || '').trim());
+            if (!m) continue;
+            const name = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+            const known = { Linkedin: 'LinkedIn', Github: 'GitHub' }[name] || name;
+            if (!found.includes(known)) found.push(known);
+          }
+          return found;
+        }
+        """;
+
+    /// <summary>The verdict for a page that is only identity providers: what Apply led to and
+    /// that the posting is the person's by Copy answers and open.</summary>
+    public static string SocialWallNote(string url, IReadOnlyList<string> providers)
+    {
+        var at = Uri.TryCreate(url, UriKind.Absolute, out var wall) ? wall.Host : "the page";
+        return $"Apply leads to {at}, which only signs candidates up through {string.Join(", ", providers)} — there is no application form for the browser to fill; create the account yourself and apply by Copy answers and open the posting";
+    }
+
+    /// <summary>The identity providers a page offers as its only way in ("Continue with
+    /// Google"), in every frame — or nothing when the page has a box to type into.</summary>
+    public static async Task<IReadOnlyList<string>> SocialSignUpWallAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                var found = await frame.EvaluateAsync<string[]>(SocialWallScript);
+                if (found is { Length: > 0 }) return found;
+            }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return [];
     }
 
     // The board's own sign-in: a password box beside a username or email box. Never a
