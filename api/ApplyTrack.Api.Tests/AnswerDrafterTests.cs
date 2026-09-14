@@ -27,6 +27,31 @@ public class AnswerDrafterTests
         "ada@example.com", letter, "We need a .NET engineer.");
 
     [Fact]
+    public async Task A_saved_demographic_answer_goes_on_a_form_that_offers_it_and_is_never_flagged()
+    {
+        var gender = new PacketQuestion("gender", "Gender", false, PacketQuestion.Select,
+            ["Male", "Female", "Decline To Self Identify"], PacketQuestion.Eeo);
+        var stub = new StubLlmClient((_, _, _) => "{\"answers\":[]}");
+        var drafter = new AnswerDrafter(new StructuredCompleter(stub));
+
+        var (answers, review) = await drafter.DraftAsync([gender], Ctx(), Cfg,
+            pinned: new Dictionary<string, string> { ["gender"] = "decline to self identify" });
+        Assert.Equal("Decline To Self Identify", answers["gender"]);
+        Assert.Empty(review);
+
+        // Worded differently on this form: left blank, and still nothing for the person to fix.
+        (answers, review) = await drafter.DraftAsync([gender], Ctx(), Cfg,
+            pinned: new Dictionary<string, string> { ["gender"] = "I don't wish to answer" });
+        Assert.False(answers.ContainsKey("gender"));
+        Assert.Empty(review);
+
+        // Nothing saved: never guessed, never flagged.
+        (answers, review) = await drafter.DraftAsync([gender], Ctx(), Cfg);
+        Assert.False(answers.ContainsKey("gender"));
+        Assert.Empty(review);
+    }
+
+    [Fact]
     public async Task Greenhouse_form_gets_deterministic_answers_and_one_model_call_for_the_rest()
     {
         var questions = GreenhouseBoard.Parse(GreenhouseBoardTests.JobJson).Questions;

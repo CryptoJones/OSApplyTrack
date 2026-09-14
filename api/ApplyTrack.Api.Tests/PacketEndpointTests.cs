@@ -5,13 +5,16 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Notifications;
+using Dapper;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Npgsql;
 
 namespace ApplyTrack.Api.Tests;
 
@@ -161,6 +164,36 @@ public class PacketEndpointTests : IAsyncLifetime
         Assert.Contains("Needs Rust", (await ReadJson(res)).GetProperty("detail").GetString());
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/apps/{name}/packet")).StatusCode);
         Assert.Empty(_notifier.Sent);
+    }
+
+    [Fact]
+    public async Task A_demographic_answer_saved_on_a_packet_is_pinned_in_the_answer_bank()
+    {
+        var client = await ClientAsync(new StubLlmClient(Responders.Agent()));
+        var name = await CreateLeadAsync(client);
+        await client.PostAsync($"/api/apps/{name}/packet/prepare", null);
+        // The stubbed board has no EEO section: give the packet one the way Greenhouse would.
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+        var tenant = await conn.ExecuteScalarAsync<long>(
+            "SELECT tenant_id FROM agent_packets WHERE application_name = @n ORDER BY updated_at DESC LIMIT 1", new { n = name });
+        var packets = new AgentPacketRepo(conn, tenant, TestAuth.Protector);
+        var packet = (await packets.GetAsync(name))!;
+        packet.Questions.Add(new PacketQuestion("veteran_status", "Veteran Status", false, PacketQuestion.Select,
+            ["I am not a protected veteran", "I identify as one or more of the classifications of a protected veteran", "I don't wish to answer"],
+            PacketQuestion.Eeo));
+        await packets.UpsertAsync(packet);
+
+        var ok = await client.PutAsync($"/api/apps/{name}/packet",
+            Json("""{"answers":{"veteran_status":"I am not a protected veteran"}}"""));
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("I am not a protected veteran",
+            (await ReadJson(ok)).GetProperty("answers").GetProperty("veteran_status").GetString());
+
+        var bank = await ReadJson(await client.GetAsync("/api/answers"));
+        var entry = Assert.Single(bank.EnumerateArray(), e => e.GetProperty("key").GetString() == "veteran status");
+        Assert.Equal("I am not a protected veteran", entry.GetProperty("answer").GetString());
+        Assert.Equal("human", entry.GetProperty("source").GetString());
     }
 
     [Fact]

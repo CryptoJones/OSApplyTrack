@@ -165,8 +165,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             foreach (var q in packet.Questions)
             {
                 ct.ThrowIfCancellationRequested();
+                // A demographic question is filled only with the person's own saved answer;
+                // with none it stays blank, and it never counts as unmapped (#224).
                 if (q.Kind == PacketQuestion.Eeo)
+                {
+                    if (packet.Answers.TryGetValue(q.Id, out var own) && !string.IsNullOrWhiteSpace(own)
+                        && await FillAsync(form, q, own))
+                        mapped.Add(q.Id);
                     continue;
+                }
                 if (q.Type == PacketQuestion.File)
                 {
                     if (IsResume(q) && await ResumeOnFileAsync(form))

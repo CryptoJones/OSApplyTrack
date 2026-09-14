@@ -554,7 +554,10 @@ packet, and the application moves to **ready** — the queue of things waiting f
   without needing a rebuild. The screening questions go to the model in one call,
   grounded strictly in your résumé brief and the posting; anything it can't answer
   from those facts is left blank and **flagged for you**, never invented. EEO /
-  demographic questions and CAPTCHA boxes are never answered at all.
+  demographic questions (gender, race, veteran and disability status) are never
+  guessed: answer each once — on any packet, or in Settings · Answers — and it goes
+  on every form that offers the same option; a form that words it differently
+  stays blank. CAPTCHA boxes are never answered at all.
 - **The cover letter** is drafted (if you allow it) and stored as usual.
 - **Review, then apply.** The application sheet shows the packet with every answer
   editable, an alert listing what still needs you (Submit stays blocked until it's
@@ -736,8 +739,9 @@ never creates accounts. A SuccessFactors career site on the employer's own domai
 (Kiewit's, say) is not knowable from the link: the browser learns it at the Apply
 click. The careers site's own job-search and job-alert boxes are never mistaken
 for the form. The agent never guesses on
-EEO/demographic questions, file fields other than the résumé, or any answer the
-model wasn't confident about — those block Submit until you resolve them.
+EEO/demographic questions (it fills them only from the answers you saved once),
+file fields other than the résumé, or any answer the model wasn't confident
+about — those block Submit until you resolve them.
 
 **Running it.** The worker is the API image with `Agent__Enabled=true` and no
 published port — the compose files start it as the `agent` service, and

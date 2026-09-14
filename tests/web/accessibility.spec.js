@@ -343,7 +343,7 @@ test("a ready packet lists its answers, blocks submit on review items, and passe
   await expect(page.getByRole("alert").filter({ hasText: "need" })).toContainText("Describe a system you scaled.");
   await expect(page.getByLabel("First Name *")).toHaveValue("Ada");
   await expect(page.getByLabel("Are you legally authorized to work in the US? *")).toHaveValue("Yes");
-  await expect(page.getByText("left blank on purpose")).toBeVisible();
+  await expect(page.getByText("never guessed")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Fit verdict" })).toBeVisible();
   // A browser is available: Submit stays disabled while answers need review; the dry
   // run is always offered; the last dry run shows as evidence.

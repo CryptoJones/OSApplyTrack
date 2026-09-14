@@ -890,7 +890,7 @@ function packetQuestionRow(q, answers, review) {
   const help = flagged
     ? `<span id="${id}-help" class="field-help packet-flag">${escapeHtml(flagged.reason)}</span>`
     : q.kind === "eeo"
-    ? `<span id="${id}-help" class="field-help">Optional demographic question — left blank on purpose.</span>`
+    ? `<span id="${id}-help" class="field-help">Optional demographic question — never guessed. Answer it once here or in Settings · Answers and it goes on every form that offers the same option; blank stays blank.</span>`
     : "";
   let control;
   if (q.type === "file") {
