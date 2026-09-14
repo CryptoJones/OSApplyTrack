@@ -45,6 +45,12 @@ public sealed partial class AnswerDrafter
     private static partial Regex GitHub();
     [GeneratedRegex(@"portfolio|website|personal site|url", RegexOptions.IgnoreCase)]
     private static partial Regex Website();
+    [GeneratedRegex(@"facebook|twitter|instagram|mastodon|bluesky|threads", RegexOptions.IgnoreCase)]
+    private static partial Regex Social();
+    // An identifier standing in for a label: digits in a run, identifier punctuation, or a
+    // camelCase word — only when the "label" is literally the control's own id or name.
+    [GeneratedRegex(@"\d{3,}|[_\[\]:]|^[a-z]+[A-Z]|^-|-\w*-")]
+    private static partial Regex Identifierish();
     [GeneratedRegex(@"\bphone\b|mobile", RegexOptions.IgnoreCase)]
     private static partial Regex Phone();
     [GeneratedRegex(@"\be-?mail\b", RegexOptions.IgnoreCase)]
@@ -55,7 +61,7 @@ public sealed partial class AnswerDrafter
     private static partial Regex LastName();
     [GeneratedRegex(@"^full name$|^name$|your name", RegexOptions.IgnoreCase)]
     private static partial Regex FullName();
-    [GeneratedRegex(@"how did you hear|\breferr|\bstart date|available to start|notice period|\bearliest", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"how did you hear|\breferr|\bstart date|available to start|notice period|\bearliest|captcha", RegexOptions.IgnoreCase)]
     private static partial Regex HumanOnly();
     // Anchored, and checked AFTER the eligibility rules: "…to remain in your current
     // location?" is a sponsorship question that once got a city typed into it.
@@ -103,6 +109,15 @@ public sealed partial class AnswerDrafter
             if (reason is not null)
             {
                 review.Add(new ReviewItem(q.Id, reason));
+                continue;
+            }
+            // A question nobody can read is not put to the model. Zoho's fields once
+            // arrived labelled by their own opaque names (rec-form_50429000000003149), and
+            // the model, asked anyway, guessed "25+ years" for one and "Yes" for another —
+            // answers that went into First Name and Email boxes it never saw (#207).
+            if (IsOpaqueLabel(q))
+            {
+                if (q.Required) review.Add(new ReviewItem(q.Id, "this field has no readable label — fill it in by hand"));
                 continue;
             }
             forModel.Add(q);
@@ -198,6 +213,10 @@ public sealed partial class AnswerDrafter
             return Link(ctx.Resume, "linkedin") is { } li ? (li, null) : (null, "no LinkedIn link in your résumé");
         if (GitHub().IsMatch(label))
             return Link(ctx.Resume, "github") is { } gh ? (gh, null) : (null, "no GitHub link in your résumé");
+        // Any other social-profile box takes that site's link from the résumé or stays
+        // empty — never free text. Zoho's Facebook box once got the education history (#207).
+        if (Social().Match(label) is { Success: true } social)
+            return Link(ctx.Resume, social.Value) is { } s ? (s, null) : (null, $"no {social.Value} link in your résumé");
         if (id is "website" || Website().IsMatch(label))
             return FirstLink(ctx.Resume) is { } site ? (site, null) : (null, "no website link in your résumé");
         // A question that asks about authorization AND sponsorship in one breath, with fixed
@@ -485,6 +504,22 @@ public sealed partial class AnswerDrafter
 
     [GeneratedRegex(@"^\p{L}\.?$")]
     private static partial Regex Initial();
+
+    /// <summary>
+    /// True when the question's label is no label at all — empty, or the control's own
+    /// id or name standing in for one (<c>rec-form_50429000000003149</c>, <c>inputId</c>,
+    /// <c>cards[abc][field0]</c>). A one-word label that happens to equal a readable id
+    /// ("Country" / country) is still a label. Public for tests.
+    /// </summary>
+    public static bool IsOpaqueLabel(PacketQuestion q)
+    {
+        var label = q.Label.Trim();
+        if (label.Length == 0) return true;
+        if (label.Contains(' ')) return false;
+        if (Regex.IsMatch(label, @"\d{4,}")) return true;
+        var id = q.Id.StartsWith("std:", StringComparison.Ordinal) ? q.Id[4..] : q.Id;
+        return string.Equals(label, id, StringComparison.Ordinal) && Identifierish().IsMatch(label);
+    }
 
     private static string? Link(Resume r, string host) =>
         r.Links.FirstOrDefault(l => l.Url.Contains(host, StringComparison.OrdinalIgnoreCase)

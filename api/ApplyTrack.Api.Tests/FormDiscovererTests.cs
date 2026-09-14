@@ -50,6 +50,8 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             "<html><body><h1>Job</h1><button type=\"button\" onclick=\"const f=document.createElement('iframe');f.src='/acme/1234/apply';f.style.width='700px';f.style.height='900px';document.body.appendChild(f);this.remove()\">Apply for this job</button></body></html>", "text/html"));
         _fixture.MapGet("/late", () => Results.Content(
             "<html><body><h1>Job</h1><div id=\"slot\">Fetching application form</div><script>setTimeout(()=>{fetch('/acme/1234/apply').then(r=>r.text()).then(h=>{document.getElementById('slot').innerHTML=h.replace(/^[\\s\\S]*<body>/,'').replace(/<\\/body>[\\s\\S]*$/,'');});},1500)</script></body></html>", "text/html"));
+        // Zoho Recruit's shape (#207): web-component fields with no label association.
+        _fixture.MapGet("/zoho", () => Results.Content(ZohoHtml, "text/html"));
         _fixture.MapPost("/acme/1234/apply", () => { Interlocked.Increment(ref _posts); return Results.Content("nope"); });
         await _fixture.StartAsync();
         _url = _fixture.Urls.First();
@@ -81,6 +83,62 @@ public sealed class FormDiscovererTests : IAsyncLifetime
           <button type="submit">Submit application</button>
         </form></body></html>
         """;
+
+    // Zoho Recruit's career-site form as fyerx runs it, reduced: every field is a
+    // <crux-*-component cx-prop-label="…"> around an input with no id and no <label for>;
+    // the row above carries a plain <label>; the First Name row also holds a Salutation
+    // picklist (a div combobox, not an input); City/State/Zip share id="inputId".
+    private const string ZohoHtml = """
+        <html><body><form>
+          <div class="crc-form-row"><label class="crm-from-label"><span>First Name</span></label>
+            <div class="crc-form-field">
+              <crux-picklist-component cx-prop-label="Salutation"><div role="combobox"><span>-None-</span></div></crux-picklist-component>
+              <crux-text-component cx-prop-label="First Name"><div><input type="text" name="rec-form_50429000000003149" /></div></crux-text-component>
+            </div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>Last Name</span><span class="required">*</span></label>
+            <div class="crc-form-field"><crux-text-component cx-prop-label="Last Name"><div><input type="text" name="rec-form_50429000000003151" required /></div></crux-text-component></div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>Email</span></label>
+            <div class="crc-form-field"><crux-email-component cx-prop-label="Email"><div><input type="text" name="rec-form_50429000000003155" /></div></crux-email-component></div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>City</span></label>
+            <div class="crc-form-field"><crux-text-component cx-prop-label="City"><div><input type="text" id="inputId" /></div></crux-text-component></div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>State/Province</span></label>
+            <div class="crc-form-field"><crux-text-component cx-prop-label="State/Province"><div><input type="text" id="inputId" /></div></crux-text-component></div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>Country</span></label>
+            <div class="crc-form-field"><crux-text-component cx-prop-label="Country"><div><input type="text" name="rec-form_50429000000003177" /></div></crux-text-component></div></div>
+          <!-- A row whose component names nothing: the row's own label must serve. -->
+          <div class="crc-form-row"><label class="crm-from-label"><span>LinkedIn</span></label>
+            <div class="crc-form-field"><crux-website-component><div><input type="text" name="rec-form_50429000005978001" /></div></crux-website-component></div></div>
+          <div class="crc-form-row"><label class="crm-from-label"><span>Resume</span></label>
+            <div class="crc-form-field"><rec-file-upload-component><input type="file" name="rec-form_50429000000017197_file" /></rec-file-upload-component></div></div>
+          <button type="button">Submit Application</button>
+        </form></body></html>
+        """;
+
+    [SkippableFact]
+    public async Task A_zoho_form_with_no_label_association_still_gets_its_labels_and_keeps_every_field()
+    {
+        Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(
+            new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
+
+        var questions = await discoverer.DiscoverAsync($"{_url}/zoho");
+
+        Assert.NotNull(questions);
+        var byId = questions!.ToDictionary(q => q.Id);
+        Assert.Equal("First Name", byId["rec-form_50429000000003149"].Label);
+        Assert.Equal("Last Name", byId["rec-form_50429000000003151"].Label);
+        Assert.True(byId["rec-form_50429000000003151"].Required);
+        Assert.Equal("Email", byId["rec-form_50429000000003155"].Label);
+        Assert.Equal(PacketQuestion.Standard, byId["rec-form_50429000000003155"].Kind);
+        Assert.Equal("Country", byId["rec-form_50429000000003177"].Label);
+        Assert.Equal("LinkedIn", byId["rec-form_50429000005978001"].Label);   // from the row's <label>
+        Assert.Equal(PacketQuestion.File, byId["rec-form_50429000000017197_file"].Type);
+        Assert.Equal("Resume", byId["rec-form_50429000000017197_file"].Label);
+        // The shared id keeps the first box; the second is keyed by its own label.
+        Assert.Equal("City", byId["inputId"].Label);
+        Assert.Equal("State/Province", byId["State/Province"].Label);
+        Assert.Equal(0, _posts);
+    }
 
     [SkippableFact]
     public async Task Discovers_a_lever_shaped_form_without_touching_it()
@@ -139,8 +197,14 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             ("", "agree", "I agree to the terms", "input", "checkbox", true, []),
             ("", "", "What are the database technologies you are proficient with? *", "input", "text", true, []),
             ("", "", "", "input", "text", false, []),
+            // Zoho's City / State / Zip: one id for three boxes (#207).
+            ("inputId", "", "City", "input", "text", false, []),
+            ("inputId", "", "State/Province", "input", "text", false, []),
+            ("inputId", "", "State/Province", "input", "text", false, []),
         ]);
-        Assert.Equal(4, qs.Count);
+        Assert.Equal(6, qs.Count);
+        Assert.Equal(("inputId", "City"), (qs[4].Id, qs[4].Label));
+        Assert.Equal(("State/Province", "State/Province"), (qs[5].Id, qs[5].Label));
         // No name, no id: keyed by the label (Comeet's custom questions); nothing at all is dropped.
         Assert.Equal("What are the database technologies you are proficient with?", qs[3].Id);
         Assert.True(qs[3].Required);

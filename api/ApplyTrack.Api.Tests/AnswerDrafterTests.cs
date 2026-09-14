@@ -197,6 +197,59 @@ public class AnswerDrafterTests
     }
 
     [Fact]
+    public async Task A_question_with_no_readable_label_is_never_put_to_the_model()
+    {
+        // Zoho's fields arrived labelled by their own opaque names, and the model guessed
+        // "25+ years" for one and "Yes" for another — into boxes it never saw (#207).
+        var questions = new List<PacketQuestion>
+        {
+            new("rec-form_50429000000003149", "rec-form_50429000000003149", true, PacketQuestion.Text, [], PacketQuestion.Custom),
+            new("inputId", "inputId", false, PacketQuestion.Text, [], PacketQuestion.Custom),
+            new("q1", "Why do you want to work here?", true, PacketQuestion.Textarea, [], PacketQuestion.Custom),
+        };
+        var asked = new List<string>();
+        var stub = new StubLlmClient((_, user, _) =>
+        {
+            asked.Add(user);
+            return "{\"answers\":[{\"id\":\"rec-form_50429000000003149\",\"answer\":\"25+ years\"},{\"id\":\"inputId\",\"answer\":\"Yes\"},{\"id\":\"q1\",\"answer\":\"Because billing.\"}]}";
+        });
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub)).DraftAsync(questions, Ctx(), Cfg);
+
+        Assert.Equal(["q1"], answers.Keys.ToArray());
+        Assert.DoesNotContain("rec-form_50429000000003149", Assert.Single(asked));
+        var item = Assert.Single(review);
+        Assert.Equal("rec-form_50429000000003149", item.Id);   // required and unreadable: the human's
+        Assert.Contains("no readable label", item.Reason);
+    }
+
+    [Theory]
+    [InlineData("rec-form_50429000000003149", "rec-form_50429000000003149", true)]
+    [InlineData("inputId", "inputId", true)]
+    [InlineData("cards[abc][field0]", "cards[abc][field0]", true)]
+    [InlineData("-add-skills", "-add-skills", true)]
+    [InlineData("q", "", true)]
+    [InlineData("country", "Country", false)]
+    [InlineData("std:email", "email", false)]
+    [InlineData("q7", "Why us?", false)]
+    [InlineData("inputId", "State/Province", false)]
+    public void An_opaque_label_is_the_controls_own_identifier_not_a_word(string id, string label, bool opaque) =>
+        Assert.Equal(opaque, AnswerDrafter.IsOpaqueLabel(new(id, label, false, PacketQuestion.Text, [], PacketQuestion.Custom)));
+
+    [Fact]
+    public void A_social_profile_box_takes_that_sites_link_or_stays_empty()
+    {
+        var ctx = Ctx() with { Resume = new Resume { Links = [new ResumeLink("Facebook", "https://facebook.com/ada")] } };
+        var (fb, _) = AnswerDrafter.Deterministic(new("q", "Facebook", false, PacketQuestion.Text, [], PacketQuestion.Custom), ctx);
+        Assert.Equal("https://facebook.com/ada", fb);
+
+        // No such link: a reason, never free text — and optional, so it will not block.
+        var (x, why) = AnswerDrafter.Deterministic(new("q", "X (formerly Twitter)", false, PacketQuestion.Text, [], PacketQuestion.Custom), ctx);
+        Assert.Null(x);
+        Assert.Contains("link in your résumé", why);
+    }
+
+    [Fact]
     public async Task A_dead_model_still_yields_a_packet_with_everything_owed_flagged()
     {
         var questions = new List<PacketQuestion>
