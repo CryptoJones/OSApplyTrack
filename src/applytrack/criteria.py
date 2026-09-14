@@ -24,6 +24,9 @@ BUILTIN_SOURCES = (
     "remotefirstjobs",
     "workanywhere",
     "hn_whoishiring",
+    # Greenhouse's candidate portal, signed in with the tenant's own account (#218):
+    # per tenant, never shared, off by default.
+    "mygreenhouse",
 )
 
 # ATS providers the board adder understands (public boards, no auth).

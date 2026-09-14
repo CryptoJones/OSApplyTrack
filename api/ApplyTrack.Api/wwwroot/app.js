@@ -1655,7 +1655,7 @@ async function deleteApp(name) {
 // BUILTIN_SOURCES. The /api/criteria payload always carries all of them.
 const SOURCES = [
   "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
-  "remotefirstjobs", "workanywhere", "hn_whoishiring",
+  "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse",
 ];
 const SOURCE_LABEL = {
   remotive: "Remotive",
@@ -1666,6 +1666,7 @@ const SOURCE_LABEL = {
   remotefirstjobs: "RemoteFirstJobs",
   workanywhere: "WorkAnywhere.pro",
   hn_whoishiring: "HN “Who is hiring”",
+  mygreenhouse: "MyGreenhouse (signed in — needs a board account for greenhouse.io and your mailbox)",
 };
 const ATS_PROVIDERS = ["greenhouse", "lever", "paylocity"];
 // Paylocity boards are keyed by the company's recruiting GUID, not a name slug, and

@@ -674,6 +674,19 @@ contained rather than trusted:
    sandbox in a container, this is what decides how bad a renderer escape is —
    "write rows the agent already writes", not "read every session token".
 
+**MyGreenhouse, signed in.** Greenhouse's candidate portal (`my.greenhouse.io`)
+lists the newest postings across every Greenhouse board once you are signed in,
+and the poller can pull from it as the **MyGreenhouse** source in Settings ·
+Criteria (off by default). It needs two things you already may have: a **board
+account for `greenhouse.io`** (Settings · Agent · Board accounts — username only,
+the portal has no password) and **your mailbox** (Settings · Notifications), because
+the portal signs you in by emailing a security code. The poller asks for the code,
+reads it from the mailbox, and keeps the fortnight-long session sealed on the
+board-account row, so the code is read once in a while, not every poll. It searches
+your keywords (capped) a page each plus the newest postings, `remote` only when your
+profile is remote-only, and every listing links to the employer's own Greenhouse
+board, which the packet builder reads through the Job Board API as usual.
+
 **Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
 schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are
 **discovered read-only in the browser** — the agent visits the form one hop past

@@ -25,8 +25,10 @@ from collections.abc import Iterator
 
 import psycopg
 
+from applytrack import secrets
 from applytrack.criteria import Criteria
 from applytrack.importer import _FIELD_COLUMNS, row_params
+from applytrack.mygreenhouse import ACCOUNT_HOSTS, Mailbox, PortalAccount
 from applytrack.store import AppFields, filename_for
 
 # A plain INSERT (not the importer's upsert): a slug already present is a genuine
@@ -73,6 +75,53 @@ class PollRepo:
         if row is None:
             return Criteria()
         return Criteria.from_dict(dict(zip(_PROFILE_COLUMNS, row, strict=True)))
+
+    def portal_account(self) -> PortalAccount | None:
+        """The tenant's MyGreenhouse sign-in (a board account for greenhouse.io) with the
+        session kept for it, unsealed — or None when there is no such account (#218)."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT host, username, session_ciphertext, session_expires_at "
+                "FROM board_accounts WHERE tenant_id = %s AND host = ANY(%s)",
+                (self._t, list(ACCOUNT_HOSTS)),
+            )
+            row = cur.fetchone()
+        if row is None or not row[1]:
+            return None
+        session = ""
+        if row[2]:
+            try:
+                session = secrets.unseal(row[2], secrets.master_key())
+            except secrets.SealError:
+                session = ""
+        return PortalAccount(email=row[1], session=session, session_expires_at=row[3])
+
+    def save_portal_session(self, session: str, expires_at: object) -> None:
+        """Keep the portal session sealed on the board-account row (blank clears it)."""
+        sealed = secrets.seal(session, secrets.master_key()) if session else ""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE board_accounts SET session_ciphertext = %s, session_expires_at = %s, "
+                "updated_at = now() WHERE tenant_id = %s AND host = ANY(%s)",
+                (sealed, expires_at if session else None, self._t, list(ACCOUNT_HOSTS)),
+            )
+
+    def mailbox(self) -> Mailbox | None:
+        """The tenant's IMAP mailbox from Settings · Notifications, password unsealed — or None."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT host, port, username, password_ciphertext FROM mailbox_settings "
+                "WHERE tenant_id = %s AND enabled",
+                (self._t,),
+            )
+            row = cur.fetchone()
+        if row is None or not row[0] or not row[2] or not row[3]:
+            return None
+        try:
+            password = secrets.unseal(row[3], secrets.master_key())
+        except secrets.SealError:
+            return None
+        return Mailbox(host=row[0], port=int(row[1] or 993), username=row[2], password=password)
 
     def iter_existing(self) -> Iterator[tuple[str, str, str]]:
         """Yield ``(link, company, role)`` for every application already stored.
