@@ -165,6 +165,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // and a job-alert box on the page, the form behind "Apply now »" — on the same site
         // here; on the real one it leads to career4.successfactors.com's sign-in.
         _fixture.MapGet("/jobs/widgets", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/1"), "text/html"));
+        // Alignerr's way in: Apply opens the marketplace's sign-up, which is a terms checkbox
+        // and "Continue with Google / LinkedIn" — no form, no username box.
+        _fixture.MapGet("/jobs/widgets-sso", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/sso-wall"), "text/html"));
+        _fixture.MapGet("/jobs/sso-wall", () => Results.Content(SsoWallHtml, "text/html"));
         _fixture.MapGet("/jobs/widgets-account", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
         // SAP SuccessFactors' way in (#216): the career-site posting, Apply now to the board's
         // sign-in, and behind it the application as an accordion — documents already on the
@@ -2084,6 +2088,29 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Empty(outcome.Mapped);
         Assert.Empty(_posts);
     }
+
+    [SkippableFact]
+    public async Task Apply_that_leads_to_a_social_sign_up_wall_names_the_providers_and_nothing_is_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/widgets-sso", Packet(), null, dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("only signs candidates up through Google, LinkedIn", outcome.Error);
+        Assert.Contains("Copy answers and open", outcome.Error);
+        Assert.DoesNotContain("no form appeared", outcome.Error);
+        Assert.Empty(outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    private const string SsoWallHtml = """
+        <html><body>
+        <h1>Get paid to align groundbreaking AI models with your expertise</h1>
+        <label><input type="checkbox" /> I agree to the Terms of Service, Privacy Policy and Release Agreement</label>
+        <button type="button">Continue with Google</button>
+        <button type="button">Continue with LinkedIn</button>
+        </body></html>
+        """;
 
     [SkippableFact]
     public async Task A_job_search_and_a_job_alert_box_are_not_discovered_as_questions()

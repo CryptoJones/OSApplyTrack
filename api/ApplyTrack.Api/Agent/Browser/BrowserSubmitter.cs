@@ -284,6 +284,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (await OnlyEmailFieldsAsync(form))
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     SignInError + "; apply via Copy answers and open the posting");
+            // A terms checkbox beside "Continue with Google / LinkedIn" is a control, not a form:
+            // the page is a sign-up wall (Alignerr), and the verdict says so, not "nothing matched".
+            if (mapped.Count == 0 && await BrowserSession.SocialSignUpWallAsync(page) is { Count: > 0 } wall)
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    BrowserSession.SocialWallNote(page.Url, wall));
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame))
