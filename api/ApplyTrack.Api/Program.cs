@@ -152,6 +152,10 @@ builder.Services.AddSingleton<ISecurityCodeSource, ImapSecurityCodeSource>();
 builder.Services.AddScoped(sp => new MailboxSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<ILogger<MailboxSettingsRepo>>()));
+// The candidate's own sign-ins on account-only ATSs (SAP SuccessFactors, #216).
+builder.Services.AddScoped(sp => new BoardAccountRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<ILogger<BoardAccountRepo>>()));
 builder.Services.AddSingleton<PacketReadyNotifier>();
 builder.Services.AddScoped(sp => new NotificationSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
@@ -360,6 +364,7 @@ app.MapPacketEndpoints();
 app.MapAnswersEndpoints();
 app.MapNotificationsEndpoints();
 app.MapSubmitEndpoints();
+app.MapBoardAccountEndpoints();
 app.MapReadyEndpoints();
 app.MapPipelineEndpoints();
 

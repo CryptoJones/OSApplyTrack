@@ -19,7 +19,7 @@ public sealed record PacketScope(
 /// <summary>The tenant facts a build draws on.</summary>
 public sealed record PacketInputs(
     Resume Resume, AgentSettings Settings, string Email, string Signature, bool LettersEnabled,
-    EffectiveLlmConfig Cfg);
+    EffectiveLlmConfig Cfg, IReadOnlyList<BoardAccount>? Accounts = null);
 
 /// <summary>
 /// Turns a <c>proceed</c> verdict into a prepared packet and parks the application
@@ -107,7 +107,7 @@ public sealed partial class PacketBuilder
         {
             try
             {
-                questions = await _discoverer.DiscoverAsync(AtsProvider.ApplyUrl(f.Link, provider), ct);
+                questions = await _discoverer.DiscoverAsync(AtsProvider.ApplyUrl(f.Link, provider), ct, inputs.Accounts);
             }
             catch (Exception ex) when (ex is AppValidationException or Microsoft.Playwright.PlaywrightException or TimeoutException)
             {

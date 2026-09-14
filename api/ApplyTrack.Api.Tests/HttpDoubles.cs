@@ -86,7 +86,8 @@ internal sealed class FakeSubmitter(
     public Task<ApplyTrack.Api.Agent.Browser.SubmitOutcome> RunAsync(
         string link, ApplyTrack.Api.Data.AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
         CancellationToken ct = default, string resumeText = "", string coverLetter = "",
-        Func<ApplyTrack.Api.Agent.Browser.CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null)
+        Func<ApplyTrack.Api.Agent.Browser.CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode = null,
+        IReadOnlyList<ApplyTrack.Api.Data.BoardAccount>? accounts = null)
     {
         lock (Runs) Runs.Add((link, dryRun, new Dictionary<string, string>(packet.Answers)));
         return run(link, packet, dryRun, awaitSecurityCode, ct);

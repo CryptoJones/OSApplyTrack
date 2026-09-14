@@ -2265,6 +2265,42 @@ function agentMarkup(s, events) {
         </div>
       </div>
 
+      <h3 class="mt-8" id="board-accounts-heading">Board accounts</h3>
+      <p class="field-help">
+        Some applicant-tracking systems only take an application from a signed-in candidate
+        account — <strong>SAP SuccessFactors</strong> (Kiewit and many large employers) asks for
+        the account you created on their careers site the first time you applied. Save that
+        sign-in here and the browser signs in with it when Apply leads there, then fills and
+        submits the application as usual. The password is write-only and stored encrypted.
+        The browser never creates accounts.
+      </p>
+      <ul id="board-accounts" class="agent-log" aria-labelledby="board-accounts-heading">
+        ${(s.board_accounts || []).length ? s.board_accounts.map((a) => `
+          <li class="mt-2 text-sm flex items-center gap-2">
+            <span class="mono">${escapeHtml(a.host)}</span>
+            <span class="text-ink-faint">· ${escapeHtml(a.username)}${a.has_password ? "" : " · no password saved"}</span>
+            <button class="btn btn-ghost btn-sm" type="button" data-forget-account="${escapeHtml(a.host)}" aria-label="Forget the account at ${escapeHtml(a.host)}">Forget</button>
+          </li>`).join("") : '<li class="mt-2 text-sm field-help">None saved.</li>'}
+      </ul>
+      <div class="mt-3 agent-grid">
+        <div>
+          <label class="field-label" for="ba-host">Site</label>
+          <input id="ba-host" class="field-input mono" placeholder="career4.successfactors.com" autocomplete="off" />
+          <p class="field-help">The host of the sign-in page Apply leads to.</p>
+        </div>
+        <div>
+          <label class="field-label" for="ba-user">Username</label>
+          <input id="ba-user" class="field-input" placeholder="you@example.com" autocomplete="off" />
+        </div>
+        <div>
+          <label class="field-label" for="ba-pass">Password — write-only</label>
+          <input id="ba-pass" type="password" class="field-input mono" autocomplete="new-password" />
+        </div>
+      </div>
+      <div class="mt-2 flex justify-end">
+        <button class="btn btn-ghost" type="button" data-act="save-account">Save board account</button>
+      </div>
+
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
         <button class="btn btn-primary" data-act="save">Save agent settings</button>
@@ -2306,6 +2342,30 @@ function wireAgent() {
       toast(e.message);
     }
   };
+  // Board accounts (#216): save one, forget one; the list re-renders from the server.
+  const saveAccount = contentEl.querySelector('[data-act="save-account"]');
+  if (saveAccount) saveAccount.onclick = async () => {
+    const body = { host: $("#ba-host").value.trim(), username: $("#ba-user").value.trim() };
+    if ($("#ba-pass").value) body.password = $("#ba-pass").value;
+    try {
+      await api("PUT", "/api/board-accounts", body);
+      toast(`Board account for ${body.host} saved.`);
+      openSettings("agent");
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+  contentEl.querySelectorAll("[data-forget-account]").forEach((b) => {
+    b.onclick = async () => {
+      try {
+        await api("DELETE", `/api/board-accounts/${encodeURIComponent(b.dataset.forgetAccount)}`);
+        toast(`Forgot the account at ${b.dataset.forgetAccount}.`);
+        openSettings("agent");
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+  });
   contentEl.querySelectorAll("[data-open]").forEach((b) => {
     b.onclick = () => openApp(b.dataset.open);
   });
@@ -2323,11 +2383,13 @@ function workerSeenLine(s) {
 
 // Settings · Agent tab.
 async function loadAgentTab(body, gen = settingsGen) {
-  const [s, events] = await Promise.all([
+  const [s, events, accounts] = await Promise.all([
     api("GET", "/api/agent-settings"),
     api("GET", "/api/agent-events?limit=50").catch(() => []),
+    api("GET", "/api/board-accounts").catch(() => []),
   ]);
   if (settingsSuperseded(gen)) return;
+  s.board_accounts = Array.isArray(accounts) ? accounts : [];
   state.agentEnabled = s.enabled === true;
   state.browserAvailable = s.browser_available === true;
   state.longTail = s.long_tail === true;

@@ -38,13 +38,20 @@ public sealed partial class FormDiscoverer
         string Id, string Name, string Label, string Tag, string Type, bool Required, List<string> Options);
 
     /// <summary>The form's questions, or null when the page had no fillable form.</summary>
-    public async Task<List<PacketQuestion>?> DiscoverAsync(string link, CancellationToken ct = default)
+    public async Task<List<PacketQuestion>?> DiscoverAsync(string link, CancellationToken ct = default,
+        IReadOnlyList<BoardAccount>? accounts = null)
     {
-        await using var session = await BrowserSession.OpenAsync(_options, link, ct);
+        await using var session = await BrowserSession.OpenAsync(_options, link, ct, accounts);
         // The form is often not there yet (Ashby fetches it after the page is idle) and often
         // not in the page at all (Comeet loads it into a cross-origin iframe): wait for a
         // control to show anywhere, then read every frame, top document first.
         await BrowserSession.WaitForFieldAsync(session.Page, 10_000);
+        // The board's sign-in, not the form: nothing to discover (#216).
+        if (await BrowserSession.SignInFormVisibleAsync(session.Page))
+        {
+            _log.LogInformation("discovery at {Link}: {Reason}", link, session.RevealNote.Length > 0 ? session.RevealNote : "the page is a sign-in");
+            return null;
+        }
         var controls = new List<Control>();
         foreach (var frame in session.Page.Frames)
         {

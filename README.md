@@ -345,6 +345,9 @@ killing the process:
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, `prepare` (rebuild first), timestamps. |
 | `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed` / `awaiting_code`), `url`, `confirmation`, `detail` (a dry run's carries `needs_you[]` — the required questions the person still has to answer, by label; empty means clean; an `awaiting_code` row carries `recipient` and `sign_in` — true when the run is parked on a board's email sign-in rather than Greenhouse's security code), `has_screenshot`. |
+| `GET`    | `/api/board-accounts` | The candidate's own sign-ins on ATSs that only take applications from a signed-in account (SAP SuccessFactors): `host`, `username`, `has_password`, `updated_at` — never the password. |
+| `PUT`    | `/api/board-accounts` | `{host, username, password}` — save one; the host is normalised (`career4.successfactors.com`), the password is write-only and sealed with the secrets key (omit to keep, blank to clear). Returns the list. |
+| `DELETE` | `/api/board-accounts/{host}` | Forget one. **204**, or **404** when there was none. |
 | `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback); or, for a run parked on a board's **email sign-in** (join.com), the code *or the whole link* the board emailed — a link must be http(s), and the browser follows it only onto the board's own site. **202** when a run is waiting, **409** when none is; the run types the code in (or opens the link) and carries on. Replying to the 🔐 Telegram moo with the code or the link does the same thing without the app. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
@@ -705,14 +708,21 @@ resolve is prepared and mooed as apply-by-hand, never run.
 Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
 field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
-doesn't know* in Settings · Agent. **Workday and SAP SuccessFactors stay manual,
-permanently** — applying needs a candidate account with the employer's tenant (a
-password, email verification, a multi-step wizard) — so they are detected, the
-packet is prepared, and the sheet routes you to copy-and-open. A SuccessFactors
-career site on the employer's own domain (Kiewit's, say) is not knowable from the
-link: the browser learns it when Apply now leads to `career*.successfactors.com`,
-and the run says so. The careers site's own job-search and job-alert boxes are
-never mistaken for the form. That is the honest outcome, not a gap. The agent never guesses on
+doesn't know* in Settings · Agent. **Workday stays manual, permanently** — applying
+needs an account with the employer's tenant, email verification and a multi-step
+wizard — so it is detected, the packet is prepared, and the sheet routes you to
+copy-and-open. **SAP SuccessFactors** also only takes an application from a signed-in
+candidate account, but there the account is yours to give: save the sign-in you
+created on that careers site under **Settings · Agent · Board accounts** (host,
+username, a write-only password sealed with the secrets key) and the browser
+signs in with it when Apply now leads to `career*.successfactors.com`, opens the
+folded sections of the application, counts the résumé already on your account as
+attached, fills what is still empty, presses **Apply** and answers the "are you
+sure" once. Without a saved account the run says which host wants one. The browser
+never creates accounts. A SuccessFactors career site on the employer's own domain
+(Kiewit's, say) is not knowable from the link: the browser learns it at the Apply
+click. The careers site's own job-search and job-alert boxes are never mistaken
+for the form. The agent never guesses on
 EEO/demographic questions, file fields other than the résumé, or any answer the
 model wasn't confident about — those block Submit until you resolve them.
 

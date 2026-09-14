@@ -166,6 +166,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // here; on the real one it leads to career4.successfactors.com's sign-in.
         _fixture.MapGet("/jobs/widgets", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/1"), "text/html"));
         _fixture.MapGet("/jobs/widgets-account", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
+        // SAP SuccessFactors' way in (#216): the career-site posting, Apply now to the board's
+        // sign-in, and behind it the application as an accordion — documents already on the
+        // account, profile pre-filled, job-specific questions folded away — with Apply in a
+        // footer bar and an "are you sure" dialog before it sends.
+        _fixture.MapGet("/jobs/sf", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "/jobs/sf/signin"), "text/html"));
+        _fixture.MapGet("/jobs/sf/signin", (string? error) => Results.Content(SfSignInHtml.Replace("ERROR", error is null ? "" : "<p class=\"errorMessage\">Invalid email address or password.</p>"), "text/html"));
+        _fixture.MapPost("/jobs/sf/signin", async (HttpRequest req) =>
+        {
+            var form = await req.ReadFormAsync();
+            return form["username"] == "ada@example.com" && form["password"] == "Sekrit-9$"
+                ? Results.Redirect("/jobs/sf/app") : Results.Redirect("/jobs/sf/signin?error=1");
+        });
+        _fixture.MapGet("/jobs/sf/app", () => Results.Content(SfApplicationHtml, "text/html"));
         // A posting whose Apply button never becomes clickable (Fuse Energy).
         _fixture.MapGet("/jobs/stuck-apply", () => Results.Content(StuckApplyHtml, "text/html"));
         // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
@@ -819,6 +832,69 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <input id="j_idt90" type="number" class="form-control subscribe-frequency" name="frequency" required min="1" max="99" value="7" />
           <input id="emailsubscribe-button" class="btn emailsubscribe-button" value="Create Alert" type="submit" />
         </form>
+        </body></html>
+        """;
+
+    private const string SfSignInHtml = """
+        <html><body>
+        <form class="form-inline jobAlertsSearchForm" name="keywordsearch" method="get" action="/search/" role="search">
+          <input type="text" class="keywordsearch-q" name="q" placeholder="Search by Keyword" aria-label="Search by Keyword" />
+        </form>
+        <h1>Career Opportunities: Sign In</h1>
+        <p>Already have an account? Enter your email address and password (Credentials are case sensitive).</p>
+        ERROR
+        <form method="post" action="/jobs/sf/signin">
+          <label for="username">Email Address:<span>*</span></label><input id="username" name="username" type="text" required />
+          <label for="password">Password:<span>*</span></label><input id="password" name="password" type="password" required />
+          <input type="button" id="show_button" value="Show" />
+          <button type="submit">Sign In</button> <a href="/forgot">Forgot your password?</a>
+        </form>
+        <p>Not a registered user yet? <a href="/register">Create an account</a> to apply for our career opportunities.</p>
+        </body></html>
+        """;
+
+    private const string SfApplicationHtml = """
+        <html><body>
+        <h1>Sr AI Engineer (181457)</h1>
+        <p>WELCOME! Please ensure you complete your profile in its entirety.</p>
+        <form id="app" method="post" action="/apply">
+          <button type="button" id="50:topBar" aria-expanded="true" aria-controls="sec-docs">My Documents</button>
+          <div id="sec-docs">
+            <p>Accepted file types: DOCX, PDF, Image and Text</p>
+            <div><label>* Upload Resume</label> <span>Required</span>
+              <div><a href="#">Download document resume.pdf</a> <span>Last Modified: 07/09/2026</span> <span>resume.pdf (07/09/2026)</span> <a href="#">Edit document resume.pdf</a></div></div>
+            <div><label>Cover letter</label> <div><a href="#">Download document Clark-Aaron-CoverLetter.pdf</a> <a href="#">Delete document</a></div></div>
+          </div>
+          <button type="button" id="117:topBar" aria-expanded="false" aria-controls="sec-profile">Profile Information</button>
+          <div id="sec-profile" style="display:none">
+            <label for="60:_txtFld">* Legal First Name</label><input id="60:_txtFld" name="firstName" value="Ada" required />
+            <label for="68:_txtFld">* Legal Last Name</label><input id="68:_txtFld" name="lastName" value="Lovelace" required />
+            <label for="72:_txtFld">* Primary Phone</label><input id="72:_txtFld" name="cellPhone" value="5712975406" required />
+            <label for="80:_txtFld">* Email Address</label><input id="80:_txtFld" name="contactEmail" value="ada@example.com" required />
+          </div>
+          <button type="button" id="446:topBar" aria-expanded="false" aria-controls="sec-job">Job-Specific Information</button>
+          <div id="sec-job" style="display:none">
+            <label for="q2">* Are you legally authorized to work in the United States?</label>
+            <select id="q2" name="q2" required><option value="">Select</option><option>Yes</option><option>No</option></select>
+            <label for="q3">* Describe a system you scaled.</label>
+            <textarea id="q3" name="q3" required></textarea>
+          </div>
+        </form>
+        <div class="footer-bar"><span id="447:_backToListing" role="button" tabindex="0">View Profile</span> <span id="447:_saveBtn" role="button" tabindex="0">Save</span> <span id="447:_submitBtn" role="button" tabindex="0">Apply</span></div>
+        <div id="confirm" role="dialog" aria-label="Confirm" style="display:none">
+          <p>Are you sure you want to apply for this position?</p>
+          <button type="button" id="confirm-no">Cancel</button> <button type="button" id="confirm-yes">Yes</button>
+        </div>
+        <script>
+          for (const bar of document.querySelectorAll('[id$="topBar"]')) bar.addEventListener('click', () => {
+            const open = bar.getAttribute('aria-expanded') === 'true';
+            bar.setAttribute('aria-expanded', String(!open));
+            document.getElementById(bar.getAttribute('aria-controls')).style.display = open ? 'none' : 'block';
+          });
+          document.getElementById('447:_submitBtn').addEventListener('click', () => { document.getElementById('confirm').style.display = 'block'; });
+          document.getElementById('confirm-no').addEventListener('click', () => { document.getElementById('confirm').style.display = 'none'; });
+          document.getElementById('confirm-yes').addEventListener('click', () => { document.getElementById('app').submit(); });
+        </script>
         </body></html>
         """;
 
@@ -1956,6 +2032,66 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains(questions!, q => q.Label.Contains("First Name", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(questions!, q => q.Id == "q" || q.Id == "locationsearch" || q.Id == "j_idt90" || q.Label.Contains("alert", StringComparison.OrdinalIgnoreCase));
         Assert.Null(await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/widgets-account"));
+    }
+
+    private static readonly BoardAccount[] SfAccount = [new("127.0.0.1", "ada@example.com", "Sekrit-9$")];
+
+    [SkippableFact]
+    public async Task With_a_saved_board_account_the_browser_signs_in_opens_the_folded_sections_and_applies()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", Packet(), (Pdf, "resume.pdf"), dryRun: false, accounts: SfAccount);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var sent = Assert.Single(_posts);
+        Assert.Equal("Ada", sent["firstName"]);
+        Assert.Equal("Yes", sent["q2"]);
+        Assert.False(string.IsNullOrWhiteSpace(sent["q3"]));
+        // The résumé the account already holds counted as attached; nothing was uploaded.
+        Assert.Contains("resume", outcome.Mapped);
+        Assert.Equal("", sent["resume:file"]);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Empty(_laterPosts);
+    }
+
+    [SkippableFact]
+    public async Task Without_a_board_account_the_run_names_the_host_that_wants_one_and_where_to_save_it()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", Packet(), null, dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.False(outcome.Submitted);
+        Assert.Contains("no account is saved", outcome.Error);
+        Assert.Contains("127.0.0.1", outcome.Error);
+        Assert.Contains("Board accounts", outcome.Error);
+        Assert.Empty(outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_refused_sign_in_is_reported_with_the_host_and_username_and_nothing_is_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sf", Packet(), null, dryRun: false,
+            accounts: [new("127.0.0.1", "ada@example.com", "wrong-password")]);
+        Assert.False(outcome.Submitted);
+        Assert.False(outcome.Filled);
+        Assert.Contains("was refused", outcome.Error);
+        Assert.Contains("ada@example.com", outcome.Error);
+        Assert.Contains("Invalid email address or password", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task Discovery_signs_in_with_the_board_account_and_reads_the_folded_sections_as_questions()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/sf", accounts: SfAccount);
+        Assert.NotNull(questions);
+        Assert.Contains(questions!, q => q.Label.Contains("legally authorized", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(questions!, q => q.Label.Contains("Legal First Name", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(questions!, q => q.Id == "username" || q.Id == "password" || q.Id == "q");
+        Assert.Null(await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/sf"));
     }
 
     [SkippableFact]
