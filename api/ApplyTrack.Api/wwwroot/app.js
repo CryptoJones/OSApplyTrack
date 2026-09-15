@@ -451,7 +451,7 @@ function renderPipelineView(data) {
   const readyRows = ready.map((r) => `
     <li class="pipe-ready${r.promotable ? " promotable" : ""}">
       <button type="button" class="link-button" data-open="${escapeHtml(r.name)}">${pipelineRowTitle(r)}</button>
-      <span class="field-help">${escapeHtml(r.holding)}</span>
+      <span class="field-help">${escapeHtml(readyHolding(r))}</span>
     </li>`).join("");
 
   body.innerHTML = `
@@ -950,6 +950,15 @@ async function queueSubmit(name, btn, dryRun) {
     btn.disabled = false;
     btn.textContent = label;
   }
+}
+
+// "last run failed at 12:17 PM 9/15/2026 — see what the browser saw": when the run was, in
+// the reader's own clock, so a failure can be matched to what they were doing at the time.
+function readyHolding(r) {
+  if (!r.last_at || !/^last run /.test(r.holding)) return r.holding;
+  const at = new Date(r.last_at);
+  const when = `${at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} ${at.toLocaleDateString()}`;
+  return r.holding.replace(/^(last run [a-z ]+?)( —| waiting)/, `$1 at ${when}$2`);
 }
 
 // What the browser saw: screenshots and confirmations, newest first.

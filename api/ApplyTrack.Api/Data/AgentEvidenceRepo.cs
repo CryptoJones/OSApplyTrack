@@ -72,11 +72,11 @@ public sealed class AgentEvidenceRepo
 
     /// <summary>The newest piece of evidence per application still parked in <c>ready</c>,
     /// without bytes — what the promotion pass and "Submit all clean" judge a packet by.</summary>
-    public async Task<IReadOnlyList<(string Name, string Kind, JsonElement Detail)>> LatestPerReadyApplicationAsync()
+    public async Task<IReadOnlyList<(string Name, string Kind, JsonElement Detail, DateTimeOffset CreatedAt)>> LatestPerReadyApplicationAsync()
     {
-        var rows = await _conn.QueryAsync<(string Name, string Kind, string Detail)>(
+        var rows = await _conn.QueryAsync<(string Name, string Kind, string Detail, DateTimeOffset CreatedAt)>(
             """
-            SELECT DISTINCT ON (e.application_name) e.application_name, e.kind, e.detail::text
+            SELECT DISTINCT ON (e.application_name) e.application_name, e.kind, e.detail::text, e.created_at
             FROM agent_evidence e
             JOIN applications a ON a.tenant_id = e.tenant_id AND a.name = e.application_name
             WHERE e.tenant_id = @t AND a.status = 'ready'
@@ -84,7 +84,7 @@ public sealed class AgentEvidenceRepo
             """,
             new { t = _t });
         return rows.Select(r => (r.Name, r.Kind,
-            JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone())).ToList();
+            JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone(), r.CreatedAt)).ToList();
     }
 
     /// <summary>The newest piece of evidence for each of the named applications, without

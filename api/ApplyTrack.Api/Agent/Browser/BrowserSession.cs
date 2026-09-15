@@ -510,6 +510,18 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 return;
             }
         }
+        // Gainwell's "Apply Now" only opens a menu — "Apply Now" / "Start applying with LinkedIn" —
+        // and the way in is its item, not the button. Without this click the run watched an open
+        // menu for ten seconds and reported "no form appeared".
+        var item = Page.GetByRole(AriaRole.Menuitem, new() { NameRegex = ApplyTrigger() })
+            .Filter(new() { HasNotTextRegex = new Regex(@"linkedin|indeed|google|facebook", RegexOptions.IgnoreCase) }).First;
+        try
+        {
+            await item.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 1_500 });
+            await item.ClickAsync(new() { Timeout = 5_000 });
+        }
+        catch (TimeoutException) { /* no menu: the button was the way in */ }
+        catch (PlaywrightException) { /* ditto */ }
         // What Apply led to: the form, or the board's sign-in first (#216), or a sign-up wall
         // (#235), or nothing. A new tab is adopted whenever it arrives within the wait: Alignerr's
         // Apply opens its sign-in in a new tab only after a round trip, later than the moment
@@ -528,7 +540,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
                     catch (TimeoutException) { /* judged by what renders */ }
                     catch (PlaywrightException) { /* ditto */ }
                     await DismissConsentAsync(Page);
-                    deadline = DateTime.UtcNow.AddSeconds(10);
+                    // A new tab is a whole app booting through the proxy: Alignerr's goes /signup →
+                    // /signin behind a spinner and showed its wall well after ten seconds on pluto.
+                    deadline = DateTime.UtcNow.AddSeconds(30);
                 }
                 // A field on screen settles it — and only then is the sign-in question asked, so a
                 // page still mid-navigation cannot answer "no sign-in" a moment before it renders one.

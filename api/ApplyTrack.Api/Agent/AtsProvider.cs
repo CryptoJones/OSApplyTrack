@@ -56,6 +56,8 @@ public static partial class AtsProvider
         // more aggregators, never a form. The browser followed Apply off-site and reported "no
         // form appeared"; all three job-board hosts in the chain are apply-by-hand (#243).
         "sundayy.com", "thebigjobsite.com", "lensa.com",
+        // FetchJobs.co: the same chain under another name, Apply off to thebigjobsite.com (#251).
+        "fetchjobs.co",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]

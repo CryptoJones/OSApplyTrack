@@ -28,7 +28,7 @@ public static class ReadyPromoter
         var apps = new ApplicationRepo(conn, tenantId);
         var queue = new SubmitRequestRepo(conn, tenantId);
         var promoted = new List<string>();
-        foreach (var (name, kind, detail) in await evidence.LatestPerReadyApplicationAsync())
+        foreach (var (name, kind, detail, _) in await evidence.LatestPerReadyApplicationAsync())
         {
             if (!AgentEvidenceRepo.IsCleanDryRun(kind, detail))
                 continue;
