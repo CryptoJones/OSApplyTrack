@@ -784,10 +784,17 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   instantly (no stranded JWTs).
 - **Hard tenant isolation.** Repositories are DI-scoped per tenant; every query
   filters `tenant_id`. There is no endpoint path that reads across tenants.
-- **Strict security headers on every response** (custom middleware): a tight
-  `Content-Security-Policy` (`script-src 'self'`, no inline scripts),
-  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: no-referrer`, and HSTS once the request is HTTPS.
+- **Strict security headers on every response** (custom middleware), and the app
+  is their single source of truth: a tight `Content-Security-Policy`
+  (`script-src 'self'`, no inline scripts), `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and HSTS once the
+  request is HTTPS. **Don't re-add these at your reverse proxy.** A second copy
+  duplicates every header and, worse, invites the two sources to drift apart in
+  the *weaker* direction — an edge `X-Frame-Options: SAMEORIGIN` alongside the
+  app's `DENY`, say. Let the app own the set; if your proxy adds its own headers
+  by default, drop the ones the app already sends. Also turn off the proxy's
+  version banner (`server_tokens off;` on nginx, or the equivalent) so it doesn't
+  advertise its exact build.
 - **Output sanitization.** User Markdown is rendered with `marked` and scrubbed
   through **DOMPurify** before it touches the DOM — defense in depth against stored
   XSS even though the poller already strips HTML at ingestion.
