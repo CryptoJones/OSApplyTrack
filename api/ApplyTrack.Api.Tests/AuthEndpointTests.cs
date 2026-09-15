@@ -226,6 +226,14 @@ public class AuthEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_spa_script_is_revalidated_so_a_deploy_is_seen()
+    {
+        var res = await NewClient().GetAsync("/app.js");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True(res.Headers.CacheControl?.NoCache);
+    }
+
+    [Fact]
     public async Task HSTS_is_emitted_over_https()
     {
         // TestServer derives Request.IsHttps from the request URI scheme, so an https
