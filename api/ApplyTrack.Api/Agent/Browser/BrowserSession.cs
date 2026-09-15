@@ -372,20 +372,34 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// posting's link back instead of an application (#210). Nor are the careers site's
     /// job-search and job-alert widgets, which SuccessFactors puts on every posting (#214).
     /// </summary>
-    public static async Task<bool> ApplicationFormVisibleAsync(IPage page)
+    public static Task<bool> ApplicationFormVisibleAsync(IPage page) => AnyFrameAsync(page, ApplicationFormScript);
+
+    /// <summary>The same as <see cref="ApplicationFormVisibleAsync"/>, but a file input only
+    /// counts when it is on screen. Used solely for the reveal's early return (#246): a form that
+    /// is in the page from load but collapsed behind an "Apply Now" link — Freshteam keeps its
+    /// résumé <c>&lt;input type=file&gt;</c> and every other control hidden until the link is
+    /// clicked — has a hidden file input, and the plain check would wrongly call that "on screen"
+    /// and skip the click, so only the résumé field is ever discovered. Requiring the file input
+    /// to be shown lets the reveal fall through and click "Apply Now" to expand the real form.</summary>
+    private static Task<bool> ApplicationFormRevealedAsync(IPage page) => AnyFrameAsync(page, RevealedFormScript);
+
+    private static async Task<bool> AnyFrameAsync(IPage page, string script)
     {
         foreach (var frame in page.Frames)
         {
             try
             {
-                if (await frame.EvaluateAsync<bool>(ApplicationFormScript)) return true;
+                if (await frame.EvaluateAsync<bool>(script)) return true;
             }
             catch (PlaywrightException) { /* a frame mid-navigation */ }
         }
         return false;
     }
 
-    private static readonly string ApplicationFormScript = """
+    // The application-form check. Only the file rule differs between the two builds below: the
+    // plain check counts any file input (Greenhouse hides its résumé input behind a styled
+    // button, so it must count even when not shown), the revealed check only a shown one.
+    private const string ApplicationFormScriptTemplate = """
                     () => {
                       const widget = __WIDGET__;
                       const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
@@ -394,7 +408,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       for (const el of document.querySelectorAll('input, textarea, select')) {
                         if (widget(el)) continue;
                         const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
-                        if (type === 'file') return true;
+                        __FILE_RULE__
                         if (!shown(el)) continue;
                         if (el.tagName === 'TEXTAREA') return true;
                         if (type === 'text' || type === 'email' || type === 'tel' || type === 'url' || type === 'select') texts++;
@@ -402,14 +416,25 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       }
                       return false;
                     }
-                    """.Replace("__WIDGET__", WidgetJs);
+                    """;
 
-    public static async Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
+    private static readonly string ApplicationFormScript = ApplicationFormScriptTemplate
+        .Replace("__FILE_RULE__", "if (type === 'file') return true;")
+        .Replace("__WIDGET__", WidgetJs);
+
+    private static readonly string RevealedFormScript = ApplicationFormScriptTemplate
+        .Replace("__FILE_RULE__", "if (type === 'file' && shown(el)) return true;")
+        .Replace("__WIDGET__", WidgetJs);
+
+    public static Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
+        => WaitForAsync(page, timeoutMs, ApplicationFormVisibleAsync);
+
+    private static async Task<bool> WaitForAsync(IPage page, int timeoutMs, Func<IPage, Task<bool>> present)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         while (true)
         {
-            if (await ApplicationFormVisibleAsync(page)) return true;
+            if (await present(page)) return true;
             if (DateTime.UtcNow >= deadline) return false;
             await page.WaitForTimeoutAsync(500);
         }
@@ -427,8 +452,12 @@ public sealed partial class BrowserSession : IAsyncDisposable
     {
         // The link itself may be the board's sign-in (a direct career*.successfactors.com link).
         if (await SignInFormVisibleAsync(Page) && !await TrySignInAsync()) return;
-        // A moment for a form that renders itself after load, before deciding it is hidden.
-        if (await WaitForApplicationFormAsync(Page, 3_000)) return;
+        // A moment for a form that renders itself after load, before deciding it is hidden. A
+        // hidden file input does not count as the form being on screen here (#246): Freshteam
+        // ships the whole form collapsed behind "Apply Now", so counting its hidden résumé input
+        // would skip the click and leave the real fields — every text, select and textarea, and
+        // the Submit button — hidden and undiscovered.
+        if (await WaitForAsync(Page, 3_000, ApplicationFormRevealedAsync)) return;
         ILocator? apply = null;
         foreach (var candidate in new[]
                  {

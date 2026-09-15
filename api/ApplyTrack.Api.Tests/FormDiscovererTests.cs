@@ -52,6 +52,9 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             "<html><body><h1>Job</h1><div id=\"slot\">Fetching application form</div><script>setTimeout(()=>{fetch('/acme/1234/apply').then(r=>r.text()).then(h=>{document.getElementById('slot').innerHTML=h.replace(/^[\\s\\S]*<body>/,'').replace(/<\\/body>[\\s\\S]*$/,'');});},1500)</script></body></html>", "text/html"));
         // Zoho Recruit's shape (#207): web-component fields with no label association.
         _fixture.MapGet("/zoho", () => Results.Content(ZohoHtml, "text/html"));
+        // Freshteam's shape (#246): the whole form is in the page from load but collapsed
+        // (display:none, hidden résumé file input and all) behind an "Apply Now" link.
+        _fixture.MapGet("/collapsed", () => Results.Content(CollapsedHtml, "text/html"));
         _fixture.MapPost("/acme/1234/apply", () => { Interlocked.Increment(ref _posts); return Results.Content("nope"); });
         await _fixture.StartAsync();
         _url = _fixture.Urls.First();
@@ -82,6 +85,29 @@ public sealed class FormDiscovererTests : IAsyncLifetime
           <input type="hidden" name="token" value="x" />
           <button type="submit">Submit application</button>
         </form></body></html>
+        """;
+
+    // Freshteam's collapsed application (#246): the full form ships in the page but the whole
+    // wrapper is display:none — the résumé file input and every text/select/textarea control
+    // hidden — until the "Apply Now" anchor is clicked. Before the click the only thing form
+    // detection could latch onto was the hidden file input.
+    private const string CollapsedHtml = """
+        <html><body>
+          <h1>AI Engineer</h1>
+          <a href="#applicant-form" onclick="document.getElementById('applicant-form').style.display='block';return false;">Apply Now</a>
+          <div id="applicant-form" style="display:none">
+            <form method="post">
+              <label>Full name *<input name="name" required /></label>
+              <label>Email *<input name="email" type="email" required /></label>
+              <label>Resume/CV *<input name="resume" type="file" /></label>
+              <label for="q1">Why Acme? *</label><textarea id="q1" name="cards[abc][field0]" required></textarea>
+              <label for="q2">Are you authorized to work in the US?</label>
+              <select id="q2" name="cards[abc][field1]"><option value="">Select</option><option>Yes</option><option>No</option></select>
+              <label for="eeo">Gender</label><select id="eeo" name="eeo[gender]"><option>Female</option><option>Male</option><option>Decline</option></select>
+              <button type="submit">Submit application</button>
+            </form>
+          </div>
+        </body></html>
         """;
 
     // Zoho Recruit's career-site form as fyerx runs it, reduced: every field is a
@@ -183,6 +209,29 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             Assert.Equal(PacketQuestion.Custom, byId["cards[abc][field0]"].Kind);
             Assert.Equal(["Remote", "Office"], byId["cards[abc][field2]"].Options);
         }
+        Assert.Equal(0, _posts);
+    }
+
+    [SkippableFact]
+    public async Task A_form_collapsed_behind_apply_now_is_expanded_so_every_field_is_discovered()
+    {
+        Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(
+            new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
+
+        var questions = await discoverer.DiscoverAsync($"{_url}/collapsed");
+
+        Assert.NotNull(questions);
+        var byId = questions!.ToDictionary(q => q.Id);
+        // The whole form comes back, not just the résumé input: the reveal no longer treats the
+        // hidden file input as "the form is on screen", so it clicks "Apply Now" and the real
+        // fields — text, select, textarea, EEO — are discovered behind it (#246).
+        Assert.Equal("Full name", byId["name"].Label);
+        Assert.True(byId["name"].Required);
+        Assert.Equal(PacketQuestion.File, byId["resume"].Type);
+        Assert.Equal(PacketQuestion.Textarea, byId["cards[abc][field0]"].Type);
+        Assert.Equal(["Yes", "No"], byId["cards[abc][field1]"].Options);
+        Assert.Equal(PacketQuestion.Eeo, byId["eeo[gender]"].Kind);
         Assert.Equal(0, _posts);
     }
 
