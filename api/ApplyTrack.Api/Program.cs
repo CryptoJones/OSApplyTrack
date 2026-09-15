@@ -320,7 +320,12 @@ app.UseMiddleware<JsonBodyLimitMiddleware>();
 // Static files short-circuit before the tenancy middleware, so the shell loads
 // without a session and the SPA's own login gate handles the 401s on /api.
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// The SPA's script URLs never change between releases, so browsers must revalidate
+// (a cheap 304 on the ETag) instead of running a heuristically cached old app.js.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache",
+});
 
 // The tenancy choke-point: resolve the session -> tenant, enforce auth on /api.
 app.UseMiddleware<TenantMiddleware>();
