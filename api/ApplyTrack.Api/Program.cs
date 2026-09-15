@@ -266,6 +266,11 @@ else
 // forge Request.IsHttps or rotate the per-IP rate-limit partition.
 app.UseForwardedHeaders(ForwardedHeadersConfiguration.Create(builder.Configuration));
 
+// Right after UseForwardedHeaders: warn once if a proxy's X-Forwarded-Proto=https was
+// dropped because the peer isn't trusted, which silently disables Secure cookies + HSTS
+// (#229). Names the peer to trust; never trusts the header itself.
+app.UseMiddleware<ForwardedProtoDiagnosticMiddleware>();
+
 // Enforce request-body size limits on the two endpoints that accept large uploads,
 // checked on Content-Length before the body is read, so it works under TestServer too.
 app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/scrape",
