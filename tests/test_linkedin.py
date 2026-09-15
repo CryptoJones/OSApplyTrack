@@ -294,7 +294,7 @@ def test_a_linkedin_lead_is_stored_with_the_employers_link(monkeypatch) -> None:
     assert is_aggregator_link("https://www.sundayy.com/job-description/us1E83")  # #243
     assert is_aggregator_link("https://us.thebigjobsite.com/redirectjob?id=1E83")  # #243
     assert is_aggregator_link("https://lensa.com/software-engineer-jobs-in-lafayette-co")  # #243
-    assert is_aggregator_link("https://www.fetchjobs.co/job-description-usb/DBE262F9F85264450F4C41420DB74AAC")  # #251
+    assert is_aggregator_link("https://www.fetchjobs.co/job-description-usb/DBE262F9")  # #251
 
     class _Client:
         def close(self) -> None:
