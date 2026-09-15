@@ -51,6 +51,11 @@ public static partial class AtsProvider
         // Jobright reposts employers' openings with its own "send my profile" flow in place
         // of a form (#238).
         "jobright.ai",
+        // Sundayy lists employers' openings (GE Aerospace, …) and its Apply is an ad-monetised
+        // redirect chain — sundayy.com → thebigjobsite.com → appcast.io → lensa.com — through
+        // more aggregators, never a form. The browser followed Apply off-site and reported "no
+        // form appeared"; all three job-board hosts in the chain are apply-by-hand (#243).
+        "sundayy.com", "thebigjobsite.com", "lensa.com",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]
