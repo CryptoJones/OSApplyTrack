@@ -657,3 +657,28 @@ test("the Pipeline button opens the submit queue and says what each request will
   await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-pressed", "false");
 });
+
+test("a status chip opens that status's applications as a list in the main pane", async ({ page }) => {
+  const chip = page.getByRole("button", { name: "lead, 2 applications" });
+  await chip.click();
+  await expect(chip).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "Lead", level: 1 })).toBeVisible();
+  const table = page.getByRole("table", { name: "Lead applications" });
+  await expect(table.getByRole("row")).toHaveCount(3);
+  await expect(table).not.toContainText("Aurora Systems");
+  await expectNoSeriousViolations(page);
+
+  // Another chip swaps the list; un-pressing the chip closes it.
+  await page.getByRole("button", { name: "applied, 1 applications" }).click();
+  await expect(page.getByRole("heading", { name: "Applied", level: 1 })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Applied applications" })).toContainText("Aurora Systems");
+  const applied = page.getByRole("button", { name: "applied, 1 applications" });
+  await applied.click();
+  await expect(applied).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("heading", { name: "Applied", level: 1 })).toHaveCount(0);
+
+  // A row opens its application.
+  await page.getByRole("button", { name: "lead, 2 applications" }).click();
+  await page.getByRole("table", { name: "Lead applications" }).getByRole("button", { name: "Example Co · Senior Engineer" }).click();
+  await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
+});

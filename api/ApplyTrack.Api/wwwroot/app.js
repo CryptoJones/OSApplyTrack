@@ -73,7 +73,7 @@ const state = {
   sort: readStoredSort(),
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new | settings
+  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status
   settingsTab: "accessibility",
   coverLettersEnabled: true,
   // The agent (Settings · Agent) is opt-in; OFF hides the evaluate affordance.
@@ -339,7 +339,10 @@ function renderPipeline() {
       state.filterStatus = state.filterStatus === el.dataset.status ? "" : el.dataset.status;
       statusSel.value = state.filterStatus;
       renderPipeline();
-      renderSidebar();
+      // A chip opens that status's list in the main pane; un-pressing it closes it.
+      if (state.filterStatus) openStatusView();
+      else if (state.mode === "status") renderEmpty();
+      else renderSidebar();
     });
   });
 }
@@ -348,6 +351,52 @@ function renderPipeline() {
 function syncPipelineButton() {
   const btn = document.getElementById("pipeline-btn");
   if (btn) btn.setAttribute("aria-pressed", String(state.mode === "pipeline"));
+}
+
+// ---- Status view ------------------------------------------------------------
+// A status chip's applications as a list in the main pane. It shows exactly what the
+// sidebar shows (status, lane, search, and sort compose), so renderSidebar repaints it.
+
+function openStatusView({ focus = true } = {}) {
+  state.mode = "status";
+  state.current = null;
+  showDetailPane();
+  syncPipelineButton();
+  renderSidebar();
+  if (focus) focusView("h1");
+}
+
+function renderStatusView() {
+  const apps = filteredApps();
+  const label = STATUS_LABEL[state.filterStatus] || state.filterStatus;
+  const title = label.charAt(0).toUpperCase() + label.slice(1);
+  const rows = apps.map((a) => `
+    <tr>
+      <td><button type="button" class="link-button" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</button>
+        ${a.location ? `<div class="field-help">${escapeHtml(a.location)}</div>` : ""}</td>
+      <td>${lanePill(a.lane)}</td>
+      <td class="mono">${a.score ? escapeHtml(a.score) : "—"}</td>
+      <td>${escapeHtml(a.created || "—")}</td>
+      <td>${escapeHtml(a.applied || "—")}${a.followup ? `<div class="field-help">follow-up ${escapeHtml(a.followup)}</div>` : ""}</td>
+    </tr>`).join("");
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Status</div>
+        <h1>${escapeHtml(title)}</h1>
+        <p aria-live="polite">${apps.length} application${apps.length === 1 ? "" : "s"}.</p>
+      </header>
+      ${apps.length ? `
+      <div class="table-scroll">
+        <table class="pipeline-table">
+          <caption class="sr-only">${escapeHtml(title)} applications</caption>
+          <thead><tr><th scope="col">Application</th><th scope="col">Lane</th><th scope="col">Fit</th><th scope="col">Posted</th><th scope="col">Applied</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>` : `<p class="empty-result">No applications match the current filters.</p>`}
+    </div>`;
+  document.title = `${title} | ApplyTrack`;
+  contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
 }
 
 // ---- Pipeline view ----------------------------------------------------------
@@ -653,6 +702,10 @@ function renderSidebar() {
   countEl.textContent = shown === total
     ? `${total} application${total === 1 ? "" : "s"}`
     : `${shown} of ${total} applications`;
+  if (state.mode === "status") {
+    if (state.filterStatus) renderStatusView();
+    else renderEmpty();
+  }
 }
 
 // ---- Main pane ------------------------------------------------------------
