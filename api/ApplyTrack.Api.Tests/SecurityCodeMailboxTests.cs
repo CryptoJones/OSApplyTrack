@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Net;
+using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Notifications;
 
 namespace ApplyTrack.Api.Tests;
@@ -85,6 +87,34 @@ public class SecurityCodeMailboxTests
     [InlineData("evil.example", "join.com", false)]
     public void The_boards_host_covers_its_subdomains_and_nothing_else(string host, string board, bool expected) =>
         Assert.Equal(expected, ImapSecurityCodeSource.OnBoard(host, board));
+
+    [Fact]
+    public void The_mailbox_pins_its_dial_to_public_addresses_and_never_a_private_one()
+    {
+        // A rebinding server can answer public at check time and private at connect time. The
+        // mailbox now resolves once and pins the dial to the public addresses of that one
+        // resolution, so whatever the name resolves to, no private address is ever handed to the
+        // socket — the check-then-connect window is gone (#231).
+        var publicV4 = IPAddress.Parse("93.184.216.34");
+        var publicV6 = IPAddress.Parse("2606:2800:220:1:248:1893:25c8:1946");
+        var metadata = IPAddress.Parse("169.254.169.254"); // cloud metadata, link-local
+        var loopback = IPAddress.Parse("127.0.0.1");
+        var rfc1918 = IPAddress.Parse("10.1.2.3");
+
+        var dialable = ImapSecurityCodeSource.PublicAddressesOrThrow([publicV4, metadata, publicV6, loopback, rfc1918]);
+
+        Assert.Equal(new[] { publicV4, publicV6 }, dialable);
+        Assert.DoesNotContain(metadata, dialable);
+        Assert.DoesNotContain(loopback, dialable);
+        Assert.DoesNotContain(rfc1918, dialable);
+
+        // The rebind's second answer — nothing public — resolves to nothing dialable, so the
+        // connection is refused rather than made to an internal service.
+        Assert.Throws<AppValidationException>(() =>
+            ImapSecurityCodeSource.PublicAddressesOrThrow([metadata, loopback, rfc1918]));
+        Assert.Throws<AppValidationException>(() =>
+            ImapSecurityCodeSource.PublicAddressesOrThrow([]));
+    }
 
     [Theory]
     [InlineData("Security code for your application to Aperia", "Aperia", true)]
