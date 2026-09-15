@@ -51,7 +51,7 @@ public static class PipelineEndpoints
     /// <summary>One Ready packet that is not queued, and what is holding it.</summary>
     public sealed record ReadyRow(
         string Name, string Company, string Role, string Link, string Provider, string LastEvidence,
-        bool Clean, bool Promotable, int BlockingReview, string Holding);
+        bool Clean, bool Promotable, int BlockingReview, string Holding, DateTimeOffset? LastAt = null);
 
     public static void MapPipelineEndpoints(this IEndpointRouteBuilder app)
     {
@@ -140,7 +140,7 @@ public static class PipelineEndpoints
             // click once Dry run only is off (#185); the rest name what is holding them.
             var queued = pending.Select(p => p.ApplicationName).ToHashSet(StringComparer.Ordinal);
             var ready = new List<ReadyRow>();
-            foreach (var (name, kind, detail) in await evidence.LatestPerReadyApplicationAsync())
+            foreach (var (name, kind, detail, lastAt) in await evidence.LatestPerReadyApplicationAsync())
             {
                 if (queued.Contains(name)) continue;
                 var rec = await apps.GetAsync(name);
@@ -163,7 +163,7 @@ public static class PipelineEndpoints
                     _ => "last dry run stopped on questions only you can answer",
                 };
                 ready.Add(new ReadyRow(name, rec.Fields.Company.Length > 0 ? rec.Fields.Company : Slug.NameStem(name),
-                    rec.Fields.Role, rec.Fields.Link, provider, kind, clean, promotable, blocking, holding));
+                    rec.Fields.Role, rec.Fields.Link, provider, kind, clean, promotable, blocking, holding, lastAt));
             }
 
             return Results.Ok(new

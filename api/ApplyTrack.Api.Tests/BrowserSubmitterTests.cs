@@ -171,7 +171,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/sso-wall", () => Results.Content(SsoWallHtml, "text/html"));
         // The same wall in a new tab that only shows its content after a round trip (Alignerr, #235).
         _fixture.MapGet("/jobs/widgets-sso-late", () => Results.Content(WidgetsHtml.Replace("href=\"APPLY_HREF\"", "href=\"#\" onclick=\"const w = window.open('', '_blank'); setTimeout(() => { w.location = '/jobs/sso-wall'; }, 3000); return false;\""), "text/html"));
-        _fixture.MapGet("/jobs/widgets-account", () => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
+        // Gainwell's posting: "Apply Now" only opens a menu, and the way in is its "Apply Now" item.
+        _fixture.MapGet("/jobs/menu-apply", () => Results.Content(MenuApplyHtml, "text/html"));
+        _fixture.MapGet("/jobs/widgets-account",() => Results.Content(WidgetsHtml.Replace("APPLY_HREF", "https://career4.successfactors.com/careers?company=Kiewit"), "text/html"));
         // SAP SuccessFactors' way in (#216): the career-site posting, Apply now to the board's
         // sign-in, and behind it the application as an accordion — documents already on the
         // account, profile pre-filled, job-specific questions folded away — with Apply in a
@@ -2151,6 +2153,30 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("only signs candidates up through Google, LinkedIn", outcome.Error);
         Assert.Empty(_posts);
     }
+
+    [SkippableFact]
+    public async Task An_apply_button_that_opens_a_menu_is_followed_through_its_apply_item()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/menu-apply", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    private const string MenuApplyHtml = """
+        <html><body>
+        <h1>.Net Developer</h1>
+        <div>
+          <button type="button" aria-haspopup="true" aria-expanded="false"
+            onclick="this.setAttribute('aria-expanded', 'true'); document.getElementById('apply-menu').hidden = false">Apply Now</button>
+          <ul id="apply-menu" role="menu" hidden>
+            <li role="menuitem" tabindex="0" onclick="location = '/jobs/1'">Apply Now</li>
+            <li role="menuitem" tabindex="0" onclick="location = '/jobs/nowhere'">Start applying with LinkedIn</li>
+          </ul>
+        </div>
+        <p>The posting, at length.</p>
+        </body></html>
+        """;
 
     private const string SsoWallHtml = """
         <html><body>

@@ -113,6 +113,9 @@ AGGREGATOR_HOSTS = frozenset({
     # (sundayy.com -> thebigjobsite.com -> appcast.io -> lensa.com) through more
     # aggregators, never a form; all three job-board hosts are apply-by-hand (#243).
     "sundayy.com", "thebigjobsite.com", "lensa.com",
+    # FetchJobs.co is the same chain under another name: a script-rendered listing whose
+    # Apply leads off to us.thebigjobsite.com, never a form (#251).
+    "fetchjobs.co",
 })
 
 _APPLY_ANCHOR_RE = re.compile(
