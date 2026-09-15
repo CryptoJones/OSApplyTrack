@@ -127,8 +127,9 @@ the chain was fixed end to end, each step found by reading the next production r
 
 **First real submission: Aperia, 2026-09-13 04:37 CDT**, confirmed by Greenhouse and by
 the employer's email. Greenhouse applications go one at a time: each parks for its
-code for up to eight minutes. Open follow-ups: [#159](https://github.com/CryptoJones/OSApplyTrack/issues/159)
-(the api container cannot queue a browser run, so the SPA's Submit and Prepare do
-nothing on a stock deploy); Eleventh Hour needs a human answer to a required question.
+code for up to eight minutes. Follow-ups: [#159](https://github.com/CryptoJones/OSApplyTrack/issues/159)
+(the api container could not queue a browser run, so the SPA's Submit and Prepare did
+nothing on a stock deploy) — fixed in 1.29.0 by #172, the worker heartbeat; Eleventh
+Hour needs a human answer to a required question.
 
 Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
