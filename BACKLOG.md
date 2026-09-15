@@ -7,10 +7,10 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 
 ## Security and stability
 
-- [ ] [#228 — [SEC] Magic-link sign-in is broken on the live instance: POST /api/auth/request returns 500 for every valid email](https://github.com/CryptoJones/OSApplyTrack/issues/228)
-- [ ] [#229 — [SEC] Session cookie issued without Secure flag: app layer does not see the request as HTTPS behind the TLS proxy](https://github.com/CryptoJones/OSApplyTrack/issues/229)
+- [x] [#228 — [SEC] Magic-link sign-in is broken on the live instance: POST /api/auth/request returns 500 for every valid email](https://github.com/CryptoJones/OSApplyTrack/issues/228) (fixed in #245: fail loudly at boot on a misconfigured SMTP sender instead of a per-request 500)
+- [x] [#229 — [SEC] Session cookie issued without Secure flag: app layer does not see the request as HTTPS behind the TLS proxy](https://github.com/CryptoJones/OSApplyTrack/issues/229) (fixed in #247: surface a dropped X-Forwarded-Proto so Secure cookies + HSTS aren't silently off)
 - [ ] [#230 — [SEC] Duplicate and conflicting security headers emitted by both edge and app](https://github.com/CryptoJones/OSApplyTrack/issues/230)
-- [ ] [#231 — [SEC] DNS-rebinding TOCTOU in the IMAP mailbox host guard](https://github.com/CryptoJones/OSApplyTrack/issues/231)
+- [x] [#231 — [SEC] DNS-rebinding TOCTOU in the IMAP mailbox host guard](https://github.com/CryptoJones/OSApplyTrack/issues/231) (fixed in 1.39.4: the mailbox resolves the host once and dials a socket pinned to that resolution's public addresses, handed to MailKit already connected — no second resolution at connect time, the same no-TOCTOU pattern as the scrape path in #51)
 - [ ] [#232 — [SEC] Minor information disclosure: build version, DB status, and nginx version on unauthenticated surfaces](https://github.com/CryptoJones/OSApplyTrack/issues/232)
 - [x] [#51 — Close the Python poller link-check DNS rebinding gap](https://github.com/CryptoJones/OSApplyTrack/issues/51)
 - [x] [#49 — Restrict forwarded-header trust to configured proxies](https://github.com/CryptoJones/OSApplyTrack/issues/49)

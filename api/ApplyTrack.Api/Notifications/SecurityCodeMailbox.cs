@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Net;
+using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Scrape;
@@ -170,11 +171,18 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
 
     private static async Task<ImapClient> OpenAsync(MailboxTarget target, CancellationToken ct)
     {
-        await GuardHostAsync(target.Host, ct);
+        // Resolve the host once, dial a public address pinned from that resolution, then hand
+        // MailKit the already-connected socket (the host is still passed so TLS validates the
+        // certificate against it). Connecting to the pinned address closes the check-then-connect
+        // gap the old code had — it resolved and rejected private, then let ImapClient.Connect
+        // resolve the same name a second time, so a rebinding server could answer public at
+        // check time and private at connect time (#231). Same no-TOCTOU pattern JobPageFetcher
+        // uses for the scrape path (#51).
+        var socket = await DialPublicAsync(target.Host, target.Port, ct);
         var client = new ImapClient { Timeout = 20_000 };
         try
         {
-            await client.ConnectAsync(target.Host, target.Port,
+            await client.ConnectAsync(socket, target.Host, target.Port,
                 target.Port == 993 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls, ct);
             await client.AuthenticateAsync(target.Username, target.Password, ct);
             await client.Inbox.OpenAsync(FolderAccess.ReadOnly, ct);
@@ -183,21 +191,45 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         catch
         {
             client.Dispose();
+            socket.Dispose();
             throw;
         }
     }
 
-    /// <summary>The same rule as every other user-supplied destination: never a private address.</summary>
-    private static async Task GuardHostAsync(string host, CancellationToken ct)
+    /// <summary>Resolve the host once and return a connected socket to one of its public
+    /// addresses, or throw the validation exception when it resolves to nothing public.</summary>
+    private static async Task<Socket> DialPublicAsync(string host, int port, CancellationToken ct)
     {
         IPAddress[] addresses;
         try { addresses = await Dns.GetHostAddressesAsync(host, ct); }
-        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
+        catch (Exception ex) when (ex is SocketException or ArgumentException)
         {
             throw new AppValidationException("the mailbox host could not be resolved");
         }
-        if (addresses.Length == 0 || addresses.Any(JobPageFetcher.IsBlockedAddress))
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(PublicAddressesOrThrow(addresses), port, ct);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>The resolved addresses that are safe to dial, or the validation exception when
+    /// the host resolves to nothing public — the same rule every other user-supplied destination
+    /// gets. Pinning the connection to exactly these addresses is what removes the rebinding
+    /// window: the name is resolved once and only these addresses are dialed, so a later
+    /// resolution can never swap in a private target. Public for tests.</summary>
+    public static IPAddress[] PublicAddressesOrThrow(IPAddress[] resolved)
+    {
+        var publicAddresses = Array.FindAll(resolved, a => !JobPageFetcher.IsBlockedAddress(a));
+        if (publicAddresses.Length == 0)
             throw new AppValidationException("refusing to connect to a private address for the mailbox");
+        return publicAddresses;
     }
 
     private static string StripHtml(string html)
