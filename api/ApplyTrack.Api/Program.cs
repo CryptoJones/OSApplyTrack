@@ -339,10 +339,16 @@ if (buildVersion.Length == 0) buildVersion = "unknown";
 // Liveness: cheap and static, so a transient DB blip never trips it into a restart loop.
 // It also carries the build version. This is the one endpoint the SPA can read before
 // login, which is what lets the header show a version on the sign-in screen too.
+// The version on an unauthenticated surface is an accepted disclosure (#232): the pre-login
+// header badge (#111) needs it, and it is read live from the running assembly, not a stale
+// constant, so it is worth more as an accurate signal than it costs as a fingerprint.
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = buildVersion }));
 // Readiness: actually touch Postgres so an orchestrator can gate traffic on a working
 // DB. Deliberately a separate path from liveness — a DB hiccup should drain traffic,
 // not kill the pod. 503 (not an exception) on failure so it reads as "not ready" cleanly.
+// The connected/disconnected flag is an accepted disclosure (#232): it is the point of a
+// readiness probe. The nginx version banner, the third item in that audit, is turned off at
+// the edge (`server_tokens off;`) rather than in the app — see README, Security & hardening.
 app.MapGet("/health/ready", async (NpgsqlDataSource db, CancellationToken ct) =>
 {
     try
