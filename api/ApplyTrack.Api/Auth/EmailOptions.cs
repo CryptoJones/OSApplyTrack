@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using MimeKit;
+
 namespace ApplyTrack.Api.Auth;
 
 /// <summary>
@@ -44,4 +46,29 @@ public sealed class EmailOptions
     /// <summary>The address mail is sent from — explicit <see cref="From"/>, else the SASL username.</summary>
     public string EffectiveFrom =>
         !string.IsNullOrWhiteSpace(From) ? From.Trim() : Username.Trim();
+
+    /// <summary>
+    /// Fail-fast check for a configured SMTP sender. When <see cref="Host"/> is set but
+    /// <see cref="EffectiveFrom"/> is blank or not a real mailbox address,
+    /// <c>SmtpEmailSender</c> throws the instant MailKit builds the From header
+    /// (<c>new MailboxAddress(FromName, "")</c>), turning every magic-link request into an
+    /// opaque 500 — the live-instance outage in #228. Called at boot so a bad
+    /// <c>Email__</c> config fails loudly there, not silently on every sign-in. No-op when
+    /// no host is set (the console sender stands in and needs no From address).
+    /// </summary>
+    public void Validate()
+    {
+        if (!IsConfigured)
+            return;
+        var from = EffectiveFrom;
+        if (string.IsNullOrWhiteSpace(from))
+            throw new InvalidOperationException(
+                "Email:Host is set but neither Email:From nor Email:Username supplies a From "
+                + "address. Set Email:From (e.g. apply@example.com), or clear Email:Host to log "
+                + "sign-in links to the console instead.");
+        if (!MailboxAddress.TryParse(from, out _))
+            throw new InvalidOperationException(
+                $"Email:From/Email:Username '{from}' is not a valid email address. Set a real "
+                + "From address, or clear Email:Host to log sign-in links to the console instead.");
+    }
 }

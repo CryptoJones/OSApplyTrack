@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using ApplyTrack.Api.Auth;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
@@ -103,5 +104,51 @@ public class ConfigurationTests : IAsyncLifetime
         });
 
         Assert.Contains(value, error.Message);
+    }
+}
+
+/// <summary>
+/// Pure unit tests for <see cref="EmailOptions.Validate"/> — the boot-time guard that
+/// turns the #228 magic-link outage (Email:Host set with no usable From address, which
+/// throws an opaque 500 on every sign-in) into a loud failure at startup. No Postgres
+/// fixture: these never touch the database, so they run without Docker.
+/// </summary>
+public class EmailOptionsTests
+{
+    [Fact]
+    public void Validate_noop_when_no_host_configured()
+    {
+        // No host -> console sender stands in; a blank From must not fail boot.
+        new EmailOptions().Validate();
+    }
+
+    [Fact]
+    public void Validate_passes_with_explicit_from()
+    {
+        new EmailOptions { Host = "smtp.example.com", From = "apply@example.com" }.Validate();
+    }
+
+    [Fact]
+    public void Validate_falls_back_to_username_for_from()
+    {
+        new EmailOptions { Host = "smtp.example.com", Username = "apply@example.com" }.Validate();
+    }
+
+    [Fact]
+    public void Validate_rejects_host_without_from_or_username()
+    {
+        // The exact #228 misconfiguration: Host set, From/Username both blank -> empty
+        // EffectiveFrom -> MailKit throws per-request. Boot must reject it instead.
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new EmailOptions { Host = "smtp.example.com" }.Validate());
+        Assert.Contains("Email:From", error.Message);
+    }
+
+    [Fact]
+    public void Validate_rejects_unparseable_from()
+    {
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new EmailOptions { Host = "smtp.example.com", From = "not an address" }.Validate());
+        Assert.Contains("not a valid email address", error.Message);
     }
 }
