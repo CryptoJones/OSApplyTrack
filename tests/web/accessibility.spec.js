@@ -643,6 +643,9 @@ test("the Pipeline button opens the submit queue and says what each request will
   await expect(page.getByRole("heading", { name: "Pipeline", level: 1 })).toBeVisible();
   await expect(button).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#pipeline-summary")).toContainText("2 queued — 1 will submit, 1 dry run, 1 waiting for a code.");
+  // Each section heading carries its own item count (#264).
+  await expect(page.getByRole("heading", { name: "Submit queue: (2)", level: 2 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready, not queued: (1)", level: 2 })).toBeVisible();
   const table = page.getByRole("table", { name: "Queued submit requests, oldest first" });
   await expect(table.getByRole("row")).toHaveCount(3);
   await expect(table).toContainText("Waiting for the code the board emailed you");
