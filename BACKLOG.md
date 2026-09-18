@@ -105,6 +105,7 @@ review items and unsupported forms still need human attention.
 - [x] [#251 — Apply that opens a menu (Gainwell) or a sign-up wall that renders slowly in a new tab (Alignerr) still reports "no form appeared"; FetchJobs.co is an aggregator chain](https://github.com/CryptoJones/OSApplyTrack/issues/251) (fixed in [#253](https://github.com/CryptoJones/OSApplyTrack/pull/253): an Apply menu item is clicked; an adopted tab is watched 30 s; `fetchjobs.co` is apply-by-hand in both runtimes. Statheros' "no Submit button found" predates the #246 deploy — re-run it)
 - [x] [#252 — Pipeline: "last run failed" should say when the run was](https://github.com/CryptoJones/OSApplyTrack/issues/252) (fixed in [#253](https://github.com/CryptoJones/OSApplyTrack/pull/253): ready rows carry `last_at`, shown in the reader's clock)
 - [x] [#255 — CI is failing on main](https://github.com/CryptoJones/OSApplyTrack/issues/255) (auto-filed for #253's E501 on a test line; fixed in [#254](https://github.com/CryptoJones/OSApplyTrack/pull/254))
+- [ ] Pipeline: show item counts in the "Ready, not queued" and "Submit Queue" section headings — each label should read e.g. **"Ready, not queued: (3)"** and **"Submit Queue: (7)"** so the user can see at a glance how many items are in each section without counting rows
 
 ## Production audit — 2026-09-12, closed out 2026-09-13
 
