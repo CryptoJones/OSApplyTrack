@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Diagnostics;
 using System.Net;
+using System.Net.Http.Headers;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Scrape;
 
@@ -292,4 +294,107 @@ public class ScrapeTests
     [InlineData("2002:5db8:d822::")]       // 6to4 wrapping a public v4 (93.184.216.34)
     public void Allows_public_addresses(string ip) =>
         Assert.False(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
+
+    // ---- Whole-fetch budget (#266) ---------------------------------------------
+
+    [Fact]
+    public async Task The_budget_covers_a_stalled_body_read_not_just_the_headers()
+    {
+        // Under ResponseHeadersRead the per-hop HttpClient.Timeout stops covering the
+        // response the moment headers arrive, so a board that trickles its body used to
+        // hang for as long as it liked. The whole-fetch budget is what bounds it.
+        var fetcher = new JobPageFetcher(new StallingBodyHandler(), totalTimeout: TimeSpan.FromMilliseconds(400));
+
+        var sw = Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<ScrapeUnavailableException>(
+            () => fetcher.FetchAsync(BoardsUrl.ToString(), CancellationToken.None));
+        sw.Stop();
+
+        Assert.Equal("that page took too long to answer", ex.Message);
+        // Well inside the per-hop 10s — the budget, not the per-hop timeout, ended this.
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"the stalled body ran for {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task The_budget_is_shared_across_redirect_hops_not_restarted_per_hop()
+    {
+        // Slow-but-legal redirects would run one budget each if the ceiling were per hop.
+        // It is not: the chain is cut off at the budget, and it says so, rather than
+        // walking all of MaxRedirects and blaming the redirect count.
+        var handler = new SlowRedirectHandler(TimeSpan.FromMilliseconds(1200));
+        var fetcher = new JobPageFetcher(handler, totalTimeout: TimeSpan.FromSeconds(2));
+
+        var sw = Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<ScrapeUnavailableException>(
+            () => fetcher.FetchAsync(BoardsUrl.ToString(), CancellationToken.None));
+        sw.Stop();
+
+        Assert.Equal("that page took too long to answer", ex.Message);
+        Assert.True(handler.Requests < 6,
+            $"the chain ran {handler.Requests} hops — the budget restarted per hop");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"the whole fetch took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task A_caller_cancel_is_never_masked_as_a_502()
+    {
+        // A client that goes away is not a board that misbehaved: the endpoint has to see
+        // cancellation, not a ScrapeUnavailableException the middleware turns into a 502.
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var fetcher = new JobPageFetcher(new StallingBodyHandler(), totalTimeout: TimeSpan.FromMinutes(5));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => fetcher.FetchAsync(BoardsUrl.ToString(), cts.Token));
+    }
+
+    /// <summary>Answers headers at once, then stalls the body until the token fires — the
+    /// shape a board trickling its response has.</summary>
+    private sealed class StallingBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var content = new StreamContent(new StallingStream());
+            content.Headers.ContentType = new MediaTypeHeaderValue("text/html");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    /// <summary>A body that never yields a byte until it is cancelled.</summary>
+    private sealed class StallingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0; // unreachable: the delay only ever ends by throwing
+        }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>Answers every request with a redirect after a delay, counting the hops.</summary>
+    private sealed class SlowRedirectHandler(TimeSpan delay) : HttpMessageHandler
+    {
+        public int Requests { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests++;
+            await Task.Delay(delay, ct);
+            var res = new HttpResponseMessage(HttpStatusCode.Redirect) { RequestMessage = request };
+            res.Headers.Location = new Uri(request.RequestUri!, $"/acme/jobs/{Requests + 1}");
+            return res;
+        }
+    }
 }
