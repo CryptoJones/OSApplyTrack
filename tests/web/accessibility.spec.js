@@ -643,6 +643,11 @@ test("the Pipeline button opens the submit queue and says what each request will
   await expect(page.getByRole("heading", { name: "Pipeline", level: 1 })).toBeVisible();
   await expect(button).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#pipeline-summary")).toContainText("2 queued — 1 will submit, 1 dry run, 1 waiting for a code.");
+  // Each section heading carries its own item count (#264). exact: true pins the whole
+  // accessible name — Playwright's name match is a substring by default, so the bare
+  // form would also pass against a wrong "Submit queue: (23)".
+  await expect(page.getByRole("heading", { name: "Submit queue: (2)", level: 2, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready, not queued: (1)", level: 2, exact: true })).toBeVisible();
   const table = page.getByRole("table", { name: "Queued submit requests, oldest first" });
   await expect(table.getByRole("row")).toHaveCount(3);
   await expect(table).toContainText("Waiting for the code the board emailed you");
@@ -656,6 +661,30 @@ test("the Pipeline button opens the submit queue and says what each request will
   await table.getByRole("button", { name: "Example Co · Senior Engineer" }).click();
   await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Pipeline" })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("an empty Pipeline still counts its sections, at zero (#264)", async ({ page }) => {
+  // The zero is a stated design decision, not an accident: an empty section reads "(0)"
+  // rather than dropping the count, so the heading keeps one shape in every state and
+  // "empty" stays distinguishable from "the render broke". Registered after mockApi, so
+  // this override wins for /api/pipeline.
+  await page.route("**/api/pipeline", (route) =>
+    route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        ...pipeline,
+        queue: [], ready: [],
+        summary: { ...pipeline.summary, queued: 0, promotable: 0 },
+      }),
+    }));
+
+  await page.getByRole("button", { name: "Pipeline" }).click();
+  await expect(page.getByRole("heading", { name: "Submit queue: (0)", level: 2, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ready, not queued: (0)", level: 2, exact: true })).toBeVisible();
+  // The count agrees with the empty-state copy beneath it, not merely with itself.
+  await expect(page.getByText("Nothing is queued.")).toBeVisible();
+  await expect(page.getByText("Nothing is parked in Ready.")).toBeVisible();
+  await expectNoSeriousViolations(page);
 });
 
 test("a status chip opens that status's applications as a list in the main pane", async ({ page }) => {

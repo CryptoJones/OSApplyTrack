@@ -505,7 +505,7 @@ function renderPipelineView(data) {
 
   body.innerHTML = `
     <div class="pipe-health" role="group" aria-label="Agent status">${health.join(" ")}</div>
-    <h2 class="mt-4">Submit queue</h2>
+    <h2 class="mt-4">Submit queue: (${queue.length})</h2>
     <p class="field-help">In the order the worker will take them. It claims one every 15 seconds and runs the browser on it.</p>
     ${queue.length ? `
     <div class="table-scroll">
@@ -515,7 +515,7 @@ function renderPipelineView(data) {
         <tbody>${queueRows}</tbody>
       </table>
     </div>` : `<p class="empty-result">Nothing is queued. Queue a packet from the Ready lane, or from an application's Submit button.</p>`}
-    <h2 class="mt-4">Ready, not queued</h2>
+    <h2 class="mt-4">Ready, not queued: (${ready.length})</h2>
     <p class="field-help">Packets parked in Ready and what is holding each one.${
       s.promotable ? ` <strong>${s.promotable} clean</strong> — ${data.dry_run
         ? "they queue for real once Dry run only is turned off in Settings · Agent."
