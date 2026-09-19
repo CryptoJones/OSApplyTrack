@@ -146,16 +146,14 @@ public class PipelineEndpointTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_ready_packet_that_is_not_queued_is_listed_with_what_holds_it()
+    public async Task Ready_packets_that_are_not_queued_do_not_appear_in_pipeline()
     {
-        var (client, _) = await ClientAsync();
+        var (client, tenant) = await ClientAsync();
         var name = await PreparedLeadAsync(client, "Initech");
-        // Prepare with a browser on this instance queues a dry run; the packet sits in Ready.
+        await SettleQueueAsync(tenant);
+
         var body = await ReadJson(await client.GetAsync("/api/pipeline"));
-        var queued = body.GetProperty("queue").EnumerateArray().Select(q => q.GetProperty("name").GetString()).ToList();
-        Assert.Contains(name, queued);
-        // Nothing has run, so there is no evidence and it is not in the Ready list either.
-        Assert.DoesNotContain(name, body.GetProperty("ready").EnumerateArray().Select(r => r.GetProperty("name").GetString()));
-        Assert.Equal("ready", body.GetProperty("queue").EnumerateArray().First(q => q.GetProperty("name").GetString() == name).GetProperty("status").GetString());
+        Assert.Equal(0, body.GetProperty("queue").GetArrayLength());
+        Assert.Equal(0, body.GetProperty("ready").GetArrayLength());
     }
 }
