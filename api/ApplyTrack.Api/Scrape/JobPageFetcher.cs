@@ -14,14 +14,23 @@ namespace ApplyTrack.Api.Scrape;
 /// ports only, DNS resolution pinned to public addresses (the connect callback
 /// validates the resolved IPs and dials those — a rebinding name can't swap in a
 /// private target between check and use), manual redirect following with the same
-/// validation per hop, and a hard response-size cap and timeout.
+/// validation per hop, a hard response-size cap, and a single wall-clock budget for
+/// the whole fetch (#266).
 /// </summary>
 public sealed class JobPageFetcher
 {
     private const int MaxBytes = 2 * 1024 * 1024;
     private const int MaxRedirects = 5;
+    // The only ceiling on a fetch (#266), and it has to be here because HttpClient.Timeout
+    // cannot do the job: under ResponseHeadersRead it stops covering the response once the
+    // headers arrive — measured, not assumed: a stalled body ran past it indefinitely — and
+    // it restarts per hop, so a chain of redirects stacked. 15s is generous for one real page
+    // load (a full-cap 2 MB body needs ~140 KB/s to land inside it) while still failing fast
+    // on a stall.
+    private static readonly TimeSpan DefaultTotalTimeout = TimeSpan.FromSeconds(15);
 
     private readonly HttpClient _http;
+    private readonly TimeSpan _totalTimeout;
 
     public JobPageFetcher()
         : this(new SocketsHttpHandler
@@ -38,10 +47,21 @@ public sealed class JobPageFetcher
     /// parameterless constructor, whose SSRF-guarded handler pins DNS to public
     /// addresses; this overload lets the test suite drive the same fetch/redirect/cap
     /// logic against a scripted handler with no network. Public for that reason.
+    /// <paramref name="totalTimeout"/> overrides the whole-fetch budget (tests use a
+    /// tiny value; production takes the 15s default).
     /// </summary>
-    public JobPageFetcher(HttpMessageHandler handler)
+    public JobPageFetcher(HttpMessageHandler handler, TimeSpan? totalTimeout = null)
     {
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+        // Fail at construction rather than per request: a non-positive budget makes
+        // CancelAfter fire immediately, so every fetch would look like a timeout.
+        if (totalTimeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(
+                nameof(totalTimeout), totalTimeout, "the whole-fetch budget must be positive");
+        _totalTimeout = totalTimeout ?? DefaultTotalTimeout;
+        // Deliberately no timeout of its own: the budget above is the single ceiling, so a
+        // slow hop is measured against 15s instead of being cut short by a second, smaller
+        // clock that also made the class's own documentation untrue.
+        _http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         // Some boards refuse the default HttpClient UA; identify as a browser-compatible
         // bot with a pointer back to the project.
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
@@ -55,20 +75,40 @@ public sealed class JobPageFetcher
     public async Task<(string Html, Uri FinalUrl)> FetchAsync(string rawUrl, CancellationToken ct)
     {
         var uri = ValidateUrl(rawUrl);
+        // Every redirect hop and the body read draw on the same clock, linked to the caller's
+        // token so a disconnect still cancels at once. The expiry source is kept separate
+        // from the linked one so "the budget fired" is positive evidence rather than an
+        // inference from whichever exception type happened to surface.
+        using var expiry = new CancellationTokenSource(_totalTimeout);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct, expiry.Token);
+        var token = budget.Token;
         for (var hop = 0; ; hop++)
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, uri);
             HttpResponseMessage res;
             try
             {
-                res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
             }
             catch (Exception ex) when (FindValidation(ex) is { } validation)
             {
                 throw validation; // private-address rejection from the connect callback
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (Exception) when (ct.IsCancellationRequested)
             {
+                // The client went away. Ask the token rather than the type: a wrapping
+                // handler can hand back an HttpRequestException for a cancelled connect.
+                ct.ThrowIfCancellationRequested();
+                throw;
+            }
+            catch (Exception) when (expiry.IsCancellationRequested)
+            {
+                throw new ScrapeUnavailableException("that page took too long to answer");
+            }
+            catch (HttpRequestException)
+            {
+                // Refused, NXDOMAIN, TLS failure, reset before the headers — the page was
+                // never reached. A different failure from a timeout, and a different fix.
                 throw new ScrapeUnavailableException("couldn't reach that page");
             }
 
@@ -92,17 +132,30 @@ public sealed class JobPageFetcher
                     throw new ScrapeUnavailableException("that URL isn't an HTML page");
 
                 // The body read can still fail after headers arrive — a connection reset
-                // mid-body, corrupt gzip/brotli under AutomaticDecompression, or the
-                // timeout firing during a slow body. Map those to the same 502 the
-                // contract uses for "couldn't reach that page", not a generic 500.
-                // (ReadCappedAsync's own size-cap ScrapeUnavailableException passes through.)
+                // mid-body, corrupt gzip/brotli under AutomaticDecompression, or the budget
+                // firing during a slow body. Map those to the same 502 the contract uses for
+                // "couldn't reach that page", not a generic 500.
                 try
                 {
-                    return (await ReadCappedAsync(res, ct), uri);
+                    return (await ReadCappedAsync(res, token), uri);
                 }
-                catch (Exception ex)
-                    when (ex is IOException or HttpRequestException or TaskCanceledException
-                        or InvalidDataException)
+                catch (ScrapeUnavailableException)
+                {
+                    throw; // the size cap — not a timeout, whatever the clock happens to say
+                }
+                catch (Exception) when (ct.IsCancellationRequested)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    throw;
+                }
+                catch (Exception) when (expiry.IsCancellationRequested)
+                {
+                    // The budget elapsed mid-body. Say that, rather than blaming a read that
+                    // was working fine — a board trickling its body is the common case, and
+                    // the two need different fixes.
+                    throw new ScrapeUnavailableException("that page took too long to answer");
+                }
+                catch (Exception ex) when (ex is IOException or HttpRequestException or InvalidDataException)
                 {
                     throw new ScrapeUnavailableException("couldn't read that page");
                 }
