@@ -4,6 +4,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Scrape;
 
@@ -300,9 +301,8 @@ public class ScrapeTests
     [Fact]
     public async Task The_budget_covers_a_stalled_body_read_not_just_the_headers()
     {
-        // Under ResponseHeadersRead the per-hop HttpClient.Timeout stops covering the
-        // response the moment headers arrive, so a board that trickles its body used to
-        // hang for as long as it liked. The whole-fetch budget is what bounds it.
+        // The bug #266 fixes: a board that sends headers and then trickles its body had no
+        // ceiling at all. The whole-fetch budget is what bounds it.
         var fetcher = new JobPageFetcher(new StallingBodyHandler(), totalTimeout: TimeSpan.FromMilliseconds(400));
 
         var sw = Stopwatch.StartNew();
@@ -311,37 +311,78 @@ public class ScrapeTests
         sw.Stop();
 
         Assert.Equal("that page took too long to answer", ex.Message);
-        // Well inside the per-hop 10s — the budget, not the per-hop timeout, ended this.
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"the stalled body ran for {sw.Elapsed}");
+        // The budget is 400ms; anything near it not firing means the read is still unbounded.
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"the stalled body ran for {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task A_page_that_finishes_inside_the_budget_still_loads()
+    {
+        // The other half of the contract: a budget that fails working fetches is as broken as
+        // one that bounds nothing. This is also what distinguishes a shared budget from a
+        // too-tight one.
+        var fetcher = new JobPageFetcher(
+            new DelayedBodyHandler(TimeSpan.FromMilliseconds(150), "<html><title>Slow but fine</title></html>"),
+            totalTimeout: TimeSpan.FromSeconds(5));
+
+        var (html, finalUrl) = await fetcher.FetchAsync(BoardsUrl.ToString(), CancellationToken.None);
+
+        Assert.Contains("Slow but fine", html);
+        Assert.Equal(BoardsUrl, finalUrl);
     }
 
     [Fact]
     public async Task The_budget_is_shared_across_redirect_hops_not_restarted_per_hop()
     {
-        // Slow-but-legal redirects would run one budget each if the ceiling were per hop.
-        // It is not: the chain is cut off at the budget, and it says so, rather than
-        // walking all of MaxRedirects and blaming the redirect count.
-        var handler = new SlowRedirectHandler(TimeSpan.FromMilliseconds(1200));
-        var fetcher = new JobPageFetcher(handler, totalTimeout: TimeSpan.FromSeconds(2));
+        // A per-hop ceiling would let every one of these slow-but-legal redirects finish and
+        // then report "too many redirects". A shared one cuts the chain off part-way and says
+        // it ran out of time — that message is the assertion that actually discriminates.
+        // The hop count is the anti-vacuity guard: at least one redirect has to have been
+        // followed, or the budget merely killed the first request and proved nothing.
+        var handler = new SlowRedirectHandler(TimeSpan.FromMilliseconds(1500));
+        var fetcher = new JobPageFetcher(handler, totalTimeout: TimeSpan.FromSeconds(4));
 
-        var sw = Stopwatch.StartNew();
         var ex = await Assert.ThrowsAsync<ScrapeUnavailableException>(
             () => fetcher.FetchAsync(BoardsUrl.ToString(), CancellationToken.None));
-        sw.Stop();
 
         Assert.Equal("that page took too long to answer", ex.Message);
-        Assert.True(handler.Requests < 6,
-            $"the chain ran {handler.Requests} hops — the budget restarted per hop");
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"the whole fetch took {sw.Elapsed}");
+        Assert.True(handler.Requests >= 2,
+            $"only {handler.Requests} hop(s) were attempted — the chain never got past the first, so sharing was never exercised");
     }
 
     [Fact]
-    public async Task A_caller_cancel_is_never_masked_as_a_502()
+    public async Task A_page_that_cannot_be_reached_is_not_reported_as_a_timeout()
+    {
+        // Refused, NXDOMAIN and TLS failures are not timeouts. Saying they are sends the
+        // reader after the wrong problem — only the clock gets to claim a timeout.
+        var fetcher = new JobPageFetcher(new UnreachableHandler(), totalTimeout: TimeSpan.FromSeconds(30));
+
+        var ex = await Assert.ThrowsAsync<ScrapeUnavailableException>(
+            () => fetcher.FetchAsync(BoardsUrl.ToString(), CancellationToken.None));
+
+        Assert.Equal("couldn't reach that page", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_caller_cancel_during_the_body_read_is_never_masked_as_a_502()
     {
         // A client that goes away is not a board that misbehaved: the endpoint has to see
         // cancellation, not a ScrapeUnavailableException the middleware turns into a 502.
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         var fetcher = new JobPageFetcher(new StallingBodyHandler(), totalTimeout: TimeSpan.FromMinutes(5));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => fetcher.FetchAsync(BoardsUrl.ToString(), cts.Token));
+    }
+
+    [Fact]
+    public async Task A_caller_cancel_while_waiting_for_headers_is_never_masked_as_a_502()
+    {
+        // The send path is where HttpClient wraps things, so this one has to be decided by the
+        // token rather than by the exception type. It is the path a stopping agent worker
+        // takes, and a disconnect there must not read as a dead board.
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var fetcher = new JobPageFetcher(new StallingHeadersHandler(), totalTimeout: TimeSpan.FromMinutes(5));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => fetcher.FetchAsync(BoardsUrl.ToString(), cts.Token));
@@ -359,6 +400,37 @@ public class ScrapeTests
         }
     }
 
+    /// <summary>Takes the request and never answers it, so the fetch is still inside
+    /// SendAsync when the token fires.</summary>
+    private sealed class StallingHeadersHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            throw new InvalidOperationException("the infinite delay only ends by throwing");
+        }
+    }
+
+    /// <summary>Answers with a complete page after a delay — the legitimate slow fetch.</summary>
+    private sealed class DelayedBodyHandler(TimeSpan delay, string html) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            await Task.Delay(delay, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(html, Encoding.UTF8, "text/html"),
+            };
+        }
+    }
+
+    /// <summary>Refuses the connection, as a DNS, TLS or connect failure reaches the caller.</summary>
+    private sealed class UnreachableHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromException<HttpResponseMessage>(new HttpRequestException("Connection refused"));
+    }
+
     /// <summary>A body that never yields a byte until it is cancelled.</summary>
     private sealed class StallingStream : Stream
     {
@@ -373,10 +445,12 @@ public class ScrapeTests
         }
         public override void Flush() { }
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            return 0; // unreachable: the delay only ever ends by throwing
+            throw new InvalidOperationException("the infinite delay only ends by throwing");
         }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();

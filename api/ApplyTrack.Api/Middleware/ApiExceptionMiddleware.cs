@@ -60,6 +60,16 @@ public sealed class ApiExceptionMiddleware
             // And for a notification channel that refused the message.
             await WriteDetail(context, StatusCodes.Status502BadGateway, ex.Message);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            // The client hung up mid-request. There is nobody left to answer and nothing went
+            // wrong on our side, so this is not an unhandled error — logging it would turn
+            // every closed tab into an outage signal. The scrape path reaches here on purpose
+            // (#266): a disconnect propagates as cancellation instead of being disguised as a
+            // board failure.
+            _logger.LogDebug("Client aborted {Method} {Path}",
+                context.Request.Method, context.Request.Path);
+        }
         catch (Exception ex)
         {
             // Anything not a known domain exception: log the detail server-side, but
