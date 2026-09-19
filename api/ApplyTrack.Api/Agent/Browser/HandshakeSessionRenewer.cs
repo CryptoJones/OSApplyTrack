@@ -22,9 +22,14 @@ public interface IHandshakeSessionRenewer
 /// that.
 ///
 /// The sign-in is two steps. The school email goes first, because that is how Handshake
-/// finds the school; the school's own LDAP form comes back and takes the same address
+/// finds the school; the school's own form comes back and takes the same address
 /// ("School username or email"), so one saved value serves both. A bare username cannot
 /// be used: Handshake has nothing to route on.
+///
+/// <para><b>Which schools this drives.</b> A school whose sign-in is a plain username and
+/// password form on Handshake's own page. A school that federates to Microsoft, Okta,
+/// Shibboleth or Google, or that requires a second factor, is refused by name rather than
+/// left to time out with a message that blames Handshake.</para>
 /// </summary>
 public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
 {
@@ -41,6 +46,10 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
 
     [GeneratedRegex(@"wrong|incorrect|invalid|doesn.t match|couldn.t find|unable to|try again|no account|not recognized", RegexOptions.IgnoreCase)]
     private static partial Regex Refusal();
+
+    /// <summary>An identity provider this renewer does not drive, or a second factor.</summary>
+    [GeneratedRegex(@"microsoftonline|okta|shibboleth|auth0|duo|verification code|two-factor|two factor|authenticator|approve (this|the) (request|sign-in)", RegexOptions.IgnoreCase)]
+    private static partial Regex ForeignSignIn();
 
     private readonly BrowserOptions _options;
     private readonly ILogger<HandshakeSessionRenewer> _log;
@@ -66,11 +75,12 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
     /// Open Handshake's sign-in, give it the school email, then fill the school's own form
     /// with the same address and the password, and return the session once
     /// <c>hss-global</c> is set. Throws <see cref="PortalRenewalException"/> with the step
-    /// it stopped at.
+    /// it stopped at — naming the host it landed on, so a school this does not drive is
+    /// legible rather than a mystery timeout.
     /// </summary>
     public async Task<PortalSession> RenewAsync(string username, string password, CancellationToken ct)
     {
-        if (password.Length == 0)
+        if (string.IsNullOrWhiteSpace(password))
             throw new PortalRenewalException("the Handshake board account has no password saved");
         if (!username.Contains('@'))
             throw new PortalRenewalException(
@@ -79,24 +89,43 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
         await using var session = await BrowserSession.OpenAsync(_options, _signInUrl, ct);
         var page = session.Page;
 
-        // Step one: the school email.
-        var email = page.Locator("input[type=email]:visible, input[type=text]:visible, input:not([type]):visible").First;
+        // Step one: the school email. Named selectors first — a union with `.First` will
+        // happily fill whatever search box the page happens to render first.
+        var email = await FirstPresentAsync(page,
+            "input[type=email]:visible", "input[name*=email i]:visible", "input[type=text]:visible");
+        if (email is null)
+            throw new PortalRenewalException(
+                $"Handshake's sign-in page at {HostOf(page.Url)} shows no email box");
         try
         {
             await email.FillAsync(username, new() { Timeout = 10_000 });
         }
         catch (PlaywrightException ex)
         {
-            throw new PortalRenewalException("Handshake's sign-in page shows no email box: " + FirstLine(ex));
+            throw new PortalRenewalException("the email box could not be filled: " + FirstLine(ex));
         }
         await PressAsync(page, EmailStepButton(), email, "Continue with email");
 
-        // Step two: the school's own LDAP form, which takes the same address.
-        var pass = page.Locator("input[type=password]:visible").First;
-        if (!await AppearsAsync(pass, _stepWaitSeconds, ct))
+        // Whatever the school does next is the school's choice, not Handshake's: record
+        // where we landed so the commonest failure names itself.
+        var landed = HostOf(page.Url);
+
+        // Step two: the school's own form.
+        var pass = await FirstPresentAsync(page, "input[type=password]:visible");
+        if (pass is null)
+        {
+            var text = landed + " " + await BodyTextAsync(page);
+            if (ForeignSignIn().IsMatch(text))
+                throw new PortalRenewalException(
+                    $"the sign-in for {username} went to {landed}, which wants an identity provider or a second factor the agent cannot complete — sign in yourself and keep the session, or use a school whose sign-in is a plain username and password form");
             throw new PortalRenewalException(
-                $"Handshake did not offer the school's sign-in form for {username} — " + await ComplaintAsync(page));
-        var schoolUser = page.Locator("input[type=text]:visible, input[type=email]:visible").First;
+                $"after the email step we landed on {landed}, which this renewer does not drive — it handles a school's own username-and-password form only");
+        }
+        var schoolUser = await FirstPresentAsync(page,
+            "input[name*=user i]:visible", "input[name*=login i]:visible",
+            "input[type=email]:visible", "input[type=text]:visible");
+        if (schoolUser is null)
+            throw new PortalRenewalException($"the sign-in form at {landed} shows no username box");
         try
         {
             await schoolUser.FillAsync(username, new() { Timeout = 10_000 });
@@ -104,18 +133,24 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
         }
         catch (PlaywrightException ex)
         {
-            throw new PortalRenewalException("the school's sign-in form shows no username and password boxes: " + FirstLine(ex));
+            throw new PortalRenewalException(
+                "the school's sign-in form could not be filled: " + FirstLine(ex));
         }
+
+        // The cookie has to be *earned*: remember what was there before the password, so a
+        // school that hands out an anonymous session cookie on first load cannot be
+        // mistaken for a signed-in one.
+        var before = (await session.CookiesAsync(_signInUrl))
+            .FirstOrDefault(c => c.Name == CookieName)?.Value ?? "";
         await PressAsync(page, ContinueButton(), pass, "Continue");
 
-        // The cookie is the whole session.
         var deadline = DateTime.UtcNow.AddSeconds(Math.Max(10, _stepWaitSeconds));
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
             var cookie = (await session.CookiesAsync(_signInUrl))
                 .FirstOrDefault(c => c.Name == CookieName && c.Value.Length > 0);
-            if (cookie is not null)
+            if (cookie is not null && cookie.Value != before)
             {
                 var expires = DateTimeOffset.UtcNow + SessionLife;
                 if (cookie.Expires > 0)
@@ -130,8 +165,27 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
                 throw new PortalRenewalException("Handshake refused the sign-in — " + await ComplaintAsync(page));
             await page.WaitForTimeoutAsync(2_000);
         }
-        throw new PortalRenewalException("the sign-in did not finish — " + await ComplaintAsync(page));
+        throw new PortalRenewalException(
+            $"the sign-in did not finish at {HostOf(page.Url)} — " + await ComplaintAsync(page));
     }
+
+    /// <summary>The first of these selectors that is actually on screen, or null.</summary>
+    private static async Task<ILocator?> FirstPresentAsync(IPage page, params string[] selectors)
+    {
+        foreach (var selector in selectors)
+        {
+            var locator = page.Locator(selector).First;
+            try
+            {
+                if (await locator.CountAsync() > 0 && await locator.IsVisibleAsync()) return locator;
+            }
+            catch (PlaywrightException) { /* mid-render; try the next */ }
+        }
+        return null;
+    }
+
+    private static string HostOf(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : url;
 
     /// <summary>Press the named button, or fall back to Enter in the last field filled.</summary>
     private static async Task PressAsync(IPage page, Regex name, ILocator fallback, string what)
@@ -146,23 +200,6 @@ public sealed partial class HandshakeSessionRenewer : IHandshakeSessionRenewer
         {
             throw new PortalRenewalException($"{what} could not be pressed: " + FirstLine(ex));
         }
-    }
-
-    /// <summary>Wait for a locator to show up, because the second step renders after the first.</summary>
-    private static async Task<bool> AppearsAsync(ILocator locator, int seconds, CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(Math.Max(5, seconds));
-        while (DateTime.UtcNow < deadline)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                if (await locator.CountAsync() > 0 && await locator.IsVisibleAsync()) return true;
-            }
-            catch (PlaywrightException) { /* mid-render; look again */ }
-            await Task.Delay(500, ct);
-        }
-        return false;
     }
 
     private static string FirstLine(PlaywrightException ex) => ex.Message.Split('\n')[0];

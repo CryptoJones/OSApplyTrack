@@ -2,30 +2,24 @@
 # Copyright 2026 Aaron K. Clark
 """Handshake as a discovery source (#267) — campus recruiting, signed in.
 
-Handshake is where US colleges run their campus recruiting: employers post, schools
-approve, students search. It is a large slice of entry-level and internship hiring that
-no other source here reaches.
+Handshake is where US colleges run their campus recruiting. Its official API is not
+usable here: the EDU API is read-only, scoped to one institution, and gated to Career
+Services partners. So this takes the route the LinkedIn source takes (#233) — sign in
+with the candidate's own account and call the endpoint Handshake's own web app calls
+(``POST /hs/graphql``).
 
-**Why the tenant's own session, not an API key.** Handshake does publish an official
-API, but the EDU API is read-only, scoped to one institution, and gated to Career
-Services partners through a developer portal Handshake runs — a self-hosted tenant
-cannot obtain one. The alternative is the one the LinkedIn source already takes (#233):
-sign in with the candidate's own account and use the endpoint Handshake's own web app
-calls (``POST /hs/graphql``), which is a GraphQL endpoint with named operations.
-
-**A posting here is a listing of the employer's.** Handshake's job search returns the
-posting's own copy, but ``job.jobApplySetting`` says how it is applied to:
+**One query does the whole job.** ``job.jobApplySetting`` is selectable on the search
+result itself, so the search returns how each posting is applied to alongside its copy:
 ``externalUrl`` is the employer's own posting — the ATS Handshake tracked it from
-(iCIMS, BambooHR, Workday …) — and ``applyType`` is ``EXTERNAL`` or
-``HANDSHAKE_AND_EXTERNAL``. That employer URL is the lead's ``apply_link`` under the
-#191 rule, exactly as an offsite-apply LinkedIn posting's is. A posting Handshake hosts
-itself (``applyType: HANDSHAKE``, no employer URL) is remembered through ``remember``
-and skipped rather than staged as a dead end, which is what LinkedIn's Easy Apply gets.
+(iCIMS, BambooHR, …) — and that becomes the lead's ``apply_link`` under the #191 rule.
+A posting with no employer URL applies inside Handshake and is staged with the Handshake
+posting as its link and **no** ``apply_link``, which is the poller's apply-by-hand lane.
+Those are the postings that exist nowhere else — the school-scoped ones this source is
+for — so they are staged rather than discarded.
 
-**The kept session is one cookie.** ``hss-global`` (httpOnly, ~90 days) is the whole
-session: a GraphQL call carrying only that cookie answers exactly as the browser does.
-The .NET agent's browser signs in with the board account saved for ``joinhandshake.com``
-and seals it on that row; this reads it.
+**The session is one cookie.** ``hss-global`` (httpOnly, ~90 days) is the whole session;
+a GraphQL call carrying only that cookie answers as the browser does. The .NET agent's
+browser signs in with the board account saved for ``joinhandshake.com`` and seals it.
 
 Every request is the tenant's own; nothing here is shared across tenants.
 """
@@ -37,7 +31,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -56,26 +50,26 @@ ACCOUNT_HOSTS = ("joinhandshake.com", "app.joinhandshake.com")
 #: The whole session: one httpOnly cookie, which is what the renewer seals.
 SESSION_COOKIE = "hss-global"
 
-#: ``hss-global`` is issued for about ninety days; renew well inside that.
-SESSION_DAYS = 90
-
 GRAPHQL_URL = BASE + "/hs/graphql"
 JOB_URL = BASE + "/jobs"
 
-#: The app's own page size. Capped so one keyword cannot walk the whole board.
+#: The app's own page size.
 PAGE_SIZE = 25
+#: How deep one keyword is walked. A board this size has more than any poll needs.
 MAX_PAGES = 4
+#: How many of the tenant's keywords are worth a search. LinkedIn caps the same way;
+#: without it the request budget is whatever the operator typed into the keyword box.
+MAX_KEYWORD_QUERIES = 8
 
 #: One request at a time, politely. Handshake is a third party and this is a poll.
 PACE_SECONDS = 0.5
 
-#: The channel the web app searches on; without it the endpoint answers for another surface.
+#: The channel the web app searches on.
 CHANNEL = "NL_SEARCH_CHANNEL"
 
-# The app's own search document, trimmed to the fields a Listing needs. GraphQL lets the
-# client choose, so this asks for the description (the fit judge's input), the employer,
-# the location, the pay and the dates — and nothing else. ``filter.query`` is the
-# server-side keyword search: "software engineer" narrows 72,562 postings to 5,517.
+#: The app's own search document, trimmed to the fields a Listing needs and the one
+#: that decides the employer link. GraphQL lets the client choose the fields, so a
+#: field this does not ask for cannot break the walk by being renamed.
 SEARCH_QUERY = """
 query JobSearchQuery($first: Int, $after: String, $input: JobSearchInput) {
   jobSearch(first: $first, after: $after, input: $input) {
@@ -88,39 +82,17 @@ query JobSearchQuery($first: Int, $after: String, $input: JobSearchInput) {
           id
           title
           description
-          createdAt
-          expirationDate
           remote
-          onSite
-          hybrid
           locations { displayName }
-          employmentType { name }
-          jobType { name }
           salaryRange { min max currency paySchedule { friendlyName } }
-          employer { name industry { name } }
+          employer { name }
+          jobApplySetting { applyType externalApplyType externalUrl alternativeExternalUrl }
         }
       }
     }
   }
 }
 """.strip()
-
-# The employer's own URL lives on the detail type, not on the search result, so each
-# candidate that names a keyword costs one more call. It is small and carries only what
-# the #191 decision needs.
-APPLY_QUERY = """
-query JobApplySetting($id: ID!) {
-  job(id: $id) {
-    id
-    atsProvider
-    jobApplySetting { applyType externalApplyType externalUrl alternativeExternalUrl }
-  }
-}
-""".strip()
-
-#: ``applyType`` values that mean the employer takes the application themselves. Anything
-#: else is Handshake's own apply flow, which this source does not stage.
-EXTERNAL_APPLY_TYPES = frozenset({"EXTERNAL", "HANDSHAKE_AND_EXTERNAL"})
 
 
 class NeedsSignIn(Exception):
@@ -129,6 +101,14 @@ class NeedsSignIn(Exception):
 
 class RateLimited(Exception):
     """Handshake answered 429; the rest of the poll waits for the next pass."""
+
+
+class SchemaError(Exception):
+    """Handshake rejected the query document — almost always a schema change.
+
+    Deliberately distinct from an empty result: a source that quietly returns no leads
+    forever is the hardest kind of break for an operator to notice.
+    """
 
 
 @dataclass
@@ -155,9 +135,8 @@ class HandshakeAccount:
 def parse_session(session: str) -> str:
     """The sealed session's plaintext — JSON ``{"hss-global": …}`` — as a cookie value.
 
-    Anything without the cookie is no session. The JSON shape (rather than the bare
-    value) matches the LinkedIn session, and leaves room for a second cookie if
-    Handshake ever needs one.
+    The shape is the cross-runtime contract with the renewer's ``Encode``; anything
+    without the cookie is no session.
     """
     if not session:
         return ""
@@ -170,25 +149,17 @@ def parse_session(session: str) -> str:
     return str(data.get(SESSION_COOKIE) or "").strip()
 
 
-def encode_session(cookie: str) -> str:
-    """The plaintext the renewer seals: the session cookie as JSON."""
-    return json.dumps({SESSION_COOKIE: cookie})
-
-
-def session_expiry() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
-
-
 # -- reading the payloads ---------------------------------------------------
 
 
 def jobs_from_search(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str, bool]:
     """``(jobs, end_cursor, has_next)`` from a ``JobSearchQuery`` response.
 
-    A malformed or erroring payload is an empty page, not a crash: one bad response must
-    not abort a tenant's poll.
+    A thin or erroring payload is an empty page, not a crash — ``data`` is present and
+    null on a GraphQL error, which is not the same as absent.
     """
-    search = (payload or {}).get("data", {}).get("jobSearch") or {}
+    data = (payload or {}).get("data") or {}
+    search = data.get("jobSearch") or {}
     jobs: list[dict[str, Any]] = []
     for edge in search.get("edges") or []:
         job = ((edge or {}).get("node") or {}).get("job")
@@ -199,21 +170,35 @@ def jobs_from_search(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str
     return jobs, cursor, bool(page.get("hasNextPage"))
 
 
-def external_url(payload: dict[str, Any]) -> str:
-    """The employer's own posting from a ``JobApplySetting`` response, or ``""``.
+def total_count(payload: dict[str, Any]) -> int:
+    """How many postings the search matched — the tripwire for a silent schema break."""
+    data = (payload or {}).get("data") or {}
+    search = data.get("jobSearch") or {}
+    try:
+        return int(search.get("totalCount") or 0)
+    except (TypeError, ValueError):
+        return 0
 
-    Only an external apply counts: a posting Handshake hosts itself has no employer URL
-    to hand the agent, and staging it would produce a lead that cannot be filled.
+
+def employer_url(job: dict[str, Any]) -> str:
+    """The employer's own posting, or ``""`` when the apply happens inside Handshake.
+
+    The URL is the evidence, not ``applyType``: an unrecognized type that still carries
+    an employer URL is the employer's posting, and only "no URL at all" means Handshake
+    hosts the apply. Whitelisting the enum would silently discard every posting whose
+    type Handshake adds later.
     """
-    job = (payload or {}).get("data", {}).get("job") or {}
     setting = job.get("jobApplySetting") or {}
-    if str(setting.get("applyType") or "").upper() not in EXTERNAL_APPLY_TYPES:
-        return ""
     for key in ("externalUrl", "alternativeExternalUrl"):
         url = str(setting.get(key) or "").strip()
         if url.startswith("http://") or url.startswith("https://"):
             return url
     return ""
+
+
+def apply_type(job: dict[str, Any]) -> str:
+    """The posting's apply type, upper-cased, for the log line only."""
+    return str((job.get("jobApplySetting") or {}).get("applyType") or "").strip().upper()
 
 
 def job_link(job: dict[str, Any]) -> str:
@@ -222,23 +207,25 @@ def job_link(job: dict[str, Any]) -> str:
 
 
 def location_text(job: dict[str, Any]) -> str:
-    """Where the posting is, as one line. A remote posting says so even with no city."""
-    if job.get("remote"):
-        return "Remote"
+    """Where the posting is, as one line. A remote posting keeps its anchor city."""
     places: list[str] = []
     for place in job.get("locations") or []:
         name = str((place or {}).get("displayName") or "").strip()
         if name and name not in places:
             places.append(name)
-    if places:
-        return " · ".join(places[:3])
-    if job.get("hybrid"):
-        return "Hybrid"
-    return ""
+    where = " · ".join(places[:3])
+    if job.get("remote"):
+        return f"Remote · {where}" if where else "Remote"
+    return where
 
 
 def salary_text(job: dict[str, Any]) -> str:
-    """The posting's pay as one line, or ``""`` when it names none."""
+    """The posting's pay as one line, or ``""`` when it names none.
+
+    ``salaryRange`` reports **minor units**: a security officer's hourly rate arrives as
+    ``1751`` for $17.51, and a service manager's salary as ``9000000`` for $90,000.
+    Rendering the raw number would overstate every posting by a factor of a hundred.
+    """
     rng = job.get("salaryRange") or {}
     low, high = rng.get("min"), rng.get("max")
     if low is None and high is None:
@@ -250,7 +237,7 @@ def salary_text(job: dict[str, Any]) -> str:
         if value is None:
             return ""
         try:
-            number = float(value)  # type: ignore[arg-type]
+            number = float(value) / 100  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return str(value)
         return f"{number:,.0f}" if number >= 1000 else f"{number:,.2f}".rstrip("0").rstrip(".")
@@ -264,12 +251,12 @@ def salary_text(job: dict[str, Any]) -> str:
     return f"{text} {period.lower()}" if period else text
 
 
-def listing_from_job(job: dict[str, Any], employer_link: str) -> Listing:
-    """A search result whose Apply leads to ``employer_link`` as the poller's :class:`Listing`.
+def listing_from_job(job: dict[str, Any]) -> Listing:
+    """A search result as the poller's :class:`Listing`.
 
-    The Handshake posting stays the listing's link (the dedupe key, and an aggregator
-    link the #191 rule resolves); the employer's URL rides as ``apply_link`` and is what
-    gets stored — the same split LinkedIn's offsite postings use.
+    The Handshake posting is the link (the dedupe key, and an aggregator link the #191
+    rule resolves). The employer's URL, when there is one, rides as ``apply_link`` and
+    is what gets stored; when there is not, the lead is apply-by-hand.
     """
     return Listing(
         company=str(((job.get("employer") or {}).get("name")) or "").strip(),
@@ -279,12 +266,13 @@ def listing_from_job(job: dict[str, Any], employer_link: str) -> Listing:
         salary=salary_text(job),
         source=SOURCE,
         description=str(job.get("description") or ""),
-        apply_link=employer_link,
+        apply_link=employer_url(job),
     )
 
 
 def queries_for(keywords: Iterable[str]) -> list[str]:
-    """The keyword searches worth a page each: the tenant's keywords, de-duped and capped."""
+    """The keyword searches worth a page each: the tenant's keywords, de-duped and
+    capped at :data:`MAX_KEYWORD_QUERIES` so the request budget is bounded."""
     out: list[str] = []
     seen: set[str] = set()
     for keyword in keywords:
@@ -292,6 +280,8 @@ def queries_for(keywords: Iterable[str]) -> list[str]:
         if query and query.lower() not in seen:
             seen.add(query.lower())
             out.append(query)
+        if len(out) >= MAX_KEYWORD_QUERIES:
+            break
     return out
 
 
@@ -299,7 +289,11 @@ def queries_for(keywords: Iterable[str]) -> list[str]:
 
 
 class Client:
-    """One tenant's view of Handshake's job search over an ``httpx.Client``."""
+    """One tenant's view of Handshake's job search over an ``httpx.Client``.
+
+    The session travels as a request header rather than in the shared cookie jar: the
+    cookie is a property of this tenant's call, not of a client the poller may reuse.
+    """
 
     def __init__(
         self,
@@ -311,36 +305,46 @@ class Client:
         self._client = client
         self._pace = pace
         self._cookie = account.cookie if account else ""
-        if self._cookie:
-            client.cookies.set(SESSION_COOKIE, self._cookie, domain=".joinhandshake.com")
 
     @property
     def signed_in(self) -> bool:
         return bool(self._cookie)
 
     def _post(self, operation: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        # The app names the operation; the endpoint is happy without it but this is what
-        # the web client sends, and it is what makes a failed call identifiable.
+        self._pace(PACE_SECONDS)
+        headers = {
+            "content-type": "application/json",
+            "accept": "application/json",
+            "referer": BASE + "/job-search",
+            "origin": BASE,
+        }
+        if self._cookie:
+            headers["cookie"] = f"{SESSION_COOKIE}={self._cookie}"
         r = self._client.post(
             GRAPHQL_URL,
             json={"operationName": operation, "query": query, "variables": variables},
-            headers={
-                "content-type": "application/json",
-                "accept": "application/json",
-                "referer": BASE + "/job-search",
-                "origin": BASE,
-            },
+            headers=headers,
         )
         self._check(r)
         try:
-            return r.json()  # type: ignore[no-any-return]
+            payload = r.json()
         except ValueError as exc:
             raise NeedsSignIn("Handshake answered with a page, not JSON") from exc
+        # A GraphQL error is a 200 with an `errors` array, not an HTTP failure: read it,
+        # or a renamed field looks exactly like a board with no jobs.
+        errors = (payload or {}).get("errors") if isinstance(payload, dict) else None
+        if errors:
+            message = str((errors[0] or {}).get("message") or "unknown error")[:200]
+            if _looks_like_auth(message):
+                raise NeedsSignIn(f"Handshake rejected the session: {message}")
+            raise SchemaError(f"Handshake rejected the {operation} document: {message}")
+        return payload  # type: ignore[no-any-return]
 
     def _check(self, r: httpx.Response) -> None:
         if r.status_code == 429:
             raise RateLimited("Handshake answered 429")
-        # A signed-in call that lands on the sign-in surface is the session's end.
+        # A stale cookie is a clean 401 with an empty body — verified against the live
+        # site, not assumed. A redirect to the sign-in surface is the same news.
         if r.status_code in (401, 403) or (
             r.status_code in (301, 302, 303, 307, 308)
             and "/access" in r.headers.get("location", "")
@@ -350,8 +354,14 @@ class Client:
             raise NeedsSignIn("Handshake redirected the request")
         r.raise_for_status()
 
-    def search(self, query: str, *, after: str = "MA==", first: int = PAGE_SIZE) -> dict[str, Any]:
-        """One page of the signed-in job search for ``query``, newest first."""
+    def search(
+        self, query: str, *, after: str | None = None, first: int = PAGE_SIZE
+    ) -> dict[str, Any]:
+        """One page of the signed-in job search for ``query``, newest first.
+
+        ``after`` is the page cursor; ``None`` asks for the first page, which the endpoint
+        accepts — no assumption about how a cursor is encoded.
+        """
         return self._post(
             "JobSearchQuery",
             SEARCH_QUERY,
@@ -366,9 +376,10 @@ class Client:
             },
         )
 
-    def apply_setting(self, job_id: str) -> dict[str, Any]:
-        """How the posting is applied to, and the employer's URL when there is one."""
-        return self._post("JobApplySetting", APPLY_QUERY, {"id": job_id})
+
+def _looks_like_auth(message: str) -> bool:
+    lowered = message.lower()
+    return any(word in lowered for word in ("unauthor", "not signed in", "forbidden", "session"))
 
 
 def fetch_listings(
@@ -377,54 +388,68 @@ def fetch_listings(
     *,
     limit: int,
     already_seen: Callable[[str], bool] = lambda _url: False,
-    remember: Callable[[str], None] = lambda _url: None,
 ) -> list[Listing]:
-    """Search each keyword, then read the employer's URL for every new posting that names
-    one. A posting Handshake hosts itself is remembered through ``remember`` and dropped;
-    ``already_seen`` (by the Handshake posting URL) keeps a listing the ledger knows from
-    costing another call. A 429 ends the poll with what was gathered.
+    """Search each keyword and stage what matches, newest first.
 
-    The keyword check runs on the title before the detail call, so a page of 25 costs 25
-    searches' worth of one response and only the matching postings cost a second call.
+    The employer's URL, when the posting has one, becomes the lead's ``apply_link``; a
+    posting that applies inside Handshake is staged with the Handshake posting as its
+    link and no ``apply_link``, which is the poller's apply-by-hand lane. Nothing is
+    written to the ledger here — a skip is a decision that can change, and the ledger is
+    for a URL processed under a rule that will not.
     """
     keyword_list = list(keywords)
     out: list[Listing] = []
     done: set[str] = set()
+    hosted = 0
     try:
         for query in queries_for(keyword_list):
-            after = "MA=="
+            after: str | None = None
             for _ in range(MAX_PAGES):
                 page = client.search(query, after=after)
                 jobs, cursor, has_next = jobs_from_search(page)
                 if not jobs:
+                    # A positive count with nothing to show is a schema break wearing a
+                    # "no jobs" costume; say so rather than returning an empty poll.
+                    if total_count(page) > 0:
+                        logger.warning(
+                            "handshake: %r matched %d postings but none parsed — the search "
+                            "document may no longer match Handshake's schema",
+                            query, total_count(page),
+                        )
                     break
                 for job in jobs:
                     job_id = str(job.get("id") or "").strip()
-                    if not job_id or job_id in done or already_seen(job_link(job)):
+                    if not job_id or job_id in done:
                         continue
                     done.add(job_id)
-                    if not classify(str(job.get("title") or ""), "", keyword_list)[1]:
+                    if already_seen(job_link(job)):
                         continue
-                    client._pace(PACE_SECONDS)
-                    employer_link = external_url(client.apply_setting(job_id))
-                    if not employer_link:
-                        logger.info(
-                            "handshake: %s — %s applies on Handshake itself; skipped",
-                            (job.get("employer") or {}).get("name"),
-                            job.get("title"),
-                        )
-                        remember(job_link(job))
+                    if not classify(
+                        str(job.get("title") or ""), str(job.get("description") or ""), keyword_list
+                    )[1]:
                         continue
-                    out.append(listing_from_job(job, employer_link))
+                    if not employer_url(job):
+                        hosted += 1
+                    out.append(listing_from_job(job))
                     if len(out) >= limit * 3:
                         return out
                 if not has_next or not cursor:
                     break
                 after = cursor
-                client._pace(PACE_SECONDS)
     except RateLimited:
         logger.warning(
             "handshake: rate-limited (429) after %d listings; the rest waits for the next poll",
             len(out),
+        )
+    except httpx.HTTPError as exc:
+        # A 500 or a read timeout must not throw away what was already gathered.
+        logger.warning(
+            "handshake: %s after %d listings; the rest waits for the next poll",
+            type(exc).__name__, len(out),
+        )
+    if hosted:
+        logger.info(
+            "handshake: %d of %d staged leads apply inside Handshake (apply by hand)",
+            hosted, len(out),
         )
     return out

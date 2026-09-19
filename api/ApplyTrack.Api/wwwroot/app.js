@@ -2342,7 +2342,18 @@ function agentMarkup(s, events) {
         (site <span class="mono">linkedin.com</span>, with its password) turns on the
         <strong>LinkedIn</strong> source under Criteria: the browser signs in as you, keeps
         the session, and the poller searches with it — you may have to tap Yes in the
-        LinkedIn app the first time, and the moo will say so.
+        LinkedIn app the first time, and the moo will say so. A <strong>Handshake</strong>
+        account (site <span class="mono">joinhandshake.com</span>, with the
+        <strong>school email</strong> your campus signs in with and its password) turns on
+        the <strong>Handshake</strong> source the same way.
+        <strong>Read this before saving a Handshake one:</strong> that password is your
+        <strong>school sign-in</strong> — the same one that opens your campus email,
+        registrar record and financial-aid portal, not a job-board password. It is stored
+        encrypted like every other credential here, but it is a campus identity, and most
+        university policies forbid handing those to third-party software. Handshake also
+        forbids automated access. Only a school whose sign-in is a plain username and
+        password form can be driven; a school using Microsoft, Okta, Shibboleth or Google,
+        or requiring a second factor, is refused with a message saying so.
       </p>
       <ul id="board-accounts" class="agent-log" aria-labelledby="board-accounts-heading">
         ${(s.board_accounts || []).length ? s.board_accounts.map((a) => `

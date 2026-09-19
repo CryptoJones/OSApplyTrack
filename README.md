@@ -729,10 +729,25 @@ keywords (a page each, newest first) through the endpoint Handshake's own web ap
 and reads each matching posting's `jobApplySetting`: an **externally-applied** posting
 carries the employer's own URL (the ATS Handshake tracked it from — iCIMS, BambooHR and
 the like), which becomes the lead's link under the same aggregator rule; a posting
-Handshake hosts itself is skipped and remembered, like Easy Apply. Unlike LinkedIn there
-is no guest search — Handshake's public pages expose a fraction of the board and hide
-the employer's URL — so with no live session the source yields nothing and says so
-rather than staging leads that cannot be applied to.
+Handshake hosts itself is staged with the Handshake posting as its link and no employer
+URL — the poller's apply-by-hand lane — because those school-scoped postings are the ones
+that exist nowhere else. Unlike LinkedIn there is no guest search: Handshake's public
+pages expose a fraction of the board and hide the employer's URL, so with no live session
+the source yields nothing and says so rather than staging leads that cannot be applied
+to. Only a school whose sign-in is a plain username and password form on Handshake's own
+page can be driven; a school that federates to Microsoft, Okta, Shibboleth or Google, or
+that requires a second factor, is refused by name instead of timing out.
+
+> **Read this before saving a Handshake board account.** The password it stores is your
+> **school sign-in** — the same one that opens your campus email, your registrar record
+> and your financial-aid portal — not a job-board password like the LinkedIn one. It is
+> sealed on the board-account row like every other credential here, but a self-hosted
+> database plus its key is then a campus identity, and automated sign-ins from a server
+> can trip a school's new-device rules and lock you out. Most university acceptable-use
+> policies also forbid delegating SSO credentials to third-party software, and
+> Handshake's terms almost certainly forbid automated access — a ban lands on an account
+> the school issued. That is a materially different risk from the LinkedIn source, and it
+> is the operator's call to make knowingly.
 
 **Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
 schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are

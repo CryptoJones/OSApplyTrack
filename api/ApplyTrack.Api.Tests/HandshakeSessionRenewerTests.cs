@@ -31,6 +31,8 @@ public sealed class HandshakeSessionRenewerTests : IAsyncLifetime
     private string _ws = "";
     private WebApplication? _fixture;
     private string _fixtureUrl = "";
+    private volatile bool _anonymousCookie;
+    private volatile bool _federated;
 
     public async Task InitializeAsync()
     {
@@ -55,14 +57,24 @@ public sealed class HandshakeSessionRenewerTests : IAsyncLifetime
         _fixture = builder.Build();
 
         // Step one: the school email, which is how Handshake finds the school.
-        _fixture.MapGet("/access", () => Results.Content(EmailHtml, "text/html"));
+        _fixture.MapGet("/access", (HttpResponse res) =>
+        {
+            // A school whose site hands out an anonymous session cookie on first load —
+            // the shape that would let a naive renewer seal an unauthenticated session.
+            if (_anonymousCookie)
+                res.Cookies.Append("hss-global", "hs-anonymous", new CookieOptions { HttpOnly = true, Path = "/" });
+            return Results.Content(EmailHtml, "text/html");
+        });
         _fixture.MapPost("/access", async (HttpRequest req, HttpResponse res) =>
         {
             var form = await req.ReadFormAsync();
             if (form["email"] != "ada@eastern.edu")
                 return Results.Content(EmailHtml.Replace("<!--ERR-->", "<div role=\"alert\">That email is not recognized.</div>"), "text/html");
+            if (_federated) return Results.Redirect("/access/sso/microsoft");
             return Results.Redirect("/access/sso/ldap");
         });
+        _fixture.MapGet("/access/sso/microsoft", () =>
+            Results.Content("<html><body><h1>Sign in</h1><p>Enter code from your authenticator app</p></body></html>", "text/html"));
 
         // Step two: the school's own form, which takes the same address.
         _fixture.MapGet("/access/sso/ldap", () => Results.Content(SchoolHtml, "text/html"));
@@ -71,7 +83,9 @@ public sealed class HandshakeSessionRenewerTests : IAsyncLifetime
             var form = await req.ReadFormAsync();
             if (form["username"] != "ada@eastern.edu" || form["password"] != "hunter2")
                 return Results.Content(SchoolHtml.Replace("<!--ERR-->", "<div role=\"alert\">Wrong username or password. Try again.</div>"), "text/html");
-            res.Cookies.Append("hss-global", "hs-fresh-1", new CookieOptions
+            // With _anonymousCookie the site keeps the value it handed out before the
+            // password — so "a cookie exists" must not be mistaken for "signed in".
+            res.Cookies.Append("hss-global", _anonymousCookie ? "hs-anonymous" : "hs-fresh-1", new CookieOptions
             {
                 HttpOnly = true, Path = "/", Expires = DateTimeOffset.UtcNow.AddDays(90),
             });
@@ -116,12 +130,44 @@ public sealed class HandshakeSessionRenewerTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task An_email_handshake_does_not_know_is_refused_at_the_first_step()
+    public async Task An_email_handshake_does_not_know_is_refused_by_name()
     {
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
         var ex = await Assert.ThrowsAsync<PortalRenewalException>(
             () => Renewer().RenewAsync("nobody@example.com", "hunter2", CancellationToken.None));
-        Assert.Contains("did not offer the school's sign-in form", ex.Message);
+        // The message names the host it landed on, so the failure is legible rather than a
+        // timeout that blames Handshake.
+        Assert.Contains("does not drive", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task A_school_that_federates_or_wants_a_second_factor_is_named()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        _federated = true;
+        try
+        {
+            var ex = await Assert.ThrowsAsync<PortalRenewalException>(
+                () => Renewer(stepWaitSeconds: 15).RenewAsync("ada@eastern.edu", "hunter2", CancellationToken.None));
+            Assert.Contains("identity provider or a second factor", ex.Message);
+        }
+        finally { _federated = false; }
+    }
+
+    [SkippableFact]
+    public async Task An_anonymous_cookie_handed_out_on_first_load_is_not_sealed()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // A site that sets its session cookie on page load, unauthenticated: "a cookie
+        // named hss-global exists" is not the same as "signed in".
+        _anonymousCookie = true;
+        try
+        {
+            var ex = await Assert.ThrowsAsync<PortalRenewalException>(
+                () => Renewer(stepWaitSeconds: 15).RenewAsync("ada@eastern.edu", "hunter2", CancellationToken.None));
+            Assert.Contains("did not finish", ex.Message);
+        }
+        finally { _anonymousCookie = false; }
     }
 
     [Fact]

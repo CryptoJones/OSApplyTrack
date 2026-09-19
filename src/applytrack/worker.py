@@ -401,18 +401,17 @@ def _gather_handshake(repo: TenantRepo, profile: Criteria, limit: int) -> list[L
             return []
         seen_url = getattr(repo, "seen_url", None) or (lambda _url: False)
 
-        def remember(url: str) -> None:
-            from applytrack.poll import _norm_url
-
-            repo.mark_seen(_norm_url(url), "")
-
         with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
             hs = handshake.Client(client, account)
             try:
                 return handshake.fetch_listings(
-                    hs, profile.keywords, limit=limit,
-                    already_seen=seen_url, remember=remember,
+                    hs, profile.keywords, limit=limit, already_seen=seen_url,
                 )
+            except handshake.SchemaError as exc:
+                # Loud on purpose: a schema break otherwise looks exactly like a board
+                # with no jobs, and the source would return nothing indefinitely.
+                logger.error("handshake: %s", exc)
+                return []
             except handshake.NeedsSignIn:
                 logger.info(
                     "handshake: the kept session for %s was bounced; cleared for the agent's "
