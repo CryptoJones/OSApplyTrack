@@ -16,6 +16,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#49 — Restrict forwarded-header trust to configured proxies](https://github.com/CryptoJones/OSApplyTrack/issues/49)
 - [x] [#50 — Add global JSON body caps and per-field/cardinality limits](https://github.com/CryptoJones/OSApplyTrack/issues/50)
 - [x] [#52 — Serialize overlapping tenant poll runs](https://github.com/CryptoJones/OSApplyTrack/issues/52)
+- [ ] [#266 — Scrape: the fetch has no whole-fetch budget, so a slow board or a redirect chain stacks past the per-hop timeout](https://github.com/CryptoJones/OSApplyTrack/issues/266) — `HttpClient.Timeout` is per-hop and, under `ResponseHeadersRead`, does not cover the streamed body; up to 5 redirect hops each restart it, so one "Fetching…" can run ~a minute with nothing in the logs. Give the whole fetch one wall-clock budget, shared by every hop and the body read
 - [x] [#117 — Encrypt sensitive columns at rest, secure by default for every deploy](https://github.com/CryptoJones/OSApplyTrack/issues/117) (phase 1 shipped in 1.26.0; `notes`, `email`, `contact_email`, `phone` and the extracted résumé fields stay deferred)
 - [x] [#118 — Public beta terms, acceptance at sign-in, and a typed-confirmation data delete](https://github.com/CryptoJones/OSApplyTrack/issues/118)
 - [x] [#120 — Saved answers reused across fields that ask for different units, periods or currencies](https://github.com/CryptoJones/OSApplyTrack/issues/120)
