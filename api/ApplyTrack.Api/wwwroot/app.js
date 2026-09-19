@@ -1718,6 +1718,7 @@ async function deleteApp(name) {
 const SOURCES = [
   "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
   "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse", "linkedin",
+  "handshake",
 ];
 const SOURCE_LABEL = {
   remotive: "Remotive",
@@ -1730,6 +1731,7 @@ const SOURCE_LABEL = {
   hn_whoishiring: "HN “Who is hiring”",
   mygreenhouse: "MyGreenhouse (signed in — needs a board account for greenhouse.io and your mailbox)",
   linkedin: "LinkedIn (your own account — a board account for linkedin.com with its password; only postings whose Apply leads to the employer's site, Easy Apply skipped)",
+  handshake: "Handshake (your own account — a board account for joinhandshake.com with your school email and password; only postings that apply on the employer's own site)",
 };
 const ATS_PROVIDERS = ["greenhouse", "lever", "paylocity"];
 // Paylocity boards are keyed by the company's recruiting GUID, not a name slug, and

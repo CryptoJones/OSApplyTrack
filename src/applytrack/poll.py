@@ -116,6 +116,10 @@ AGGREGATOR_HOSTS = frozenset({
     # FetchJobs.co is the same chain under another name: a script-rendered listing whose
     # Apply leads off to us.thebigjobsite.com, never a form (#251).
     "fetchjobs.co",
+    # A Handshake posting is a listing of the employer's (#267): its external Apply URL
+    # is the lead's ``apply_link`` and what gets stored; Handshake-hosted ones are never
+    # staged.
+    "joinhandshake.com",
 })
 
 _APPLY_ANCHOR_RE = re.compile(

@@ -59,6 +59,9 @@ public sealed class BoardAccountRepo
     /// <summary>Board-account hosts that mean the candidate's LinkedIn sign-in (#233) — the
     /// same list the poller reads (<c>linkedin.ACCOUNT_HOSTS</c>).</summary>
     public static readonly string[] LinkedInHosts = ["linkedin.com", "www.linkedin.com"];
+    /// <summary>Board-account hosts that mean the candidate's Handshake sign-in (#267) — the
+    /// same list the poller reads (<c>handshake.ACCOUNT_HOSTS</c>).</summary>
+    public static readonly string[] HandshakeHosts = ["joinhandshake.com", "app.joinhandshake.com"];
 
     /// <summary>The one privileged, cross-tenant query the agent's pass runs (#221): tenants
     /// whose MyGreenhouse account has no kept session, or one that runs out within
@@ -144,6 +147,9 @@ public sealed class BoardAccountRepo
 
     /// <summary>The tenant's LinkedIn account (#233), or null when none is saved.</summary>
     public Task<PortalAccount?> LinkedInAsync() => AccountOnAsync(LinkedInHosts);
+
+    /// <summary>The tenant's Handshake account (#267), or null when none is saved.</summary>
+    public Task<PortalAccount?> HandshakeAsync() => AccountOnAsync(HandshakeHosts);
 
     /// <summary>The tenant's board account on one of <paramref name="hosts"/> — a signed-in
     /// discovery source's — with whether a session is kept for it, or null.</summary>

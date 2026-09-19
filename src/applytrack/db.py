@@ -25,7 +25,7 @@ from collections.abc import Iterator
 
 import psycopg
 
-from applytrack import linkedin, secrets
+from applytrack import handshake, linkedin, secrets
 from applytrack.criteria import Criteria
 from applytrack.importer import _FIELD_COLUMNS, row_params
 from applytrack.mygreenhouse import ACCOUNT_HOSTS, PortalAccount
@@ -136,6 +136,21 @@ class PollRepo:
     def save_linkedin_session(self, session: str, expires_at: object) -> None:
         """Keep the LinkedIn session sealed on the board-account row (blank clears it)."""
         self._save_session(linkedin.ACCOUNT_HOSTS, session, expires_at)
+
+    def handshake_account(self) -> handshake.HandshakeAccount | None:
+        """The tenant's Handshake sign-in (a board account for joinhandshake.com) with the
+        session kept for it, unsealed — or None when there is no such account (#267)."""
+        found = self._account(handshake.ACCOUNT_HOSTS)
+        if found is None:
+            return None
+        username, session, expires = found
+        return handshake.HandshakeAccount(
+            username=username, session=session, session_expires_at=expires  # type: ignore[arg-type]
+        )
+
+    def save_handshake_session(self, session: str, expires_at: object) -> None:
+        """Keep the Handshake session sealed on the board-account row (blank clears it)."""
+        self._save_session(handshake.ACCOUNT_HOSTS, session, expires_at)
 
     def seen_url(self, url: str) -> bool:
         """Is this listing URL already in the tenant's ledger? A source that pays a
