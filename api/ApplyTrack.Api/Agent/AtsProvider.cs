@@ -62,6 +62,8 @@ public static partial class AtsProvider
         // the employer's link from jobApplySetting.externalUrl; one it could not resolve is
         // apply-by-hand like any aggregator's.
         "joinhandshake.com",
+        // BestJobTool reposts job listings across boards without direct employer forms.
+        "bestjobtool.com",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]

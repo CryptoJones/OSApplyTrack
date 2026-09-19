@@ -497,12 +497,6 @@ function renderPipelineView(data) {
         ${r.reason ? `<div class="field-help">${escapeHtml(r.reason)}</div>` : ""}</td>
     </tr>`).join("");
 
-  const readyRows = ready.map((r) => `
-    <li class="pipe-ready${r.promotable ? " promotable" : ""}">
-      <button type="button" class="link-button" data-open="${escapeHtml(r.name)}">${pipelineRowTitle(r)}</button>
-      <span class="field-help">${escapeHtml(readyHolding(r))}</span>
-    </li>`).join("");
-
   body.innerHTML = `
     <div class="pipe-health" role="group" aria-label="Agent status">${health.join(" ")}</div>
     <h2 class="mt-4">Submit queue: (${queue.length})</h2>
@@ -515,38 +509,11 @@ function renderPipelineView(data) {
         <tbody>${queueRows}</tbody>
       </table>
     </div>` : `<p class="empty-result">Nothing is queued. Queue a packet from the Ready lane, or from an application's Submit button.</p>`}
-    <h2 class="mt-4">Ready, not queued: (${ready.length})</h2>
-    <p class="field-help">Packets parked in Ready and what is holding each one.${
-      s.promotable ? ` <strong>${s.promotable} clean</strong> — ${data.dry_run
-        ? "they queue for real once Dry run only is turned off in Settings · Agent."
-        : "Submit all clean queues them now."}` : ""}</p>
-    ${ready.length ? `<ul class="pipe-ready-list">${readyRows}</ul>` : `<p class="empty-result">Nothing is parked in Ready.</p>`}
-    ${s.promotable && !data.dry_run && data.allowed && data.browser_available
-      ? `<div class="mt-3"><button type="button" id="pipeline-submit-clean" class="btn btn-primary">Submit all clean (${s.promotable})</button></div>` : ""}
     ${data.dry_run ? `<div class="mt-3"><button type="button" id="pipeline-open-agent" class="btn btn-ghost">Open Settings · Agent</button></div>` : ""}`;
 
   body.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
   const agentBtn = document.getElementById("pipeline-open-agent");
   if (agentBtn) agentBtn.addEventListener("click", () => openSettings("agent"));
-  const cleanBtn = document.getElementById("pipeline-submit-clean");
-  if (cleanBtn) cleanBtn.addEventListener("click", async () => {
-    const ok = await confirmAction({
-      title: "Submit every clean packet?",
-      message: `The browser will click Submit for real on ${s.promotable} application${s.promotable === 1 ? "" : "s"} whose dry run was clean.`,
-      confirmLabel: "Submit all clean",
-    });
-    if (!ok) return;
-    cleanBtn.disabled = true;
-    try {
-      const r = await api("POST", "/api/ready/actions", { action: "submit", all_clean: true });
-      toast(`${(r.done || []).length} queued for submission.`);
-      const gen = ++pipelineGen;
-      await loadPipeline(gen);
-    } catch (e) {
-      toast(e.message);
-      cleanBtn.disabled = false;
-    }
-  });
 }
 
 // ---- Sidebar --------------------------------------------------------------

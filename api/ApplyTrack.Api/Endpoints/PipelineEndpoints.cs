@@ -135,36 +135,9 @@ public static class PipelineEndpoints
                     last.Kind ?? "", last.Kind is null ? null : last.CreatedAt));
             }
 
-            // Ready packets not in the queue, with what would happen to them: the worker's
-            // promotion pass and "Submit all clean" both queue a clean dry run for the real
-            // click once Dry run only is off (#185); the rest name what is holding them.
-            var queued = pending.Select(p => p.ApplicationName).ToHashSet(StringComparer.Ordinal);
-            var ready = new List<ReadyRow>();
-            foreach (var (name, kind, detail, lastAt) in await evidence.LatestPerReadyApplicationAsync())
-            {
-                if (queued.Contains(name)) continue;
-                var rec = await apps.GetAsync(name);
-                if (rec is null) continue;
-                var packet = await packets.GetAsync(name);
-                var blocking = packet?.BlockingReview().Count() ?? 0;
-                var provider = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
-                var canDrive = rec.Fields.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail);
-                var clean = AgentEvidenceRepo.IsCleanDryRun(kind, detail);
-                var promotable = clean && packet is not null && blocking == 0 && canDrive;
-                var holding = kind switch
-                {
-                    _ when packet is null => "no packet — prepare it first",
-                    _ when !canDrive => rec.Fields.Link.Length == 0 ? "no posting link" : SubmitEndpoints.CannotDrive(provider),
-                    _ when blocking > 0 => $"{blocking} required answer{(blocking == 1 ? "" : "s")} still need{(blocking == 1 ? "s" : "")} you",
-                    AgentEvidenceRepo.Kinds.Submitted => "already submitted — mark it applied",
-                    AgentEvidenceRepo.Kinds.Failed => "last run failed — see what the browser saw",
-                    AgentEvidenceRepo.Kinds.AwaitingCode => "last run timed out waiting for a security code — run Submit again",
-                    _ when clean => settings.DryRun ? "clean dry run; waiting for Dry run only to be turned off" : "clean dry run; Submit all clean or the next pass queues it",
-                    _ => "last dry run stopped on questions only you can answer",
-                };
-                ready.Add(new ReadyRow(name, rec.Fields.Company.Length > 0 ? rec.Fields.Company : Slug.NameStem(name),
-                    rec.Fields.Role, rec.Fields.Link, provider, kind, clean, promotable, blocking, holding, lastAt));
-            }
+            // Pipeline only surfaces actively queued submit requests (the submit queue).
+            // Ready applications are strictly managed under Ready to avoid cross-stage duplication.
+            var ready = Array.Empty<ReadyRow>();
 
             return Results.Ok(new
             {
@@ -186,7 +159,7 @@ public static class PipelineEndpoints
                     prepares = rows.Count(r => r.Will == Will.Prepare),
                     drops = rows.Count(r => r.Will == Will.Drop),
                     awaiting_code = rows.Count(r => r.Phase == Phase.AwaitingCode),
-                    promotable = ready.Count(r => r.Promotable),
+                    promotable = 0,
                 },
             });
         });

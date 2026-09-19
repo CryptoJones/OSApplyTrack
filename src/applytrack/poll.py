@@ -120,6 +120,8 @@ AGGREGATOR_HOSTS = frozenset({
     # is the lead's ``apply_link`` and what gets stored; Handshake-hosted ones are never
     # staged.
     "joinhandshake.com",
+    # BestJobTool reposts job listings across boards without direct employer forms.
+    "bestjobtool.com",
 })
 
 _APPLY_ANCHOR_RE = re.compile(
