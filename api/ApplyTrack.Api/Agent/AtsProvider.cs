@@ -58,6 +58,10 @@ public static partial class AtsProvider
         "sundayy.com", "thebigjobsite.com", "lensa.com",
         // FetchJobs.co: the same chain under another name, Apply off to thebigjobsite.com (#251).
         "fetchjobs.co",
+        // A Handshake posting is a listing of the employer's too (#267): the poller stores
+        // the employer's link from jobApplySetting.externalUrl; one it could not resolve is
+        // apply-by-hand like any aggregator's.
+        "joinhandshake.com",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]

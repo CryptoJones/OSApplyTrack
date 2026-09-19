@@ -26,7 +26,7 @@ from typing import Protocol
 import httpx
 import psycopg
 
-from applytrack import linkedin, mygreenhouse
+from applytrack import handshake, linkedin, mygreenhouse
 from applytrack.criteria import AtsBoard, Criteria
 from applytrack.db import PollRepo
 from applytrack.linkcheck import BROWSER_HEADERS
@@ -257,6 +257,13 @@ def run_all_tenants(
                             repos[tid], profiles[tid], limit_per_source
                         )
                     listings = [*listings, *gathered[key]]
+                if profiles[tid].sources.get(handshake.SOURCE) and not ats_only:
+                    key = f"{handshake.SOURCE}:{tid}"
+                    if key not in gathered:
+                        gathered[key] = _gather_handshake(
+                            repos[tid], profiles[tid], limit_per_source
+                        )
+                    listings = [*listings, *gathered[key]]
                 results[tid] = score_and_stage(
                     repos[tid], profiles[tid], listings, verify_links=verify_links
                 )
@@ -365,6 +372,57 @@ def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Li
                 return []
     except Exception:  # noqa: BLE001 - one tenant's LinkedIn must not abort the poll
         logger.warning("poll source linkedin failed", exc_info=True)
+        return []
+
+
+def _gather_handshake(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+    """One tenant's Handshake listings (#267): the externally-applied postings behind the
+    keyword searches, with the employer's own link. Unlike LinkedIn there is no guest
+    path — Handshake's public pages expose a fraction of the board and hide the employer's
+    URL, so with no live session this yields nothing and says so rather than staging leads
+    that cannot be applied to. A bounced session is cleared for the agent to renew. Every
+    failure is logged and yields an empty bucket — the rest of the poll goes on."""
+    account_of = getattr(repo, "handshake_account", None)
+    try:
+        account = account_of() if account_of is not None else None
+        keep = getattr(repo, "save_handshake_session", None)
+        if account is None:
+            logger.info(
+                "handshake is on with no board account for joinhandshake.com — save one under "
+                "Settings · Agent · Board accounts; Handshake has no guest search"
+            )
+            return []
+        if not account.session_fresh:
+            logger.info(
+                "handshake: no live session for %s — waiting for the agent's browser to sign "
+                "in and keep one",
+                account.username,
+            )
+            return []
+        seen_url = getattr(repo, "seen_url", None) or (lambda _url: False)
+
+        with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
+            hs = handshake.Client(client, account)
+            try:
+                return handshake.fetch_listings(
+                    hs, profile.keywords, limit=limit, already_seen=seen_url,
+                )
+            except handshake.SchemaError as exc:
+                # Loud on purpose: a schema break otherwise looks exactly like a board
+                # with no jobs, and the source would return nothing indefinitely.
+                logger.error("handshake: %s", exc)
+                return []
+            except handshake.NeedsSignIn:
+                logger.info(
+                    "handshake: the kept session for %s was bounced; cleared for the agent's "
+                    "browser to renew",
+                    account.username,
+                )
+                if keep is not None:
+                    keep("", None)
+                return []
+    except Exception:  # noqa: BLE001 - one tenant's Handshake must not abort the poll
+        logger.warning("poll source handshake failed", exc_info=True)
         return []
 
 

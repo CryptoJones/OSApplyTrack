@@ -52,6 +52,8 @@ public sealed class Criteria
     [
         "remotive", "remoteok", "arbeitnow", "jobicy", "weworkremotely",
         "remotefirstjobs", "workanywhere", "hn_whoishiring", "mygreenhouse", "linkedin",
+        // Signed in with the tenant's own account (#267), like the two before it.
+        "handshake",
     ];
 
     public static readonly string[] AtsProviders = ["greenhouse", "lever", "paylocity"];

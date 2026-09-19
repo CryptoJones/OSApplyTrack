@@ -713,6 +713,42 @@ account, or no kept session yet, the source falls back to LinkedIn's guest job
 search — the approach [JobSpy](https://github.com/speedyapply/JobSpy) uses — which
 needs no sign-in but is rate-limited hard.
 
+**Handshake, your own account — campus recruiting, the employer's own posting.** US
+colleges run their campus recruiting on Handshake, which reaches the entry-level and
+internship postings no other source here carries. Handshake does publish an official
+API, but the EDU API is read-only, scoped to a single institution and gated to Career
+Services partners through a developer portal Handshake runs — a self-hosted tenant
+cannot obtain one — so the **Handshake** source in Settings · Criteria (off by default)
+takes the route the LinkedIn source does. Save a **board account for
+`joinhandshake.com`** with your **school email** and password (Settings · Agent · Board
+accounts): the **agent's browser** signs in the way a person does — the school address
+first, which is how Handshake finds the school, then the school's own form, which takes
+the same address — and keeps the ninety-day session sealed on the row, renewing it well
+before it runs out or whenever Handshake bounces it. The poller then searches your
+keywords (a page each, newest first) through the endpoint Handshake's own web app calls,
+and reads each matching posting's `jobApplySetting`: an **externally-applied** posting
+carries the employer's own URL (the ATS Handshake tracked it from — iCIMS, BambooHR and
+the like), which becomes the lead's link under the same aggregator rule; a posting
+Handshake hosts itself is staged with the Handshake posting as its link and no employer
+URL — the poller's apply-by-hand lane — because those school-scoped postings are the ones
+that exist nowhere else. Unlike LinkedIn there is no guest search: Handshake's public
+pages expose a fraction of the board and hide the employer's URL, so with no live session
+the source yields nothing and says so rather than staging leads that cannot be applied
+to. Only a school whose sign-in is a plain username and password form on Handshake's own
+page can be driven; a school that federates to Microsoft, Okta, Shibboleth or Google, or
+that requires a second factor, is refused by name instead of timing out.
+
+> **Read this before saving a Handshake board account.** The password it stores is your
+> **school sign-in** — the same one that opens your campus email, your registrar record
+> and your financial-aid portal — not a job-board password like the LinkedIn one. It is
+> sealed on the board-account row like every other credential here, but a self-hosted
+> database plus its key is then a campus identity, and automated sign-ins from a server
+> can trip a school's new-device rules and lock you out. Most university acceptable-use
+> policies also forbid delegating SSO credentials to third-party software, and
+> Handshake's terms almost certainly forbid automated access — a ban lands on an account
+> the school issued. That is a materially different risk from the LinkedIn source, and it
+> is the operator's call to make knowingly.
+
 **Step 5 — Lever, Ashby, and the long tail.** Only Greenhouse publishes its form
 schema. Lever, Ashby, Workable, Breezy, SmartRecruiters and join.com forms are
 **discovered read-only in the browser** — the agent visits the form one hop past
