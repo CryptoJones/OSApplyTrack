@@ -408,6 +408,14 @@ def fetch_listings(
                     )
                     remember(card.view_url)
                     continue
+                if already_seen(link):
+                    logger.info(
+                        "linkedin: %s — %s destination link already seen; skipped",
+                        card.company,
+                        card.title,
+                    )
+                    remember(card.view_url)
+                    continue
                 out.append(to_listing(card, link, description, remote=remote_only))
                 if len(out) >= limit * 3:
                     return out

@@ -325,14 +325,15 @@ class Seen:
     def has(self, url: str, slug: str) -> bool:
         """Have we already processed this listing?
 
-        The URL is authoritative: when the listing has one, the verdict is purely
-        whether *that* URL was seen — a distinct URL is a distinct lead, never
-        suppressed by a colliding ``company + role`` slug. The slug is consulted
-        only for URL-less listings, where it is all we have.
+        A listing is seen if its canonical URL has already been recorded in
+        the ledger, or if its normalized ``company + role`` slug already matches
+        an existing application or seen opportunity. This prevents re-posted
+        listings (e.g. from LinkedIn with changing job IDs) from staging
+        duplicate leads when the opportunity is already tracked.
         """
         nu = _norm_url(url)
-        if nu:
-            return nu in self.urls
+        if nu and nu in self.urls:
+            return True
         return bool(slug) and slug in self.slugs
 
     def note(self, url: str, slug: str) -> tuple[str, str]:
@@ -1307,7 +1308,7 @@ def score_and_stage(
             if blacklist.has(item.company):
                 continue
             slug = _norm_slug(item.company, item.role)
-            if seen.has(item.link, slug):
+            if seen.has(item.link, slug) or (item.apply_link and seen.has(item.apply_link, slug)):
                 continue
 
             # We act on this listing one way or another below, so it is recorded
@@ -1330,6 +1331,10 @@ def score_and_stage(
                 resolved = resolve_employer_link(item, verify_client)
                 if resolved:
                     logger.info("resolved %s -> %s", item.link, resolved)
+                    if seen.has(resolved, slug):
+                        seen.add(listing_link, slug)
+                        seen.add(resolved, slug)
+                        continue
                     item = replace(item, link=resolved)
 
             # Block dead postings: don't create an entry we can't actually open.
@@ -1343,21 +1348,24 @@ def score_and_stage(
 
             fields = _to_fields(item, profile.default_lane, score, hits)
             try:
-                # add_lead suffixes -N on a slug-name collision, so a distinct URL
-                # whose name matches an existing row is staged, not dropped.
                 name = repo.add_lead(fields)
             except psycopg.errors.UniqueViolation:
-                # add_lead exhausted its name attempts: surface and leave unseen
-                # so a later run retries it.
-                logger.warning(
-                    "stage failed (slug collision) for %s — %s",
+                # Opportunity already tracked under this slug: mark keys seen and skip
+                logger.info(
+                    "lead already tracked for %s — %s (slug collision)",
                     item.company,
                     item.role,
-                    exc_info=True,
                 )
+                seen.add(listing_link, slug)
+                if item.link and item.link != listing_link:
+                    seen.add(item.link, slug)
+                continue
+            if not name:
                 continue
             # Staged: record keys, then collect. Cover letter is drafted on demand.
             seen.add(listing_link, slug)
+            if item.link and item.link != listing_link:
+                seen.add(item.link, slug)
             added.append(name)
     finally:
         if verify_client is not None:

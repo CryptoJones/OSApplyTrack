@@ -77,15 +77,11 @@ class FakeRepo:
             self._seen_slugs.add(slug_key)
 
     def add_lead(self, fields: AppFields) -> str:
-        # Mirror PollRepo.add_lead: suffix -N on a slug-name collision so two
-        # genuinely distinct postings can coexist rather than the second failing.
-        base = filename_for(fields)
-        stem = base[:-3] if base.endswith(".md") else base
-        name = base
-        n = 1
-        while name in self._names:
-            n += 1
-            name = f"{stem}-{n}.md"
+        # Mirror PollRepo.add_lead: a slug collision raises UniqueViolation so the
+        # opportunity is deduplicated across stages rather than duplicated under a -N suffix.
+        name = filename_for(fields)
+        if name in self._names:
+            raise psycopg.errors.UniqueViolation(f"an application named {name!r} already exists")
         self._names.add(name)
         self.added.append(fields)
         return name
@@ -209,9 +205,9 @@ def test_run_poll_keeps_distinct_urls_for_role_variants() -> None:
     assert len(added) == 2
 
 
-def test_score_and_stage_unique_names_for_same_title_distinct_urls() -> None:
-    # Same role title (location only in a separate field) -> same slug stem but
-    # distinct URLs. Each must get its own row via a -N suffix, not be dropped.
+def test_score_and_stage_dedupes_same_company_role_even_distinct_urls() -> None:
+    # Same company and role title -> same slug. Staged once; second is deduplicated
+    # rather than minting an orphan duplicate row via a -N suffix (#269).
     repo = FakeRepo()
     c = Criteria(keywords=["engineer"])
     added = score_and_stage(
@@ -222,8 +218,8 @@ def test_score_and_stage_unique_names_for_same_title_distinct_urls() -> None:
             _lead("Acme", "Backend Engineer", link="https://acme.co/2", location="SF"),
         ],
     )
-    assert len(added) == 2
-    assert added == ["acme-backend-engineer.md", "acme-backend-engineer-2.md"]
+    assert len(added) == 1
+    assert added == ["acme-backend-engineer.md"]
 
 
 def test_run_poll_dedupes_urlless_by_slug() -> None:
@@ -402,9 +398,10 @@ def test_run_poll_honors_preloaded_seen_url() -> None:
     assert repo.added == []
 
 
-def test_run_poll_preloaded_slug_blocks_only_urlless() -> None:
-    # The slug is the fallback key: a preloaded slug blocks a url-less listing, but
-    # a listing carrying a distinct URL is judged by URL and still staged.
+def test_run_poll_preloaded_slug_blocks_even_with_url() -> None:
+    # A preloaded slug (from an existing row in lead, ready, or pipeline, or seen)
+    # blocks incoming postings for the same opportunity, preventing duplicate leads
+    # when listings are reposted under new URLs (#269).
     c = Criteria(keywords=["engineer"])
 
     urlless = FakeRepo(seen=[("slug", "acme-backend-engineer")])
@@ -414,7 +411,7 @@ def test_run_poll_preloaded_slug_blocks_only_urlless() -> None:
     added = run_poll(
         with_url, c, listings=[_lead("Acme", "Backend Engineer", link="https://acme.co/9")]
     )
-    assert len(added) == 1
+    assert added == []
 
 
 def test_run_all_tenants_routes_sources_per_profile() -> None:
@@ -936,3 +933,64 @@ def test_resolve_employer_link_gives_up_quietly_when_the_listing_cannot_be_read(
     monkeypatch.setattr("applytrack.poll.fetch_public", boom)
     item = Listing(company="Acme", role="Engineer", link="https://remotive.com/remote-jobs/x")
     assert resolve_employer_link(item, client=None) is None  # type: ignore[arg-type]
+
+
+def test_run_poll_dedupes_against_existing_ready_or_pipeline_rows() -> None:
+    # When an application already exists in any stage (seeded via iter_existing),
+    # incoming listings matching its URL or company+role slug are dropped (#269).
+    repo = FakeRepo(
+        existing=[
+            ("https://haystack.cv/jobs/123", "Haystack", "Senior Backend Engineer"),
+            ("https://example.com/job/456", "FetchJobs.co", ".NET Developer"),
+        ]
+    )
+    c = Criteria(keywords=["engineer", "developer"])
+
+    # 1. Matching URL is skipped
+    added = run_poll(
+        repo,
+        c,
+        listings=[
+            _lead("Different Company", "Other Role", link="https://haystack.cv/jobs/123"),
+        ],
+    )
+    assert added == []
+
+    # 2. Matching company+role slug with different URL is skipped
+    added = run_poll(
+        repo,
+        c,
+        listings=[
+            _lead("FetchJobs.co", ".NET Developer", link="https://linkedin.com/jobs/view/999999"),
+        ],
+    )
+    assert added == []
+
+
+def test_score_and_stage_dedupes_resolved_employer_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When an aggregator link resolves to an employer URL already in seen,
+    # the resolved listing is skipped and not staged (#269).
+    from applytrack.linkcheck import LinkStatus
+
+    html = b'<html><body><a class="btn" href="https://jobs.lever.co/acme/1">Apply</a></body></html>'
+    monkeypatch.setattr("applytrack.poll.fetch_public", lambda url, *, client=None: html)
+    monkeypatch.setattr(
+        "applytrack.poll.probe",
+        lambda url, *, client=None, timeout=12.0: LinkStatus(
+            url=url, ok=True, status_code=200, final_url=url
+        ),
+    )
+    monkeypatch.setattr("applytrack.poll.is_reachable", lambda url, *, client=None: True)
+
+    repo = FakeRepo(seen=[("url", "jobs.lever.co/acme/1")])
+    c = Criteria(keywords=["engineer"])
+    item = Listing(
+        company="Acme",
+        role="Engineer",
+        link="https://remoteok.com/remote-jobs/acme-engineer-1111",
+    )
+    added = score_and_stage(repo, c, listings=[item], verify_links=True)
+    assert added == []
+
