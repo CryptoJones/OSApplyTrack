@@ -113,8 +113,14 @@ internal static partial class LinkedInEasyApply
 
                 if (await page.Locator(Submit).First.IsVisibleAsync())
                 {
-                    await UntickFollowAsync(page);
+                    var notFollowing = await UntickFollowAsync(page);
                     shot = await session.ScreenshotAsync();
+                    // Submitting would follow the company in the person's name. Not the agent's to do.
+                    if (!dryRun && !notFollowing)
+                    {
+                        await LeaveAsync(page, save: true);
+                        return Fail("refused to submit: \"Follow the company\" could not be unticked, and applying is not following — the draft is saved on LinkedIn");
+                    }
                     if (dryRun)
                     {
                         await LeaveAsync(page, save: false);
@@ -194,16 +200,22 @@ internal static partial class LinkedInEasyApply
         finally { page.Response -= OnResponse; }
     }
 
-    /// <summary>"Follow &lt;company&gt;" arrives ticked. Applying is not following.</summary>
-    private static async Task UntickFollowAsync(IPage page)
+    /// <summary>"Follow &lt;company&gt;" arrives ticked. Applying is not following. True when the
+    /// box is absent or verifiably unticked; false when it could not be shown to be.</summary>
+    private static async Task<bool> UntickFollowAsync(IPage page)
     {
         try
         {
             var follow = page.Locator(Follow).First;
-            if (await follow.CountAsync() > 0 && await follow.IsCheckedAsync())
+            if (await follow.CountAsync() == 0) return true;
+            for (var attempt = 0; attempt < 2 && await follow.IsCheckedAsync(); attempt++)
+            {
                 await follow.EvaluateAsync("el => (document.querySelector(`label[for=\"${CSS.escape(el.id)}\"]`) || el).click()");
+                await page.WaitForTimeoutAsync(200);
+            }
+            return !await page.Locator(Follow).First.IsCheckedAsync();
         }
-        catch (PlaywrightException) { /* cosmetic; never worth a run */ }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
     }
 
     /// <summary>Close the dialog: Save keeps LinkedIn's draft for the person, Discard leaves nothing.</summary>

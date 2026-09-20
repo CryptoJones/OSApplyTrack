@@ -396,6 +396,20 @@ public sealed class AgentWorker : BackgroundService
         var dryRun = req.DryRun || settings.DryRun;
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
+        // One LinkedIn run per tenant at a time, across every worker (#278): two browsers signed
+        // in to one personal account at once is exactly what LinkedIn looks for, and it is also
+        // what makes the daily cap below a real one rather than a race between two readers of the
+        // same count. Held on this connection for the run; released after it, and by Postgres
+        // itself if the worker dies.
+        var linkedInLock = detected == AtsProvider.LinkedInEasy ? $"applytrack:linkedin-easy:{t}" : null;
+        if (linkedInLock is not null)
+            await conn.ExecuteAsync("SELECT pg_advisory_lock(hashtext(@key))", new { key = linkedInLock });
+        async Task ReleaseLinkedInAsync()
+        {
+            if (linkedInLock is null) return;
+            try { await conn.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@key))", new { key = linkedInLock }); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "linkedin lock release failed"); }
+        }
         if (!dryRun && detected == AtsProvider.LinkedInEasy
             && await evidence.SubmittedSinceAsync("linkedin.com", DailyWindow) >= LinkedInEasyDailyCap)
         {
@@ -546,8 +560,10 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
+            await ReleaseLinkedInAsync();
             return false;
         }
+        await ReleaseLinkedInAsync();
 
         if (outcome.Closed)
         {
@@ -606,10 +622,12 @@ public sealed class AgentWorker : BackgroundService
         if (outcome.Discovered is { Count: > 0 } met)
         {
             var work = await LoadTenantWorkAsync(conn, t, settings);
-            if (work.Cfg.IsConfigured
-                && await _packets.ExtendAsync(rec, packet, met, work.Inputs, work.Scope, ct) > 0
-                && !packet.BlockingReview().Any())
-                _dryAgain.Add(req.Id);
+            if (work.Cfg.IsConfigured)
+            {
+                var (answered, extended) = await _packets.ExtendAsync(rec, packet, met, work.Inputs, work.Scope, ct);
+                if (answered > 0 && !extended.BlockingReview().Any())
+                    _dryAgain.Add(req.Id);
+            }
         }
 
         if (outcome.Submitted)

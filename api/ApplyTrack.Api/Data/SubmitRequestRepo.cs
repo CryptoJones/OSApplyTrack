@@ -81,11 +81,11 @@ public sealed class SubmitRequestRepo
     /// application, in the order the worker will claim it (oldest request first).</summary>
     public sealed record PendingView(
         string ApplicationName, string Company, string Role, string Status, string Link,
-        bool DryRun, bool Prepare, DateTimeOffset RequestedAt, DateTimeOffset? ClaimedAt, bool CodeReceived);
+        bool DryRun, bool Prepare, DateTimeOffset RequestedAt, DateTimeOffset? ClaimedAt, bool CodeReceived, string Source = "");
 
     private sealed record PendingRow(
         string ApplicationName, string Company, string Role, string Status, string Link,
-        bool DryRun, bool Prepare, DateTime RequestedAt, DateTime? ClaimedAt, bool CodeReceived);
+        bool DryRun, bool Prepare, DateTime RequestedAt, DateTime? ClaimedAt, bool CodeReceived, string Source);
 
     /// <summary>Every request still pending (queued or claimed, not done), oldest first —
     /// the same order <see cref="SubmitQueue.ClaimNextAsync"/> drains them in.</summary>
@@ -95,7 +95,7 @@ public sealed class SubmitRequestRepo
             """
             SELECT r.application_name AS applicationname, a.company, a.role, a.status, a.link,
                    r.dry_run AS dryrun, r.prepare, r.requested_at AS requestedat, r.claimed_at AS claimedat,
-                   r.security_code <> '' AS codereceived
+                   r.security_code <> '' AS codereceived, a.source
             FROM submit_requests r
             JOIN applications a ON a.tenant_id = r.tenant_id AND a.name = r.application_name
             WHERE r.tenant_id = @t AND r.done_at IS NULL
@@ -103,7 +103,7 @@ public sealed class SubmitRequestRepo
             """,
             new { t = _t });
         return rows.Select(r => new PendingView(r.ApplicationName, r.Company, r.Role, r.Status, r.Link,
-            r.DryRun, r.Prepare, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), r.CodeReceived)).ToList();
+            r.DryRun, r.Prepare, Utc(r.RequestedAt)!.Value, Utc(r.ClaimedAt), r.CodeReceived, r.Source)).ToList();
     }
 
     /// <summary>The applications with a request still pending (queued or claimed, not done).</summary>

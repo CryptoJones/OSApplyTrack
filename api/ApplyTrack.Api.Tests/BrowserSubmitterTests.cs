@@ -62,6 +62,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // steps that only exist once reached, a validator that flags a placeholder, a pre-ticked
         // "Follow", and a close that asks Discard or Save.
         _fixture.MapGet("/li/jobs/view/1", () => Results.Content(EasyApplyHtml, "text/html"));
+        // A "Follow" box that will not stay unticked.
+        _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
+            """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
         _fixture.MapGet("/li/login", () => Results.Content("<html><body><h1>Sign in</h1></body></html>", "text/html"));
         _fixture.MapPost("/li/event", async (HttpRequest req) =>
         {
@@ -1853,6 +1856,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("No", sent.GetProperty("visa").GetString());
         // "Follow Acme" arrives ticked. Applying is not following.
         Assert.False(sent.GetProperty("follow").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_refuses_to_submit_while_it_would_follow_the_company_in_your_name()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sticky-follow", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("could not be unticked", outcome.Error);
+        var events = EasyApplyEvents();
+        Assert.DoesNotContain(events, e => e.TryGetProperty("submitted", out _));
+        Assert.Equal("save", Assert.Single(events).GetProperty("left").GetString());
     }
 
     [SkippableFact]

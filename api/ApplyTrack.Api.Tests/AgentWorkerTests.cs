@@ -787,6 +787,8 @@ public class AgentWorkerTests(PostgresFixture pg)
                     Discovered: [new PacketQuestion(question, question, true, PacketQuestion.Text, [], PacketQuestion.Custom)]));
         });
         var llm = new StubLlmClient(Responders.Agent(answersJson: $$"""{"answers":[{"id":"{{question}}","answer":"12"}]}"""));
+        // The queue is drained across tenants: settle what other tests left, so the count is this one's.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
         await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
         using var worker = NewWorker(llm, pg.ConnectionString, notifier, browser: FakeBrowser, submitter: fake);
 

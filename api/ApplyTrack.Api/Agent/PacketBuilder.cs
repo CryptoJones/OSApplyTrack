@@ -71,25 +71,30 @@ public sealed partial class PacketBuilder
     /// set, then the model. LinkedIn's Easy Apply shows its questions only as each step is reached
     /// (#278), so its packet grows run by run. Returns how many of the new questions got an answer.
     /// </summary>
-    public async Task<int> ExtendAsync(
+    public async Task<(int Answered, AgentPacket Packet)> ExtendAsync(
         AppRecord rec, AgentPacket packet, IReadOnlyList<PacketQuestion> found, PacketInputs inputs, PacketScope scope, CancellationToken ct = default)
     {
         var fresh = found.Where(q => packet.Questions.All(known => known.Id != q.Id)).ToList();
-        if (fresh.Count == 0) return 0;
+        if (fresh.Count == 0) return (0, packet);
         var letter = await scope.Letters.GetBodyAsync(rec.Name) ?? "";
         var ctx = new AnswerContext(inputs.Resume, inputs.Settings, inputs.Email, letter, packet.PostingExcerpt);
         var (answers, review) = await _answers.DraftAsync(fresh, ctx, inputs.Cfg, ct, await scope.Bank.PinnedAsync());
         await scope.Bank.RecordAsync(fresh, answers, rec.Name);
 
+        // The browser run and the drafting above took minutes, and the person may have edited an
+        // answer meanwhile. Merge into the packet as it is NOW, not the copy read before the run:
+        // only the new questions and their answers are this method's to write.
+        packet = await scope.Packets.GetAsync(rec.Name) ?? packet;
+        fresh = fresh.Where(q => packet.Questions.All(known => known.Id != q.Id)).ToList();
         packet.Questions.AddRange(fresh);
-        foreach (var (id, answer) in answers) packet.Answers[id] = answer;
-        packet.NeedsReview.AddRange(review);
+        foreach (var (id, answer) in answers) packet.Answers.TryAdd(id, answer);
+        packet.NeedsReview.AddRange(review.Where(r => packet.NeedsReview.All(known => known.Id != r.Id)));
         packet.RecomputeReview();
         await scope.Packets.UpsertAsync(packet);
         var answered = fresh.Count(q => packet.Answers.TryGetValue(q.Id, out var a) && a.Trim().Length > 0);
         _log.LogInformation("{Name}: {Found} question(s) met for the first time, {Answered} answered, {Review} to review",
             rec.Name, fresh.Count, answered, packet.NeedsReview.Count);
-        return answered;
+        return (answered, packet);
     }
 
     /// <summary>The form every non-Greenhouse packet gets — what any ATS asks for first.</summary>
