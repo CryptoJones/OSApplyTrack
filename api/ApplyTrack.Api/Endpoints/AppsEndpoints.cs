@@ -42,10 +42,12 @@ public static class AppsEndpoints
             return Results.Ok(await repo.ListAsync());
         });
 
-        app.MapGet("/api/stats", async (ApplicationRepo repo) =>
+        app.MapGet("/api/stats", async (ApplicationRepo repo, AgentEvidenceRepo evidence) =>
         {
             var (status, lane) = await repo.StatsAsync();
-            return Results.Ok(new { status, lane });
+            // `errors` is the strip's "N errors" chip (#284): Ready applications whose last
+            // run failed. They are still counted in status.ready — that is their status.
+            return Results.Ok(new { status, lane, errors = await evidence.ErroredCountAsync() });
         });
 
         app.MapGet("/api/apps/{name}", async (

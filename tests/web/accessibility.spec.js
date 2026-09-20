@@ -707,3 +707,58 @@ test("a status chip opens that status's applications as a list in the main pane"
   await page.getByRole("table", { name: "Lead applications" }).getByRole("button", { name: "Example Co · Senior Engineer" }).click();
   await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
 });
+
+test("the errors chip sits between ready and applied and lists what is stuck, and why", async ({ page }) => {
+  // A failed run used to drop its application back into Ready, where it looked like a
+  // packet nobody had tried (#284).
+  const readyApps = [
+    { ...application, status: "ready" },
+    { ...applications[1], status: "ready" },
+    applications[2],
+  ];
+  const stuck = {
+    name: application.filename, company: application.company, role: application.role,
+    link: "https://careers.example.com/jobs/1", provider: "unknown",
+    error: "no application form was found on the page — nothing to fill (the Apply button did not respond within 5 s)",
+    at: "2026-09-20T07:05:03Z", runs: 4, captcha: false,
+    next: "you", retry_at: null, why: "gave up after 3 failed runs in 7 days",
+  };
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    let body = { ok: true };
+    if (path === "/api/auth/me") body = { email: "person@example.com" };
+    else if (path === "/api/apps" && method === "GET") body = readyApps;
+    else if (path === "/api/stats") body = { status: { ready: 2, applied: 1 }, lane: {}, errors: 1 };
+    else if (path === "/api/errors") body = { count: 1, retrying: 0, needs_you: 1, errors: [stuck] };
+    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true, browser_available: true, dry_run: false };
+    else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
+    else if (path.endsWith("/submit") && method === "POST") body = { queued: true, dry_run: true };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/");
+
+  // The errored one is an error, not a Ready packet: the two chips never count it twice.
+  const strip = page.locator(".pipe-stat");
+  await expect(strip).toHaveText([/1\s*ready/, /1\s*error$/, /1\s*applied/]);
+
+  await page.getByRole("button", { name: "1 application with errors" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Errors" })).toBeVisible();
+  const row = page.getByRole("row").filter({ hasText: application.company });
+  await expect(row).toContainText("the Apply button did not respond within 5 s");
+  await expect(row).toContainText("Needs you");
+  await expect(row).toContainText("gave up after 3 failed runs in 7 days");
+  await expectNoSeriousViolations(page);
+
+  const sent = page.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith("/submit") && request.method() === "POST");
+  await row.getByRole("button", { name: /^Retry / }).click();
+  expect((await sent).postDataJSON()).toEqual({ dry_run: true });
+
+  // Ready lists only what is still to try.
+  await page.getByRole("button", { name: "ready, 1 applications" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Ready" })).toBeVisible();
+  await expect(page.locator("#content")).toContainText("1 application.");
+  await expect(page.locator("#content")).not.toContainText(application.company);
+});

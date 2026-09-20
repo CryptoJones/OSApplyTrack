@@ -206,6 +206,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/consent", () => Results.Content(ConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
         // The same banner, over the form itself.
         _fixture.MapGet("/jobs/consent-form", () => Results.Content(ConsentHtml.Replace("BODY", FormHtml), "text/html"));
+        // Radancy (TalentBrew), as UnitedHealth Group runs it: a dialog named for nothing but
+        // "Important System Message", its only mention of cookies in the text (#283) — once
+        // with Radancy's own button id, once as any such dialog a vendor we have not met ships.
+        _fixture.MapGet("/jobs/consent-unnamed", () => Results.Content(UnnamedConsentHtml.Replace("BUTTONID", "system-ialert-button").Replace("BODY", ConsentPostingBody), "text/html"));
+        _fixture.MapGet("/jobs/consent-unnamed-generic", () => Results.Content(UnnamedConsentHtml.Replace("BUTTONID", "ok").Replace("BODY", ConsentPostingBody), "text/html"));
+        // No role, no telling name, and "Accept" is a link: just a bar pinned to the bottom.
+        _fixture.MapGet("/jobs/consent-pinned-link", () => Results.Content(PinnedLinkConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
+        // A dialog that mentions cookies but holds the form itself: its "I agree" is an answer.
+        _fixture.MapGet("/jobs/consent-is-the-form", () => Results.Content(AgreeInsideFormDialogHtml.Replace("BODY", FormHtml), "text/html"));
+        // The same, where all the dialog holds besides the button is an acknowledgement checkbox.
+        _fixture.MapGet("/jobs/consent-is-an-acknowledgement", () => Results.Content(AgreeBesideCheckboxHtml.Replace("BODY", FormHtml), "text/html"));
         // Zoho Recruit's consent: rendered after the page has booted, with a transparent
         // freeze layer over the whole viewport until a choice is made (fyerx).
         _fixture.MapGet("/jobs/consent-late", () => Results.Content(LateFreezeConsentHtml, "text/html"));
@@ -994,6 +1005,59 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           </div>
         </div>
         BODY
+        </body></html>
+        """;
+
+    // Nothing in the box is named for cookies — not the id, not the class, not the label.
+    private const string UnnamedConsentHtml = """
+        <html><body>
+        <div id="system-imessage" role="dialog" aria-label="Important System Message"
+             style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:flex-end">
+          <div style="background:#fff;width:100%;padding:24px">
+            <p>We use cookies and other tracking technologies to support navigation and improve our site.</p>
+            <button type="button" id="BUTTONID" onclick="document.getElementById('system-imessage').remove()">Accept</button>
+          </div>
+        </div>
+        BODY
+        </body></html>
+        """;
+
+    // A full-screen bar with nothing to go on but where it sits and what it says.
+    private const string PinnedLinkConsentHtml = """
+        <html><body>
+        <div id="notice-bar" style="position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:flex-end">
+          <div style="background:#fff;width:100%;padding:24px">
+            <p>This website stores cookies on your device.</p>
+            <a href="#" onclick="document.getElementById('notice-bar').remove();return false">Accept and continue</a>
+          </div>
+        </div>
+        BODY
+        </body></html>
+        """;
+
+    // A pre-application acknowledgement: a checkbox and "I agree", in a dialog whose small print
+    // mentions cookies. Clicked as a banner, it would throw the application away.
+    private const string AgreeBesideCheckboxHtml = """
+        <html><body>
+        <div id="ack-panel" role="dialog" aria-label="Before you apply"
+             style="position:fixed;left:0;right:0;bottom:0;background:#fff;padding:16px">
+          <p>This site uses cookies. Tick to confirm you have read the notice.</p>
+          <label><input type="checkbox" name="ack"> I have read the applicant notice</label>
+          <button type="button" onclick="document.body.innerHTML='<p>gone</p>'">I agree</button>
+        </div>
+        BODY
+        </body></html>
+        """;
+
+    // The application sits inside a dialog whose small print mentions cookies. "I agree" here
+    // throws the form away: clicking it as a banner would leave nothing to fill.
+    private const string AgreeInsideFormDialogHtml = """
+        <html><body>
+        <div id="apply-panel" role="dialog" aria-label="Application">
+          <p>By applying you acknowledge this site uses cookies.</p>
+          <button type="button" onclick="document.getElementById('apply-panel').remove()">I agree</button>
+          BODY
+        </div>
         </body></html>
         """;
 
@@ -2386,6 +2450,31 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // on "I'm interested" landed on the transparent freeze layer the late consent
         // component put over the page.
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent-late", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableTheory]
+    [InlineData("consent-unnamed")]
+    [InlineData("consent-unnamed-generic")]
+    [InlineData("consent-pinned-link")]
+    public async Task A_cookie_dialog_named_for_nothing_but_its_text_is_dismissed(string path)
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // UnitedHealth Group on Radancy: "the Apply button did not respond within 5 s", three
+        // runs running — the box is "Important System Message" and only its text says cookies (#283).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/{path}", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableTheory]
+    [InlineData("consent-is-the-form")]
+    [InlineData("consent-is-an-acknowledgement")]
+    public async Task An_agree_button_in_a_dialog_that_asks_for_anything_is_an_answer_not_a_banner(string path)
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/{path}", Packet(), (Pdf, "resume.pdf"), dryRun: false);
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }

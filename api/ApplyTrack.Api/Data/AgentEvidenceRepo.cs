@@ -87,6 +87,55 @@ public sealed class AgentEvidenceRepo
             JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone(), r.CreatedAt)).ToList();
     }
 
+    /// <summary>One application in the Errors view: parked in Ready with a failed run as its newest evidence.</summary>
+    public sealed record Errored(
+        string ApplicationName, string Company, string Role, string Link, string Source,
+        JsonElement Detail, DateTimeOffset At, int Runs, int RecentFailures);
+
+    private sealed record ErroredRow(
+        string ApplicationName, string Company, string Role, string Link, string Source,
+        string Detail, DateTime At, int Runs, int RecentFailures);
+
+    private const string ErroredFrom =
+        """
+        FROM applications a
+        JOIN LATERAL (
+            SELECT e.kind, e.detail, e.created_at FROM agent_evidence e
+            WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
+            ORDER BY e.created_at DESC, e.id DESC LIMIT 1) last ON true
+        WHERE a.tenant_id = @t AND a.status = 'ready' AND last.kind = 'failed'
+          AND NOT EXISTS (SELECT 1 FROM submit_requests r
+                          WHERE r.tenant_id = a.tenant_id AND r.application_name = a.name AND r.done_at IS NULL)
+        """;
+
+    /// <summary>
+    /// The applications that are stuck: still <c>ready</c>, nothing queued for them, and the
+    /// last thing the browser did with them was fail (#284). A failed run used to drop its
+    /// application back into Ready, where it looked exactly like a packet nobody had tried
+    /// yet. Oldest failure first — the one that has waited longest.
+    /// </summary>
+    public async Task<IReadOnlyList<Errored>> ErroredAsync(TimeSpan failureWindow)
+    {
+        var rows = await _conn.QueryAsync<ErroredRow>(
+            """
+            SELECT a.name AS applicationname, a.company, a.role, a.link, a.source,
+                   last.detail::text AS detail, last.created_at AS at,
+                   (SELECT count(*)::int FROM agent_evidence e
+                    WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name) AS runs,
+                   (SELECT count(*)::int FROM agent_evidence e
+                    WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
+                      AND e.kind = 'failed' AND e.created_at > now() - @window) AS recentfailures
+            """ + "\n" + ErroredFrom + " ORDER BY last.created_at, a.name",
+            new { t = _t, window = failureWindow });
+        return rows.Select(r => new Errored(r.ApplicationName, r.Company, r.Role, r.Link, r.Source,
+            JsonDocument.Parse(r.Detail.Length > 0 ? r.Detail : "{}").RootElement.Clone(),
+            new DateTimeOffset(DateTime.SpecifyKind(r.At, DateTimeKind.Utc)), r.Runs, r.RecentFailures)).ToList();
+    }
+
+    /// <summary>How many applications <see cref="ErroredAsync"/> would list — the strip's number.</summary>
+    public Task<int> ErroredCountAsync() =>
+        _conn.ExecuteScalarAsync<int>("SELECT count(*)::int " + ErroredFrom, new { t = _t });
+
     /// <summary>The newest piece of evidence for each of the named applications, without
     /// bytes — what the Pipeline view labels a queued request by (parked on a security
     /// code, last dry run clean or not). Applications with no evidence are absent.</summary>

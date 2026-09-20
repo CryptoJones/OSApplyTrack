@@ -73,7 +73,10 @@ const state = {
   sort: readStoredSort(),
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status
+  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors
+  // Ready applications whose last browser run failed (#284): their own chip and view,
+  // and no longer counted or listed under Ready.
+  errors: [],
   settingsTab: "accessibility",
   coverLettersEnabled: true,
   // The agent (Settings · Agent) is opt-in; OFF hides the evaluate affordance.
@@ -317,15 +320,27 @@ function safeUrl(u) {
 // ---- Pipeline strip -------------------------------------------------------
 
 function renderPipeline() {
-  const counts = state.stats.status || {};
-  const parts = STATUSES.filter((s) => counts[s]).map((s) => {
-    const active = state.filterStatus === s;
+  const raw = state.stats.status || {};
+  // An errored application is still `ready` in the table; on the strip it is an error,
+  // not a Ready packet, so the two chips never count the same one twice (#284).
+  const errorCount = state.errors.length;
+  const counts = { ...raw, ready: Math.max(0, (raw.ready || 0) - errorCount) };
+  const parts = [];
+  const errorsChip = () => `<button type="button" class="pipe-stat" data-view="errors" data-status="errors"
+      aria-pressed="${state.mode === "errors"}" aria-label="${errorCount} application${errorCount === 1 ? "" : "s"} with errors">
+      <span class="n" aria-hidden="true">${errorCount}</span><span>error${errorCount === 1 ? "" : "s"}</span></button>`;
+  let errorsPlaced = false;
+  for (const s of STATUSES) {
+    // Errors sit after lead and ready, before applied — wherever those chips happen to be.
+    if (!errorsPlaced && errorCount && s !== "lead" && s !== "ready") { parts.push(errorsChip()); errorsPlaced = true; }
+    if (!counts[s]) continue;
+    const active = state.filterStatus === s && state.mode !== "errors";
     const label = STATUS_LABEL[s] || s;
-    return `<button type="button" class="pipe-stat" data-status="${s}" aria-pressed="${active}"
+    parts.push(`<button type="button" class="pipe-stat" data-status="${s}" aria-pressed="${active}"
       aria-label="${escapeHtml(label)}, ${counts[s]} applications">
-      <span class="n" aria-hidden="true">${counts[s]}</span><span>${escapeHtml(label)}</span></button>`;
-  });
-  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+      <span class="n" aria-hidden="true">${counts[s]}</span><span>${escapeHtml(label)}</span></button>`);
+  }
+  const total = Object.values(raw).reduce((sum, n) => sum + n, 0);
   if (total) parts.push(`<span class="pipe-total"><span class="n">${total}</span>total</span>`);
   // The label is the door to the submit queue: what the worker will drain, and what
   // each request turns into when it does (submit, dry run, rebuild, or dropped).
@@ -334,7 +349,12 @@ function renderPipeline() {
       title="Open the submit queue">Pipeline</button>
     ${parts.join("") || `<span class="pipeline-empty">No applications yet</span>`}`;
   pipelineEl.querySelector("#pipeline-btn").addEventListener("click", () => openPipeline());
-  pipelineEl.querySelectorAll(".pipe-stat[data-status]").forEach((el) => {
+  const errorsBtn = pipelineEl.querySelector('.pipe-stat[data-view="errors"]');
+  if (errorsBtn) errorsBtn.addEventListener("click", () => {
+    if (state.mode === "errors") { renderEmpty(); renderPipeline(); }
+    else openErrors();
+  });
+  pipelineEl.querySelectorAll(".pipe-stat[data-status]:not([data-view])").forEach((el) => {
     el.addEventListener("click", () => {
       state.filterStatus = state.filterStatus === el.dataset.status ? "" : el.dataset.status;
       statusSel.value = state.filterStatus;
@@ -397,6 +417,84 @@ function renderStatusView() {
     </div>`;
   document.title = `${title} | ApplyTrack`;
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
+}
+
+// ---- Errors view -------------------------------------------------------------
+// The applications that are stuck (#284): still Ready, nothing queued, and the last thing
+// the browser did with them was fail. Each row says what went wrong and what happens
+// next — a retry the agent will make by itself, or that it is waiting on you, and why.
+
+const errorNames = () => new Set(state.errors.map((e) => e.name));
+
+async function loadErrors() {
+  try {
+    const data = await api("GET", "/api/errors");
+    state.errors = Array.isArray(data.errors) ? data.errors : [];
+  } catch {
+    // A request that failed says nothing about what is stuck: keep what was last known,
+    // or the errored ones would slide back under Ready until the next good answer.
+  }
+}
+
+async function openErrors({ focus = true } = {}) {
+  state.mode = "errors";
+  state.current = null;
+  state.filterStatus = "";
+  statusSel.value = "";
+  showDetailPane();
+  await loadErrors();
+  renderPipeline();
+  renderSidebar();
+  renderErrorsView();
+  if (focus) focusView("h1");
+}
+
+function renderErrorsView() {
+  const errors = state.errors;
+  const retrying = errors.filter((e) => e.next === "retry").length;
+  const rows = errors.map((e) => {
+    const link = safeUrl(e.link);
+    const next = e.next === "retry"
+      ? `<span class="link-status warn">Retrying by itself</span>
+         <div class="field-help">${e.retry_at ? `next try after ${escapeHtml(new Date(e.retry_at).toLocaleString())} — ` : ""}${escapeHtml(e.why)}</div>`
+      : `<span class="link-status bad">Needs you</span><div class="field-help">${escapeHtml(e.why)}</div>`;
+    return `
+    <tr>
+      <td><button type="button" class="link-button" data-open="${escapeHtml(e.name)}">${pipelineRowTitle(e)}</button>
+        <div class="field-help">${escapeHtml(e.provider || "")}${link ? ` · <a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">posting<span class="sr-only"> (opens in a new tab)</span></a>` : ""}</div></td>
+      <td>${escapeHtml(e.error || "the run failed")}</td>
+      <td>${escapeHtml(new Date(e.at).toLocaleString())}<div class="field-help">${e.runs} run${e.runs === 1 ? "" : "s"}</div></td>
+      <td>${next}</td>
+      <td><button type="button" class="btn btn-xs" data-retry="${escapeHtml(e.name)}"
+        aria-label="Retry ${escapeHtml(e.company)} with a dry run">Retry</button></td>
+    </tr>`;
+  }).join("");
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Stuck</div>
+        <h1>Errors</h1>
+        <p aria-live="polite">${errors.length
+          ? `${errors.length} application${errors.length === 1 ? "" : "s"} whose last run failed — ${retrying} will be retried automatically, ${errors.length - retrying} need${errors.length - retrying === 1 ? "s" : ""} you.`
+          : "Nothing is stuck. Every Ready application is either untried or ran clean."}</p>
+      </header>
+      ${errors.length ? `
+      <div class="table-scroll">
+        <table class="pipeline-table">
+          <caption class="sr-only">Applications whose last run failed, oldest failure first</caption>
+          <thead><tr><th scope="col">Application</th><th scope="col">What went wrong</th><th scope="col">Last run</th><th scope="col">What happens next</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>` : ""}
+    </div>`;
+  document.title = "Errors | ApplyTrack";
+  contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
+  contentEl.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", async () => {
+    await queueSubmit(b.dataset.retry, b, true);
+    // Queued means it has left Errors for the Pipeline until the run lands. The row and
+    // its button are gone with the repaint, so focus goes to the heading, not the body.
+    if (state.mode === "errors") await openErrors();
+  }));
 }
 
 // ---- Pipeline view ----------------------------------------------------------
@@ -520,9 +618,12 @@ function renderPipelineView(data) {
 
 function filteredApps() {
   const q = state.query.trim().toLowerCase();
+  const errored = state.filterStatus === "ready" ? errorNames() : null;
   const apps = state.apps.filter((a) => {
     if (state.filterLane && a.lane !== state.filterLane) return false;
     if (state.filterStatus && a.status !== state.filterStatus) return false;
+    // An errored application has its own view; Ready lists the ones still to try (#284).
+    if (errored && errored.has(a.filename)) return false;
     if (!q) return true;
     return (
       a.company.toLowerCase().includes(q) ||
@@ -2728,6 +2829,7 @@ async function refresh() {
   // Stats are derived from the same applications table revision, so an unchanged
   // list means they are unchanged too. Fetch them only after an ETag miss.
   const stats = await api("GET", "/api/stats");
+  await loadErrors();
   state.apps = list.data;
   state.stats = stats;
   state.appsEtag = list.etag;
