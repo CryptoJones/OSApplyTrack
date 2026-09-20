@@ -38,7 +38,7 @@ public static class ErrorsEndpoints
         {
             var settings = await agentSettings.GetAsync();
             var rows = (await evidence.ErroredAsync(ReadyReconciler.Window))
-                .Select(e => Describe(e, settings.LongTail)).ToList();
+                .Select(e => Describe(e, settings.LongTail, settings.LinkedInEasy)).ToList();
             return Results.Ok(new
             {
                 count = rows.Count,
@@ -52,7 +52,7 @@ public static class ErrorsEndpoints
 
     /// <summary>The row for one errored application: the same rules the reconciler applies,
     /// read ahead of time so the person is told what it will do. Public for tests.</summary>
-    public static ErrorRow Describe(AgentEvidenceRepo.Errored e, bool longTail)
+    public static ErrorRow Describe(AgentEvidenceRepo.Errored e, bool longTail, bool linkedInEasy = false)
     {
         var provider = AtsProvider.Detect(e.Link, e.Source);
         var error = Text(e.Detail, "error");
@@ -66,7 +66,7 @@ public static class ErrorsEndpoints
             why = "the form is guarded by a captcha — finish it with Copy answers and open";
         else if (error.Contains("Submit was clicked", StringComparison.Ordinal))
             why = "Submit was clicked and the board never confirmed — it may have gone through, so it is not retried; check the screenshot and your email";
-        else if (e.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(provider, longTail))
+        else if (e.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(provider, longTail, linkedInEasy))
             why = e.Link.Length == 0 ? "no posting link" : SubmitEndpoints.CannotDrive(provider);
         else if (!ReadyReconciler.IsTransientFailure(AgentEvidenceRepo.Kinds.Failed, e.Detail))
             why = "the same thing will happen on another run — it needs you, or a fix";

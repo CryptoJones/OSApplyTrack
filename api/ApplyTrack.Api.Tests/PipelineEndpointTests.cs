@@ -93,6 +93,34 @@ public class PipelineEndpointTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_linkedin_easy_apply_request_is_read_with_its_source_not_as_a_listing()
+    {
+        // Only the source tells an Easy Apply posting from a LinkedIn listing. Read without it, the
+        // Pipeline called every one an aggregator and said it would be dropped (#278).
+        var (client, tenant) = await ClientAsync();
+        var res = await client.PostAsync("/api/apps", Json(
+            """{"company":"EasyCo","role":"Engineer","score":"80","link":"https://www.linkedin.com/jobs/view/42","source":"auto:linkedin:easy"}"""));
+        var name = (await ReadJson(res)).GetProperty("filename").GetString()!;
+        await using var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("INSERT INTO submit_requests (tenant_id, application_name) VALUES (@t, @name)", new { t = tenant, name });
+
+        async Task<JsonElement> RowAsync() =>
+            Assert.Single((await ReadJson(await client.GetAsync("/api/pipeline"))).GetProperty("queue").EnumerateArray());
+
+        // Switch off: it is an Easy Apply posting, and the account has not turned Easy Apply on.
+        var off = await RowAsync();
+        Assert.Equal("linkedin_easy", off.GetProperty("provider").GetString());
+
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_settings (tenant_id, enabled, linkedin_easy) VALUES (@t, true, true) "
+            + "ON CONFLICT (tenant_id) DO UPDATE SET linkedin_easy = true", new { t = tenant });
+        Assert.Equal("linkedin_easy", (await RowAsync()).GetProperty("provider").GetString());
+        // The queue is drained across tenants: leave nothing pending for a worker test to pick up.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t = tenant });
+    }
+
+    [Fact]
     public async Task Queued_requests_come_back_oldest_first_labelled_with_what_the_worker_will_do()
     {
         var (client, tenant) = await ClientAsync();

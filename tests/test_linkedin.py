@@ -156,6 +156,32 @@ def test_guest_pages_parse_the_way_jobspy_reads_them() -> None:
     assert linkedin.guest_apply_link_from_html("<html>Easy Apply</html>") is None
 
 
+def test_easy_apply_postings_are_staged_only_when_the_tenant_switched_it_on() -> None:
+    # Easy Apply was always skipped; with the tenant's switch on it is staged on the posting's
+    # own link, flagged so the agent's browser drives LinkedIn's dialog instead of reading the
+    # link as a listing (#278).
+    handler, _ = _handler()
+    client = _client(handler, LinkedInAccount(email="a@b.c", session=SESSION))
+    remembered: list[str] = []
+    listings = linkedin.fetch_listings(
+        client, [".net", "cloud", "nurse"], remote_only=True, limit=40,
+        already_seen=lambda url: url.endswith("/4400000001"), remember=remembered.append,
+        easy_apply=True,
+    )
+    easy = [item for item in listings if item.source == linkedin.EASY_SOURCE]
+    assert [item.link for item in easy] == ["https://www.linkedin.com/jobs/view/4436625592"]
+    assert easy[0].apply_link == ""
+    # Staged, so it is the stager's to remember — not dropped into the ledger unread.
+    assert remembered == []
+    # The offsite posting is untouched by the switch.
+    assert [item.apply_link for item in listings if item.source == "linkedin"] == [STRYKER]
+
+
+def test_the_easy_apply_source_is_the_one_the_agent_looks_for() -> None:
+    # "auto:" + this is AtsProvider.LinkedInEasySource on the .NET side; the schema is the contract.
+    assert f"auto:{linkedin.EASY_SOURCE}" == "auto:linkedin:easy"
+
+
 def test_signed_in_fetch_keeps_offsite_skips_easy_apply_and_asks_the_ledger_first() -> None:
     handler, log = _handler()
     client = _client(handler, LinkedInAccount(email="a@b.c", session=SESSION))

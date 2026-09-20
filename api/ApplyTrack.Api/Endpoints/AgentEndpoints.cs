@@ -42,7 +42,7 @@ public static class AgentEndpoints
             // leaving them in Ready until something else revisits them (#185).
             var requeued = new List<string>();
             if (before.DryRun && !settings.DryRun && allowed && await browser.IsAvailableAsync())
-                requeued = await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false);
+                requeued = await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false, settings.LinkedInEasy);
             return Results.Ok(await ViewAsync(await repo.GetAsync(), options, browser, conn, allowed, requeued));
         });
 
@@ -93,6 +93,7 @@ public static class AgentEndpoints
         phone = s.Phone,
         country = s.Country,
         long_tail = s.LongTail,
+        linkedin_easy = s.LinkedInEasy,
         // Whether a worker runs on this instance at all — in this process, or as the
         // separate agent container that has checked in (agent_workers) — so the UI can
         // say "saved, but nothing will happen until the operator starts the agent".

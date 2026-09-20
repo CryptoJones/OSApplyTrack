@@ -85,6 +85,8 @@ const state = {
   browserAvailable: false,
   // The tenant lets the browser fill forms on ATSs it doesn't know.
   longTail: false,
+  // LinkedIn Easy Apply (#278): its own switch, not the long tail's.
+  linkedinEasy: false,
   // The Ready lane's multi-select: filenames ticked while the status filter is Ready.
   selected: new Set(),
 };
@@ -958,7 +960,8 @@ function packetSection(data) {
   // The browser drives Greenhouse, Lever and Ashby; the long tail only when opted in;
   // Workday never — applying needs an account with the employer.
   const browserCan = state.browserAvailable && url && (
-    BROWSER_PROVIDERS.includes(p.provider) || (!MANUAL_PROVIDERS.includes(p.provider) && state.longTail));
+    BROWSER_PROVIDERS.includes(p.provider)
+    || (p.provider === "linkedin_easy" ? state.linkedinEasy : (!MANUAL_PROVIDERS.includes(p.provider) && state.longTail)));
   const manualNote = url && (p.provider === "aggregator" || (state.browserAvailable && !browserCan))
     ? `<p class="field-help mt-2">${p.provider === "workday"
         ? "Workday needs an account with the employer, so this one is yours to submit — copy the answers and open the posting."
@@ -2338,6 +2341,14 @@ function agentMarkup(s, events) {
         <p class="field-help">Greenhouse, Lever and Ashby forms are understood. Anything else is filled by field label alone, and the agent refuses to click if a required field can't be mapped. Off by default; Workday is always yours to do by hand.</p>
       </div>
 
+      <div class="mt-4">
+        <label class="source-row">
+          <input id="a-li-easy" type="checkbox"${s.linkedin_easy ? " checked" : ""} aria-describedby="a-li-easy-help" />
+          <span>Apply through LinkedIn Easy Apply, signed in as me</span>
+        </label>
+        <p class="field-help" id="a-li-easy-help">Off by default. On, LinkedIn postings that only take Easy Apply are staged (they were skipped before) and the browser fills LinkedIn's own dialog using the LinkedIn account saved under Board accounts. <strong>This automates your personal LinkedIn account, which LinkedIn's terms do not allow</strong>; an account it notices can be restricted, and it is the same account your LinkedIn search runs on. It sends at most ten a day, never follows the company for you, and stops at any sign-in or security check.</p>
+      </div>
+
       <div class="mt-4 agent-grid">
         <div>
           <label class="field-label" for="a-min">Min fit score</label>
@@ -2469,6 +2480,7 @@ function wireAgent() {
       enabled: $("#a-enabled").checked,
       dry_run: $("#a-dry").checked,
       long_tail: $("#a-long").checked,
+      linkedin_easy: $("#a-li-easy").checked,
       min_fit_score: Number($("#a-min").value),
       max_per_run: Number($("#a-run").value),
       max_per_day: Number($("#a-day").value),
@@ -2542,6 +2554,7 @@ async function loadAgentTab(body, gen = settingsGen) {
   state.agentEnabled = s.enabled === true;
   state.browserAvailable = s.browser_available === true;
   state.longTail = s.long_tail === true;
+  state.linkedinEasy = s.linkedin_easy === true;
   body.innerHTML = agentMarkup(s, Array.isArray(events) ? events : []);
   wireAgent();
 }
@@ -3335,6 +3348,7 @@ async function showBetaTerms() {
     state.agentEnabled = agent.value.enabled === true;
     state.browserAvailable = agent.value.browser_available === true;
     state.longTail = agent.value.long_tail === true;
+    state.linkedinEasy = agent.value.linkedin_easy === true;
   }
   try {
     await refresh();

@@ -15,11 +15,14 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// field the rendered form itself still marks required-and-empty after the fill (a country picker the
 /// packet never knew about, a combobox whose value did not commit) — any of these refuses the click.</param>
 /// <param name="Closed">The posting was gone: the page says it is no longer open. The lead expired, it did not fail.</param>
+/// <param name="Discovered">Questions the run met that the packet had never heard of — a dialog whose steps only
+/// exist once they are reached (LinkedIn Easy Apply, #278). The worker adds them to the packet and drafts answers.</param>
 /// <param name="Captcha">The form guards submit with an interactive captcha. Not a defect to retry and not
 /// something to solve — the posting has to be finished by hand with Copy answers and open.</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
-    List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false);
+    List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false,
+    List<PacketQuestion>? Discovered = null);
 
 /// <summary>
 /// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the
@@ -101,6 +104,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     {
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
+
+        // LinkedIn's Easy Apply is a dialog with its own way in and its own steps, not a page form (#278).
+        if (packet.Provider == AtsProvider.LinkedInEasy)
+        {
+            await using var linkedIn = await BrowserSession.OpenAsync(_options, link, ct, accounts, reveal: false);
+            return await LinkedInEasyApply.RunAsync(linkedIn, packet, dryRun, _log, ct);
+        }
 
         var opened = await BrowserSession.OpenAsync(_options, AtsProvider.ApplyUrl(link, packet.Provider), ct, accounts);
         // A hosted Greenhouse posting whose board redirects to the employer's own careers

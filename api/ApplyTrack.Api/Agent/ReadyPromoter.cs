@@ -21,7 +21,7 @@ namespace ApplyTrack.Api.Agent;
 public static class ReadyPromoter
 {
     public static async Task<List<string>> PromoteCleanAsync(
-        IDbConnection conn, long tenantId, SecretProtector protector, bool longTail, bool dryRun)
+        IDbConnection conn, long tenantId, SecretProtector protector, bool longTail, bool dryRun, bool linkedInEasy = false)
     {
         var evidence = new AgentEvidenceRepo(conn, tenantId, protector);
         var packets = new AgentPacketRepo(conn, tenantId, protector);
@@ -35,7 +35,7 @@ public static class ReadyPromoter
             var packet = await packets.GetAsync(name);
             if (packet is null || packet.BlockingReview().Any())
                 continue;
-            if (!AtsProvider.BrowserCanSubmit(packet.Provider, longTail))
+            if (!AtsProvider.BrowserCanSubmit(packet.Provider, longTail, linkedInEasy))
                 continue;
             var rec = await apps.GetAsync(name);
             if (rec is null || rec.Fields.Link.Length == 0)

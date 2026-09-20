@@ -46,6 +46,11 @@ public sealed class AgentSettings
     /// default: a never-seen form is where a wrong guess is likeliest.</summary>
     public bool LongTail { get; set; }
 
+    /// <summary>Apply through LinkedIn's Easy Apply dialog, signed in as the tenant's own
+    /// LinkedIn account (#278). Off by default: it automates a personal account against
+    /// LinkedIn's terms, and the same account is the poller's discovery source.</summary>
+    public bool LinkedInEasy { get; set; }
+
     public static readonly string[] SalaryPeriods = ["annual", "monthly", "hourly"];
 
     private const int MaxPerRunCeil = 50;
@@ -75,6 +80,7 @@ public sealed class AgentSettings
         s.Phone = GetString(data, "phone");
         s.Country = GetString(data, "country");
         s.LongTail = GetBool(data, "long_tail", s.LongTail);
+        s.LinkedInEasy = GetBool(data, "linkedin_easy", s.LinkedInEasy);
         InputLimits.Text("work_authorization", s.WorkAuthorization, InputLimits.AgentAnswer);
         InputLimits.Text("salary_expectation", s.SalaryExpectation, InputLimits.AgentAnswer);
         InputLimits.Text("phone", s.Phone, InputLimits.AgentAnswer);
@@ -135,7 +141,7 @@ public sealed class AgentSettingsRepo
     private sealed record Row(
         bool Enabled, bool DryRun, int MinFitScore, int MaxPerRun, int MaxPerDay,
         string WorkAuthorization, bool NeedsSponsorship, bool ClearanceOk,
-        string SalaryExpectation, string SalaryPeriod, string SalaryCurrency, string Phone, bool LongTail, string Country);
+        string SalaryExpectation, string SalaryPeriod, string SalaryCurrency, string Phone, bool LongTail, string Country, bool LinkedInEasy);
 
     /// <summary>Whether the operator has allowed this account to use auto-apply at all —
     /// a row in <c>agent_allowlist</c>, added by hand at the database. Nothing about the
@@ -153,7 +159,7 @@ public sealed class AgentSettingsRepo
             + "work_authorization AS workauthorization, needs_sponsorship AS needssponsorship, "
             + "clearance_ok AS clearanceok, salary_expectation AS salaryexpectation, "
             + "salary_period AS salaryperiod, salary_currency AS salarycurrency, phone, "
-            + "long_tail AS longtail, country "
+            + "long_tail AS longtail, country, linkedin_easy AS linkedineasy "
             + "FROM agent_settings WHERE tenant_id = @t",
             new { t = _t });
         if (row is null)
@@ -165,7 +171,7 @@ public sealed class AgentSettingsRepo
             WorkAuthorization = row.WorkAuthorization, NeedsSponsorship = row.NeedsSponsorship,
             ClearanceOk = row.ClearanceOk, SalaryExpectation = row.SalaryExpectation,
             SalaryPeriod = row.SalaryPeriod, SalaryCurrency = row.SalaryCurrency, Phone = row.Phone,
-            LongTail = row.LongTail, Country = row.Country,
+            LongTail = row.LongTail, Country = row.Country, LinkedInEasy = row.LinkedInEasy,
         };
     }
 
@@ -175,10 +181,10 @@ public sealed class AgentSettingsRepo
             INSERT INTO agent_settings (
                 tenant_id, enabled, dry_run, min_fit_score, max_per_run, max_per_day,
                 work_authorization, needs_sponsorship, clearance_ok, salary_expectation,
-                salary_period, salary_currency, phone, long_tail, country, updated_at)
+                salary_period, salary_currency, phone, long_tail, country, linkedin_easy, updated_at)
             VALUES (@t, @Enabled, @DryRun, @MinFitScore, @MaxPerRun, @MaxPerDay,
                 @WorkAuthorization, @NeedsSponsorship, @ClearanceOk, @SalaryExpectation,
-                @SalaryPeriod, @SalaryCurrency, @Phone, @LongTail, @Country, now())
+                @SalaryPeriod, @SalaryCurrency, @Phone, @LongTail, @Country, @LinkedInEasy, now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 enabled            = EXCLUDED.enabled,
                 dry_run            = EXCLUDED.dry_run,
@@ -194,13 +200,14 @@ public sealed class AgentSettingsRepo
                 phone              = EXCLUDED.phone,
                 long_tail          = EXCLUDED.long_tail,
                 country            = EXCLUDED.country,
+                linkedin_easy      = EXCLUDED.linkedin_easy,
                 updated_at         = now()
             """,
             new
             {
                 t = _t, s.Enabled, s.DryRun, s.MinFitScore, s.MaxPerRun, s.MaxPerDay,
                 s.WorkAuthorization, s.NeedsSponsorship, s.ClearanceOk, s.SalaryExpectation,
-                s.SalaryPeriod, s.SalaryCurrency, s.Phone, s.LongTail, s.Country,
+                s.SalaryPeriod, s.SalaryCurrency, s.Phone, s.LongTail, s.Country, s.LinkedInEasy,
             },
             tx);
 }

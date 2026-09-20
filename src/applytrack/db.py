@@ -128,6 +128,18 @@ class PollRepo:
         email, session, expires = found
         return linkedin.LinkedInAccount(email=email, session=session, session_expires_at=expires)  # type: ignore[arg-type]
 
+    def linkedin_easy_enabled(self) -> bool:
+        """Whether this tenant has switched LinkedIn Easy Apply on (#278): the poller stages
+        Easy Apply postings only then. Read through ``to_jsonb`` so a database the API has
+        not migrated yet (no ``linkedin_easy`` column) answers False instead of erroring."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_jsonb(s) ->> 'linkedin_easy' FROM agent_settings s WHERE tenant_id = %s",
+                (self._t,),
+            )
+            row = cur.fetchone()
+        return row is not None and row[0] == "true"
+
     def save_linkedin_session(self, session: str, expires_at: object) -> None:
         """Keep the LinkedIn session sealed on the board-account row (blank clears it)."""
         self._save_session(linkedin.ACCOUNT_HOSTS, session, expires_at)

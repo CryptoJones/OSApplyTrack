@@ -331,8 +331,19 @@ def _description(posting: dict[str, Any]) -> str:
     return " ".join(str(desc or "").split())
 
 
+# An Easy Apply posting's source: "auto:linkedin:easy" once staged, which is what tells the
+# agent's browser that this linkedin.com link is a dialog to drive and not a listing (#278).
+# Keep in step with ``AtsProvider.LinkedInEasySource``.
+EASY_SOURCE = f"{SOURCE}:easy"
+
+
 def to_listing(
-    card: Card, employer_link: str, description: str = "", *, remote: bool = False
+    card: Card,
+    employer_link: str,
+    description: str = "",
+    *,
+    remote: bool = False,
+    easy: bool = False,
 ) -> Listing:
     """A card whose Apply leads to ``employer_link`` as the poller's :class:`Listing`: the
     LinkedIn posting stays the listing's link (the dedupe key, and an aggregator link the
@@ -346,9 +357,10 @@ def to_listing(
         role=card.title,
         link=card.view_url,
         location=location,
-        source=SOURCE,
+        # Easy Apply has no employer link: the LinkedIn posting is where it is applied to.
+        source=EASY_SOURCE if easy else SOURCE,
         description=description,
-        apply_link=employer_link,
+        apply_link="" if easy else employer_link,
     )
 
 
@@ -372,6 +384,7 @@ def fetch_listings(
     limit: int,
     already_seen: Callable[[str], bool] = lambda _url: False,
     remember: Callable[[str], None] = lambda _url: None,
+    easy_apply: bool = False,
 ) -> list[Listing]:
     """One page per keyword, then the posting of every card that is new and names a
     keyword in its title (the fit score itself is the stager's, with the description);
@@ -403,6 +416,13 @@ def fetch_listings(
                     description = ""
                 client._pace(PACE_SECONDS)
                 if not link:
+                    # Easy Apply only. With the tenant's switch on it is staged for the agent's
+                    # browser to drive LinkedIn's own dialog (#278); otherwise, as ever, skipped.
+                    if easy_apply:
+                        out.append(to_listing(card, "", description, remote=remote_only, easy=True))
+                        if len(out) >= limit * 3:
+                            return out
+                        continue
                     logger.info(
                         "linkedin: %s — %s is Easy Apply only; skipped", card.company, card.title
                     )

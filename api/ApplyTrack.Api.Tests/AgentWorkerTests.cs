@@ -170,6 +170,26 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task The_browser_is_handed_the_kept_linkedin_session_and_only_while_it_is_live()
+    {
+        // Easy Apply starts signed in from the session the renewer keeps (#278); the form-filling
+        // side never saw it before — only the poller did.
+        var (conn, t) = await SeedLinkedInTenantAsync("hunter2");
+        await using var _ = conn;
+        var accounts = new BoardAccountRepo(conn, t, Protector, NullLogger<BoardAccountRepo>.Instance);
+        Assert.Equal("", Assert.Single(await accounts.TargetsAsync()).Session);
+
+        var session = LinkedInSessionRenewer.Encode("AQED-token", "ajax:1");
+        await accounts.SavePortalSessionAsync("linkedin.com", session, DateTimeOffset.UtcNow.AddDays(30));
+        var live = Assert.Single(await accounts.TargetsAsync());
+        Assert.Equal(session, live.Session);
+        Assert.Equal("hunter2", live.Password);
+
+        await accounts.SavePortalSessionAsync("linkedin.com", session, DateTimeOffset.UtcNow.AddMinutes(-1));
+        Assert.Equal("", Assert.Single(await accounts.TargetsAsync()).Session);
+    }
+
+    [Fact]
     public async Task A_linkedin_account_with_a_password_is_signed_in_once_and_the_cookies_kept_sealed()
     {
         var (conn, t) = await SeedLinkedInTenantAsync("hunter2");
@@ -746,6 +766,42 @@ public class AgentWorkerTests(PostgresFixture pg)
     [InlineData("""{"dry_run":true,"error":"Submit was clicked but no confirmation text was recognised"}""", false)]
     public void Only_a_failed_dry_run_that_died_on_something_transient_is_worth_another_try(string detail, bool expected) =>
         Assert.Equal(expected, ReadyReconciler.IsTransientFailure("failed", JsonDocument.Parse(detail).RootElement));
+
+    [Fact]
+    public async Task A_run_that_meets_new_questions_gets_them_answered_and_goes_round_again_once()
+    {
+        // LinkedIn Easy Apply shows its questions only as each step is reached, so the first run
+        // can only name them. The packet takes them on, the drafter answers, and the run goes
+        // round again — and it cannot loop, because a question is only "discovered" once (#278).
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        const string question = "How many years of experience do you have with C#?";
+        var runs = 0;
+        var fake = new FakeSubmitter((link, packet, dry, _, _) =>
+        {
+            runs++;
+            var known = packet.Questions.Any(q => q.Id == question);
+            return Task.FromResult(known
+                ? FakeSubmitter.Clean(link)
+                : new SubmitOutcome(true, false, link, "", null, [question], [], "",
+                    Discovered: [new PacketQuestion(question, question, true, PacketQuestion.Text, [], PacketQuestion.Custom)]));
+        });
+        var llm = new StubLlmClient(Responders.Agent(answersJson: $$"""{"answers":[{"id":"{{question}}","answer":"12"}]}"""));
+        // The queue is drained across tenants: settle what other tests left, so the count is this one's.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(llm, pg.ConnectionString, notifier, browser: FakeBrowser, submitter: fake);
+
+        // One drain: the first run names the question, the second finds it answered.
+        Assert.Equal(2, await worker.DrainSubmitsAsync(CancellationToken.None));
+
+        Assert.Equal(2, runs);
+        var packet = await new AgentPacketRepo(conn, t, Protector).GetAsync("high-engineer.md");
+        Assert.Contains(packet!.Questions, q => q.Id == question);
+        Assert.Equal("12", packet.Answers[question]);
+        Assert.Equal("12", fake.Runs[1].Answers[question]);
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+    }
 
     [Fact]
     public async Task A_queued_prepare_rebuilds_the_packet_on_the_worker_and_goes_straight_to_the_dry_run()

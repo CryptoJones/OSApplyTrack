@@ -116,7 +116,7 @@ public static class PacketEndpoints
             // With a browser that may drive this ATS — here, or on a worker that has
             // checked in — the moo waits for the dry-run fill; otherwise this is it.
             if (await browser.IsAvailableAsync() && rec.Fields.Link.Length > 0
-                && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
+                && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail, settings.LinkedInEasy))
                 await queue.EnqueueAsync(rec.Name, dryRun: true);
             else
                 await notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);

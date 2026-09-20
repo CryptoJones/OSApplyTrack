@@ -73,8 +73,9 @@ public static class PipelineEndpoints
                 latest.TryGetValue(p.ApplicationName, out var last);
                 var packet = await packets.GetAsync(p.ApplicationName);
                 var blocking = packet?.BlockingReview().Count() ?? 0;
-                var provider = AtsProvider.Detect(p.Link, "");
-                var canDrive = p.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail);
+                // With the source: it alone tells a LinkedIn Easy Apply posting from a LinkedIn listing (#278).
+                var provider = AtsProvider.Detect(p.Link, p.Source);
+                var canDrive = p.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail, settings.LinkedInEasy);
 
                 // The claim is fresh for fifteen minutes; after that ClaimNextAsync hands the
                 // row out again, so an older claim is a run that died, not one in progress.

@@ -58,6 +58,21 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _fixture = builder.Build();
+        // LinkedIn's Easy Apply dialog, in the markup the live one has (mapped 2026-09-20, #278):
+        // steps that only exist once reached, a validator that flags a placeholder, a pre-ticked
+        // "Follow", and a close that asks Discard or Save.
+        _fixture.MapGet("/li/jobs/view/1", () => Results.Content(EasyApplyHtml, "text/html"));
+        // A "Follow" box that will not stay unticked.
+        _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
+            """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
+        _fixture.MapGet("/li/login", () => Results.Content("<html><body><h1>Sign in</h1></body></html>", "text/html"));
+        _fixture.MapPost("/li/event", async (HttpRequest req) =>
+        {
+            using var sr = new StreamReader(req.Body);
+            var body = await sr.ReadToEndAsync();
+            lock (_posts) _posts.Add(new() { ["json"] = body });
+            return Results.Json(new { ok = true });
+        });
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
         // Ashby draws its own checkbox and hides the real input: no id, no size, tabindex -1 (#280).
         _fixture.MapGet("/jobs/styled-checkbox", () => Results.Content(FormHtml.Replace(
@@ -1091,6 +1106,92 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    // The dialog as LinkedIn ships it: `fb-dash-form-element` groups under data-test-form-element,
+    // labels that repeat themselves for screen readers, a placeholder option that fails validation,
+    // résumé cards and courtesy boxes that are not questions.
+    private const string EasyApplyHtml = """
+        <html><body>
+        <h1>Senior .NET Engineer</h1>
+        <button id="jobs-apply-button-id" class="jobs-apply-button artdeco-button" data-live-test-job-apply-button aria-label="Easy Apply to Senior .NET Engineer at Acme">Easy Apply</button>
+        <div id="root"></div>
+        <script>
+        const steps = [
+          `<h3>Contact info</h3>
+           <div class="fb-dash-form-element" data-test-form-element><label for="c-email"><span aria-hidden="true">Email address</span><span class="visually-hidden">Email address</span></label>
+             <select id="c-email" required aria-required="true"><option>Select an option</option><option selected>ada@example.com</option></select></div>
+           <div class="fb-dash-form-element" data-test-form-element><label for="c-phone">Mobile phone number</label><input id="c-phone" type="text" required value="5550100"></div>`,
+          `<h3>Resume</h3>
+           <input type="radio" id="jobsDocumentCardToggle-1" checked><label for="jobsDocumentCardToggle-1">Deselect resume resume.pdf</label>
+           <input type="file" id="jobs-document-upload-file-input-upload-resume">`,
+          `<div class="fb-dash-form-element" data-test-form-element><input type="checkbox" id="top-choice"><label for="top-choice">Mark job as a top choice</label></div>`,
+          `<h3>Additional Questions</h3>
+           <div class="fb-dash-form-element" data-test-form-element><label for="q-auth"><span aria-hidden="true">Are you legally authorized to work in the United States?</span><span class="visually-hidden">Are you legally authorized to work in the United States?</span></label>
+             <select id="q-auth" required aria-required="true"><option>Select an option</option><option>Yes</option><option>No</option></select></div>
+           <div class="fb-dash-form-element" data-test-form-element><label for="q-years">How many years of experience do you have with C#?</label><input id="q-years" type="text" required></div>
+           <fieldset data-test-form-builder-radio-button-form-component><legend><span aria-hidden="true">Will you require visa sponsorship?</span><span class="visually-hidden">Will you require visa sponsorship?</span></legend>
+             <input type="radio" name="q-visa" id="q-visa-y" value="Yes" aria-required="true" style="position:absolute;opacity:0;width:0;height:0"><label for="q-visa-y">Yes</label>
+             <input type="radio" name="q-visa" id="q-visa-n" value="No" aria-required="true" style="position:absolute;opacity:0;width:0;height:0"><label for="q-visa-n">No</label></fieldset>`,
+          `<h3>Review your application</h3>
+           <input type="checkbox" id="follow-company-checkbox" checked><label for="follow-company-checkbox">Follow Acme to stay up to date with their page.</label>`,
+        ];
+        let at = 0; const answers = {};
+        const send = o => fetch('/li/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o) });
+        function capture() { for (const e of document.querySelectorAll('.jobs-easy-apply-modal select, .jobs-easy-apply-modal input[type=text]')) answers[e.id] = e.value;
+          const v = document.querySelector('input[name=q-visa]:checked'); if (v) answers.visa = v.value;
+          const f = document.getElementById('follow-company-checkbox'); if (f) answers.follow = f.checked; }
+        function valid() { let ok = true;
+          for (const g of document.querySelectorAll('.jobs-easy-apply-modal [data-test-form-element], .jobs-easy-apply-modal fieldset')) {
+            g.querySelector('.artdeco-inline-feedback--error')?.remove();
+            const sel = g.querySelector('select[required]'), txt = g.querySelector('input[type=text][required]'), radios = g.querySelectorAll('input[type=radio]');
+            const bad = (sel && /^select an option$/i.test(sel.options[sel.selectedIndex].text)) || (txt && (!txt.value.trim() || (txt.id === 'q-years' && !/^\d+(\.\d+)?$/.test(txt.value.trim()))))
+              || (radios.length && ![...radios].some(r => r.checked));
+            if (bad) { ok = false; const e = document.createElement('div'); e.className = 'artdeco-inline-feedback artdeco-inline-feedback--error'; e.textContent = 'Please enter a valid answer'; g.appendChild(e); } }
+          return ok; }
+        function render() {
+          const last = at === steps.length - 1;
+          document.getElementById('root').innerHTML = `<div class="artdeco-modal jobs-easy-apply-modal" role="dialog" data-test-modal>
+            <button aria-label="Dismiss" data-test-modal-close-btn onclick="ask()">x</button>
+            <progress max="100" value="${at * 25}"></progress>${steps[at]}
+            <footer>${last ? '<button data-live-test-easy-apply-submit-button aria-label="Submit application" onclick="submitIt()">Submit application</button>'
+              : `<button ${at === steps.length - 2 ? 'data-live-test-easy-apply-review-button aria-label="Review your application"' : 'data-easy-apply-next-button aria-label="Continue to next step"'} onclick="go()">
+                   ${at === steps.length - 2 ? 'Review' : 'Next'}</button>`}</footer></div>`; }
+        function go() { if (!valid()) return; capture(); at++; render(); }
+        function ask() { capture(); document.getElementById('root').insertAdjacentHTML('beforeend',
+          `<div role="alertdialog" class="artdeco-modal"><button data-test-dialog-secondary-btn onclick="leave('discard')">Discard</button><button data-test-dialog-primary-btn onclick="leave('save')">Save</button></div>`); }
+        function leave(how) { send({ left: how, step: at }); document.getElementById('root').innerHTML = ''; }
+        async function submitIt() { capture(); await fetch('/li/voyagerJobsDashOnsiteApplyApplication?action=submitApplication', { method: 'POST' }).catch(() => {});
+          await send({ submitted: true, answers }); document.getElementById('root').innerHTML = '<div role="dialog" class="artdeco-modal"><h2>Application sent</h2><p>Your application was sent to Acme.</p><button>Done</button></div>'; }
+        document.getElementById('jobs-apply-button-id').onclick = () => { at = 0; render(); };
+        </script>
+        </body></html>
+        """;
+
+    private static AgentPacket EasyApplyPacket(bool answered)
+    {
+        var packet = new AgentPacket { ApplicationName = "acme-senior-.net-engineer.md", Provider = ApplyTrack.Api.Agent.AtsProvider.LinkedInEasy };
+        packet.Questions.Add(new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Answers["first_name"] = "Ada";
+        if (!answered) return packet;
+        // Keyed by label, as the driver hands a discovered question back.
+        foreach (var (label, answer) in new[]
+                 {
+                     ("Are you legally authorized to work in the United States?", "Yes"),
+                     ("How many years of experience do you have with C#?", "12"),
+                     ("Will you require visa sponsorship?", "No"),
+                 })
+        {
+            packet.Questions.Add(new(label, label, true, PacketQuestion.Select, [], PacketQuestion.Custom));
+            packet.Answers[label] = answer;
+        }
+        return packet;
+    }
+
+    private List<System.Text.Json.JsonElement> EasyApplyEvents()
+    {
+        lock (_posts)
+            return _posts.Where(p => p.ContainsKey("json")).Select(p => System.Text.Json.JsonDocument.Parse(p["json"]).RootElement.Clone()).ToList();
+    }
+
     private const string ConsentPostingBody = """
         <h1>Senior Engineer</h1>
         <p>A posting page with no form on it, under a cookie banner.</p>
@@ -1700,6 +1801,85 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Empty(outcome.Unmapped);
         var post = Assert.Single(_posts);
         Assert.Equal("No", post["job_application[question_6]"]);
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_hands_back_the_questions_it_meets_for_the_first_time_and_saves_the_draft()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // The employer's questions do not exist until their step is reached, so no discovery pass
+        // can know them. The run walks as far as it can, names what it found, and keeps LinkedIn's
+        // own draft so the person can finish from there (#278).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/1", EasyApplyPacket(answered: false), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(
+            ["Are you legally authorized to work in the United States?", "How many years of experience do you have with C#?", "Will you require visa sponsorship?"],
+            outcome.Unmapped);
+        var found = Assert.IsType<List<PacketQuestion>>(outcome.Discovered);
+        Assert.Equal(outcome.Unmapped, found.Select(q => q.Id).ToList());
+        Assert.Equal(["Yes", "No"], found[0].Options);
+        Assert.Equal(PacketQuestion.Text, found[1].Type);
+        Assert.Equal(["Yes", "No"], found[2].Options);
+        Assert.All(found, q => Assert.True(q.Required));
+        var left = Assert.Single(EasyApplyEvents());
+        Assert.Equal("save", left.GetProperty("left").GetString());
+        Assert.Equal(3, left.GetProperty("step").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_dry_run_walks_to_the_submit_step_and_discards_without_sending()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/1", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.False(outcome.Submitted);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal(3, outcome.Mapped.Count);
+        Assert.NotNull(outcome.Screenshot);
+        var left = Assert.Single(EasyApplyEvents());
+        Assert.Equal("discard", left.GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_submits_with_the_packets_answers_and_without_following_the_company()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/1", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Application sent", outcome.Confirmation);
+        var sent = Assert.Single(EasyApplyEvents()).GetProperty("answers");
+        Assert.Equal("Yes", sent.GetProperty("q-auth").GetString());
+        Assert.Equal("12", sent.GetProperty("q-years").GetString());
+        Assert.Equal("No", sent.GetProperty("visa").GetString());
+        // "Follow Acme" arrives ticked. Applying is not following.
+        Assert.False(sent.GetProperty("follow").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_refuses_to_submit_while_it_would_follow_the_company_in_your_name()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sticky-follow", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("could not be unticked", outcome.Error);
+        var events = EasyApplyEvents();
+        Assert.DoesNotContain(events, e => e.TryGetProperty("submitted", out _));
+        Assert.Equal("save", Assert.Single(events).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_stops_at_a_sign_in_instead_of_pressing_on()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/login", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("LinkedIn asked to sign in", outcome.Error);
+        Assert.Empty(EasyApplyEvents());
     }
 
     [SkippableFact]

@@ -31,6 +31,11 @@ public sealed class AgentWorker : BackgroundService
 {
     private const string LockPrefix = "applytrack:agent:";
     private static readonly TimeSpan DailyWindow = TimeSpan.FromHours(24);
+    /// <summary>Real LinkedIn Easy Apply submissions per tenant per day (#278). It is a person's own
+    /// account, and the same one the poller discovers with: well under anything LinkedIn would notice.</summary>
+    public const int LinkedInEasyDailyCap = 10;
+    // Requests whose run met new questions and answered them: worth one more dry run (#278).
+    private readonly HashSet<long> _dryAgain = [];
 
     private readonly NpgsqlDataSource _db;
     private readonly AgentOptions _options;
@@ -220,6 +225,14 @@ public sealed class AgentWorker : BackgroundService
                 await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
                 await SubmitQueue.CompleteAsync(conn, req.Id);
             }
+            // A run that met new questions and got them answered goes round again as a dry run —
+            // after the completion, for the same reason the promotion below waits for it (#278).
+            if (_dryAgain.Remove(req.Id))
+            {
+                await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
+                if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: true))
+                    _log.LogInformation("{Name}: new questions answered, queued for another dry run", req.ApplicationName);
+            }
             // Promote AFTER the completion above, never from inside RunSubmitAsync. The queue
             // is keyed on (tenant, application) and CompleteAsync stamps done_at on that row,
             // so an enqueue from inside the run would be marked done without ever running.
@@ -352,7 +365,7 @@ public sealed class AgentWorker : BackgroundService
             if (prepared is null)
                 return false;
             (rec, packet) = prepared.Value;
-            if (rec.Fields.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
+            if (rec.Fields.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail, settings.LinkedInEasy))
             {
                 await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct);
                 return false;
@@ -383,6 +396,27 @@ public sealed class AgentWorker : BackgroundService
         var dryRun = req.DryRun || settings.DryRun;
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
+        // One LinkedIn run per tenant at a time, across every worker (#278): two browsers signed
+        // in to one personal account at once is exactly what LinkedIn looks for, and it is also
+        // what makes the daily cap below a real one rather than a race between two readers of the
+        // same count. Held on this connection for the run; released after it, and by Postgres
+        // itself if the worker dies.
+        var linkedInLock = detected == AtsProvider.LinkedInEasy ? $"applytrack:linkedin-easy:{t}" : null;
+        if (linkedInLock is not null)
+            await conn.ExecuteAsync("SELECT pg_advisory_lock(hashtext(@key))", new { key = linkedInLock });
+        async Task ReleaseLinkedInAsync()
+        {
+            if (linkedInLock is null) return;
+            try { await conn.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@key))", new { key = linkedInLock }); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "linkedin lock release failed"); }
+        }
+        if (!dryRun && detected == AtsProvider.LinkedInEasy
+            && await evidence.SubmittedSinceAsync("linkedin.com", DailyWindow) >= LinkedInEasyDailyCap)
+        {
+            dryRun = true;
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = $"LinkedIn Easy Apply: {LinkedInEasyDailyCap} sent in the last day — this one ran as a dry run and goes out tomorrow", rec.Fields.Company, rec.Fields.Role });
+        }
 
         var resumes = new ResumeRepo(conn, t, _protector);
         var resume = await resumes.GetAsync();
@@ -526,8 +560,10 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
+            await ReleaseLinkedInAsync();
             return false;
         }
+        await ReleaseLinkedInAsync();
 
         if (outcome.Closed)
         {
@@ -578,6 +614,21 @@ public sealed class AgentWorker : BackgroundService
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
             error = outcome.Error, latency_seconds = latency, rec.Fields.Company, rec.Fields.Role,
         });
+
+        // Easy Apply's questions only exist once their step is reached (#278): the run hands back
+        // what it met for the first time, the packet takes them on and answers them, and — when
+        // nothing is left for the person — it goes round again. It cannot loop: a question is
+        // only ever "discovered" once, and a run that discovers none asks for no re-run.
+        if (outcome.Discovered is { Count: > 0 } met)
+        {
+            var work = await LoadTenantWorkAsync(conn, t, settings);
+            if (work.Cfg.IsConfigured)
+            {
+                var (answered, extended) = await _packets.ExtendAsync(rec, packet, met, work.Inputs, work.Scope, ct);
+                if (answered > 0 && !extended.BlockingReview().Any())
+                    _dryAgain.Add(req.Id);
+            }
+        }
 
         if (outcome.Submitted)
         {
@@ -857,7 +908,7 @@ public sealed class AgentWorker : BackgroundService
             // wall or a submit that may already have landed (#274).
             if (_browser.IsConfigured)
             {
-                var healed = await ReadyReconciler.ReconcileAsync(conn, tenantId, _protector, settings.LongTail);
+                var healed = await ReadyReconciler.ReconcileAsync(conn, tenantId, _protector, settings.LongTail, settings.LinkedInEasy);
                 if (healed.Count > 0)
                     _log.LogInformation("tenant {TenantId}: {Prepared} stuck ready row(s) queued for a prepare, {Retried} for a retry: {Names}",
                         tenantId, healed.Prepared.Count, healed.Retried.Count, string.Join(", ", healed.Prepared.Concat(healed.Retried)));
@@ -869,7 +920,7 @@ public sealed class AgentWorker : BackgroundService
             // once, but a flip the api never saw (or saw with no browser fresh) lands here.
             if (_browser.IsConfigured && !settings.DryRun)
             {
-                var promoted = await ReadyPromoter.PromoteCleanAsync(conn, tenantId, _protector, settings.LongTail, dryRun: false);
+                var promoted = await ReadyPromoter.PromoteCleanAsync(conn, tenantId, _protector, settings.LongTail, dryRun: false, settings.LinkedInEasy);
                 if (promoted.Count > 0)
                     _log.LogInformation("tenant {TenantId}: {Count} clean dry run(s) queued for real submission: {Names}",
                         tenantId, promoted.Count, string.Join(", ", promoted));
@@ -931,7 +982,7 @@ public sealed class AgentWorker : BackgroundService
                         // otherwise this is it and the human applies by hand. An aggregator's
                         // listing page has no form on it, so it never gets a run (#191).
                         if (_browser.IsConfigured && rec.Fields.Link.Length > 0
-                            && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
+                            && AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail, settings.LinkedInEasy))
                             await new SubmitRequestRepo(conn, tenantId).EnqueueAsync(rec.Name, dryRun: true);
                         else
                             await _notifier.NotifyAsync(work.Notifications, work.Scope.Packets, events,
