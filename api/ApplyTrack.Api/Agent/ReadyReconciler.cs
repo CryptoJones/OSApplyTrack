@@ -43,7 +43,7 @@ public static partial class ReadyReconciler
         public int Count => Prepared.Count + Retried.Count;
     }
 
-    private sealed record Candidate(string Name, string Link, string Source, bool HasPacket, int Failures, int PrepareErrors);
+    private sealed record Candidate(string Name, string Link, string Source, bool HasPacket, int Failures, int PrepareErrors, DateTime? LastPrepareError);
 
     public static async Task<Result> ReconcileAsync(IDbConnection conn, long tenantId, SecretProtector protector, bool longTail)
     {
@@ -59,7 +59,10 @@ public static partial class ReadyReconciler
                       AND e.kind = 'failed' AND e.created_at > now() - @window) AS failures,
                    (SELECT count(*)::int FROM agent_events v
                     WHERE v.tenant_id = a.tenant_id AND v.application_name = a.name
-                      AND v.kind = 'error' AND v.created_at > now() - @window) AS prepareerrors
+                      AND v.kind = 'error' AND v.created_at > now() - @window) AS prepareerrors,
+                   (SELECT max(v.created_at) FROM agent_events v
+                    WHERE v.tenant_id = a.tenant_id AND v.application_name = a.name
+                      AND v.kind = 'error') AS lastprepareerror
             FROM applications a
             WHERE a.tenant_id = @t AND a.status = 'ready' AND a.link <> ''
               AND NOT EXISTS (SELECT 1 FROM submit_requests r
@@ -80,29 +83,39 @@ public static partial class ReadyReconciler
                 continue;
             if (!c.HasPacket)
             {
-                // A build that keeps failing is recorded as an error each time; stop at the cap.
+                // A build that keeps failing is recorded as an error each time; stop at the cap,
+                // and wait between tries — a model that is down stays down for a while too.
                 if (c.PrepareErrors >= MaxFailures)
                     continue;
-                if (await queue.EnqueueAsync(c.Name, dryRun: true, prepare: true))
-                {
+                if (c.LastPrepareError is { } failed && DateTime.UtcNow - DateTime.SpecifyKind(failed, DateTimeKind.Utc) < RetryAfter)
+                    continue;
+                if (await RequeueAsync(conn, queue, events, c.Name, prepare: true,
+                        new { reason = "ready with no packet — prepare queued" }))
                     result.Prepared.Add(c.Name);
-                    await events.RecordAsync(AgentEventRepo.Kinds.Requeued, c.Name,
-                        new { reason = "ready with no packet — prepare queued" });
-                }
                 continue;
             }
             if (!latest.TryGetValue(c.Name, out var last) || !IsTransientFailure(last.Kind, last.Detail))
                 continue;
             if (c.Failures >= MaxFailures || DateTimeOffset.UtcNow - last.CreatedAt < RetryAfter)
                 continue;
-            if (await queue.EnqueueAsync(c.Name, dryRun: true))
-            {
+            if (await RequeueAsync(conn, queue, events, c.Name, prepare: false,
+                    new { reason = "last run failed on a transient error — dry run queued", attempt = c.Failures + 1 }))
                 result.Retried.Add(c.Name);
-                await events.RecordAsync(AgentEventRepo.Kinds.Requeued, c.Name,
-                    new { reason = "last run failed on a transient error — dry run queued", attempt = c.Failures + 1 });
-            }
         }
         return result;
+    }
+
+    /// <summary>The queue row and its audit row land together or not at all: a request
+    /// with no <c>requeued</c> event behind it is a run nobody can account for.</summary>
+    private static async Task<bool> RequeueAsync(
+        IDbConnection conn, SubmitRequestRepo queue, AgentEventRepo events, string name, bool prepare, object detail)
+    {
+        using var tx = conn.BeginTransaction();
+        if (!await queue.EnqueueAsync(name, dryRun: true, prepare))
+            return false;
+        await events.RecordAsync(AgentEventRepo.Kinds.Requeued, name, detail);
+        tx.Commit();
+        return true;
     }
 
     /// <summary>

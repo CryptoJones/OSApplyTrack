@@ -697,6 +697,17 @@ public class AgentWorkerTests(PostgresFixture pg)
         await worker.RunOnceAsync(CancellationToken.None);
 
         Assert.Contains(("high-engineer.md", true, true), await QueuedAsync(conn, t));
+
+        // A prepare that failed is not tried again on the very next pass: three model
+        // builds in fifteen minutes is not a retry policy.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t });
+        await new AgentEventRepo(conn, t).RecordAsync("error", "high-engineer.md", new { reason = "packet build failed: model down" });
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.DoesNotContain(await QueuedAsync(conn, t), q => q.Name == "high-engineer.md");
+        await conn.ExecuteAsync("UPDATE agent_events SET created_at = now() - interval '7 hours' WHERE tenant_id = @t AND kind = 'error'", new { t });
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.Contains(("high-engineer.md", true, true), await QueuedAsync(conn, t));
+
         // Without a browser there is nowhere to run it, and nothing is queued.
         await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t });
         using var blind = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier());
