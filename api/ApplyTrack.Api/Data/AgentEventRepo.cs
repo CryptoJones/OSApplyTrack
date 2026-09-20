@@ -27,6 +27,8 @@ public sealed class AgentEventRepo
         public const string Error = "error";
         /// <summary>The browser signed in to MyGreenhouse and kept a fresh session for the poller (#221).</summary>
         public const string PortalSession = "portal_session";
+        /// <summary>The pass put a stuck Ready application back in the submit queue (#274).</summary>
+        public const string Requeued = "requeued";
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
