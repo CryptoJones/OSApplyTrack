@@ -27,10 +27,21 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// A dry run stops at the Submit step, screenshots, and <b>Discards</b>. A run that needs the
 /// person <b>Saves</b>, which keeps LinkedIn's own draft: they can finish it by hand from
 /// exactly where the agent stopped.
+///
+/// On the posting's own page LinkedIn renders the dialog inside a <b>shadow root</b>
+/// (<c>div#interop-outlet</c>). A Playwright locator reaches into it; <c>document.querySelector</c>
+/// does not, and neither does a <c>label[for]</c> looked up on the document. So every script here
+/// starts from the dialog element and asks its own root — found by running 1.49.0 against the
+/// real page, where the first version saw an empty dialog.
 /// </summary>
 internal static partial class LinkedInEasyApply
 {
-    public const string Entry = "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button]";
+    // Two pages, two ways in. The search page's side panel has the button this was first mapped
+    // from; the posting's own page — the one a stored link opens — has an anchor with generated
+    // class names and only its aria-label to go by. Never a bare "Easy Apply": that is also the
+    // search page's filter pill.
+    public const string Entry = "a[aria-label^='Easy Apply to' i], button[aria-label^='Easy Apply to' i], "
+        + "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button]";
     private const string Modal = ".jobs-easy-apply-modal";
     private const string Next = Modal + " button[data-easy-apply-next-button], " + Modal + " button[data-live-test-easy-apply-review-button]";
     private const string Submit = Modal + " button[data-live-test-easy-apply-submit-button]";
@@ -210,7 +221,7 @@ internal static partial class LinkedInEasyApply
             if (await follow.CountAsync() == 0) return true;
             for (var attempt = 0; attempt < 2 && await follow.IsCheckedAsync(); attempt++)
             {
-                await follow.EvaluateAsync("el => (document.querySelector(`label[for=\"${CSS.escape(el.id)}\"]`) || el).click()");
+                await follow.EvaluateAsync("el => (el.getRootNode().querySelector(`label[for=\"${CSS.escape(el.id)}\"]`) || el).click()");
                 await page.WaitForTimeoutAsync(200);
             }
             return !await page.Locator(Follow).First.IsCheckedAsync();
@@ -280,7 +291,7 @@ internal static partial class LinkedInEasyApply
                         (first, want) => {
                           const group = first.closest('fieldset') || first.closest('[data-test-form-element]') || first.parentElement;
                           for (const r of group.querySelectorAll('input[type=radio]')) {
-                            const label = document.querySelector(`label[for="${CSS.escape(r.id)}"]`);
+                            const label = first.getRootNode().querySelector(`label[for="${CSS.escape(r.id)}"]`);
                             if (((label?.innerText || r.value || '').trim().toLowerCase()) === want.toLowerCase()) { (label || r).click(); return r.checked; }
                           }
                           return false;
@@ -291,7 +302,7 @@ internal static partial class LinkedInEasyApply
                 {
                     if (!Affirmative(answer)) return false;
                     return await page.Locator($"{Modal} [id=\"{Css(f.ControlId)}\"]").First.EvaluateAsync<bool>(
-                        "el => { if (!el.checked) (document.querySelector(`label[for=\"${CSS.escape(el.id)}\"]`) || el).click(); return el.checked; }");
+                        "el => { if (!el.checked) (el.getRootNode().querySelector(`label[for=\"${CSS.escape(el.id)}\"]`) || el).click(); return el.checked; }");
                 }
                 default:
                 {
@@ -334,11 +345,13 @@ internal static partial class LinkedInEasyApply
     /// two courtesy checkboxes are LinkedIn's own and never a question.</summary>
     public static async Task<List<Field>> ReadStepAsync(IPage page)
     {
-        var json = await page.EvaluateAsync<string>(
+        var dialog = page.Locator(Modal).First;
+        if (await dialog.CountAsync() == 0) return [];
+        var json = await dialog.EvaluateAsync<string>(
             """
-            () => {
-              const modal = document.querySelector('.jobs-easy-apply-modal');
-              if (!modal) return '[]';
+            modal => {
+              // The dialog's own root: a shadow root on the posting's page, the document elsewhere.
+              const root = modal.getRootNode();
               const shown = el => { const r = el.getBoundingClientRect(); return r.width > 0 || r.height > 0 || el.type === 'radio' || el.type === 'checkbox'; };
               const clean = t => (t || '').split('\n').map(x => x.trim()).filter(Boolean)[0] || '';
               // A label says itself twice — once to be seen, once for a screen reader — sometimes on
@@ -363,7 +376,7 @@ internal static partial class LinkedInEasyApply
                 for (const x of g.querySelectorAll('input, select, textarea')) seen.add(x);
                 const radios = kind === 'radio' ? [...g.querySelectorAll('input[type=radio]')] : [];
                 const options = kind === 'select' ? [...c.options].map(o => o.text.trim()).filter(t => t && !/^select an option$/i.test(t))
-                  : radios.map(r => said(document.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.value);
+                  : radios.map(r => said(root.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.value);
                 const filled = kind === 'select' ? !!c.value && !/^select an option$/i.test(c.options[c.selectedIndex]?.text.trim() || '')
                   : kind === 'radio' ? radios.some(r => r.checked) : kind === 'checkbox' ? c.checked : (c.value || '').trim().length > 0;
                 const required = c.required || c.getAttribute('aria-required') === 'true' || radios.some(r => r.required || r.getAttribute('aria-required') === 'true')
