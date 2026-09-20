@@ -1439,6 +1439,24 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         try
         {
             if (await box.CountAsync() == 0) return null;
+            // Ashby's yes/no is two buttons (data-option, aria-pressed) and a hidden checkbox that
+            // only mirrors them. Unchecked already "matched" an answer of No, so the question was
+            // reported answered with nothing pressed — and gravie's real submit came back "the form
+            // rejected the submission: Will you now, or in the future, require … sponsorship?" (#280).
+            // Press the button a person presses, and believe only its own aria-pressed.
+            var option = want ? "yes" : "no";
+            var group = await box.EvaluateAsync<bool>(
+                "el => !!el.parentElement && el.parentElement.querySelectorAll('button[data-option], button[aria-pressed]').length >= 2");
+            if (group)
+            {
+                const string Find = "(el, o) => [...el.parentElement.querySelectorAll('button[data-option], button[aria-pressed]')]"
+                    + ".find(b => ((b.dataset.option || b.innerText || '').trim().toLowerCase()) === o)";
+                if (!await box.EvaluateAsync<bool>($"(el, o) => {{ const b = ({Find})(el, o); if (!b) return false; if (b.getAttribute('aria-pressed') !== 'true') b.click(); return true; }}", option))
+                    return false;
+                await page.WaitForTimeoutAsync(200);
+                return await page.Locator(boxSelector).First.EvaluateAsync<bool>(
+                    $"(el, o) => {{ const b = ({Find})(el, o); return !!b && b.getAttribute('aria-pressed') === 'true'; }}", option);
+            }
             await box.SetCheckedAsync(want, new() { Timeout = 3_000 });
             return true;
         }

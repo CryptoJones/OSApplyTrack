@@ -118,4 +118,15 @@ public class AtsProviderTests
     [InlineData("jobs.lever.co", null)]
     public void An_ats_that_only_takes_applications_from_an_account_is_named(string host, string? expected) =>
         Assert.Equal(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.AccountOnlyAts(host));
+
+    [Theory]
+    // Refused outright, and named.
+    [InlineData("career41.sapsf.com", "", "Apply leads to career41.sapsf.com (SAP SuccessFactors), which only takes")]
+    [InlineData("evil.example", "", "Apply led off the posting's site to evil.example")]
+    // Let through — it hosts forms — and landed on: where the run ended up says what it needs.
+    [InlineData("", "allstate.wd5.myworkdayjobs.com", "Apply leads to allstate.wd5.myworkdayjobs.com (Workday), which only takes")]
+    [InlineData("", "uhg.taleo.net", "Apply leads to uhg.taleo.net (Oracle Taleo), which only takes")]
+    [InlineData("", "careers.example.com", "Apply was clicked but no form appeared within 10 s")]
+    public void A_run_that_found_no_form_says_where_apply_led(string refused, string landed, string expected) =>
+        Assert.StartsWith(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.NoFormNote(refused.Length > 0 ? [refused] : [], landed));
 }

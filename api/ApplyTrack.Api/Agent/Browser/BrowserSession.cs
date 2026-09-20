@@ -613,11 +613,24 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
         }
         finally { _context.Page -= OnPage; }
-        var refused = Refused;
-        RevealNote = refused.Count > 0
-            ? AccountOnlyAts(refused[0]) is { } ats
-                ? $"Apply leads to {refused[0]} ({ats}), which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting"
-                : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow"
+        RevealNote = NoFormNote(Refused, Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "");
+    }
+
+    /// <summary>
+    /// Why an Apply click produced no form. Workday, Taleo and iCIMS are hosts the route guard
+    /// lets through — they host forms — so the run <i>lands</i> on them rather than being
+    /// refused, finds a sign-in and nothing to fill, and used to say only "no form appeared
+    /// within 10 s" (Allstate, UnitedHealth Group). Where it ended up says what is needed (#280).
+    /// </summary>
+    public static string NoFormNote(IReadOnlyList<string> refused, string landedHost)
+    {
+        const string NeedsAccount = ", which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting";
+        if (refused.Count > 0)
+            return AccountOnlyAts(refused[0]) is { } ats
+                ? $"Apply leads to {refused[0]} ({ats}){NeedsAccount}"
+                : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow";
+        return AccountOnlyAts(landedHost) is { } landed
+            ? $"Apply leads to {landedHost} ({landed}){NeedsAccount}"
             : "Apply was clicked but no form appeared within 10 s";
     }
 
