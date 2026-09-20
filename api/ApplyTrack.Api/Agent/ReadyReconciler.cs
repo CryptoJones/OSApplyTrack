@@ -105,6 +105,38 @@ public static partial class ReadyReconciler
         return result;
     }
 
+    /// <summary>
+    /// Retire what can never be applied to: a lead or a Ready application whose link is a
+    /// listing on a dead-end aggregator (#281). Marked <c>passed</c> the way the human's Pass
+    /// button does it, with the reason recorded — before the pass spends a verdict, a packet
+    /// and a cover letter on it, and instead of parking it in Ready for good. Needs no browser.
+    /// </summary>
+    public static async Task<List<string>> RetireDeadEndsAsync(IDbConnection conn, long tenantId)
+    {
+        var retired = new List<string>();
+        var rows = await conn.QueryAsync<(string Name, string Link)>(
+            "SELECT name, link FROM applications WHERE tenant_id = @t AND status IN ('lead', 'ready') AND link <> '' ORDER BY name",
+            new { t = tenantId });
+        var apps = new ApplicationRepo(conn, tenantId);
+        var events = new AgentEventRepo(conn, tenantId);
+        foreach (var (name, link) in rows)
+        {
+            if (!AtsProvider.IsDeadEndLink(link))
+                continue;
+            var rec = await apps.GetAsync(name);
+            if (rec is null)
+                continue;
+            await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, null);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, name, new
+            {
+                reason = "dead-end aggregator listing — its Apply leads only to more aggregators behind a bot check, never a form; marked passed",
+                rec.Fields.Company, rec.Fields.Role,
+            });
+            retired.Add(name);
+        }
+        return retired;
+    }
+
     /// <summary>The queue row and its audit row land together or not at all: a request
     /// with no <c>requeued</c> event behind it is a run nobody can account for.</summary>
     private static async Task<bool> RequeueAsync(

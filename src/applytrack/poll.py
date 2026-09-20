@@ -124,6 +124,21 @@ AGGREGATOR_HOSTS = frozenset({
     "bestjobtool.com",
 })
 
+# Aggregators whose Apply never reaches anything a person or a browser can fill: one
+# ad-monetised redirect network under four names, its hop through us.thebigjobsite.com
+# behind a bot check, its listings routinely another employer's posting under an invented
+# title (#281). Not apply-by-hand — not staged at all. lensa.com, where the chain ends, is
+# a board a person can sign up to and stays a plain aggregator. Keep in step with
+# ``AtsProvider.DeadEndHosts``.
+DEAD_END_HOSTS = frozenset({"sundayy.com", "thebigjobsite.com", "fetchjobs.co", "bestjobtool.com"})
+
+
+def is_dead_end_link(url: str) -> bool:
+    """True when ``url`` is a listing on a dead-end aggregator (#281)."""
+    host = (urlsplit(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in DEAD_END_HOSTS)
+
+
 _APPLY_ANCHOR_RE = re.compile(
     r"<a\b[^>]*?href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL
 )
@@ -1352,6 +1367,13 @@ def score_and_stage(
 
             score, hits = classify(item.role, item.description, profile.keywords)
             if not hits or score < profile.min_fit_score:
+                seen.add(item.link, slug)
+                continue
+
+            # A dead-end aggregator's listing, or one whose Apply leads to it (a LinkedIn
+            # "employer" fronting the network): nothing to apply to, so nothing to stage (#281).
+            if is_dead_end_link(item.link) or is_dead_end_link(item.apply_link):
+                logger.info("skipped %s — %s: dead-end aggregator", item.company, item.role)
                 seen.add(item.link, slug)
                 continue
 

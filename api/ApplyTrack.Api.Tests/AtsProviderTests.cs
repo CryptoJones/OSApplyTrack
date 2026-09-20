@@ -85,4 +85,18 @@ public class AtsProviderTests
         Assert.True(AtsProvider.TryParseGreenhouse("https://www.assuresoft.com/careers/x?gh_jid=4567890", "auto:greenhouse:assuresoft", out var board, out var id));
         Assert.Equal(("assuresoft", "4567890"), (board, id));
     }
+
+    [Theory]
+    [InlineData("https://www.bestjobtool.com/job-description-usb/3D6EACBA24A0C358CF1D5D1DF544AAB0?src=LinkedIn", true)]
+    [InlineData("https://www.fetchjobs.co/job-description-usb/DBE262F9F85264450F4C41420DB74AAC?src=LinkedIn", true)]
+    [InlineData("https://us.thebigjobsite.com/redirectjob?id=3D6E", true)]
+    [InlineData("https://sundayy.com/jobs/1", true)]
+    // Where the chain ends is a board a person can sign up to: apply-by-hand, not retired.
+    [InlineData("https://lensa.com/job/1", false)]
+    [InlineData("https://www.linkedin.com/jobs/view/4457796892", false)]
+    [InlineData("https://job-boards.greenhouse.io/acme/jobs/1", false)]
+    [InlineData("https://notbestjobtool.com/x", false)]
+    [InlineData("", false)]
+    public void A_dead_end_aggregator_is_told_from_an_apply_by_hand_one(string link, bool expected) =>
+        Assert.Equal(expected, AtsProvider.IsDeadEndLink(link));
 }

@@ -134,6 +134,26 @@ public static partial class AtsProvider
         return Unknown;
     }
 
+    /// <summary>
+    /// Aggregators whose Apply never reaches anything a person or a browser can fill: one
+    /// ad-monetised redirect network under four names, its hop through
+    /// <c>us.thebigjobsite.com</c> sitting behind a bot check, its listings routinely another
+    /// employer's posting under an invented title (#281). Nothing here is apply-by-hand —
+    /// the poller does not stage it and the agent retires what is already parked.
+    /// <c>lensa.com</c>, where the chain ends, is a board a person can sign up to and stays
+    /// a plain aggregator. Keep in step with <c>DEAD_END_HOSTS</c> in <c>poll.py</c>.
+    /// </summary>
+    private static readonly string[] DeadEndHosts =
+        ["sundayy.com", "thebigjobsite.com", "fetchjobs.co", "bestjobtool.com"];
+
+    /// <summary>Whether <paramref name="link"/> is a listing on a dead-end aggregator (#281).</summary>
+    public static bool IsDeadEndLink(string link)
+    {
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var uri)) return false;
+        var host = uri.Host.ToLowerInvariant();
+        return DeadEndHosts.Any(h => host == h || host.EndsWith("." + h, StringComparison.Ordinal));
+    }
+
     /// <summary>A host that lists other employers' postings (see <see cref="Aggregator"/>).</summary>
     public static bool IsAggregatorHost(string host)
     {

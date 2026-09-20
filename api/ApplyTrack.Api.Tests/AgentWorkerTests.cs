@@ -715,6 +715,26 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Empty(await QueuedAsync(conn, t));
     }
 
+    [Fact]
+    public async Task A_pass_retires_a_dead_end_aggregator_listing_without_a_browser()
+    {
+        // "Quick Apply" on bestjobtool leads to thebigjobsite behind a bot check and on to
+        // more aggregators — never a form. Parked in Ready it would sit there for good (#281).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            rec!.Fields with { Link = "https://www.bestjobtool.com/job-description-usb/3D6E?src=LinkedIn" }, null);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier());
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal("passed", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.Equal("ready", await StatusAsync(conn, t, "mid-engineer.md"));
+        Assert.Contains(("high-engineer.md", "error"), await EventsAsync(conn, t));
+    }
+
     [Theory]
     [InlineData("""{"reason":"TimeoutException: Timeout 20000ms exceeded.","dry_run":true}""", true)]
     [InlineData("""{"dry_run":true,"error":"no application form was found on the page — nothing to fill (the Apply button did not respond within 5 s)"}""", true)]
