@@ -102,7 +102,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (!_options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
 
-        await using var session = await BrowserSession.OpenAsync(_options, AtsProvider.ApplyUrl(link, packet.Provider), ct, accounts);
+        var opened = await BrowserSession.OpenAsync(_options, AtsProvider.ApplyUrl(link, packet.Provider), ct, accounts);
+        // A hosted Greenhouse posting whose board redirects to the employer's own careers
+        // site: the navigation was refused for leaving the posting's site and the page is
+        // blank. Greenhouse serves the same form itself — open that instead (#280).
+        if (opened.Refused.Count > 0 && !opened.Page.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            && AtsProvider.GreenhouseEmbedForm(link) is { } embed)
+        {
+            await opened.DisposeAsync();
+            opened = await BrowserSession.OpenAsync(_options, embed, ct, accounts);
+        }
+        await using var session = opened;
         var page = session.Page;
         var mapped = new List<string>();
         var unmapped = new List<string>();
@@ -1429,10 +1439,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         try
         {
             if (await box.CountAsync() == 0) return null;
-            await box.SetCheckedAsync(want);
+            await box.SetCheckedAsync(want, new() { Timeout = 3_000 });
             return true;
         }
-        catch (PlaywrightException)
+        // A timeout is a System.TimeoutException, not a PlaywrightException: caught by neither,
+        // it ended the whole run. Ashby draws its own box and hides the real input
+        // (tabindex="-1", no size), so Playwright waited its full 20 s for it to be "visible"
+        // and gravie died four times on one optional checkbox (#280).
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
         {
             // A widget that re-renders its box on click (SuccessFactors' Acknowledgement) leaves
             // Playwright reading the detached one and reporting the click "did not change its
@@ -1443,11 +1457,23 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var fresh = page.Locator(boxSelector).First;
                 if (await fresh.CountAsync() == 0) return false;
                 if (await fresh.IsCheckedAsync() == want) return true;
-                await fresh.ClickAsync(new() { Force = true, Timeout = 3_000 });
+                try { await fresh.ClickAsync(new() { Force = true, Timeout = 3_000 }); }
+                catch (Exception inner) when (inner is PlaywrightException or TimeoutException) { /* a box with no size cannot be clicked at all */ }
+                await page.WaitForTimeoutAsync(300);
+                fresh = page.Locator(boxSelector).First;
+                if (await fresh.IsCheckedAsync() == want) return true;
+                // A hidden input behind a drawn box: press what a person presses — its label —
+                // and failing that the input itself, as a click event rather than a pointer.
+                await fresh.EvaluateAsync("""
+                    el => {
+                      const label = el.closest('label') || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`));
+                      (label || el).click();
+                    }
+                    """);
                 await page.WaitForTimeoutAsync(300);
                 return await page.Locator(boxSelector).First.IsCheckedAsync() == want;
             }
-            catch (PlaywrightException) { return false; }
+            catch (Exception inner) when (inner is PlaywrightException or TimeoutException) { return false; }
         }
     }
 

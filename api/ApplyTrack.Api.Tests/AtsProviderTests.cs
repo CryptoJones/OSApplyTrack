@@ -99,4 +99,23 @@ public class AtsProviderTests
     [InlineData("", false)]
     public void A_dead_end_aggregator_is_told_from_an_apply_by_hand_one(string link, bool expected) =>
         Assert.Equal(expected, AtsProvider.IsDeadEndLink(link));
+
+    [Theory]
+    [InlineData("https://job-boards.greenhouse.io/fieldwire/jobs/8633653002", "https://job-boards.greenhouse.io/embed/job_app?for=fieldwire&token=8633653002")]
+    [InlineData("https://boards.greenhouse.io/acme/jobs/42?gh_src=x", "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=42")]
+    [InlineData("https://job-boards.eu.greenhouse.io/acme/jobs/42", "https://job-boards.eu.greenhouse.io/embed/job_app?for=acme&token=42")]
+    [InlineData("https://www.fieldwire.com/job/8633653002/?gh_jid=8633653002", null)]
+    [InlineData("https://jobs.lever.co/acme/1", null)]
+    [InlineData("", null)]
+    public void A_hosted_greenhouse_posting_has_greenhouses_own_copy_of_its_form(string link, string? expected) =>
+        Assert.Equal(expected, AtsProvider.GreenhouseEmbedForm(link));
+
+    [Theory]
+    [InlineData("careers-mheducation.icims.com", "iCIMS")]
+    [InlineData("uhg.taleo.net", "Oracle Taleo")]
+    [InlineData("allstate.wd5.myworkdayjobs.com", "Workday")]
+    [InlineData("career41.sapsf.com", "SAP SuccessFactors")]
+    [InlineData("jobs.lever.co", null)]
+    public void An_ats_that_only_takes_applications_from_an_account_is_named(string host, string? expected) =>
+        Assert.Equal(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.AccountOnlyAts(host));
 }
