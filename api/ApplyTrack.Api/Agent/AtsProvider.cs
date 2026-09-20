@@ -210,6 +210,25 @@ public static partial class AtsProvider
         _ => longTailOptIn,
     };
 
+    /// <summary>
+    /// Greenhouse's own copy of the application form for a hosted posting, or null when
+    /// <paramref name="link"/> is not one. An employer may point its board at its own careers
+    /// site: <c>job-boards.greenhouse.io/fieldwire/jobs/8633653002</c> answers with a redirect
+    /// to <c>www.fieldwire.com/job/…</c>, which the browser will not follow off the posting's
+    /// site — and there the form is only this same page in a frame. Going to it directly keeps
+    /// the run on Greenhouse (#280).
+    /// </summary>
+    public static string? GreenhouseEmbedForm(string link)
+    {
+        if (GreenhouseHosted().Match(link ?? "") is not { Success: true } m || !Uri.TryCreate(link, UriKind.Absolute, out var uri))
+            return null;
+        // The same region the posting is in (job-boards.eu.greenhouse.io); the older
+        // boards.* host serves the embed from its job-boards.* twin.
+        var host = uri.Host.ToLowerInvariant();
+        if (host.StartsWith("boards.", StringComparison.Ordinal)) host = "job-" + host;
+        return $"https://{host}/embed/job_app?for={Uri.EscapeDataString(m.Groups[1].Value)}&token={Uri.EscapeDataString(m.Groups[2].Value)}";
+    }
+
     /// <summary>Board token + job id for a Greenhouse posting, from the hosted URL or an
     /// embed's <c>gh_jid</c> plus the poller's <c>auto:greenhouse:{board}</c> source.</summary>
     public static bool TryParseGreenhouse(string link, string source, out string board, out string jobId)

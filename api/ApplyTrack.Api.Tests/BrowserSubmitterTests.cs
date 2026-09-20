@@ -59,6 +59,14 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         _fixture = builder.Build();
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
+        // Ashby draws its own checkbox and hides the real input: no id, no size, tabindex -1 (#280).
+        _fixture.MapGet("/jobs/styled-checkbox", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """<label><input tabindex="-1" type="checkbox" name="job_application[question_7]" value="accepted" style="position:absolute;width:0;height:0;opacity:0;margin:0" /><span style="display:inline-block;width:18px;height:18px;border:1px solid #333"></span> I accept the privacy policy</label>"""), "text/html"));
+        // Allstate: the Apply link's accessible name opens with the job title (#280).
+        _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
+            """<html><body><h1>Senior Engineer</h1><p>No form on this page.</p><a class="button apply-btn" href="/jobs/1" role="button" aria-label="Senior Engineer Apply Now open in new window">Apply now </a></body></html>""", "text/html"));
         // A board whose own uploader rejects the files it was handed — Greenhouse's live
         // failure, reproduced: the input accepts them, the uploader then errors, nothing uploads.
         _fixture.MapGet("/jobs/uploader", () => Results.Content(BrokenUploaderHtml, "text/html"));
@@ -1687,6 +1695,33 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("job_application[question_7]", outcome.Mapped);
         var post = Assert.Single(_posts);
         Assert.Equal("accepted", post["job_application[question_7]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_checkbox_hidden_behind_a_drawn_box_is_set_through_its_label_not_timed_out_on()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // gravie on Ashby: "TimeoutException: Timeout 20000ms exceeded … element is not visible",
+        // four runs running, and the whole run lost to one box (#280).
+        var packet = Packet();
+        packet.Questions.Add(new("job_application[question_7]", "I accept the privacy policy", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["job_application[question_7]"] = "Yes";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/styled-checkbox", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("job_application[question_7]", outcome.Mapped);
+        Assert.Equal("accepted", Assert.Single(_posts)["job_application[question_7]"]);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_link_whose_accessible_name_opens_with_the_job_title_is_still_found()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/apply-named-for-the-job", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }
 
     [SkippableFact]

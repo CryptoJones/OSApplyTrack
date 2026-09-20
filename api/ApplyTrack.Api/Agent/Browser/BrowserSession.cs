@@ -75,6 +75,12 @@ public sealed partial class BrowserSession : IAsyncDisposable
             return "SAP SuccessFactors";
         if (host.EndsWith("myworkdayjobs.com") || host.EndsWith("myworkdaysite.com"))
             return "Workday";
+        // McGraw Hill's Apply is careers-mheducation.icims.com/jobs/<id>/login; UnitedHealth
+        // Group's is uhg.taleo.net/careersection/…/jobapply.ftl. Both ran out as "no form" (#280).
+        if (host.EndsWith("icims.com"))
+            return "iCIMS";
+        if (host.EndsWith("taleo.net"))
+            return "Oracle Taleo";
         return null;
     }
 
@@ -485,15 +491,29 @@ public sealed partial class BrowserSession : IAsyncDisposable
         // would skip the click and leave the real fields — every text, select and textarea, and
         // the Submit button — hidden and undiscovered.
         if (await WaitForAsync(Page, 3_000, ApplicationFormRevealedAsync)) return;
+        // By accessible name first, then by what the control visibly says. Allstate labels its
+        // link aria-label="Lead .Net Software Engineer Apply Now open in new window": the name
+        // opens with the job title, so nothing "began with apply" and the run reported "no Apply
+        // button or link on the page" with "Apply now" in plain view (#280). And the first one
+        // that can be SEEN, not the first in the document — a collapsed panel's own "Apply"
+        // must not stand in for the posting's.
         ILocator? apply = null;
-        foreach (var candidate in new[]
+        foreach (var matches in new[]
                  {
-                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }).First,
-                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }).First,
+                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
+                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
+                     Page.Locator("a[href], button, [role=button], input[type=submit], input[type=button]")
+                         .Filter(new() { HasTextRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
                  })
         {
-            try { if (await candidate.IsVisibleAsync()) { apply = candidate; break; } }
+            try
+            {
+                var count = Math.Min(await matches.CountAsync(), 8);
+                for (var i = 0; i < count && apply is null; i++)
+                    if (await matches.Nth(i).IsVisibleAsync()) apply = matches.Nth(i);
+            }
             catch (PlaywrightException) { /* next */ }
+            if (apply is not null) break;
         }
         if (apply is null)
         {
