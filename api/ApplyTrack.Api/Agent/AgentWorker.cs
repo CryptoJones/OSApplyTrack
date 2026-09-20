@@ -846,6 +846,12 @@ public sealed class AgentWorker : BackgroundService
                 return 0;
             var events = new AgentEventRepo(conn, tenantId);
 
+            // Listings on a dead-end aggregator are retired before anything is spent on them (#281).
+            var deadEnds = await ReadyReconciler.RetireDeadEndsAsync(conn, tenantId);
+            if (deadEnds.Count > 0)
+                _log.LogInformation("tenant {TenantId}: {Count} dead-end aggregator listing(s) marked passed: {Names}",
+                    tenantId, deadEnds.Count, string.Join(", ", deadEnds));
+
             // Ready rows nothing else will ever revisit: one with no packet, one whose last
             // dry run died on something transient. Bounded, and never a captcha, a sign-in
             // wall or a submit that may already have landed (#274).

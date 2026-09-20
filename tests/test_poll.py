@@ -895,6 +895,39 @@ def test_an_aggregator_listing_that_cannot_be_resolved_keeps_its_link(
     assert repo.added[0].link == "https://remoteok.com/remote-jobs/123"
 
 
+@pytest.mark.parametrize(
+    ("link", "apply_link"),
+    [
+        # Listed on the network itself.
+        ("https://www.bestjobtool.com/job-description-usb/3D6E?src=LinkedIn", ""),
+        ("https://www.fetchjobs.co/job-description-usb/DBE2?src=LinkedIn", ""),
+        # A LinkedIn "employer" whose offsite Apply is the network (#281).
+        ("https://www.linkedin.com/jobs/view/1", "https://www.bestjobtool.com/job-description-usb/3D6E"),
+        ("https://www.linkedin.com/jobs/view/2", "https://us.thebigjobsite.com/redirectjob?id=3D6E"),
+    ],
+)
+def test_a_dead_end_aggregator_listing_is_never_staged(link: str, apply_link: str) -> None:
+    repo = FakeRepo()
+    listing = Listing(
+        company="Netrolynx AI", role="Backend Engineer", link=link, apply_link=apply_link,
+        source="linkedin", location="Remote", description="backend",
+    )
+
+    added = score_and_stage(repo, Criteria(keywords=["backend"], min_fit_score=1), [listing])
+
+    assert added == []
+    assert repo.added == []
+
+
+def test_lensa_is_still_apply_by_hand_not_a_dead_end() -> None:
+    from applytrack.poll import is_aggregator_link, is_dead_end_link
+
+    assert is_aggregator_link("https://lensa.com/job/1")
+    assert not is_dead_end_link("https://lensa.com/job/1")
+    assert not is_dead_end_link("https://jobs.lever.co/acme/1")
+    assert not is_dead_end_link("")
+
+
 def test_an_employer_link_the_employer_refused_to_show_a_bot_is_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
