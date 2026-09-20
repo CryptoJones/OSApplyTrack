@@ -245,7 +245,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
                     // "I agree" on the application form itself is an answer, not a banner:
                     // only a button inside something that calls itself cookie/consent/privacy —
                     // or inside a dialog, or a box pinned over the page, that *says* it is about
-                    // cookies and asks for nothing else. Radancy's box is id "system-imessage", labelled "Important System
+                    // cookies and asks for nothing else — not even a checkbox: an acknowledgement
+                    // box beside "I agree" is an application's, and a manager that shows category
+                    // toggles up front is one of the named ones above. Radancy's box is id "system-imessage", labelled "Important System
                     // Message"; only its text mentions cookies, and the Apply click died
                     // behind it for want of reading that (#283).
                     var inBanner = await candidate.EvaluateAsync<bool>("""
@@ -261,7 +263,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
                             if ((role === 'dialog' || role === 'alertdialog' || a.getAttribute('aria-modal') === 'true'
                                  || pos === 'fixed' || pos === 'sticky')
                                 && /\bcookies?\b/i.test(a.innerText || '')
-                                && !a.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=button]):not([type=submit]), select, textarea'))
+                                && !a.querySelector('input:not([type=hidden]):not([type=button]):not([type=submit]), select, textarea'))
                               return true;
                           }
                           return false;

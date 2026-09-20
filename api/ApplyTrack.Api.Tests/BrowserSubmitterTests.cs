@@ -215,6 +215,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/consent-pinned-link", () => Results.Content(PinnedLinkConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
         // A dialog that mentions cookies but holds the form itself: its "I agree" is an answer.
         _fixture.MapGet("/jobs/consent-is-the-form", () => Results.Content(AgreeInsideFormDialogHtml.Replace("BODY", FormHtml), "text/html"));
+        // The same, where all the dialog holds besides the button is an acknowledgement checkbox.
+        _fixture.MapGet("/jobs/consent-is-an-acknowledgement", () => Results.Content(AgreeBesideCheckboxHtml.Replace("BODY", FormHtml), "text/html"));
         // Zoho Recruit's consent: rendered after the page has booted, with a transparent
         // freeze layer over the whole viewport until a choice is made (fyerx).
         _fixture.MapGet("/jobs/consent-late", () => Results.Content(LateFreezeConsentHtml, "text/html"));
@@ -1028,6 +1030,20 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <p>This website stores cookies on your device.</p>
             <a href="#" onclick="document.getElementById('notice-bar').remove();return false">Accept and continue</a>
           </div>
+        </div>
+        BODY
+        </body></html>
+        """;
+
+    // A pre-application acknowledgement: a checkbox and "I agree", in a dialog whose small print
+    // mentions cookies. Clicked as a banner, it would throw the application away.
+    private const string AgreeBesideCheckboxHtml = """
+        <html><body>
+        <div id="ack-panel" role="dialog" aria-label="Before you apply"
+             style="position:fixed;left:0;right:0;bottom:0;background:#fff;padding:16px">
+          <p>This site uses cookies. Tick to confirm you have read the notice.</p>
+          <label><input type="checkbox" name="ack"> I have read the applicant notice</label>
+          <button type="button" onclick="document.body.innerHTML='<p>gone</p>'">I agree</button>
         </div>
         BODY
         </body></html>
@@ -2452,11 +2468,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }
 
-    [SkippableFact]
-    public async Task An_agree_button_in_a_dialog_that_holds_the_form_is_an_answer_not_a_banner()
+    [SkippableTheory]
+    [InlineData("consent-is-the-form")]
+    [InlineData("consent-is-an-acknowledgement")]
+    public async Task An_agree_button_in_a_dialog_that_asks_for_anything_is_an_answer_not_a_banner(string path)
     {
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
-        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/consent-is-the-form", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/{path}", Packet(), (Pdf, "resume.pdf"), dryRun: false);
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
     }

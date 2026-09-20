@@ -431,8 +431,8 @@ async function loadErrors() {
     const data = await api("GET", "/api/errors");
     state.errors = Array.isArray(data.errors) ? data.errors : [];
   } catch {
-    // An instance without the agent (or an older api) has no errors to show.
-    state.errors = [];
+    // A request that failed says nothing about what is stuck: keep what was last known,
+    // or the errored ones would slide back under Ready until the next good answer.
   }
 }
 
@@ -491,8 +491,9 @@ function renderErrorsView() {
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
   contentEl.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", async () => {
     await queueSubmit(b.dataset.retry, b, true);
-    // Queued means it has left Errors for the Pipeline until the run lands.
-    if (state.mode === "errors") await openErrors({ focus: false });
+    // Queued means it has left Errors for the Pipeline until the run lands. The row and
+    // its button are gone with the repaint, so focus goes to the heading, not the body.
+    if (state.mode === "errors") await openErrors();
   }));
 }
 
