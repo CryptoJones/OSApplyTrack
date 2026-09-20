@@ -518,8 +518,11 @@ public sealed class AgentWorker : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var reason = ex is AppValidationException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
+            // A crash is worth another try; a refusal the submitter reasoned its way to is
+            // not. Said here, where the difference is known, so ReadyReconciler need not
+            // guess it from the wording (#274).
             await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
-                new { reason, dry_run = dryRun }, null);
+                new { reason, dry_run = dryRun, transient = ex is not AppValidationException }, null);
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
@@ -842,6 +845,17 @@ public sealed class AgentWorker : BackgroundService
             if (!settings.Enabled)
                 return 0;
             var events = new AgentEventRepo(conn, tenantId);
+
+            // Ready rows nothing else will ever revisit: one with no packet, one whose last
+            // dry run died on something transient. Bounded, and never a captcha, a sign-in
+            // wall or a submit that may already have landed (#274).
+            if (_browser.IsConfigured)
+            {
+                var healed = await ReadyReconciler.ReconcileAsync(conn, tenantId, _protector, settings.LongTail);
+                if (healed.Count > 0)
+                    _log.LogInformation("tenant {TenantId}: {Prepared} stuck ready row(s) queued for a prepare, {Retried} for a retry: {Names}",
+                        tenantId, healed.Prepared.Count, healed.Retried.Count, string.Join(", ", healed.Prepared.Concat(healed.Retried)));
+            }
 
             // Ready packets that proved themselves in a dry run while the switch was still
             // on: with dry-run off now and a browser here, queue the real click. This is

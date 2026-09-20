@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Net;
+using System.Text.Json;
 using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Agent.Greenhouse;
@@ -630,6 +631,90 @@ public class AgentWorkerTests(PostgresFixture pg)
         await worker.RunOnceAsync(CancellationToken.None);
         Assert.Equal(0, await PendingSubmitsAsync(conn, t));
     }
+
+    private static Task<List<(string Name, bool DryRun, bool Prepare)>> QueuedAsync(NpgsqlConnection conn, long t) =>
+        conn.QueryAsync<(string, bool, bool)>(
+            "SELECT application_name, dry_run, prepare FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL ORDER BY 1",
+            new { t }).ContinueWith(r => r.Result.ToList());
+
+    private static Task AgeEvidenceAsync(NpgsqlConnection conn, long t, string interval) =>
+        conn.ExecuteAsync($"UPDATE agent_evidence SET created_at = now() - interval '{interval}' WHERE tenant_id = @t", new { t });
+
+    [Fact]
+    public async Task A_pass_retries_a_ready_packet_whose_last_dry_run_died_on_something_transient()
+    {
+        // 33 packets sat in Ready on 2026-09-19 with an empty queue: a run that failed was
+        // stamped done and nothing ever looked at it again (#274).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        await evidence.RecordAsync("high-engineer.md", "failed", "https://careers.example.com/high-engineer.md", "",
+            new { reason = "TimeoutException: Timeout 20000ms exceeded.", dry_run = true }, null);
+        // The board may have taken this one. A second application is worse than a parked one.
+        await evidence.RecordAsync("mid-engineer.md", "failed", "https://careers.example.com/mid-engineer.md", "",
+            new { dry_run = false, error = "Submit was clicked but no confirmation text was recognised" }, null);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+
+        // Too soon: a board that is down stays down for a while.
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.DoesNotContain(await QueuedAsync(conn, t), q => q.Name is "high-engineer.md" or "mid-engineer.md");
+
+        await AgeEvidenceAsync(conn, t, "7 hours");
+        await worker.RunOnceAsync(CancellationToken.None);
+        var queued = await QueuedAsync(conn, t);
+        Assert.Contains(("high-engineer.md", true, false), queued);
+        Assert.DoesNotContain(queued, q => q.Name == "mid-engineer.md");
+        Assert.Contains(("high-engineer.md", "requeued"), await EventsAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task A_pass_stops_retrying_a_ready_packet_that_keeps_failing()
+    {
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        for (var i = 0; i < ReadyReconciler.MaxFailures; i++)
+            await evidence.RecordAsync("high-engineer.md", "failed", "https://careers.example.com/high-engineer.md", "",
+                new { reason = "PlaywrightException: Target closed", dry_run = true, transient = true }, null);
+        await AgeEvidenceAsync(conn, t, "7 hours");
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(await QueuedAsync(conn, t), q => q.Name == "high-engineer.md");
+    }
+
+    [Fact]
+    public async Task A_pass_queues_a_prepare_for_a_ready_application_that_has_no_packet()
+    {
+        // Ready, version 1, no verdict, no packet, no events: the pass reads leads and the
+        // promoter reads evidence, so nothing would ever have picked it up (#274).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        await conn.ExecuteAsync("DELETE FROM agent_packets WHERE tenant_id = @t AND application_name = 'high-engineer.md'", new { t });
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Contains(("high-engineer.md", true, true), await QueuedAsync(conn, t));
+        // Without a browser there is nowhere to run it, and nothing is queued.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t });
+        using var blind = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier());
+        await blind.RunOnceAsync(CancellationToken.None);
+        Assert.Empty(await QueuedAsync(conn, t));
+    }
+
+    [Theory]
+    [InlineData("""{"reason":"TimeoutException: Timeout 20000ms exceeded.","dry_run":true}""", true)]
+    [InlineData("""{"dry_run":true,"error":"no application form was found on the page — nothing to fill (the Apply button did not respond within 5 s)"}""", true)]
+    [InlineData("""{"dry_run":true,"error":"no application form was found on the page — nothing to fill (Apply was clicked but no form appeared within 10 s)"}""", true)]
+    [InlineData("""{"reason":"refused to submit: required fields could not be mapped (x)","dry_run":true,"transient":false}""", false)]
+    [InlineData("""{"dry_run":true,"error":"no application form was found on the page — nothing to fill (no Apply button or link on the page)"}""", false)]
+    [InlineData("""{"captcha":true,"error":"TimeoutException: x","dry_run":true}""", false)]
+    [InlineData("""{"reason":"TimeoutException: Timeout 20000ms exceeded.","dry_run":false,"transient":true}""", false)]
+    [InlineData("""{"dry_run":true,"error":"Submit was clicked but no confirmation text was recognised"}""", false)]
+    public void Only_a_failed_dry_run_that_died_on_something_transient_is_worth_another_try(string detail, bool expected) =>
+        Assert.Equal(expected, ReadyReconciler.IsTransientFailure("failed", JsonDocument.Parse(detail).RootElement));
 
     [Fact]
     public async Task A_queued_prepare_rebuilds_the_packet_on_the_worker_and_goes_straight_to_the_dry_run()
