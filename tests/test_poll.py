@@ -895,6 +895,68 @@ def test_an_aggregator_listing_that_cannot_be_resolved_keeps_its_link(
     assert repo.added[0].link == "https://remoteok.com/remote-jobs/123"
 
 
+def test_an_employer_link_the_employer_refused_to_show_a_bot_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import LinkStatus
+
+    class _Client:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("applytrack.poll.ssrf_safe_client", lambda **_: _Client())
+    # Nothing answers a bot here: the reachability gate must not be what drops the lead.
+    monkeypatch.setattr("applytrack.poll.is_reachable", lambda url, *, client=None: False)
+    # Meta's careers site 403s every unattended client; a person's browser opens it (#276).
+    monkeypatch.setattr(
+        "applytrack.poll.probe",
+        lambda url, *, client=None, timeout=12.0: LinkStatus(
+            url=url, ok=False, status_code=403, final_url=url
+        ),
+    )
+    repo = FakeRepo()
+    listing = Listing(
+        company="Meta", role="Backend Engineer", link="https://www.linkedin.com/jobs/view/1",
+        apply_link="https://www.metacareers.com/jobs/1", source="linkedin", location="Remote",
+        description="backend",
+    )
+
+    score_and_stage(
+        repo, Criteria(keywords=["backend"], min_fit_score=1), [listing], verify_links=True
+    )
+
+    assert repo.added[0].link == "https://www.metacareers.com/jobs/1"
+
+
+@pytest.mark.parametrize(
+    ("status", "kwargs"),
+    [
+        (404, {}),
+        (410, {}),
+        (200, {"redirected_to_home": True}),
+        (403, {"generic_listing": True}),
+    ],
+)
+def test_a_dead_employer_link_is_not_mistaken_for_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, status: int, kwargs: dict[str, bool]
+) -> None:
+    from applytrack.linkcheck import LinkStatus
+    from applytrack.poll import resolve_employer_link
+
+    monkeypatch.setattr(
+        "applytrack.poll.probe",
+        lambda url, *, client=None, timeout=12.0: LinkStatus(
+            url=url, ok=False, status_code=status, final_url=url, **kwargs
+        ),
+    )
+    item = Listing(
+        company="Acme", role="Backend Engineer", link="https://www.linkedin.com/jobs/view/1",
+        apply_link="https://careers.acme.example/jobs/1", source="linkedin",
+    )
+
+    assert resolve_employer_link(item, client=None) is None  # type: ignore[arg-type]
+
+
 def test_resolve_employer_link_reads_the_apply_anchor_when_the_api_gave_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
