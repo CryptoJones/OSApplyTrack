@@ -152,27 +152,57 @@ def _apply_candidates(html: str, base: str) -> list[str]:
     return out
 
 
-def resolve_employer_link(item: Listing, client: httpx.Client) -> str | None:
-    """Follow an aggregator listing to the employer's own posting, or ``None``.
+# An employer's careers site that answers a bot with one of these is refusing the
+# probe, not retiring the posting: Meta, Workday tenants and most Cloudflare-fronted
+# boards do it to every unattended client, and a person's browser opens the same URL.
+_REFUSED_STATUSES = frozenset({401, 403, 405, 406, 429, 451, 503})
 
-    The aggregator's apply link when its API gave one, else the Apply anchors on the
-    listing page; each is walked through the SSRF-guarded probe (every redirect hop
-    validated) and the first live final URL that is *not* on an aggregator's host is
-    the employer's posting. Bounded to a few candidates; any failure is ``None``.
+
+def _resolve_employer(item: Listing, client: httpx.Client) -> tuple[str | None, bool]:
+    """The employer's posting behind an aggregator listing, and whether it was *seen* live.
+
+    ``(url, True)`` for the first candidate whose final URL is live and off every
+    aggregator's host. Failing that, ``(url, False)`` for the first one the employer's
+    server merely refused to show a bot (#276): the link LinkedIn handed over is still
+    the form to fill, and falling back to the listing page traded a posting the browser
+    can drive for one it never will. A 404, a redirect home or a generic index is dead
+    either way, and ``(None, False)`` leaves the listing's own link in place.
     """
     candidates = [item.apply_link] if item.apply_link else []
     if not candidates:
         try:
             html = fetch_public(item.link, client=client).decode("utf-8", "replace")
         except PublicFetchError:
-            return None
+            return None, False
         candidates = _apply_candidates(html, item.link)
+    refused: str | None = None
     for url in candidates[:_MAX_APPLY_CANDIDATES]:
         status = probe(url, client=client)
         final = status.final_url or url
-        if status.ok and not is_aggregator_link(final):
-            return final
-    return None
+        if is_aggregator_link(final):
+            continue
+        if status.ok:
+            return final, True
+        if (
+            refused is None
+            and status.status_code in _REFUSED_STATUSES
+            and not status.redirected_to_home
+            and not status.generic_listing
+        ):
+            refused = final
+    return refused, False
+
+
+def resolve_employer_link(item: Listing, client: httpx.Client) -> str | None:
+    """Follow an aggregator listing to the employer's own posting, or ``None``.
+
+    The aggregator's apply link when its API gave one, else the Apply anchors on the
+    listing page; each is walked through the SSRF-guarded probe (every redirect hop
+    validated) and the first live final URL that is *not* on an aggregator's host is
+    the employer's posting — or, when none is live, the first the employer only refused
+    to show a bot. Bounded to a few candidates; any failure is ``None``.
+    """
+    return _resolve_employer(item, client)[0]
 
 Fetcher = Callable[[httpx.Client, int], list[Listing]]
 
@@ -1327,21 +1357,31 @@ def score_and_stage(
 
             # The dedupe ledger is keyed on the listing's own link, whatever we store.
             listing_link = item.link
+            refused_probe = False
             # An aggregator's listing page has no form on it: store the employer's
             # posting instead when the apply link leads there (#191).
             if verify_client is not None and item.link and is_aggregator_link(item.link):
-                resolved = resolve_employer_link(item, verify_client)
+                resolved, seen_live = _resolve_employer(item, verify_client)
                 if resolved:
-                    logger.info("resolved %s -> %s", item.link, resolved)
+                    logger.info(
+                        "resolved %s -> %s%s",
+                        item.link,
+                        resolved,
+                        "" if seen_live else " (the employer refused the probe; kept)",
+                    )
                     if seen.has(resolved, slug):
                         seen.add(listing_link, slug)
                         seen.add(resolved, slug)
                         continue
                     item = replace(item, link=resolved)
+                    # The listing was live a moment ago and the employer's server will not
+                    # talk to a bot: the reachability check below would only drop the lead.
+                    refused_probe = not seen_live
 
             # Block dead postings: don't create an entry we can't actually open.
             if (
                 verify_client is not None
+                and not refused_probe
                 and item.link
                 and not is_reachable(item.link, client=verify_client)
             ):
