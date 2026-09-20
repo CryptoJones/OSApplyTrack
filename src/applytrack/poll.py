@@ -1379,10 +1379,19 @@ def score_and_stage(
 
             # The dedupe ledger is keyed on the listing's own link, whatever we store.
             listing_link = item.link
-            refused_probe = False
+            # An Easy Apply posting IS where it is applied to — there is no employer page
+            # behind it to resolve — and LinkedIn's own API just served it, so it is not
+            # probed either: linkedin.com answers an unattended GET with a 999 (#278).
+            easy_apply = item.source.endswith(":easy")
+            refused_probe = easy_apply
             # An aggregator's listing page has no form on it: store the employer's
             # posting instead when the apply link leads there (#191).
-            if verify_client is not None and item.link and is_aggregator_link(item.link):
+            if (
+                verify_client is not None
+                and item.link
+                and not easy_apply
+                and is_aggregator_link(item.link)
+            ):
                 resolved, seen_live = _resolve_employer(item, verify_client)
                 if resolved:
                     logger.info(

@@ -91,7 +91,7 @@ public static class ReadyEndpoints
                 if (dryRun)
                     throw new AppValidationException(
                         "turn off Dry run only in Settings · Agent first — re-running a clean dry run as a dry run proves nothing new");
-                done.AddRange(await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false));
+                done.AddRange(await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false, settings.LinkedInEasy));
                 return Results.Json(new { action, dry_run = false, done, skipped }, statusCode: StatusCodes.Status202Accepted);
             }
             foreach (var name in names)
@@ -101,7 +101,7 @@ public static class ReadyEndpoints
                 if (rec.Fields.Link.Length == 0) { Skip(name, "no posting link"); continue; }
                 var packet = await packets.GetAsync(rec.Name);
                 if (packet is null) { Skip(rec.Name, "no packet — prepare it first"); continue; }
-                if (!AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail))
+                if (!AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail, settings.LinkedInEasy))
                 {
                     Skip(rec.Name, SubmitEndpoints.CannotDrive(packet.Provider));
                     continue;

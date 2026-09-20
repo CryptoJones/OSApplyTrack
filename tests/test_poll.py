@@ -919,6 +919,35 @@ def test_a_dead_end_aggregator_listing_is_never_staged(link: str, apply_link: st
     assert repo.added == []
 
 
+def test_an_easy_apply_posting_is_staged_on_its_own_link_unresolved_and_unprobed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Client:
+        def close(self) -> None:
+            return None
+
+    def _never(*_a: object, **_k: object) -> object:
+        raise AssertionError("an Easy Apply posting must not be resolved or probed")
+
+    monkeypatch.setattr("applytrack.poll.ssrf_safe_client", lambda **_: _Client())
+    # linkedin.com answers an unattended GET with a 999: probing would only drop the lead (#278).
+    monkeypatch.setattr("applytrack.poll.is_reachable", _never)
+    monkeypatch.setattr("applytrack.poll.probe", _never)
+    monkeypatch.setattr("applytrack.poll.fetch_public", _never)
+    repo = FakeRepo()
+    listing = Listing(
+        company="Acme", role="Backend Engineer", link="https://www.linkedin.com/jobs/view/42",
+        source="linkedin:easy", location="Remote", description="backend",
+    )
+
+    score_and_stage(
+        repo, Criteria(keywords=["backend"], min_fit_score=1), [listing], verify_links=True
+    )
+
+    assert repo.added[0].link == "https://www.linkedin.com/jobs/view/42"
+    assert repo.added[0].source == "auto:linkedin:easy"
+
+
 def test_lensa_is_still_apply_by_hand_not_a_dead_end() -> None:
     from applytrack.poll import is_aggregator_link, is_dead_end_link
 

@@ -143,7 +143,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// navigation onto one of their hosts is allowed, and a password page on one of them is
     /// signed in to, so the form behind it can be reached.</param>
     public static async Task<BrowserSession> OpenAsync(BrowserOptions options, string link, CancellationToken ct,
-        IReadOnlyList<BoardAccount>? accounts = null)
+        IReadOnlyList<BoardAccount>? accounts = null, bool reveal = true)
     {
         if (!options.IsConfigured)
             throw new AppValidationException("browser submission isn't configured on this instance");
@@ -172,6 +172,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
         context.SetDefaultTimeout(Math.Max(5_000, options.TimeoutSeconds * 1000 / 6));
         var page = await context.NewPageAsync();
         var session = new BrowserSession(playwright, browser, context, page) { _accounts = accounts ?? [] };
+        // Start signed in where the tenant has a kept session for the posting's site (#278).
+        if (BoardAccount.For(session._accounts, target.Host) is { Session.Length: > 0 } kept)
+            await context.AddCookiesAsync(SessionCookies(kept.Session, target.Host));
         var allowedHost = target.Host;
         await context.RouteAsync("**/*", async route =>
         {
@@ -209,6 +212,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
         // page says (#203). Zero when the navigation produced no response (about:blank).
         session.Status = response?.Status ?? 0;
         await DismissConsentAsync(page);
+        // A driver that knows its own way in (LinkedIn's Easy Apply dialog, #278) opens it itself.
+        if (!reveal) return session;
         await session.RevealFormAsync();
         // A form that arrives folded — SuccessFactors' application is an accordion of
         // sections, every one but the first collapsed — is opened before anyone reads it.
@@ -218,6 +223,26 @@ public sealed partial class BrowserSession : IAsyncDisposable
 
     /// <summary>The HTTP status of the first navigation, or 0 when there was no response.</summary>
     public int Status { get; private set; }
+
+    /// <summary>
+    /// The cookies a kept session stands for: LinkedIn's <c>{"li_at":…,"JSESSIONID":…}</c>, as
+    /// <see cref="LinkedInSessionRenewer"/> seals it, on the registrable domain so www. and any
+    /// other host of the site see them. Anything unreadable is no cookies, and a signed-out run.
+    /// </summary>
+    public static List<Microsoft.Playwright.Cookie> SessionCookies(string session, string host)
+    {
+        var cookies = new List<Microsoft.Playwright.Cookie>();
+        try
+        {
+            var parts = host.ToLowerInvariant().Split('.');
+            var domain = "." + (parts.Length <= 2 ? string.Join('.', parts) : string.Join('.', parts[^2..]));
+            foreach (var pair in System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(session) ?? [])
+                if (pair.Key.Length > 0 && pair.Value.Length > 0)
+                    cookies.Add(new Microsoft.Playwright.Cookie { Name = pair.Key, Value = pair.Value, Domain = domain, Path = "/", Secure = true, HttpOnly = pair.Key == LinkedInSessionRenewer.CookieName, SameSite = SameSiteAttribute.None });
+        }
+        catch (System.Text.Json.JsonException) { /* not a session we can read */ }
+        return cookies;
+    }
 
     /// <summary>
     /// Click away a cookie-consent banner when one is up (#202), in the page or any frame

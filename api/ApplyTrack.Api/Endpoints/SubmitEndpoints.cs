@@ -24,6 +24,7 @@ public static class SubmitEndpoints
     {
         AtsProvider.Workday => "Workday needs an account with the employer — apply via Copy answers and open the posting",
         AtsProvider.SuccessFactors => "SuccessFactors needs a candidate account with the employer — apply via Copy answers and open the posting",
+        AtsProvider.LinkedInEasy => "LinkedIn Easy Apply is off for this account — turn it on in Settings · Agent, or open the posting and apply on LinkedIn yourself",
         AtsProvider.Aggregator => "this link is a job aggregator's listing, not the employer's form — open the posting, follow its Apply to the employer, and use Copy answers there",
         _ => "this ATS isn't one the agent knows — turn on the long tail in Settings · Agent, or apply via Copy answers and open the posting",
     };
@@ -53,7 +54,7 @@ public static class SubmitEndpoints
             // Gate on the link as it is read today, not the provider the packet was built
             // with: a board taught since then drives packets built before it (#203).
             var provider = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
-            if (!AtsProvider.BrowserCanSubmit(provider, agent.LongTail))
+            if (!AtsProvider.BrowserCanSubmit(provider, agent.LongTail, agent.LinkedInEasy))
                 throw new AppValidationException(CannotDrive(provider));
 
             // Dry run unless the caller says otherwise AND the tenant has turned dry-run off.

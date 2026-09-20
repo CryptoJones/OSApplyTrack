@@ -129,4 +129,44 @@ public class AtsProviderTests
     [InlineData("", "careers.example.com", "Apply was clicked but no form appeared within 10 s")]
     public void A_run_that_found_no_form_says_where_apply_led(string refused, string landed, string expected) =>
         Assert.StartsWith(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.NoFormNote(refused.Length > 0 ? [refused] : [], landed));
+
+    [Theory]
+    // Only the poller's own flag makes a LinkedIn link an Easy Apply one (#278).
+    [InlineData("https://www.linkedin.com/jobs/view/42", "auto:linkedin:easy", AtsProvider.LinkedInEasy)]
+    [InlineData("https://linkedin.com/jobs/view/42", "AUTO:LINKEDIN:EASY", AtsProvider.LinkedInEasy)]
+    [InlineData("https://www.linkedin.com/jobs/view/42", "auto:linkedin", AtsProvider.Aggregator)]
+    [InlineData("https://www.linkedin.com/jobs/view/42", "", AtsProvider.Aggregator)]
+    // The flag on another site's link means nothing.
+    [InlineData("https://jobs.lever.co/acme/1", "auto:linkedin:easy", AtsProvider.Lever)]
+    [InlineData("https://notlinkedin.com/jobs/view/42", "auto:linkedin:easy", AtsProvider.Unknown)]
+    public void A_linkedin_link_is_easy_apply_only_when_the_poller_staged_it_as_one(string link, string source, string expected) =>
+        Assert.Equal(expected, AtsProvider.Detect(link, source));
+
+    [Fact]
+    public void Easy_apply_is_driven_only_by_its_own_switch()
+    {
+        // Not the long tail's: it is the tenant's personal LinkedIn account being automated.
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.LinkedInEasy, longTailOptIn: true));
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.LinkedInEasy, longTailOptIn: true, linkedInEasyOptIn: false));
+        Assert.True(AtsProvider.BrowserCanSubmit(AtsProvider.LinkedInEasy, longTailOptIn: false, linkedInEasyOptIn: true));
+        // And it switches nothing else on.
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Aggregator, longTailOptIn: true, linkedInEasyOptIn: true));
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Workday, longTailOptIn: true, linkedInEasyOptIn: true));
+    }
+
+    [Fact]
+    public void A_kept_linkedin_session_becomes_cookies_on_the_whole_site()
+    {
+        var cookies = ApplyTrack.Api.Agent.Browser.BrowserSession.SessionCookies(
+            ApplyTrack.Api.Agent.Browser.LinkedInSessionRenewer.Encode("AQED-token", "\"ajax:123\""), "www.linkedin.com");
+
+        Assert.Equal(2, cookies.Count);
+        Assert.All(cookies, c => { Assert.Equal(".linkedin.com", c.Domain); Assert.True(c.Secure); Assert.Equal("/", c.Path); });
+        Assert.Equal("AQED-token", cookies.Single(c => c.Name == "li_at").Value);
+        Assert.True(cookies.Single(c => c.Name == "li_at").HttpOnly);
+        Assert.Equal("\"ajax:123\"", cookies.Single(c => c.Name == "JSESSIONID").Value);
+        // Anything unreadable is no cookies, and a signed-out run — never a throw.
+        Assert.Empty(ApplyTrack.Api.Agent.Browser.BrowserSession.SessionCookies("not json", "www.linkedin.com"));
+        Assert.Empty(ApplyTrack.Api.Agent.Browser.BrowserSession.SessionCookies("", "www.linkedin.com"));
+    }
 }

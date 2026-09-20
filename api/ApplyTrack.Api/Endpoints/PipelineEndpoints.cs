@@ -74,7 +74,7 @@ public static class PipelineEndpoints
                 var packet = await packets.GetAsync(p.ApplicationName);
                 var blocking = packet?.BlockingReview().Count() ?? 0;
                 var provider = AtsProvider.Detect(p.Link, "");
-                var canDrive = p.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail);
+                var canDrive = p.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail, settings.LinkedInEasy);
 
                 // The claim is fresh for fifteen minutes; after that ClaimNextAsync hands the
                 // row out again, so an older claim is a run that died, not one in progress.

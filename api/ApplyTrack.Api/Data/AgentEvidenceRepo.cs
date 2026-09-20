@@ -132,6 +132,12 @@ public sealed class AgentEvidenceRepo
             new DateTimeOffset(DateTime.SpecifyKind(r.At, DateTimeKind.Utc)), r.Runs, r.RecentFailures)).ToList();
     }
 
+    /// <summary>Real submissions to a site inside <paramref name="window"/> — what paces LinkedIn Easy Apply (#278).</summary>
+    public Task<int> SubmittedSinceAsync(string hostLike, TimeSpan window) =>
+        _conn.ExecuteScalarAsync<int>(
+            "SELECT count(*)::int FROM agent_evidence WHERE tenant_id = @t AND kind = 'submitted' AND url ILIKE @like AND created_at > now() - @window",
+            new { t = _t, like = "%" + hostLike + "%", window });
+
     /// <summary>How many applications <see cref="ErroredAsync"/> would list — the strip's number.</summary>
     public Task<int> ErroredCountAsync() =>
         _conn.ExecuteScalarAsync<int>("SELECT count(*)::int " + ErroredFrom, new { t = _t });

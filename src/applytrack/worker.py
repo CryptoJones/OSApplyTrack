@@ -348,6 +348,8 @@ def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Li
             )
             account = None
         seen_url = getattr(repo, "seen_url", None) or (lambda _url: False)
+        easy_of = getattr(repo, "linkedin_easy_enabled", None)
+        easy_apply = bool(easy_of()) if easy_of is not None else False
 
         def remember(url: str) -> None:
             from applytrack.poll import _norm_url
@@ -359,7 +361,7 @@ def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Li
             try:
                 return linkedin.fetch_listings(
                     li, profile.keywords, remote_only=profile.remote_only, limit=limit,
-                    already_seen=seen_url, remember=remember,
+                    already_seen=seen_url, remember=remember, easy_apply=easy_apply,
                 )
             except linkedin.NeedsSignIn:
                 logger.info(

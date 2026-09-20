@@ -32,6 +32,14 @@ public static partial class AtsProvider
     /// posting: there is no form on it to fill. The poller resolves these to the employer's
     /// page where it can (#191); one still on the aggregator's host is applied to by hand.</summary>
     public const string Aggregator = "aggregator";
+    /// <summary>A LinkedIn posting that takes applications through LinkedIn's own Easy Apply
+    /// dialog (#278): the poller stages it as <c>auto:linkedin:easy</c> on the posting's own
+    /// linkedin.com link, and the browser drives the dialog signed in as the tenant — but only
+    /// with the tenant's <c>linkedin_easy</c> switch on. Every other linkedin.com link is still a
+    /// listing of the employer's, and an <see cref="Aggregator"/>.</summary>
+    public const string LinkedInEasy = "linkedin_easy";
+    /// <summary>The <c>source</c> the poller stages an Easy Apply posting under.</summary>
+    public const string LinkedInEasySource = "auto:linkedin:easy";
     public const string Unknown = "unknown";
 
     /// <summary>
@@ -110,6 +118,11 @@ public static partial class AtsProvider
         if (!Uri.TryCreate(link, UriKind.Absolute, out var uri))
             return Unknown;
         var host = uri.Host.ToLowerInvariant();
+        // Before the aggregator rule, which linkedin.com otherwise falls under: only the
+        // poller's own flag makes a LinkedIn link an Easy Apply one (#278).
+        if (string.Equals(source, LinkedInEasySource, StringComparison.OrdinalIgnoreCase)
+            && (host == "linkedin.com" || host.EndsWith(".linkedin.com", StringComparison.Ordinal)))
+            return LinkedInEasy;
         if (IsAggregatorHost(host))
             return Aggregator;
         if (host.EndsWith("greenhouse.io") || GreenhouseEmbed().IsMatch(uri.Query))
@@ -203,8 +216,10 @@ public static partial class AtsProvider
     /// aggregator's listing never: there is no form on it. The unknown long tail only with
     /// the tenant's explicit opt-in.
     /// </summary>
-    public static bool BrowserCanSubmit(string provider, bool longTailOptIn) => provider switch
+    public static bool BrowserCanSubmit(string provider, bool longTailOptIn, bool linkedInEasyOptIn = false) => provider switch
     {
+        // Easy Apply is the tenant's own LinkedIn account being driven: only ever by its own switch (#278).
+        LinkedInEasy => linkedInEasyOptIn,
         Greenhouse or Lever or Ashby or Workable or Breezy or SmartRecruiters or Join => true,
         Workday or SuccessFactors or Aggregator => false,
         _ => longTailOptIn,

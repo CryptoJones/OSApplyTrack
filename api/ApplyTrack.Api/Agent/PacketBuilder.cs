@@ -65,6 +65,33 @@ public sealed partial class PacketBuilder
         _log = log;
     }
 
+    /// <summary>
+    /// Add the questions a run met for the first time to a packet already built, and answer them
+    /// the way a build would — the person's own answers from the bank, then the deterministic
+    /// set, then the model. LinkedIn's Easy Apply shows its questions only as each step is reached
+    /// (#278), so its packet grows run by run. Returns how many of the new questions got an answer.
+    /// </summary>
+    public async Task<int> ExtendAsync(
+        AppRecord rec, AgentPacket packet, IReadOnlyList<PacketQuestion> found, PacketInputs inputs, PacketScope scope, CancellationToken ct = default)
+    {
+        var fresh = found.Where(q => packet.Questions.All(known => known.Id != q.Id)).ToList();
+        if (fresh.Count == 0) return 0;
+        var letter = await scope.Letters.GetBodyAsync(rec.Name) ?? "";
+        var ctx = new AnswerContext(inputs.Resume, inputs.Settings, inputs.Email, letter, packet.PostingExcerpt);
+        var (answers, review) = await _answers.DraftAsync(fresh, ctx, inputs.Cfg, ct, await scope.Bank.PinnedAsync());
+        await scope.Bank.RecordAsync(fresh, answers, rec.Name);
+
+        packet.Questions.AddRange(fresh);
+        foreach (var (id, answer) in answers) packet.Answers[id] = answer;
+        packet.NeedsReview.AddRange(review);
+        packet.RecomputeReview();
+        await scope.Packets.UpsertAsync(packet);
+        var answered = fresh.Count(q => packet.Answers.TryGetValue(q.Id, out var a) && a.Trim().Length > 0);
+        _log.LogInformation("{Name}: {Found} question(s) met for the first time, {Answered} answered, {Review} to review",
+            rec.Name, fresh.Count, answered, packet.NeedsReview.Count);
+        return answered;
+    }
+
     /// <summary>The form every non-Greenhouse packet gets — what any ATS asks for first.</summary>
     public static List<PacketQuestion> StandardQuestions() =>
     [
@@ -106,7 +133,10 @@ public sealed partial class PacketBuilder
         // deterministically or the model would say, and they answer a pre-screening step so
         // discovery can go through it to the real form (#239).
         var pinned = await scope.Bank.PinnedAsync();
+        // Easy Apply's questions live in a dialog, behind steps: nothing reads them off the page.
+        // The packet starts with the standard set and the runs add what they meet (#278).
         if (questions is null && _browser.IsConfigured && f.Link.Length > 0 && provider != AtsProvider.Greenhouse
+            && provider != AtsProvider.LinkedInEasy
             && AtsProvider.BrowserCanSubmit(provider, inputs.Settings.LongTail))
         {
             try

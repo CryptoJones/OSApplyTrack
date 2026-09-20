@@ -45,7 +45,7 @@ public static partial class ReadyReconciler
 
     private sealed record Candidate(string Name, string Link, string Source, bool HasPacket, int Failures, int PrepareErrors, DateTime? LastPrepareError);
 
-    public static async Task<Result> ReconcileAsync(IDbConnection conn, long tenantId, SecretProtector protector, bool longTail)
+    public static async Task<Result> ReconcileAsync(IDbConnection conn, long tenantId, SecretProtector protector, bool longTail, bool linkedInEasy = false)
     {
         var result = new Result([], []);
         // Ready, with a link to drive, and nothing already in flight.
@@ -79,7 +79,7 @@ public static partial class ReadyReconciler
         var events = new AgentEventRepo(conn, tenantId);
         foreach (var c in candidates)
         {
-            if (!AtsProvider.BrowserCanSubmit(AtsProvider.Detect(c.Link, c.Source), longTail))
+            if (!AtsProvider.BrowserCanSubmit(AtsProvider.Detect(c.Link, c.Source), longTail, linkedInEasy))
                 continue;
             if (!c.HasPacket)
             {

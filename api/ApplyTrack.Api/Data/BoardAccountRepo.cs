@@ -16,7 +16,10 @@ public sealed record BoardAccountView(string Host, string Username, bool HasPass
 public sealed record PortalAccount(string Host, string Username, bool HasSession, DateTimeOffset? SessionExpiresAt);
 
 /// <summary>A board account the browser can sign in with: host, username, decrypted password.</summary>
-public sealed record BoardAccount(string Host, string Username, string Password)
+/// <param name="Session">The kept, signed-in session for this host, when there is one the browser
+/// should start from instead of signing in: LinkedIn's <c>{"li_at":…,"JSESSIONID":…}</c>, the same
+/// sealed value the poller searches with (#278). Empty for every other account.</param>
+public sealed record BoardAccount(string Host, string Username, string Password, string Session = "")
 {
     /// <summary>Does this account cover <paramref name="host"/> — the same host, a subdomain
     /// of it, or the same registrable domain (two-label approximation)? An account saved
@@ -84,7 +87,7 @@ public sealed class BoardAccountRepo
     }
 
     // Npgsql hands a timestamptz back as a UTC DateTime; the view carries it as an offset.
-    private sealed record Row(string Host, string Username, string PasswordCiphertext, DateTime UpdatedAt)
+    private sealed record Row(string Host, string Username, string PasswordCiphertext, DateTime UpdatedAt, string SessionCiphertext = "", DateTime? SessionExpiresAt = null)
     {
         public DateTimeOffset UpdatedAtOffset => new(DateTime.SpecifyKind(UpdatedAt, DateTimeKind.Utc));
     }
@@ -105,15 +108,29 @@ public sealed class BoardAccountRepo
         foreach (var r in await ReadRowsAsync())
         {
             if (r.Username.Length == 0) continue;
-            if (r.PasswordCiphertext.Length == 0) { out_.Add(new BoardAccount(r.Host, r.Username, "")); continue; }
+            var session = KeptSession(r);
+            if (r.PasswordCiphertext.Length == 0) { out_.Add(new BoardAccount(r.Host, r.Username, "", session)); continue; }
             if (!_protector.Available) continue;
-            try { out_.Add(new BoardAccount(r.Host, r.Username, _protector.Unprotect(r.PasswordCiphertext))); }
+            try { out_.Add(new BoardAccount(r.Host, r.Username, _protector.Unprotect(r.PasswordCiphertext), session)); }
             catch (CryptographicException)
             {
                 _log.LogWarning("Stored board account password for tenant {TenantId} at {Host} failed to decrypt (key rotated?); re-enter it.", _t, r.Host);
             }
         }
         return out_;
+    }
+
+    /// <summary>The LinkedIn account's kept session, unsealed, for the browser to start signed in
+    /// with (#278) — and "" for any other host, an expired one, or one that will not decrypt.
+    /// Only LinkedIn: MyGreenhouse's and Handshake's sessions are the poller's, never the form's.</summary>
+    private string KeptSession(Row r)
+    {
+        if (r.SessionCiphertext.Length == 0 || !_protector.Available || !LinkedInHosts.Contains(r.Host, StringComparer.OrdinalIgnoreCase))
+            return "";
+        if (r.SessionExpiresAt is { } expires && DateTime.SpecifyKind(expires, DateTimeKind.Utc) <= DateTime.UtcNow)
+            return "";
+        try { return _protector.Unprotect(r.SessionCiphertext); }
+        catch (CryptographicException) { return ""; }
     }
 
     /// <summary>Save one account. A null password keeps the stored one; an empty string clears it.</summary>
@@ -187,6 +204,7 @@ public sealed class BoardAccountRepo
 
     private async Task<List<Row>> ReadRowsAsync() =>
         (await _conn.QueryAsync<Row>(
-            "SELECT host, username, password_ciphertext AS passwordciphertext, updated_at AS updatedat FROM board_accounts WHERE tenant_id = @t ORDER BY host",
+            "SELECT host, username, password_ciphertext AS passwordciphertext, updated_at AS updatedat, "
+            + "session_ciphertext AS sessionciphertext, session_expires_at AS sessionexpiresat FROM board_accounts WHERE tenant_id = @t ORDER BY host",
             new { t = _t })).ToList();
 }

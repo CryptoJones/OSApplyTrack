@@ -780,6 +780,21 @@ resolve is prepared and mooed as apply-by-hand, never run.
   packets. Postings returning HTTP 404 or 410 are cleanly reported as "gone" / closed
   rather than failing as "no form found".
 
+**LinkedIn Easy Apply** is its own switch — *Apply through LinkedIn Easy Apply, signed
+in as me* in Settings · Agent, **off by default** — because it is a different kind of thing:
+the browser drives LinkedIn's own dialog signed in as *you*, from the session kept for the
+LinkedIn account under **Board accounts**. **That automates a personal account, which
+LinkedIn's terms do not allow**; an account LinkedIn notices can be restricted, and it is the
+same account the LinkedIn search source runs on. On, the poller stages postings that only
+take Easy Apply (it skips them otherwise) as `auto:linkedin:easy`, and the browser walks the
+dialog — Contact info, Resume, the employer's Additional Questions, Review. Those questions
+do not exist until their step is reached, so nothing can read them up front: a run answers
+what the packet knows, hands back the required ones it met for the first time, the packet
+takes them on and the drafter answers them, and it goes round again. A dry run stops at the
+Submit step and **discards**; a run that needs you **saves**, which keeps LinkedIn's own
+draft so you can finish by hand from where it stopped. It never ticks *Follow the company*
+for you, sends at most ten a day, and stops dead at a sign-in or a security check.
+
 Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
 field is unmapped, **off by default** behind *Let the browser fill forms on ATSs it
