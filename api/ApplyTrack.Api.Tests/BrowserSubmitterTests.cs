@@ -1112,8 +1112,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     private const string EasyApplyHtml = """
         <html><body>
         <h1>Senior .NET Engineer</h1>
-        <button id="jobs-apply-button-id" class="jobs-apply-button artdeco-button" data-live-test-job-apply-button aria-label="Easy Apply to Senior .NET Engineer at Acme">Easy Apply</button>
-        <div id="root"></div>
+        <!-- The search page's filter pill says "Easy Apply" too, and is not the way in. -->
+        <button type="button" aria-label="Easy Apply filter." onclick="document.title='WRONG BUTTON'">Easy Apply</button>
+        <!-- The posting's own page: an anchor with generated class names, known only by its aria-label. -->
+        <a href="#" id="entry" class="f7a37dee _1d1ba039" aria-label="Easy Apply to Senior .NET Engineer at Acme">Easy Apply</a>
+        <!-- ...and the dialog inside a shadow root, where document.querySelector cannot see it. -->
+        <div id="interop-outlet"></div>
         <script>
         const steps = [
           `<h3>Contact info</h3>
@@ -1134,13 +1138,16 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           `<h3>Review your application</h3>
            <input type="checkbox" id="follow-company-checkbox" checked><label for="follow-company-checkbox">Follow Acme to stay up to date with their page.</label>`,
         ];
+        const sr = document.getElementById('interop-outlet').attachShadow({ mode: 'open' });
+        sr.innerHTML = '<div id="root"></div>';
+        const rootEl = sr.getElementById('root');
         let at = 0; const answers = {};
         const send = o => fetch('/li/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o) });
-        function capture() { for (const e of document.querySelectorAll('.jobs-easy-apply-modal select, .jobs-easy-apply-modal input[type=text]')) answers[e.id] = e.value;
-          const v = document.querySelector('input[name=q-visa]:checked'); if (v) answers.visa = v.value;
-          const f = document.getElementById('follow-company-checkbox'); if (f) answers.follow = f.checked; }
+        function capture() { for (const e of sr.querySelectorAll('.jobs-easy-apply-modal select, .jobs-easy-apply-modal input[type=text]')) answers[e.id] = e.value;
+          const v = sr.querySelector('input[name=q-visa]:checked'); if (v) answers.visa = v.value;
+          const f = sr.getElementById('follow-company-checkbox'); if (f) answers.follow = f.checked; }
         function valid() { let ok = true;
-          for (const g of document.querySelectorAll('.jobs-easy-apply-modal [data-test-form-element], .jobs-easy-apply-modal fieldset')) {
+          for (const g of sr.querySelectorAll('.jobs-easy-apply-modal [data-test-form-element], .jobs-easy-apply-modal fieldset')) {
             g.querySelector('.artdeco-inline-feedback--error')?.remove();
             const sel = g.querySelector('select[required]'), txt = g.querySelector('input[type=text][required]'), radios = g.querySelectorAll('input[type=radio]');
             const bad = (sel && /^select an option$/i.test(sel.options[sel.selectedIndex].text)) || (txt && (!txt.value.trim() || (txt.id === 'q-years' && !/^\d+(\.\d+)?$/.test(txt.value.trim()))))
@@ -1149,19 +1156,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           return ok; }
         function render() {
           const last = at === steps.length - 1;
-          document.getElementById('root').innerHTML = `<div class="artdeco-modal jobs-easy-apply-modal" role="dialog" data-test-modal>
+          rootEl.innerHTML = `<div class="artdeco-modal jobs-easy-apply-modal" role="dialog" data-test-modal>
             <button aria-label="Dismiss" data-test-modal-close-btn onclick="ask()">x</button>
             <progress max="100" value="${at * 25}"></progress>${steps[at]}
             <footer>${last ? '<button data-live-test-easy-apply-submit-button aria-label="Submit application" onclick="submitIt()">Submit application</button>'
               : `<button ${at === steps.length - 2 ? 'data-live-test-easy-apply-review-button aria-label="Review your application"' : 'data-easy-apply-next-button aria-label="Continue to next step"'} onclick="go()">
                    ${at === steps.length - 2 ? 'Review' : 'Next'}</button>`}</footer></div>`; }
         function go() { if (!valid()) return; capture(); at++; render(); }
-        function ask() { capture(); document.getElementById('root').insertAdjacentHTML('beforeend',
+        function ask() { capture(); rootEl.insertAdjacentHTML('beforeend',
           `<div role="alertdialog" class="artdeco-modal"><button data-test-dialog-secondary-btn onclick="leave('discard')">Discard</button><button data-test-dialog-primary-btn onclick="leave('save')">Save</button></div>`); }
-        function leave(how) { send({ left: how, step: at }); document.getElementById('root').innerHTML = ''; }
+        function leave(how) { send({ left: how, step: at }); rootEl.innerHTML = ''; }
         async function submitIt() { capture(); await fetch('/li/voyagerJobsDashOnsiteApplyApplication?action=submitApplication', { method: 'POST' }).catch(() => {});
-          await send({ submitted: true, answers }); document.getElementById('root').innerHTML = '<div role="dialog" class="artdeco-modal"><h2>Application sent</h2><p>Your application was sent to Acme.</p><button>Done</button></div>'; }
-        document.getElementById('jobs-apply-button-id').onclick = () => { at = 0; render(); };
+          await send({ submitted: true, answers }); rootEl.innerHTML = '<div role="dialog" class="artdeco-modal"><h2>Application sent</h2><p>Your application was sent to Acme.</p><button>Done</button></div>'; }
+        document.getElementById('entry').onclick = e => { e.preventDefault(); at = 0; render(); };
         </script>
         </body></html>
         """;
