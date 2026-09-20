@@ -64,6 +64,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
             """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
             """<label><input tabindex="-1" type="checkbox" name="job_application[question_7]" value="accepted" style="position:absolute;width:0;height:0;opacity:0;margin:0" /><span style="display:inline-block;width:18px;height:18px;border:1px solid #333"></span> I accept the privacy policy</label>"""), "text/html"));
+        // Ashby's yes/no: two buttons and a hidden checkbox that only mirrors them. The form will
+        // not post until one is pressed, exactly as Ashby's validation will not (#280).
+        _fixture.MapGet("/jobs/ashby-yesno", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """
+            <label for="visa">Will you now, or in the future, require employer visa sponsorship?</label>
+            <div class="ashby-application-form-input-yesno">
+              <button type="button" data-option="yes" aria-pressed="false" onclick="pick(this)">Yes</button>
+              <button type="button" data-option="no" aria-pressed="false" onclick="pick(this)">No</button>
+              <input type="checkbox" tabindex="-1" name="visa" style="position:absolute;width:0;height:0;opacity:0;margin:0" />
+              <input type="hidden" name="visa_answer" id="visa_answer" value="" />
+            </div>
+            <script>
+              function pick(b) {
+                for (const x of b.parentElement.querySelectorAll('button')) x.setAttribute('aria-pressed', String(x === b));
+                document.getElementById('visa_answer').value = b.dataset.option;
+                b.parentElement.querySelector('input[type=checkbox]').checked = b.dataset.option === 'yes';
+              }
+              document.addEventListener('submit', e => { if (!document.getElementById('visa_answer').value) e.preventDefault(); }, true);
+            </script>
+            """), "text/html"));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
             """<html><body><h1>Senior Engineer</h1><p>No form on this page.</p><a class="button apply-btn" href="/jobs/1" role="button" aria-label="Senior Engineer Apply Now open in new window">Apply now </a></body></html>""", "text/html"));
@@ -1713,6 +1735,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Contains("job_application[question_7]", outcome.Mapped);
         Assert.Equal("accepted", Assert.Single(_posts)["job_application[question_7]"]);
+    }
+
+    [SkippableTheory]
+    [InlineData("No", "no")]
+    [InlineData("Yes", "yes")]
+    public async Task A_yes_no_button_pair_is_pressed_not_read_off_the_hidden_checkbox_that_mirrors_it(string answer, string posted)
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // "No" is the case that lied: the hidden box was already unchecked, so nothing was pressed,
+        // the dry run came back clean, and the real submit was rejected as unanswered (#280).
+        var packet = Packet();
+        packet.Questions.Add(new("visa", "Will you now, or in the future, require employer visa sponsorship?", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Answers["visa"] = answer;
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-yesno", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("visa", outcome.Mapped);
+        Assert.Equal(posted, Assert.Single(_posts)["visa_answer"]);
     }
 
     [SkippableFact]
