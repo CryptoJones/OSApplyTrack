@@ -62,10 +62,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // steps that only exist once reached, a validator that flags a placeholder, a pre-ticked
         // "Follow", and a close that asks Discard or Save.
         _fixture.MapGet("/li/jobs/view/1", () => Results.Content(EasyApplyHtml, "text/html"));
+        // A posting with a draft already saved: LinkedIn shows "Continue", not "Easy Apply".
+        _fixture.MapGet("/li/jobs/view/7/", () => Results.Content(EasyApplyHtml.Replace(
+            """<a href="#" id="entry" class="f7a37dee _1d1ba039" aria-label="Easy Apply to Senior .NET Engineer at Acme">Easy Apply</a>""",
+            """<a href="/li/jobs/view/7/apply/?openSDUIApplyFlow=true" id="entry" class="f7a37dee _1d1ba039">Continue</a><p>You last modified this application now</p>"""), "text/html"));
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
         _fixture.MapGet("/li/login", () => Results.Content("<html><body><h1>Sign in</h1></body></html>", "text/html"));
+        // The posting's page as a signed-out visitor gets it: public, with a plain Apply.
+        _fixture.MapGet("/li/jobs/view/guest", () => Results.Content(
+            "<html><body><nav><a href=\"/li/login\">Sign in</a> <a href=\"/signup\">Join now</a></nav><h1>Staff Software Engineer</h1><button>Apply</button><button>Save</button></body></html>", "text/html"));
         _fixture.MapPost("/li/event", async (HttpRequest req) =>
         {
             using var sr = new StreamReader(req.Body);
@@ -1863,6 +1870,30 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("No", sent.GetProperty("visa").GetString());
         // "Follow Acme" arrives ticked. Applying is not following.
         Assert.False(sent.GetProperty("follow").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_says_so_when_linkedin_serves_the_signed_out_page()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/guest", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("signed-out page", outcome.Error);
+        Assert.Empty(EasyApplyEvents());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_resumes_a_draft_it_saved_where_the_entry_now_says_continue()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Live on 2026-09-20: run one met a question, saved the draft, the answer was drafted —
+        // and run two found "no Easy Apply button", because the entry had become "Continue" (#278).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/7/", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
     }
 
     [SkippableFact]

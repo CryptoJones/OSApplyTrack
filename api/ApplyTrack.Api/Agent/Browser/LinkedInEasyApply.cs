@@ -40,7 +40,15 @@ internal static partial class LinkedInEasyApply
     // from; the posting's own page — the one a stored link opens — has an anchor with generated
     // class names and only its aria-label to go by. Never a bare "Easy Apply": that is also the
     // search page's filter pill.
-    public const string Entry = "a[aria-label^='Easy Apply to' i], button[aria-label^='Easy Apply to' i], "
+    //
+    // And a third: once a run has SAVED a draft — which is what a run that needs an answer does —
+    // LinkedIn swaps "Easy Apply" for "Continue" ("You last modified this application now"), and
+    // the very next run, the one that now has the answer, found "no Easy Apply button" (#278). On
+    // the posting's own page both are the same link into …/jobs/view/<id>/apply/, so that is what
+    // is looked for; the labels are kept for the side panel, where the entry is a button.
+    public const string Entry = "a[href*='/jobs/view/'][href*='/apply/'], "
+        + "a[aria-label^='Easy Apply to' i], button[aria-label^='Easy Apply to' i], "
+        + "a[aria-label^='Continue applying' i], button[aria-label^='Continue applying' i], "
         + "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button]";
     private const string Modal = ".jobs-easy-apply-modal";
     private const string Next = Modal + " button[data-easy-apply-next-button], " + Modal + " button[data-live-test-easy-apply-review-button]";
@@ -85,6 +93,12 @@ internal static partial class LinkedInEasyApply
                 shot = await session.ScreenshotAsync();
                 var body = await page.InnerTextAsync("body", new() { Timeout = 5_000 });
                 if (Gone().IsMatch(body)) return Fail("posting is no longer accepting applications", closed: true);
+                // A posting's page is public: signed out, LinkedIn serves it anyway, with "Sign in" and
+                // "Join now" where the navigation would be and a plain Apply that leads to a login.
+                // Read as "no Easy Apply button", that sent a whole investigation the wrong way.
+                var head = body.Length > 800 ? body[..800] : body;
+                if (head.Contains("Join now", StringComparison.OrdinalIgnoreCase) && head.Contains("Sign in", StringComparison.OrdinalIgnoreCase))
+                    return Fail("LinkedIn showed its signed-out page — the kept session is not valid in the browser; it is renewed on the next pass, and nothing was attempted");
                 return Fail(SignedOut().IsMatch(page.Url)
                     ? "LinkedIn asked to sign in — the kept session has lapsed or been challenged"
                     : "no Easy Apply button on the posting — already applied to, or the employer moved it to its own site");
