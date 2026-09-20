@@ -90,8 +90,19 @@ public sealed partial class BrowserSession : IAsyncDisposable
         "#truste-consent-button", ".osano-cm-accept-all", "#hs-eu-confirmation-button",
         "button[data-cookiebanner='accept_button']",
         ".cw-cookie-banner .cookie-accept-btn",
+        // Radancy (TalentBrew) career sites — UnitedHealth Group, and a great many employers'
+        // own careers pages: "Important System Message", nothing in it named for cookies (#283).
+        "#system-ialert-button",
+        // The rest of the field, by the ids and classes each manager ships with: Didomi,
+        // Usercentrics (in an open shadow root, which a locator pierces), Quantcast Choice,
+        // CookieYes, Complianz, Iubenda, Termly, Klaro, Civic, Cookie Script.
+        "#didomi-notice-agree-button", "[data-testid='uc-accept-all-button']",
+        ".qc-cmp2-summary-buttons button[mode='primary']",
+        ".cky-btn-accept", ".cmplz-btn.cmplz-accept", ".iubenda-cs-accept-btn",
+        "[data-tid='banner-accept']", ".klaro .cm-btn-success", "#ccc-notify-accept",
+        "#cookiescript_accept",
     ];
-    [GeneratedRegex(@"^\s*(?:accept|allow|agree|got it|ok(?:ay)?|i (?:agree|accept|understand)|yes)(?:\s+(?:all|everything|cookies|all cookies|and close|& close|to all))?\s*[.!]?\s*$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*(?:accept|allow|agree|got it|ok(?:ay)?|i (?:agree|accept|understand)|yes)(?:\s+(?:all|everything|cookies|all cookies|and close|& close|to all|and continue|& continue|and proceed))?\s*[.!]?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex ConsentAccept();
 
     private readonly IPlaywright _playwright;
@@ -223,14 +234,20 @@ public sealed partial class BrowserSession : IAsyncDisposable
                     await page.WaitForTimeoutAsync(300);
                     return true;
                 }
-                var buttons = frame.GetByRole(AriaRole.Button, new() { NameRegex = ConsentAccept() });
+                // Buttons, and links: a good many banners make "Accept" an anchor.
+                var buttons = frame.GetByRole(AriaRole.Button, new() { NameRegex = ConsentAccept() })
+                    .Or(frame.GetByRole(AriaRole.Link, new() { NameRegex = ConsentAccept() }));
                 var count = Math.Min(await buttons.CountAsync(), 6);
                 for (var i = 0; i < count; i++)
                 {
                     var candidate = buttons.Nth(i);
                     if (!await candidate.IsVisibleAsync()) continue;
                     // "I agree" on the application form itself is an answer, not a banner:
-                    // only a button inside something that calls itself cookie/consent/privacy.
+                    // only a button inside something that calls itself cookie/consent/privacy —
+                    // or inside a dialog, or a box pinned over the page, that *says* it is about
+                    // cookies and asks for nothing else. Radancy's box is id "system-imessage", labelled "Important System
+                    // Message"; only its text mentions cookies, and the Apply click died
+                    // behind it for want of reading that (#283).
                     var inBanner = await candidate.EvaluateAsync<bool>("""
                         el => {
                           for (let a = el; a && a !== document.body; a = a.parentElement) {
@@ -238,6 +255,14 @@ public sealed partial class BrowserSession : IAsyncDisposable
                             const cls = typeof a.className === 'string' ? a.className : '';
                             const label = a.getAttribute('aria-label') || '';
                             if (/cookie|consent|gdpr|privacy/i.test(id + ' ' + cls + ' ' + label)) return true;
+                            const role = a.getAttribute('role') || '';
+                            const pos = getComputedStyle(a).position;
+                            // A dialog, or anything pinned over the page the way a banner is.
+                            if ((role === 'dialog' || role === 'alertdialog' || a.getAttribute('aria-modal') === 'true'
+                                 || pos === 'fixed' || pos === 'sticky')
+                                && /\bcookies?\b/i.test(a.innerText || '')
+                                && !a.querySelector('input:not([type=hidden]):not([type=checkbox]):not([type=button]):not([type=submit]), select, textarea'))
+                              return true;
                           }
                           return false;
                         }
