@@ -386,6 +386,7 @@ app.MapSubmitEndpoints();
 app.MapBoardAccountEndpoints();
 app.MapReadyEndpoints();
 app.MapPipelineEndpoints();
+app.MapErrorsEndpoints();
 
 app.Run();
 
