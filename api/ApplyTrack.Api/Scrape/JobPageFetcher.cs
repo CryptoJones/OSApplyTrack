@@ -72,7 +72,10 @@ public sealed class JobPageFetcher
 
     /// <summary>Fetch the page, following up to <see cref="MaxRedirects"/> redirects,
     /// and return the HTML plus the URL that finally answered.</summary>
-    public async Task<(string Html, Uri FinalUrl)> FetchAsync(string rawUrl, CancellationToken ct)
+    /// <param name="accept">An <c>Accept</c> header for this one request, in place of the page
+    /// fetcher's <c>text/html</c>. Workday's job JSON answers <c>text/html</c> with a 406 — which
+    /// says nothing — and only a JSON request with the 404 that means the job is gone (#277).</param>
+    public async Task<(string Html, Uri FinalUrl)> FetchAsync(string rawUrl, CancellationToken ct, string? accept = null)
     {
         var uri = ValidateUrl(rawUrl);
         // Every redirect hop and the body read draw on the same clock, linked to the caller's
@@ -85,6 +88,8 @@ public sealed class JobPageFetcher
         for (var hop = 0; ; hop++)
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+            // Set on the request, a header is not overlaid by the client's default.
+            if (accept is not null) req.Headers.Accept.ParseAdd(accept);
             HttpResponseMessage res;
             try
             {
