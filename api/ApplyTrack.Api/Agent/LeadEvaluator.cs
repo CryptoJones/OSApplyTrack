@@ -80,7 +80,8 @@ public sealed class LeadEvaluator
         // a bot, a timeout — says nothing, and a live lead is never retired on nothing (#277).
         if (AtsProvider.WorkdayJobApi(link) is { } api)
         {
-            try { await _fetcher.FetchAsync(api, ct); return false; }
+            // Asked for as JSON: the same address answers a text/html request with a 406.
+            try { await _fetcher.FetchAsync(api, ct, "application/json"); return false; }
             catch (ScrapeUnavailableException ex) when (ex.Message.Contains("HTTP 404", StringComparison.Ordinal) || ex.Message.Contains("HTTP 410", StringComparison.Ordinal))
             {
                 _log.LogInformation("liveness: {Link} is gone (Workday answered {Reason})", link, ex.Message);

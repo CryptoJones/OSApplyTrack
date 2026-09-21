@@ -752,8 +752,12 @@ public class AgentWorkerTests(PostgresFixture pg)
             var rec = await apps.GetAsync(name);
             await apps.UpdateStructuredAsync(name, rec!.Fields with { Link = link }, null);
         }
+        // As Workday really answers: 404 for a removed job only to a request that asks for JSON;
+        // the same address answers text/html with a 406, which says nothing. Live on 1.49.3 the
+        // page fetcher's default Accept got exactly that, and retired nothing.
         var handler = new CapturingHandler(req => new HttpResponseMessage(
-            req.RequestUri!.Host.StartsWith("gone.", StringComparison.Ordinal) ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden));
+            !req.Headers.Accept.Any(a => a.MediaType == "application/json") ? HttpStatusCode.NotAcceptable
+            : req.RequestUri!.Host.StartsWith("gone.", StringComparison.Ordinal) ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden));
         using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
             fetcher: new JobPageFetcher(handler));
 
