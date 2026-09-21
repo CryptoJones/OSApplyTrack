@@ -137,6 +137,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // A 404 or 410 from the posting itself is the same verdict, whatever the page
             // says: Workable answers a taken-down job with a 410 (#203).
             var body = await BodyTextAsync(page.MainFrame);
+            // The site will not talk to this server at all — McGraw Hill's careers site answers
+            // pluto with a bare "403 Forbidden". That is not a page with no Apply button on it,
+            // which is what the run used to report, and no retry will change it (#280).
+            if (session.Status is 401 or 403 or 429 or 451 && body.Length < 600)
+            {
+                screenshot = await session.ScreenshotAsync();
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    $"the posting's site refused this server (HTTP {session.Status}) — it has to be opened from your own browser: apply by Copy answers and open the posting");
+            }
             if (session.Status is 404 or 410 || IsClosedPosting(body))
             {
                 screenshot = await session.ScreenshotAsync();
@@ -845,6 +854,24 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           const emailOnly = f => { const cs = fillable(f); return cs.length > 0 && cs.every(c => (c.getAttribute('type') || '').toLowerCase() === 'email'); };
           const realFormExists = [...document.querySelectorAll('form')].some(f => !emailOnly(f) && fillable(f).length > 0);
           const sideForm = el => { const f = el.closest('form'); return !!f && realFormExists && emailOnly(f); };
+          // Ashby marks a question required on its TITLE LABEL (a generated _required_ class) and
+          // nowhere on the control, for everything but plain text boxes. None of these reached the
+          // loop below, so a form with three required radio questions blank, or its Location
+          // typeahead empty, was clicked — Ashby answered 200, stayed on the form, and the run said
+          // "Submit was clicked but no confirmation text was recognised" (actai, ElevenLabs, #280).
+          for (const title of document.querySelectorAll('.ashby-application-form-question-title')) {
+            if (!/(^|\s)_required_/.test(title.className.toString())) continue;
+            const entry = title.closest('fieldset, [class*="_fieldEntry_"], .ashby-application-form-field-entry');
+            if (!entry || !visible(entry) || entry.querySelector('input[required], textarea[required], select[required]')) continue;
+            const choices = [...entry.querySelectorAll('input[type=radio], input[type=checkbox]')];
+            const pressed = entry.querySelector('button[aria-pressed=true]');
+            const typeahead = entry.querySelector('input[role=combobox]');
+            const empty = entry.querySelector('button[data-option], button[aria-pressed]') ? !pressed
+              : typeahead ? (typeahead.value || '').trim().length === 0
+              : choices.length > 0 ? !choices.some(c => c.checked)
+              : false;
+            if (empty) add(choices[0]?.getAttribute('name') || title.getAttribute('for') || '', title.innerText);
+          }
           for (const el of document.querySelectorAll('input, select, textarea')) {
             if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
@@ -1435,10 +1462,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     if (!Same(await radio.GetAttributeAsync("value") ?? "", answer)
                         && !Same(await ChoiceLabelAsync(radio), answer))
                         continue;
-                    await radio.CheckAsync();
-                    return true;
+                    // Bounded, and a timeout caught: it is a System.TimeoutException, not a
+                    // PlaywrightException, and a drawn radio (Ashby keeps the real input out of
+                    // sight behind a span) would otherwise take its full 20 s and the run with it.
+                    try { await radio.CheckAsync(new() { Timeout = 3_000 }); return true; }
+                    catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+                    {
+                        // Pressed the way a person presses it: by its label.
+                        if (await radio.EvaluateAsync<bool>(
+                                "el => { const l = (el.id && el.getRootNode().querySelector(`label[for=\"${CSS.escape(el.id)}\"]`)) || el.closest('label'); (l || el).click(); return el.checked; }"))
+                            return true;
+                    }
                 }
-                catch (PlaywrightException) { /* try the next member */ }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* try the next member */ }
             }
             return false;
         }

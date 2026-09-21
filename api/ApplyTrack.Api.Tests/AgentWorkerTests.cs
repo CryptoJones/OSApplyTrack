@@ -736,6 +736,36 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task A_pass_retires_a_workday_posting_that_no_longer_exists_and_no_other()
+    {
+        // The browser never opens a Workday link, so nothing ever found one closed (#277). Workday's
+        // page is a script under a 200 either way; the JSON behind it answers 404 for a removed job.
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        foreach (var (name, link) in new[]
+                 {
+                     ("high-engineer.md", "https://gone.wd1.myworkdayjobs.com/Careers/job/Remote/Engineer_R1"),
+                     ("mid-engineer.md", "https://refuses.wd5.myworkdayjobs.com/Careers/job/Remote/Engineer_R2"),
+                 })
+        {
+            var rec = await apps.GetAsync(name);
+            await apps.UpdateStructuredAsync(name, rec!.Fields with { Link = link }, null);
+        }
+        var handler = new CapturingHandler(req => new HttpResponseMessage(
+            req.RequestUri!.Host.StartsWith("gone.", StringComparison.Ordinal) ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            fetcher: new JobPageFetcher(handler));
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Equal("passed", await StatusAsync(conn, t, "high-engineer.md"));
+        // A tenant that refuses a bot says nothing about the job: never retired on that.
+        Assert.Equal("ready", await StatusAsync(conn, t, "mid-engineer.md"));
+        Assert.Contains(handler.Requests, r => r.Request.RequestUri!.AbsolutePath.StartsWith("/wday/cxs/gone/Careers/job/", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task A_pass_retires_a_dead_end_aggregator_listing_without_a_browser()
     {
         // "Quick Apply" on bestjobtool leads to thebigjobsite behind a bot check and on to

@@ -55,6 +55,7 @@ public sealed class FormDiscovererTests : IAsyncLifetime
         // Freshteam's shape (#246): the whole form is in the page from load but collapsed
         // (display:none, hidden résumé file input and all) behind an "Apply Now" link.
         _fixture.MapGet("/collapsed", () => Results.Content(CollapsedHtml, "text/html"));
+        _fixture.MapGet("/ashby", () => Results.Content(AshbyHtml, "text/html"));
         _fixture.MapPost("/acme/1234/apply", () => { Interlocked.Increment(ref _posts); return Results.Content("nope"); });
         await _fixture.StartAsync();
         _url = _fixture.Urls.First();
@@ -213,6 +214,24 @@ public sealed class FormDiscovererTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task An_ashby_radio_question_is_named_by_its_title_label_and_required_by_its_class()
+    {
+        Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
+        // Read as a legend-less fieldset, the question came back labelled by its radios' name — a
+        // UUID — and optional, so nobody answered it (#280).
+        var discoverer = new FormDiscoverer(
+            new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_url}/ashby");
+
+        var radio = Assert.Single(questions!, q => q.Id == "3c35_d782");
+        Assert.Equal("Which best describes your backend experience?", radio.Label);
+        Assert.True(radio.Required);
+        Assert.Equal(["A. I have owned and shipped backend services", "B. I have contributed significantly"], radio.Options);
+        // An optional one, titled the same way, stays optional.
+        Assert.False(Assert.Single(questions!, q => q.Id == "opt_group").Required);
+    }
+
+    [SkippableFact]
     public async Task A_form_collapsed_behind_apply_now_is_expanded_so_every_field_is_discovered()
     {
         Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
@@ -273,4 +292,21 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             dir = dir.Parent;
         return dir?.FullName ?? AppContext.BaseDirectory;
     }
+
+    private const string AshbyHtml = """
+        <html><body><form>
+          <div class="_fieldEntry_1e3gg_28 ashby-application-form-field-entry"><label class="_required_f7cvd_91 ashby-application-form-question-title" for="nm">Name</label><input id="nm" name="nm" required></div>
+          <fieldset class="_fieldEntry_1e3gg_28 ashby-application-form-input-radio-group">
+            <label class="_heading_f7cvd_52 _required_f7cvd_91 ashby-application-form-question-title" for="d782">Which best describes your backend experience?</label>
+            <div><span><span class="_circle_"></span><input type="radio" id="r0" name="3c35_d782" style="position:absolute;opacity:0;width:0;height:0"></span><label for="r0">A. I have owned and shipped backend services</label></div>
+            <div><span><span class="_circle_"></span><input type="radio" id="r1" name="3c35_d782" style="position:absolute;opacity:0;width:0;height:0"></span><label for="r1">B. I have contributed significantly</label></div>
+          </fieldset>
+          <fieldset class="_fieldEntry_1e3gg_28 ashby-application-form-input-radio-group">
+            <label class="_heading_f7cvd_52 ashby-application-form-question-title" for="opt">How did you hear about us?</label>
+            <div><span><input type="radio" id="o0" name="opt_group" style="position:absolute;opacity:0;width:0;height:0"></span><label for="o0">A friend</label></div>
+            <div><span><input type="radio" id="o1" name="opt_group" style="position:absolute;opacity:0;width:0;height:0"></span><label for="o1">LinkedIn</label></div>
+          </fieldset>
+          <button type="submit">Submit Application</button>
+        </form></body></html>
+        """;
 }

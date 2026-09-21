@@ -192,20 +192,31 @@ public sealed partial class FormDiscoverer
             return false;
           };
           const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+          // Ashby names a question in a <label class="…ashby-application-form-question-title">,
+          // even for a radio group in a <fieldset> (there is no <legend>), and says it is required
+          // only with a generated _required_ class on that label — never `required` on the radios,
+          // the yes/no or the typeahead. Read as a legend-less fieldset, a required screening
+          // question came back labelled by its radios' name — a UUID — and optional, so nobody
+          // answered it and the application was clicked through to a silent rejection (#280).
+          const ashbyTitle = (el) => el.closest('fieldset, [class*="_fieldEntry_"], .ashby-application-form-field-entry')
+            ?.querySelector('.ashby-application-form-question-title') || null;
+          const ashbyRequired = (el) => /(^|\s)_required_/.test(ashbyTitle(el)?.className?.toString() || '');
           for (const el of document.querySelectorAll('input, select, textarea')) {
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? (el.multiple ? 'select-multiple' : 'select-one') : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
             if (el.disabled || el.readOnly) continue;
-            if (type !== 'file' && !visible(el)) continue;
+            // Ashby draws its own radio and checkbox and keeps the real input out of sight.
+            const drawn = (type === 'radio' || type === 'checkbox') && !!ashbyTitle(el);
+            if (type !== 'file' && !drawn && !visible(el)) continue;
             // The careers site's own job search and job-alert boxes are not questions (#214).
             if (widget(el)) continue;
-            const required = el.required || el.getAttribute('aria-required') === 'true' || /^\s*\*|\*\s*$/.test(labelFor(el)) || starred(el);
+            const required = el.required || el.getAttribute('aria-required') === 'true' || ashbyRequired(el) || /^\s*\*|\*\s*$/.test(labelFor(el)) || starred(el);
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               const grp = seenRadio.get(name);
               const opt = (document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText || el.closest('label')?.innerText || el.value || '').trim();
               if (grp) { grp.options.push(opt); grp.required = grp.required || required; continue; }
-              const entry = { id: el.id || '', name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || name, tag: 'input', type: 'radio', required, options: [opt] };
+              const entry = { id: el.id || '', name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || name, tag: 'input', type: 'radio', required, options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // A blank-valued option is the placeholder ("Select…"), not a choice.

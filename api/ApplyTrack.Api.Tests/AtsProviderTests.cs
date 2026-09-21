@@ -169,4 +169,17 @@ public class AtsProviderTests
         Assert.Empty(ApplyTrack.Api.Agent.Browser.BrowserSession.SessionCookies("not json", "www.linkedin.com"));
         Assert.Empty(ApplyTrack.Api.Agent.Browser.BrowserSession.SessionCookies("", "www.linkedin.com"));
     }
+
+    [Theory]
+    [InlineData("https://cvshealth.wd1.myworkdayjobs.com/CVS_Health_Careers/job/Work-At-Home-New-York/Principal-Engineer_R0842786",
+        "https://cvshealth.wd1.myworkdayjobs.com/wday/cxs/cvshealth/CVS_Health_Careers/job/Work-At-Home-New-York/Principal-Engineer_R0842786")]
+    // A locale segment and a query string are not part of the job's address.
+    [InlineData("https://allstate.wd5.myworkdayjobs.com/en-US/allstate_careers/job/USA---IL-Remote/Lead-Net-Software-Engineer_R34186/?src=x",
+        "https://allstate.wd5.myworkdayjobs.com/wday/cxs/allstate/allstate_careers/job/USA---IL-Remote/Lead-Net-Software-Engineer_R34186")]
+    [InlineData("https://godirect.wd5.myworkdayjobs.com/voya_jobs/job/United-States-Remote/XMLNAME-NET-Developer_JR0033015-1?Codes=lkdin",
+        "https://godirect.wd5.myworkdayjobs.com/wday/cxs/godirect/voya_jobs/job/United-States-Remote/XMLNAME-NET-Developer_JR0033015-1")]
+    [InlineData("https://allstate.wd5.myworkdayjobs.com/allstate_careers", null)]
+    [InlineData("https://jobs.lever.co/acme/1", null)]
+    public void A_workday_posting_has_a_json_address_that_says_whether_it_still_exists(string link, string? expected) =>
+        Assert.Equal(expected, AtsProvider.WorkdayJobApi(link));
 }
