@@ -149,6 +149,18 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               </script>
             </div>
             """), "text/html"));
+        // The same radio question as Ashby really names it: "<form instance>_<field>", the first half
+        // new on every load. The packet was built on another load and holds a name this page never had.
+        _fixture.MapGet("/jobs/ashby-renamed-radios", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """
+            <fieldset class="_fieldEntry_1e3gg_28 ashby-application-form-input-radio-group">
+              <label class="_required_f7cvd_91 ashby-application-form-question-title" for="22222222-2222-4222-8222-222222222222">English proficiency?</label>
+              <div><span><input type="radio" id="e0" name="99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222" value="fluent" style="position:absolute;opacity:0;width:0;height:0"></span><label for="e0">Professional/Fluent: Able to lead technical discussions</label></div>
+              <div><span><input type="radio" id="e1" name="99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222" value="mid" style="position:absolute;opacity:0;width:0;height:0"></span><label for="e1">Intermediate: Able to understand requirements</label></div>
+            </fieldset>
+            """), "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -2026,7 +2038,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-required-by-label", Packet(), (Pdf, "resume.pdf"), dryRun: false);
 
         Assert.False(outcome.Submitted);
-        Assert.Contains("scr_group", outcome.Unmapped);
+        Assert.Contains("scr", outcome.Unmapped);   // the title's for=, the same on every load
         Assert.DoesNotContain("Submit was clicked", outcome.Error);
         Assert.Empty(_posts);
     }
@@ -2059,6 +2071,27 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Contains("Location", outcome.Mapped);
         Assert.Equal("United States", Assert.Single(_posts)["loc"]);
+    }
+
+    [SkippableTheory]
+    // A packet built before this fix holds the whole name, first half and all, from another load.
+    [InlineData("11111111-1111-4111-8111-111111111111_22222222-2222-4222-8222-222222222222")]
+    // One built after it holds the field's own id alone.
+    [InlineData("22222222-2222-4222-8222-222222222222")]
+    public async Task An_ashby_radio_group_is_found_by_its_field_id_whatever_this_loads_name_is(string questionId)
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // actai, live: the packet said 785a35b2…_b2574b01…, the page said fed0f562…_b2574b01…,
+        // and a perfectly good answer was never pressed (#280).
+        var packet = Packet();
+        packet.Questions.Add(new(questionId, "English proficiency?", true, PacketQuestion.Select,
+            ["Professional/Fluent: Able to lead technical discussions", "Intermediate: Able to understand requirements"], PacketQuestion.Custom));
+        packet.Answers[questionId] = "Professional/Fluent: Able to lead technical discussions";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-renamed-radios", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("fluent", Assert.Single(_posts)["99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222"]);
     }
 
     [SkippableFact]

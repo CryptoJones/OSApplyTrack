@@ -216,7 +216,11 @@ public sealed partial class FormDiscoverer
               const grp = seenRadio.get(name);
               const opt = (document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText || el.closest('label')?.innerText || el.value || '').trim();
               if (grp) { grp.options.push(opt); grp.required = grp.required || required; continue; }
-              const entry = { id: el.id || '', name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || name, tag: 'input', type: 'radio', required, options: [opt] };
+              // Ashby's group name is "<form instance>_<field>" with the first half new on every
+              // load; its title's `for` is the field's own id, the same every time. The question is
+              // recorded by that, or the packet names a control the next load will not have.
+              const stable = ashbyTitle(el)?.getAttribute('for') || '';
+              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || name, tag: 'input', type: 'radio', required, options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // A blank-valued option is the placeholder ("Select…"), not a choice.
