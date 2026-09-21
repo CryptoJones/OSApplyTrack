@@ -123,6 +123,32 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             </fieldset>
             <script>document.addEventListener('submit', e => { if (!document.querySelector('input[name=scr_group]:checked')) e.preventDefault(); }, true);</script>
             """), "text/html"));
+        // Ashby's typeahead: a title whose `for` matches nothing, an input with no id or name, and
+        // a hint paragraph between them (ElevenLabs' Location).
+        _fixture.MapGet("/jobs/ashby-typeahead", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """
+            <div class="_fieldEntry_1e3gg_28 ashby-application-form-field-entry">
+              <label class="_required_f7cvd_91 ashby-application-form-question-title" for="no-such-id">Location</label>
+              <div class="ashby-application-form-question-description"><p>Country you're currently residing in</p></div>
+              <div class="ashby-application-form-input-autocomplete">
+                <input type="text" role="combobox" aria-autocomplete="list" placeholder="Start typing..." oninput="suggest(this)">
+                <div id="loc-list" role="listbox" style="display:none"></div>
+              </div>
+              <input type="hidden" id="loc" name="loc">
+              <script>
+                function suggest(box) {
+                  const list = document.getElementById('loc-list');
+                  const hits = ['United States', 'United Kingdom', 'Canada'].filter(c => c.toLowerCase().startsWith(box.value.toLowerCase()) && box.value);
+                  list.innerHTML = hits.map(c => `<div role="option" onmousedown="pickLoc('${c}')">${c}</div>`).join('');
+                  list.style.display = hits.length ? 'block' : 'none';
+                }
+                function pickLoc(c) { document.querySelector('[role=combobox]').value = c; document.getElementById('loc').value = c; document.getElementById('loc-list').style.display = 'none'; }
+                document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.getAttribute('role') === 'combobox') { const o = document.querySelector('#loc-list [role=option]'); if (o) { e.preventDefault(); pickLoc(o.textContent); } } });
+              </script>
+            </div>
+            """), "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -2018,6 +2044,36 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("b", Assert.Single(_posts)["scr_group"]);
+    }
+
+    [SkippableFact]
+    public async Task An_ashby_typeahead_with_no_id_or_name_is_found_through_its_question_title()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("Location", "Location", true, PacketQuestion.Text, [], PacketQuestion.Custom));
+        packet.Answers["Location"] = "United States";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-typeahead", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Location", outcome.Mapped);
+        Assert.Equal("United States", Assert.Single(_posts)["loc"]);
+    }
+
+    [SkippableFact]
+    public async Task A_radio_option_is_matched_when_the_answer_is_its_opening_words()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("scr_group", "Which best describes your backend experience?", true,
+            PacketQuestion.Select, ["A. I have owned and shipped backend services", "B. I have contributed significantly"], PacketQuestion.Custom));
+        packet.Answers["scr_group"] = "A. I have owned and shipped";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-required-by-label", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("a", Assert.Single(_posts)["scr_group"]);
     }
 
     [SkippableFact]

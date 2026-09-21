@@ -1454,13 +1454,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (PlaywrightException) { return null; }
         if (count > 0)
         {
+            // Exactly first; then loosely. An option can run to a sentence ("Professional/Fluent:
+            // Able to lead technical discussions, write documentation…") and the answer drafted for
+            // it is often its opening words — which matched nothing, and left actai's last
+            // required question blank (#280). Loose never wins over an exact match elsewhere.
+            for (var pass = 0; pass < 2; pass++)
             for (var i = 0; i < count; i++)
             {
                 var radio = radios.Nth(i);
                 try
                 {
-                    if (!Same(await radio.GetAttributeAsync("value") ?? "", answer)
-                        && !Same(await ChoiceLabelAsync(radio), answer))
+                    var value = await radio.GetAttributeAsync("value") ?? "";
+                    var text = await ChoiceLabelAsync(radio);
+                    if (pass == 0 ? !Same(value, answer) && !Same(text, answer) : !Loosely(text, answer))
                         continue;
                     // Bounded, and a timeout caught: it is a System.TimeoutException, not a
                     // PlaywrightException, and a drawn radio (Ashby keeps the real input out of
@@ -1547,6 +1553,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
               || el.closest('label')?.innerText || ''
         """);
 
+    /// <summary>An option and an answer that are the same choice said at different lengths: one
+    /// opens with the other. Four characters at least, so "No" never opens "None of the above".</summary>
+    private static bool Loosely(string option, string answer)
+    {
+        var o = option.Trim(); var a = answer.Trim();
+        if (o.Length < 4 || a.Length < 4) return false;
+        return o.StartsWith(a, StringComparison.OrdinalIgnoreCase) || a.StartsWith(o, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool Same(string a, string b) =>
         a.Trim().Length > 0 && string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
 
@@ -1582,6 +1597,20 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         candidates.Add(page.Locator($"[name*={Quote(id)}]"));
         if (label.Length > 0)
             candidates.Add(page.GetByLabel(label, new() { Exact = false }));
+        // Ashby ties a title to its control with a `for` that matches nothing when the control is a
+        // typeahead: no id, no name on the input, and a description paragraph sitting between the
+        // two so the nearest preceding text is the hint, not the question. ElevenLabs' required
+        // Location stayed empty for it. Found through the entry its title sits in (#280).
+        if (label.Length > 0)
+            candidates.Add(page.Locator("fieldset, [class*='_fieldEntry_'], .ashby-application-form-field-entry")
+                .Filter(new()
+                {
+                    Has = page.Locator(".ashby-application-form-question-title", new()
+                    {
+                        HasTextRegex = new Regex(@"^\s*" + Regex.Escape(label).Replace(@"\ ", @"\s+") + @"\s*\*?\s*$", RegexOptions.IgnoreCase),
+                    }),
+                })
+                .Locator("input:not([type=hidden]):not([type=file]):not([type=radio]):not([type=checkbox]), textarea, select"));
         // Last: a label that is nothing but text above the box — no <label for>, no aria —
         // which is how a good part of the long tail writes its forms. The control whose
         // nearest preceding text starts with the question's label.
