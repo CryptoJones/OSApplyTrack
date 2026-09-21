@@ -1048,7 +1048,10 @@ public sealed class AgentWorker : BackgroundService
             if (!await _evaluator.PostingClosedAsync(link, AtsProvider.Workday, ct)) continue;
             var rec = await apps.GetAsync(name);
             if (rec is null) continue;
-            await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, null);
+            // At the version just read: a row the person is editing this moment is theirs, and the
+            // next pass will find it again.
+            try { await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, rec.Version.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            catch (AppConflictException) { continue; }
             await events.RecordAsync(AgentEventRepo.Kinds.Error, name, new
             {
                 reason = "the Workday posting no longer exists — marked passed",
