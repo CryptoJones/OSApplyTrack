@@ -870,7 +870,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
               : typeahead ? (typeahead.value || '').trim().length === 0
               : choices.length > 0 ? !choices.some(c => c.checked)
               : false;
-            if (empty) add(choices[0]?.getAttribute('name') || title.getAttribute('for') || '', title.innerText);
+            // Keyed by the title's `for` — the field's own id, the same on every load — never by
+            // the radios' name, whose first half is this page load's and no other's.
+            if (empty) add(title.getAttribute('for') || choices[0]?.getAttribute('name') || '', title.innerText);
           }
           for (const el of document.querySelectorAll('input, select, textarea')) {
             if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
@@ -1448,7 +1450,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static async Task<bool?> SetChoiceAsync(IFrame page, PacketQuestion q, string answer)
     {
         var id = Unprefixed(q.Id);
-        var radios = page.Locator($"input[type=radio][name='{id}']");
+        // Ashby names a radio group "<form instance>_<field>", and the first half is minted afresh
+        // on every page load: a packet built on one load looked for a name the next load no longer
+        // had, and the question stayed blank however good its answer (actai, #280). Only the field
+        // half is the question's. Matched by it — whether the packet holds the whole stale name or,
+        // as discovery now records, the field half alone.
+        var field = AshbyField().Match(id) is { Success: true } m ? m.Groups[1].Value : id;
+        var radios = page.Locator($"input[type=radio][name='{id}'], input[type=radio][name$='_{field}']");
         int count;
         try { count = await radios.CountAsync(); }
         catch (PlaywrightException) { return null; }
@@ -1561,6 +1569,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (o.Length < 4 || a.Length < 4) return false;
         return o.StartsWith(a, StringComparison.OrdinalIgnoreCase) || a.StartsWith(o, StringComparison.OrdinalIgnoreCase);
     }
+
+    [GeneratedRegex(@"^[0-9a-f]{8}-[0-9a-f-]{27}_([0-9a-f]{8}-[0-9a-f-]{27})$", RegexOptions.IgnoreCase)]
+    private static partial Regex AshbyField();
 
     private static bool Same(string a, string b) =>
         a.Trim().Length > 0 && string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);

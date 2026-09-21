@@ -223,12 +223,13 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
         var questions = await discoverer.DiscoverAsync($"{_url}/ashby");
 
-        var radio = Assert.Single(questions!, q => q.Id == "3c35_d782");
+        // Keyed by the title's for= (the field's own id), not the radios' name, whose first half is this load's.
+        var radio = Assert.Single(questions!, q => q.Id == "d782");
         Assert.Equal("Which best describes your backend experience?", radio.Label);
         Assert.True(radio.Required);
         Assert.Equal(["A. I have owned and shipped backend services", "B. I have contributed significantly"], radio.Options);
         // An optional one, titled the same way, stays optional.
-        Assert.False(Assert.Single(questions!, q => q.Id == "opt_group").Required);
+        Assert.False(Assert.Single(questions!, q => q.Id == "opt").Required);
     }
 
     [SkippableFact]
