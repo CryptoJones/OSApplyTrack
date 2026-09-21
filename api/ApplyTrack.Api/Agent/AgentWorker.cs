@@ -34,6 +34,9 @@ public sealed class AgentWorker : BackgroundService
     /// <summary>Real LinkedIn Easy Apply submissions per tenant per day (#278). It is a person's own
     /// account, and the same one the poller discovers with: well under anything LinkedIn would notice.</summary>
     public const int LinkedInEasyDailyCap = 10;
+    // When each Workday row was last asked whether it still exists (#277): twice a day is plenty.
+    private readonly Dictionary<string, DateTime> _workdayChecked = [];
+    private static readonly TimeSpan WorkdayRecheck = TimeSpan.FromHours(12);
     // Requests whose run met new questions and answered them: worth one more dry run (#278).
     private readonly HashSet<long> _dryAgain = [];
 
@@ -903,6 +906,13 @@ public sealed class AgentWorker : BackgroundService
                 _log.LogInformation("tenant {TenantId}: {Count} dead-end aggregator listing(s) marked passed: {Names}",
                     tenantId, deadEnds.Count, string.Join(", ", deadEnds));
 
+            // A Workday row is never opened by the browser, so nothing ever found one closed: CVS
+            // Health's and Voya's sat in Ready for days after the postings were taken down (#277).
+            var gone = await RetireClosedWorkdayAsync(conn, tenantId, ct);
+            if (gone.Count > 0)
+                _log.LogInformation("tenant {TenantId}: {Count} Workday posting(s) no longer exist, marked passed: {Names}",
+                    tenantId, gone.Count, string.Join(", ", gone));
+
             // Ready rows nothing else will ever revisit: one with no packet, one whose last
             // dry run died on something transient. Bounded, and never a captcha, a sign-in
             // wall or a submit that may already have landed (#274).
@@ -1011,6 +1021,45 @@ public sealed class AgentWorker : BackgroundService
                 _log.LogDebug(ex, "tenant {TenantId}: advisory unlock failed", tenantId);
             }
         }
+    }
+
+    /// <summary>
+    /// Ask Workday whether each of the tenant's lead/ready Workday postings still exists, a few per
+    /// pass and each at most twice a day, and retire the ones that answer 404. Anything other than
+    /// a plain "gone" leaves the row alone.
+    /// </summary>
+    private async Task<List<string>> RetireClosedWorkdayAsync(NpgsqlConnection conn, long tenantId, CancellationToken ct)
+    {
+        var retired = new List<string>();
+        var rows = await conn.QueryAsync<(string Name, string Link)>(
+            "SELECT name, link FROM applications WHERE tenant_id = @t AND status IN ('lead', 'ready') AND link LIKE '%myworkday%' ORDER BY name",
+            new { t = tenantId });
+        var apps = new ApplicationRepo(conn, tenantId);
+        var events = new AgentEventRepo(conn, tenantId);
+        var asked = 0;
+        foreach (var (name, link) in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (AtsProvider.WorkdayJobApi(link) is null) continue;
+            var key = $"{tenantId}:{name}";
+            if (_workdayChecked.TryGetValue(key, out var at) && DateTime.UtcNow - at < WorkdayRecheck) continue;
+            if (asked++ >= 5) break;
+            _workdayChecked[key] = DateTime.UtcNow;
+            if (!await _evaluator.PostingClosedAsync(link, AtsProvider.Workday, ct)) continue;
+            var rec = await apps.GetAsync(name);
+            if (rec is null) continue;
+            // At the version just read: a row the person is editing this moment is theirs, and the
+            // next pass will find it again.
+            try { await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, rec.Version.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            catch (AppConflictException) { continue; }
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, name, new
+            {
+                reason = "the Workday posting no longer exists — marked passed",
+                rec.Fields.Company, rec.Fields.Role,
+            });
+            retired.Add(name);
+        }
+        return retired;
     }
 
     public override void Dispose()

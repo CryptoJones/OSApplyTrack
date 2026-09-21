@@ -99,6 +99,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
         // Radancy (TalentBrew) career sites — UnitedHealth Group, and a great many employers'
         // own careers pages: "Important System Message", nothing in it named for cookies (#283).
         "#system-ialert-button",
+        // Workday's own: "Accept Cookies" over every posting and every step of its application.
+        "[data-automation-id='legalNoticeAcceptButton']",
         // The rest of the field, by the ids and classes each manager ships with: Didomi,
         // Usercentrics (in an open shadow root, which a locator pierces), Quantcast Choice,
         // CookieYes, Complianz, Iubenda, Termly, Klaro, Civic, Cookie Script.

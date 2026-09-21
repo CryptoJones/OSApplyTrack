@@ -75,6 +75,19 @@ public sealed class LeadEvaluator
     {
         if (string.IsNullOrWhiteSpace(link))
             return false;
+        // A Workday posting's page is a script under an HTTP 200 whether the job exists or not;
+        // the JSON behind it answers 404 for a removed one. Anything else — a tenant that refuses
+        // a bot, a timeout — says nothing, and a live lead is never retired on nothing (#277).
+        if (AtsProvider.WorkdayJobApi(link) is { } api)
+        {
+            try { await _fetcher.FetchAsync(api, ct); return false; }
+            catch (ScrapeUnavailableException ex) when (ex.Message.Contains("HTTP 404", StringComparison.Ordinal) || ex.Message.Contains("HTTP 410", StringComparison.Ordinal))
+            {
+                _log.LogInformation("liveness: {Link} is gone (Workday answered {Reason})", link, ex.Message);
+                return true;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
+        }
         var applyUrl = AtsProvider.ApplyUrl(link, provider);
         try
         {

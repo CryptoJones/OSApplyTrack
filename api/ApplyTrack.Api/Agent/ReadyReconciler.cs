@@ -126,7 +126,9 @@ public static partial class ReadyReconciler
             var rec = await apps.GetAsync(name);
             if (rec is null)
                 continue;
-            await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, null);
+            // At the version just read: a row the person is editing this moment is theirs.
+            try { await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, rec.Version.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            catch (AppConflictException) { continue; }
             await events.RecordAsync(AgentEventRepo.Kinds.Error, name, new
             {
                 reason = "dead-end aggregator listing — its Apply leads only to more aggregators behind a bot check, never a form; marked passed",

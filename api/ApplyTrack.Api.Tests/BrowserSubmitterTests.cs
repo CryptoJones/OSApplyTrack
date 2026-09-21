@@ -108,6 +108,22 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               document.addEventListener('submit', e => { if (!document.getElementById('visa_answer').value) e.preventDefault(); }, true);
             </script>
             """), "text/html"));
+        // Ashby as it really ships (#280): a radio question in a legend-less <fieldset> titled by a
+        // <label>, required only by a generated class on that label, the inputs drawn over; and a
+        // typeahead that is required the same way. Like Ashby, the form answers a bad submit by
+        // staying put and saying nothing a confirmation-watcher would recognise.
+        _fixture.MapGet("/jobs/ashby-required-by-label", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """
+            <fieldset class="_fieldEntry_1e3gg_28 ashby-application-form-input-radio-group">
+              <label class="_heading_f7cvd_52 _required_f7cvd_91 ashby-application-form-question-title" for="scr">Which best describes your backend experience?</label>
+              <div><span><span class="_circle_"></span><input type="radio" id="scr-0" name="scr_group" value="a" style="position:absolute;opacity:0;width:0;height:0"></span><label for="scr-0">A. I have owned and shipped backend services</label></div>
+              <div><span><span class="_circle_"></span><input type="radio" id="scr-1" name="scr_group" value="b" style="position:absolute;opacity:0;width:0;height:0"></span><label for="scr-1">B. I have contributed significantly</label></div>
+            </fieldset>
+            <script>document.addEventListener('submit', e => { if (!document.querySelector('input[name=scr_group]:checked')) e.preventDefault(); }, true);</script>
+            """), "text/html"));
+        _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
             """<html><body><h1>Senior Engineer</h1><p>No form on this page.</p><a class="button apply-btn" href="/jobs/1" role="button" aria-label="Senior Engineer Apply Now open in new window">Apply now </a></body></html>""", "text/html"));
@@ -1973,6 +1989,46 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Contains("visa", outcome.Mapped);
         Assert.Equal(posted, Assert.Single(_posts)["visa_answer"]);
+    }
+
+    [SkippableFact]
+    public async Task An_ashby_question_required_only_by_its_title_label_stops_the_click_when_unanswered()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // actai, live: three required radio questions blank, Submit clicked anyway, Ashby answered
+        // 200 and stayed put, and the run said "no confirmation text was recognised" (#280).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-required-by-label", Packet(), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Contains("scr_group", outcome.Unmapped);
+        Assert.DoesNotContain("Submit was clicked", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task An_ashby_drawn_radio_is_pressed_through_its_label()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.Add(new("scr_group", "Which best describes your backend experience?", true,
+            PacketQuestion.Select, ["A. I have owned and shipped backend services", "B. I have contributed significantly"], PacketQuestion.Custom));
+        packet.Answers["scr_group"] = "B. I have contributed significantly";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/ashby-required-by-label", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("b", Assert.Single(_posts)["scr_group"]);
+    }
+
+    [SkippableFact]
+    public async Task A_site_that_refuses_this_server_says_so_instead_of_no_apply_button()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/forbidden", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.False(outcome.Closed);
+        Assert.Contains("refused this server (HTTP 403)", outcome.Error);
     }
 
     [SkippableFact]

@@ -225,6 +225,26 @@ public static partial class AtsProvider
         _ => longTailOptIn,
     };
 
+    [GeneratedRegex(@"^https?://([a-z0-9-]+)\.(wd\d+)\.(myworkdayjobs|myworkdaysite)\.com/(?:[a-z]{2}-[A-Z]{2}/)?([^/?#]+)/(job/[^?#]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex WorkdayPosting();
+
+    /// <summary>
+    /// The JSON Workday's own page reads a posting from, or null when <paramref name="link"/> is not
+    /// a Workday posting. The page itself is a script that renders "The page you are looking for
+    /// doesn't exist" under an HTTP 200, so nothing unattended can tell a removed job from a live
+    /// one by fetching it — but this answers <b>404</b> for a removed job and 200 for a live one
+    /// (checked 2026-09-21: CVS Health and Voya gone, Allstate live). Some tenants refuse it a
+    /// bot (Broadridge, 403), which says nothing either way (#277).
+    /// </summary>
+    public static string? WorkdayJobApi(string link)
+    {
+        if (WorkdayPosting().Match(link ?? "") is not { Success: true } m) return null;
+        var tenant = m.Groups[1].Value.ToLowerInvariant();
+        var host = $"{tenant}.{m.Groups[2].Value.ToLowerInvariant()}.{m.Groups[3].Value.ToLowerInvariant()}.com";
+        // The site and the job path are case-sensitive on Workday's side: passed through as written.
+        return $"https://{host}/wday/cxs/{tenant}/{m.Groups[4].Value}/{m.Groups[5].Value.TrimEnd('/')}";
+    }
+
     /// <summary>
     /// Greenhouse's own copy of the application form for a hosted posting, or null when
     /// <paramref name="link"/> is not one. An employer may point its board at its own careers
