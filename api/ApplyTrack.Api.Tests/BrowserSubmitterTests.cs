@@ -192,6 +192,15 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <button type="button" disabled>Continue</button>
             </body></html>
             """, "text/html"));
+        // Darwinbox's shape for a posting taken down: the job's own address sends the browser to
+        // the careers home — a search box, a count of open jobs, no notice and no form.
+        _fixture.MapGet("/jobs/careers/jobDetails/a6aad5aa0ddbe5", () => Results.Redirect("/jobs/careers/home"));
+        _fixture.MapGet("/jobs/careers/home", () => Results.Content(
+            """
+            <html><body><h1>The perspective you want.</h1><p>We Have 88 Open Jobs</p>
+              <input type="text" placeholder="Search by role, department or location"><a href="/jobs/signin">Sign In</a>
+            </body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -1862,6 +1871,32 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("run Submit again", outcome.Error);
         Assert.Empty(_posts);
     }
+
+    [SkippableFact]
+    public async Task A_posting_whose_link_now_lands_on_the_boards_job_list_is_reported_closed()
+    {
+        // 3pillar's Darwinbox posting was taken down without a word: its address redirects to
+        // the careers home, which the run read as "no Apply button" three times (#280).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/careers/jobDetails/a6aad5aa0ddbe5", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Closed, outcome.Error);
+        Assert.Contains("job list", outcome.Error);
+        Assert.False(outcome.Filled);
+    }
+
+    [Theory]
+    [InlineData("https://3pillar.darwinbox.com/ms/candidatev2//careers/jobDetails/a6aad5aa0ddbe5", "https://3pillar.darwinbox.com/ms/candidatev2/main/careers/home", true)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/careers", true)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/", true)]
+    // The posting itself, its Apply page, and a redirect that still carries the posting's id are not a listing.
+    [InlineData("https://jobs.lever.co/acme/1a2b3c4d", "https://jobs.lever.co/acme/1a2b3c4d/apply", false)]
+    [InlineData("https://jobs.ashbyhq.com/acme/1a2b3c4d", "https://jobs.ashbyhq.com/acme/1a2b3c4d/application", false)]
+    [InlineData("https://acme.example.com/careers/12345", "https://acme.example.com/jobs?id=12345", false)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/careers/12345-senior-engineer/apply", false)]
+    [InlineData("https://acme.example.com/jobs", "https://acme.example.com/jobs", false)]
+    public void A_link_that_lands_on_the_job_list_is_told_from_one_that_lands_on_the_posting(string link, string landed, bool expected) =>
+        Assert.Equal(expected, BrowserSubmitter.RedirectedToJobList(link, landed));
 
     [SkippableFact]
     public async Task A_posting_taken_down_to_a_404_page_is_reported_closed()

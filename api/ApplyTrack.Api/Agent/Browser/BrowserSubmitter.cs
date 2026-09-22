@@ -67,6 +67,25 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed|not available anymore)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
 
+    [GeneratedRegex(@"/(?:home|careers?|jobs?|openings|positions|opportunities|search|job-?board)/?$", RegexOptions.IgnoreCase)]
+    private static partial Regex JobListPath();
+
+    /// <summary>
+    /// Did the posting's link land on the board's job list instead of the posting? True when
+    /// the posting's own last path segment — its id or slug — is nowhere in the landed
+    /// address and that address is a home or listing page. Public for tests.
+    /// </summary>
+    public static bool RedirectedToJobList(string link, string landed)
+    {
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var from) || !Uri.TryCreate(landed, UriKind.Absolute, out var to))
+            return false;
+        var id = from.AbsolutePath.TrimEnd('/').Split('/').LastOrDefault(s => s.Length > 0) ?? "";
+        if (id.Length < 4 || to.AbsoluteUri.Contains(id, StringComparison.OrdinalIgnoreCase))
+            return false;
+        var path = to.AbsolutePath.TrimEnd('/');
+        return path.Length == 0 || JobListPath().IsMatch(path);
+    }
+
     /// <summary>
     /// True when a page's text reads as a closed/expired posting. The single source for
     /// closed-posting detection, shared by the browser run (against the rendered body) and
@@ -152,6 +171,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     session.Status is 404 or 410 ? $"posting is gone (HTTP {session.Status})" : "posting is no longer open",
                     Closed: true);
+            }
+            // A posting taken down without a word: the link now lands on the board's own job list
+            // — Darwinbox sent 3pillar's `…/careers/jobDetails/<id>` to `…/careers/home`, a page of
+            // "88 Open Jobs" and a search box, and the run read that as "no Apply button" three
+            // times. The posting's id is gone from the address, the address is a home or a
+            // listing, and nothing on it is an application form: closed, not broken.
+            if (RedirectedToJobList(link, page.Url) && !await BrowserSession.ApplicationFormVisibleAsync(page))
+            {
+                screenshot = await session.ScreenshotAsync();
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "posting is gone — its link now leads to the board's job list", Closed: true);
             }
 
             // Let the form finish arriving before typing into it. Greenhouse's form fetches a
