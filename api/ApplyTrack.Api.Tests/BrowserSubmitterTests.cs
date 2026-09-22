@@ -299,6 +299,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             };
         });
         _fixture.MapGet("/jobs/sf/app", () => Results.Content(SfApplicationHtml, "text/html"));
+        // UKG (UltiPro) as OneStream runs it (#277): Apply → an Auth0-style login → the employer's
+        // own "Register" profile step, whose consent box and "Create account" are web components,
+        // → the application, whose Submit is a <ukg-button> with the real <button> in a shadow root.
+        _fixture.MapGet("/ukg/posting", () => Results.Content(
+            """<html><body><h1>Lead AI Engineer</h1><ukg-button data-automation="apply-now-button"><a href="/ukg/u/login">Apply now</a></ukg-button></body></html>""", "text/html"));
+        _fixture.MapGet("/ukg/u/login", () => Results.Content(
+            """<html><body><h1>Log in</h1><form method="post" action="/ukg/u/login"><input id="username" name="username" type="text" required><input id="password" name="password" type="password" required><button type="submit" name="action">Sign in</button></form><a href="/ukg/u/signup">Sign up</a></body></html>""", "text/html"));
+        _fixture.MapPost("/ukg/u/login", async (HttpRequest req) =>
+        {
+            var form = await req.ReadFormAsync();
+            return form["password"] == "Ukg-9$pass" && form["username"] == "ada@example.com" ? Results.Redirect("/ukg/AuthCode/Register?state=x") : Results.Redirect("/ukg/u/login?error=1");
+        });
+        _fixture.MapGet("/ukg/AuthCode/Register", () => Results.Content(UkgRegisterHtml, "text/html"));
+        _fixture.MapPost("/ukg/AuthCode/Register", async (HttpRequest req) =>
+        {
+            var form = await req.ReadFormAsync();
+            lock (_posts) _posts.Add(new() { ["register"] = $"{form["firstName"]}|{form["lastName"]}|{form["phoneNumber"]}|consent={form["consent"]}" });
+            return Results.Redirect("/ukg/application");
+        });
+        _fixture.MapGet("/ukg/application", () => Results.Content(UkgApplicationHtml, "text/html"));
         _fixture.MapGet("/jobs/sf/applied", () => Results.Content(
             "<html><body><form name=\"keywordsearch\" role=\"search\"><input type=\"text\" name=\"q\" placeholder=\"Search by Keyword\" /></form>"
             + "<h1>Career Opportunities: Sr AI Engineer</h1><p>You already applied for this position.</p><a href=\"/jobs\">Back to Job Listings</a></body></html>", "text/html"));
@@ -971,6 +991,36 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </form>
         </body></html>
         """;
+
+    // The consent box and the button are custom elements with open shadow roots, like UKG's.
+    private const string UkgRegisterHtml = """
+        <html><body><h1>Register</h1>
+        <form id="reg" method="post" action="/ukg/AuthCode/Register">
+          <label for="fn">First name</label><input id="fn" name="firstName" type="text" required>
+          <label for="ln">Last name</label><input id="ln" name="lastName" type="text" required>
+          <label for="ph">Phone number</label><input id="ph" name="phoneNumber" type="tel" required>
+          <ukg-checkbox data-automation="registrationDetails-privacy-checkbox"></ukg-checkbox>
+          <input type="hidden" name="consent" id="consent" value="no">
+          <ukg-button data-automation="registrationDetails-submit-button"></ukg-button>
+        </form>
+        <script>
+          const cb = document.querySelector('ukg-checkbox').attachShadow({mode:'open'});
+          cb.innerHTML = '<label><input type="checkbox"> I agree to the privacy policy</label>';
+          cb.querySelector('input').addEventListener('change', e => document.getElementById('consent').value = e.target.checked ? 'yes' : 'no');
+          const bt = document.querySelector('ukg-button').attachShadow({mode:'open'});
+          bt.innerHTML = '<button type="button">Create account</button>';
+          bt.querySelector('button').addEventListener('click', () => { if (document.getElementById('consent').value === 'yes') document.getElementById('reg').submit(); });
+        </script>
+        </body></html>
+        """;
+
+    // The standard fixture form, with UKG's Submit: a <ukg-button> whose real <button> is in a shadow root.
+    private static readonly string UkgApplicationHtml = FormHtml.Replace(
+        "<button id=\"submit_app\" type=\"submit\">Submit Application</button>",
+        "<ukg-button data-automation=\"btn-submit\"></ukg-button>\n<script>\n"
+        + "const bt = document.querySelector('ukg-button').attachShadow({mode:'open'});\n"
+        + "bt.innerHTML = '<button type=\"button\">Submit</button>';\n"
+        + "bt.querySelector('button').addEventListener('click', () => document.querySelector('form').submit());\n</script>");
 
     private const string SfSignInHtml = """
         <html><body>
@@ -2107,6 +2157,30 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("a", Assert.Single(_posts)["scr_group"]);
+    }
+
+    [SkippableFact]
+    public async Task Ukg_signs_in_registers_with_the_employer_and_submits_through_the_shadow_root_button()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // onestream, live: the account existed and the sign-in worked, the profile step's three
+        // fields were filled — and the run died on "no Submit button found", because the step's
+        // button is "Create account" and the application's Submit lives in a shadow root (#277).
+        var packet = Packet();
+        packet.Answers["std:phone"] = "5550100";
+        packet.Questions.Add(new("std:phone", "Phone", false, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Answers["std:first_name"] = "Ada"; packet.Answers["std:last_name"] = "Byte";
+        packet.Questions.Add(new("std:first_name", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Questions.Add(new("std:last_name", "Last name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/ukg/posting", packet, (Pdf, "resume.pdf"), dryRun: false,
+            accounts: [new("127.0.0.1", "ada@example.com", "Ukg-9$pass")]);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var registered = Assert.Single(_posts, p => p.ContainsKey("register"))["register"];
+        Assert.Equal("Ada|Byte|5550100|consent=yes", registered);
+        var applied = Assert.Single(_posts, p => p.ContainsKey("job_application[first_name]"));
+        Assert.Equal("Ada", applied["job_application[first_name]"]);
     }
 
     [SkippableFact]

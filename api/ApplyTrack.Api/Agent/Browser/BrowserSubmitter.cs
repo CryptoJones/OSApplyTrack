@@ -163,6 +163,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // A consent banner that arrived with the form, or after the page went idle, would
             // sit over every field and make the first fill time out (#202).
             await BrowserSession.DismissConsentAsync(page);
+            // UKG (UltiPro): the sign-in the session just did lands a first-time candidate on
+            // the employer's own profile step — name, phone, a privacy consent and "Create
+            // account" — before the application. Filled by the generic pass, but the button is
+            // no Submit, and the run died on "no Submit button found" (#277).
+            if (await AdvanceUkgProfileAsync(session, packet))
+            {
+                try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 8_000 }); }
+                catch (TimeoutException) { /* judged by what renders */ }
+                await BrowserSession.DismissConsentAsync(page);
+            }
             // A pre-screening step before the form — Paycor asks "Will you require sponsorship?"
             // on a page of radios and a Continue, and the reveal, finding no form and no Apply,
             // dead-ended at "no Apply button or link on the page" (#239). Answer the step from the
@@ -1935,6 +1945,52 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// comes first — so every real run clicked the anchor, waited, and reported "Submit was
     /// clicked but no confirmation text was recognised" while no request ever left the page.
     /// </summary>
+    /// <summary>
+    /// UKG's employer profile step (<c>…/AuthCode/Register</c>): first name, last name, phone,
+    /// a privacy checkbox, "Create account". The candidate account itself is the shared
+    /// <c>signin-us.ultipro.com</c> login, saved as the <c>ultipro.com</c> board account; this
+    /// registers that account with the one employer. Filled from the packet's standard answers,
+    /// which is what the person's profile says. True when the step was there and pressed.
+    /// </summary>
+    private static async Task<bool> AdvanceUkgProfileAsync(BrowserSession session, AgentPacket packet)
+    {
+        var page = session.Page;
+        // Known by UKG's own automation ids, which are the same on every board it hosts.
+        try { if (await page.Locator("ukg-button[data-automation='registrationDetails-submit-button']").CountAsync() == 0) return false; }
+        catch (PlaywrightException) { return false; }
+        try
+        {
+            static string Ans(AgentPacket p, string id) => p.Answers.TryGetValue(id, out var v) ? v.Trim() : "";
+            var (first, last) = SplitName(Ans(packet, "std:full_name"), Ans(packet, "std:first_name"), Ans(packet, "std:last_name"));
+            foreach (var (name, value) in new[] { ("firstName", first), ("lastName", last), ("phoneNumber", Ans(packet, "std:phone")) })
+            {
+                var box = page.Locator($"input[name='{name}']").First;
+                if (value.Length > 0 && await box.CountAsync() > 0 && (await box.InputValueAsync()).Trim().Length == 0)
+                    await box.FillAsync(value, new() { Timeout = 5_000 });
+            }
+            // The privacy consent is a web component; its box is in a shadow root Playwright pierces.
+            var consent = page.Locator("ukg-checkbox[data-automation='registrationDetails-privacy-checkbox'] input[type=checkbox], ukg-checkbox[data-automation='registrationDetails-privacy-checkbox']").First;
+            if (await consent.CountAsync() > 0)
+            {
+                var ticked = await consent.EvaluateAsync<bool>("el => (el.matches('input') ? el : el.shadowRoot?.querySelector('input[type=checkbox]') || el.querySelector('input[type=checkbox]'))?.checked === true");
+                if (!ticked) await consent.ClickAsync(new() { Timeout = 5_000 });
+            }
+            var create = page.Locator("ukg-button[data-automation='registrationDetails-submit-button'], button").Filter(new() { HasTextRegex = new Regex(@"^\s*create account\s*$", RegexOptions.IgnoreCase) }).First;
+            if (await create.CountAsync() == 0) return false;
+            await create.ClickAsync(new() { Timeout = 10_000 });
+            await page.WaitForTimeoutAsync(4_000);
+            return await page.Locator("ukg-button[data-automation='registrationDetails-submit-button']").CountAsync() == 0;
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    private static (string First, string Last) SplitName(string full, string first, string last)
+    {
+        if (first.Length > 0 || last.Length > 0) return (first, last);
+        var parts = full.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 0 ? ("", "") : (parts[0], parts.Length > 1 ? parts[^1] : "");
+    }
+
     private static async Task<ILocator?> FindSubmitAsync(IFrame page)
     {
         // Nothing that reads as "later" is ever the button (#210): join.com's "Apply later"
