@@ -191,7 +191,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             // leaves. The one exception is the board's résumé uploader, which stages the file
             // straight to object storage with a multipart POST — an application is always
             // posted to the board's own host, and that is always aborted.
-            if (options.BlockSubmissions && req.Method is not ("GET" or "HEAD") && !IsStorageUpload(u, req))
+            if (options.BlockSubmissions && req.Method is not ("GET" or "HEAD") && !IsStorageUpload(u, req) && !IsGraphQlQuery(u, req))
             {
                 await route.AbortAsync();
                 return;
@@ -363,6 +363,21 @@ public sealed partial class BrowserSession : IAsyncDisposable
             launch = new { args };
         }
         return new() { ["x-playwright-launch-options"] = JsonSerializer.Serialize(launch) };
+    }
+
+    /// <summary>A GraphQL <i>query</i>, or the résumé uploader's own mutations — Ashby loads the
+    /// posting and its form through POSTs to <c>/api/non-user-graphql</c> (<c>ApiJobPosting</c>,
+    /// the location autocomplete) and stages the résumé with <c>ApiCreateFileUploadHandle</c> and
+    /// <c>ApiSetFormValueToFile</c> around the S3 upload; with every POST aborted there is no form
+    /// to drive and no résumé on it. Any other mutation — the application — is still aborted.</summary>
+    private static bool IsGraphQlQuery(Uri u, IRequest req)
+    {
+        if (!u.AbsolutePath.Contains("graphql", StringComparison.OrdinalIgnoreCase)) return false;
+        var body = req.PostData ?? "";
+        if (body.Length == 0) return false;
+        if (!Regex.IsMatch(body, @"\bmutation\b", RegexOptions.IgnoreCase)) return true;
+        var op = Regex.Match(body, "\"operationName\"\\s*:\\s*\"([^\"]+)\"");
+        return op.Success && Regex.IsMatch(op.Groups[1].Value, @"upload|file", RegexOptions.IgnoreCase);
     }
 
     private static bool IsStorageUpload(Uri u, IRequest req) =>

@@ -345,9 +345,10 @@ killing the process:
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, `prepare` (rebuild first), timestamps. |
 | `GET`    | `/api/apps/{name}/evidence` | What the browser saw, newest first: `kind` (`dry_run` / `submitted` / `failed` / `awaiting_code`), `url`, `confirmation`, `detail` (a dry run's carries `needs_you[]` — the required questions the person still has to answer, by label; empty means clean; an `awaiting_code` row carries `recipient` and `sign_in` — true when the run is parked on a board's email sign-in rather than Greenhouse's security code), `has_screenshot`. |
-| `GET`    | `/api/board-accounts` | The candidate's own sign-ins on ATSs that only take applications from a signed-in account (SAP SuccessFactors): `host`, `username`, `has_password`, `updated_at` — never the password. |
+| `GET`    | `/api/board-accounts` | The candidate's own sign-ins on ATSs that only take applications from a signed-in account (SAP SuccessFactors): `host`, `username`, `has_password`, `updated_at` — never the password. A signed-in source's account (LinkedIn, MyGreenhouse, Handshake) also carries `keeps_session`, `session_expires_at` (null with none kept) and `renew_requested_at`. |
 | `PUT`    | `/api/board-accounts` | `{host, username, password}` — save one; the host is normalised (`career4.successfactors.com`), the password is write-only and sealed with the secrets key (omit to keep, blank to clear). Returns the list. |
 | `DELETE` | `/api/board-accounts/{host}` | Forget one. **204**, or **404** when there was none. |
+| `POST`   | `/api/board-accounts/{host}/renew` | **Sign in now**: the agent renews the kept session on its next tick (within a minute) instead of its own six-hour clock, so LinkedIn's app tap or the mailed PIN is asked for while you have your phone. **202** with the list; **400** for an account that keeps no session; **404** when there is none. |
 | `POST`   | `/api/apps/{name}/security-code` | `{code}` — the security code the board emailed you, for the browser run parked on it (Greenhouse's captcha fallback); or, for a run parked on a board's **email sign-in** (join.com), the code *or the whole link* the board emailed — a link must be http(s), and the browser follows it only onto the board's own site. **202** when a run is waiting, **409** when none is; the run types the code in (or opens the link) and carries on. Replying to the 🔐 Telegram moo with the code or the link does the same thing without the app. |
 | `GET`    | `/api/apps/{name}/evidence/{id}/screenshot.png` | The screenshot. |
 | `POST`   | `/api/apps/{name}/verdict` | Judge this lead now, exactly as the worker would → `{ok, verdict}`; **400** with no LLM endpoint, **502** when the model can't produce a usable verdict (recorded as an `error` event). The latest verdict also rides along on `GET /api/apps/{name}` as `agent_verdict`. |
@@ -708,7 +709,12 @@ browser** signs in as you — LinkedIn's official API only opens job search to a
 partners — and keeps the year-long session sealed on the row, renewing it well before
 it runs out or whenever LinkedIn bounces it. A sign-in from a device LinkedIn has not
 seen is challenged: a **tap in the LinkedIn app** (the moo asks you for it and the
-browser waits a few minutes) or an emailed PIN (read from your mailbox). With no
+browser waits four minutes) or an emailed PIN (read from your mailbox). The agent
+tries on its own clock — once every six hours after a try that stopped on the tap —
+so when you have your phone in hand press **Sign in now** beside the account
+(`POST /api/board-accounts/{host}/renew`): the sign-in starts within a minute and the
+moo says when to tap. An Easy Apply run with no kept session stands down before the
+browser, says so, and is queued again by the renewal that keeps one. With no
 account, or no kept session yet, the source falls back to LinkedIn's guest job
 search — the approach [JobSpy](https://github.com/speedyapply/JobSpy) uses — which
 needs no sign-in but is rate-limited hard.
@@ -812,7 +818,11 @@ sure" once. Without a saved account the run says which host wants one. The brows
 never creates accounts. A SuccessFactors career site on the employer's own domain
 (Kiewit's, say) is not knowable from the link: the browser learns it at the Apply
 click. The careers site's own job-search and job-alert boxes are never mistaken
-for the form. The agent never guesses on
+for the form. A form in **pages** — ClearCompany's "Page 1 · Page 2 · Page 3",
+evlo's five-step wizard — is walked: the browser presses Next, reads each page the
+way discovery reads a form, fills what the packet knows, and hands back any question
+it has never heard of for the drafter, then runs again; it never turns a page whose
+required question it cannot answer. The agent never guesses on
 EEO/demographic questions (it fills them only from the answers you saved once),
 file fields other than the résumé, or any answer the model wasn't confident
 about — those block Submit until you resolve them.

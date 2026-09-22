@@ -2436,9 +2436,10 @@ function agentMarkup(s, events) {
       </p>
       <ul id="board-accounts" class="agent-log" aria-labelledby="board-accounts-heading">
         ${(s.board_accounts || []).length ? s.board_accounts.map((a) => `
-          <li class="mt-2 text-sm flex items-center gap-2">
+          <li class="mt-2 text-sm flex items-center gap-2 flex-wrap">
             <span class="mono">${escapeHtml(a.host)}</span>
-            <span class="text-ink-faint">· ${escapeHtml(a.username)}${a.has_password ? "" : " · no password saved"}</span>
+            <span class="text-ink-faint">· ${escapeHtml(a.username)}${a.has_password ? "" : " · no password saved"}${boardSessionLine(a)}</span>
+            ${a.keeps_session ? `<button class="btn btn-ghost btn-sm" type="button" data-renew-account="${escapeHtml(a.host)}" aria-label="Sign in to ${escapeHtml(a.host)} now"${a.renew_requested_at ? " disabled" : ""}>Sign in now</button>` : ""}
             <button class="btn btn-ghost btn-sm" type="button" data-forget-account="${escapeHtml(a.host)}" aria-label="Forget the account at ${escapeHtml(a.host)}">Forget</button>
           </li>`).join("") : '<li class="mt-2 text-sm field-help">None saved.</li>'}
       </ul>
@@ -2527,9 +2528,34 @@ function wireAgent() {
       }
     };
   });
+  // Sign in now: the agent renews the kept session on its next tick, while the person has
+  // their phone for LinkedIn's tap or the mailed PIN — not on its own six-hour clock.
+  contentEl.querySelectorAll("[data-renew-account]").forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api("POST", `/api/board-accounts/${encodeURIComponent(b.dataset.renewAccount)}/renew`);
+        toast(`Sign-in to ${b.dataset.renewAccount} requested — the agent starts within a minute; have the app or mailbox ready, the moo says when.`);
+        openSettings("agent");
+      } catch (e) {
+        b.disabled = false;
+        toast(e.message);
+      }
+    };
+  });
   contentEl.querySelectorAll("[data-open]").forEach((b) => {
     b.onclick = () => openApp(b.dataset.open);
   });
+}
+
+// The kept session on a signed-in source's account: kept until when, or not kept — and a
+// Sign in now the worker has not taken yet. Nothing for an account that keeps no session.
+function boardSessionLine(a) {
+  if (!a.keeps_session) return "";
+  if (a.renew_requested_at) return " · sign-in requested, the agent is on it";
+  if (!a.session_expires_at) return " · no session kept";
+  const until = new Date(a.session_expires_at);
+  return until.getTime() <= Date.now() ? " · session expired" : ` · session kept until ${escapeHtml(until.toLocaleDateString())}`;
 }
 
 // "Worker last seen 12 minutes ago" — a wedged worker is visible, not merely absent (#184).

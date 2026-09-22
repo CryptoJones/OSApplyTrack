@@ -26,6 +26,7 @@ public class AtsProviderTests
     [InlineData("https://jobright.ai/jobs/info/b2b_1769670052353_604?utm_source=5012", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://www.sundayy.com/job-description/us1E83527B7B0B0D02B7BEFC83FD25AD65?source=Linkedin", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://us.thebigjobsite.com/redirectjob?id=1E83&source=sundayyapius", "auto:linkedin", AtsProvider.Aggregator)]
+    [InlineData("https://www.adzuna.com/details/5884140305?v=1FE6A7BEC0A4D518DC63EECDC1", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://www.fetchjobs.co/job-description-usb/DBE262F9F85264450F4C41420DB74AAC?src=LinkedIn", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://lensa.com/software-engineer-jobs-near-me-in-lafayette-co/cpc-hl-v3/8bfb", "auto:linkedin", AtsProvider.Aggregator)]
     [InlineData("https://careers.stryker.com/software-engineer-cloud/job/62F1?source=LinkedIn", "auto:linkedin", AtsProvider.Unknown)]

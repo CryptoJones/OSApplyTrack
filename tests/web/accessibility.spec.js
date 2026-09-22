@@ -762,3 +762,37 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
   await expect(page.locator("#content")).toContainText("1 application.");
   await expect(page.locator("#content")).not.toContainText(application.company);
 });
+
+test("a signed-in source's board account shows its session and offers Sign in now", async ({ page }) => {
+  // The agent renews a kept session on its own six-hour clock, and LinkedIn's app tap has to
+  // come within minutes of it; Sign in now lets the person pick the moment. An account that
+  // keeps no session (SuccessFactors) gets no such button.
+  const accounts = [
+    { host: "career4.successfactors.com", username: "person@example.com", has_password: true, updated_at: "2026-09-14T06:18:51Z",
+      keeps_session: false, session_expires_at: null, renew_requested_at: null },
+    { host: "linkedin.com", username: "person@example.com", has_password: true, updated_at: "2026-09-21T22:16:21Z",
+      keeps_session: true, session_expires_at: null, renew_requested_at: null },
+  ];
+  let renewed = 0;
+  await page.route("**/api/board-accounts**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body = accounts;
+    if (route.request().method() === "POST" && path === "/api/board-accounts/linkedin.com/renew") {
+      renewed += 1;
+      accounts[1].renew_requested_at = "2026-09-22T17:30:00Z";
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Agent", exact: true }).click();
+  const list = page.locator("#board-accounts");
+  await expect(list).toContainText("no session kept");
+  await expect(list.getByRole("button", { name: "Sign in to linkedin.com now" })).toBeVisible();
+  await expect(list.getByRole("button", { name: /Sign in to career4/ })).toHaveCount(0);
+  await expectNoSeriousViolations(page);
+
+  await list.getByRole("button", { name: "Sign in to linkedin.com now" }).click();
+  await expect(list).toContainText("sign-in requested, the agent is on it");
+  await expect(list.getByRole("button", { name: "Sign in to linkedin.com now" })).toBeDisabled();
+  expect(renewed).toBe(1);
+});

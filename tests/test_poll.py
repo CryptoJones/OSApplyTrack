@@ -1124,3 +1124,10 @@ def test_bestjobtool_is_recognized_as_aggregator() -> None:
 
     assert is_aggregator_link("https://www.bestjobtool.com/job-description-usb/1FA342C827F0C605954C1763836CC54C?src=LinkedIn")
     assert is_aggregator_link("https://bestjobtool.com/job-description/3173117206?src=LinkedIn")
+
+
+def test_adzuna_is_recognized_as_aggregator() -> None:
+    from applytrack.poll import is_aggregator_link
+
+    assert is_aggregator_link("https://www.adzuna.com/details/5884140305?v=1FE6A7BEC0A4D518DC63EECDC1")
+    assert not is_aggregator_link("https://careers.adzuna-not.com/jobs/1")

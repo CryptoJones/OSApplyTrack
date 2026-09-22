@@ -172,6 +172,63 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <label><input type="checkbox" name="job_application[question_9][]" value="azure" aria-required="true"> Azure</label>
             </fieldset>
             """), "text/html"));
+        // Ashby's shape: the Submit outside any <form>, disabled while the board settles a value,
+        // enabled two seconds later; and a page whose only buttons are none the finder knows.
+        _fixture.MapGet("/jobs/submit-settles", () => Results.Content(
+            """
+            <html><body>
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <button type="submit" class="ashby-application-form-submit-button" disabled
+                      onclick="fetch('/apply.json',{method:'POST',body:'x'}).then(()=>document.body.insertAdjacentHTML('beforeend','<p>Thank you for applying!</p>'));return false">Submit Application</button>
+              <script>setTimeout(() => document.querySelector('button[type=submit]').disabled = false, 2000);</script>
+            </body></html>
+            """, "text/html"));
+        _fixture.MapGet("/jobs/no-submit", () => Results.Content(
+            """
+            <html><body>
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <button type="button">Autofill from resume</button>
+              <button type="button" style="display:none">Send it</button>
+              <button type="button" disabled>Continue</button>
+            </body></html>
+            """, "text/html"));
+        // Darwinbox's shape for a posting taken down: the job's own address sends the browser to
+        // the careers home — a search box, a count of open jobs, no notice and no form.
+        _fixture.MapGet("/jobs/careers/jobDetails/a6aad5aa0ddbe5", () => Results.Redirect("/jobs/careers/home"));
+        _fixture.MapGet("/jobs/careers/home", () => Results.Content(
+            """
+            <html><body><h1>The perspective you want.</h1><p>We Have 88 Open Jobs</p>
+              <input type="text" placeholder="Search by role, department or location"><a href="/jobs/signin">Sign In</a>
+            </body></html>
+            """, "text/html"));
+        // A form in pages, rendered by script the way ClearCompany and evlo render theirs: the
+        // résumé on page one, contact and a question of the employer's on page two, a textarea and
+        // the Submit on page three. Nothing is in the document until its page is shown.
+        _fixture.MapGet("/jobs/wizard", () => Results.Content(WizardHtml, "text/html"));
+        // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
+        // radios named by a UUID — no fieldset, no legend, nothing Ashby-shaped (vector, #280).
+        _fixture.MapGet("/jobs/clearcompany-radios", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <div class="form-field qa-radio-field">
+                <span class="control-label field-title">Are you authorized to work in the United States for any employer without requiring visa sponsorship? <span class="required-indicator">*</span></span>
+                <div class="field-holder"><div class="option-holder required" required="required">
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="1c711a4a-04d7-68be-7d6f-9d960fdee434-0" value="5e16a928" required> Yes</label></div>
+                  <div class="child-field-holder"></div>
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="1c711a4a-04d7-68be-7d6f-9d960fdee434-0" value="2e8f3bd2" required> No</label></div>
+                </div></div>
+              </div>
+              <div class="form-field qa-radio-field">
+                <span class="control-label field-title">Will you now or in the future require sponsorship? <span class="required-indicator">*</span></span>
+                <div class="field-holder"><div class="option-holder required" required="required">
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="8037008b-b4f8-e65c-86a7-b9d495808d9c-0" value="a1" required> Yes</label></div>
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="8037008b-b4f8-e65c-86a7-b9d495808d9c-0" value="b2" required> No</label></div>
+                </div></div>
+              </div>
+              <button id="submit_app" type="submit">Submit Application</button>
+            </form></body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -1426,6 +1483,51 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Answers = new() { ["first_name"] = "Ada" },
     };
 
+    private const string WizardHtml = """
+        <html><body>
+          <h1>Backend Engineer</h1><p>1. Upload Resume 2. Contact Information 3. About you</p>
+          <div id="page"></div>
+          <script>
+            const state = {};
+            const pages = [
+              `<h2>Upload Resume</h2><label for="resume">Resume</label><input id="resume" name="resume" type="file" required>
+               <button type="button" id="next">Next</button>`,
+              `<h2>Contact Information</h2>
+               <label for="first_name">First Name</label><input id="first_name" name="first_name" required>
+               <label for="last_name">Last Name</label><input id="last_name" name="last_name" required>
+               <label for="email">Email</label><input id="email" name="email" type="email" required>
+               <label for="years_dotnet">How many years have you worked with .NET?</label><input id="years_dotnet" name="years_dotnet" required>
+               <button type="button" id="next">Next</button>`,
+              `<h2>About you</h2>
+               <label for="question_3">Describe a system you scaled.</label><textarea id="question_3" name="question_3" required></textarea>
+               <button type="submit" id="submit_app">Submit Application</button>`,
+            ];
+            let at = 0;
+            function show() {
+              document.getElementById('page').innerHTML = pages[at];
+              const next = document.getElementById('next');
+              if (next) next.onclick = () => {
+                for (const el of document.querySelectorAll('#page [required]')) {
+                  if (el.type === 'file' ? el.files.length === 0 : !el.value) { el.insertAdjacentHTML('afterend', '<p class="error">This field is required</p>'); return; }
+                  state[el.name] = el.value;
+                }
+                at++; show();
+              };
+              const submit = document.getElementById('submit_app');
+              if (submit) submit.onclick = () => {
+                const ta = document.getElementById('question_3');
+                if (!ta.value) { ta.insertAdjacentHTML('afterend', '<p class="error">This field is required</p>'); return false; }
+                state.question_3 = ta.value;
+                fetch('/apply.json', { method: 'POST', body: JSON.stringify(state) })
+                  .then(() => document.body.innerHTML = '<h1>Thank you for applying!</h1>');
+                return false;
+              };
+            }
+            show();
+          </script>
+        </body></html>
+        """;
+
     private static AgentPacket Packet() => new()
     {
         ApplicationName = "acme-senior-engineer.md",
@@ -1492,6 +1594,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("refused the application as a bot's", outcome.Error);
         Assert.Matches("couldn't submit your application|flagged as possible spam", outcome.Error);
         Assert.Contains("Copy answers and open", outcome.Error);
+    }
+
+    [SkippableFact]
+    public async Task A_submit_that_is_disabled_while_the_board_settles_is_waited_on_and_a_missing_one_names_what_was_there()
+    {
+        // ElevenLabs' real run said "no Submit button found" nine times with "Submit Application"
+        // in plain view in its own screenshot (#280). The finder now waits for a button that is
+        // there but disabled, and when nothing it knows is on the page it says what is.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "ashby",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var settled = await Submitter().RunAsync($"{_fixtureUrl}/jobs/submit-settles", packet, null, dryRun: false);
+        Assert.True(settled.Submitted, settled.Error);
+
+        var none = await Submitter().RunAsync($"{_fixtureUrl}/jobs/no-submit", packet, null, dryRun: false);
+        Assert.False(none.Submitted);
+        Assert.StartsWith("no Submit button found — buttons on the page: ", none.Error);
+        Assert.Contains("\"Autofill from resume\", \"Send it (hidden)\", \"Continue (disabled)\"", none.Error);
     }
 
     [SkippableFact]
@@ -1819,6 +1943,72 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("sign-in code to ada@example.com", outcome.Error);
         Assert.Contains("run Submit again", outcome.Error);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task A_posting_whose_link_now_lands_on_the_boards_job_list_is_reported_closed()
+    {
+        // 3pillar's Darwinbox posting was taken down without a word: its address redirects to
+        // the careers home, which the run read as "no Apply button" three times (#280).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/careers/jobDetails/a6aad5aa0ddbe5", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Closed, outcome.Error);
+        Assert.Contains("job list", outcome.Error);
+        Assert.False(outcome.Filled);
+    }
+
+    [Theory]
+    [InlineData("https://3pillar.darwinbox.com/ms/candidatev2//careers/jobDetails/a6aad5aa0ddbe5", "https://3pillar.darwinbox.com/ms/candidatev2/main/careers/home", true)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/careers", true)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/", true)]
+    // The posting itself, its Apply page, and a redirect that still carries the posting's id are not a listing.
+    [InlineData("https://jobs.lever.co/acme/1a2b3c4d", "https://jobs.lever.co/acme/1a2b3c4d/apply", false)]
+    [InlineData("https://jobs.ashbyhq.com/acme/1a2b3c4d", "https://jobs.ashbyhq.com/acme/1a2b3c4d/application", false)]
+    [InlineData("https://acme.example.com/careers/12345", "https://acme.example.com/jobs?id=12345", false)]
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/careers/12345-senior-engineer/apply", false)]
+    [InlineData("https://acme.example.com/jobs", "https://acme.example.com/jobs", false)]
+    // Another site's root is a refused or off-site navigation, not the board's listing.
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://career4.successfactors.com/", false)]
+    public void A_link_that_lands_on_the_job_list_is_told_from_one_that_lands_on_the_posting(string link, string landed, bool expected) =>
+        Assert.Equal(expected, BrowserSubmitter.RedirectedToJobList(link, landed));
+
+    [SkippableFact]
+    public async Task A_form_in_pages_is_walked_page_by_page_and_a_question_first_met_on_a_later_page_is_handed_back()
+    {
+        // ClearCompany's "Page 1 · Page 2 · Page 3" and evlo's five-step wizard show one page
+        // at a time: discovery read page one, the fill filled it, and the run reported the other
+        // pages' fields unmapped or "no Submit button found" (#280). The walk turns the pages.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(dry.Filled, dry.Error);
+        Assert.False(dry.Submitted);
+        Assert.Contains("resume", dry.Mapped);
+        Assert.Contains("first_name", dry.Mapped);
+        Assert.Contains("email", dry.Mapped);
+        // The employer's own question, first met on page two, is handed back for the drafter.
+        // The walk stops on that page — Next would be refused without it — so page three's
+        // textarea is unmapped too, for now.
+        var met = Assert.Single(dry.Discovered ?? []);
+        Assert.Equal("years_dotnet", met.Id);
+        Assert.Equal("How many years have you worked with .NET?", met.Label);
+        Assert.True(met.Required);
+        Assert.Equal(["question_2", "question_3", "years_dotnet"], dry.Unmapped);   // question_2 is on no page of this form
+        Assert.Empty(_posts);
+
+        // Answered, the real run walks to the last page and sends.
+        packet.Questions.Add(met);
+        packet.Questions.RemoveAll(q => q.Id == "question_2");   // the standard packet's; this form never asks it
+        packet.Answers["years_dotnet"] = "25";
+        packet.Answers["question_3"] = "Moved a monolith's hot path onto a queue.";
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard", packet, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(real.Submitted, real.Error);
+        Assert.Empty(real.Unmapped);
+        var sent = Assert.Single(_posts);
+        Assert.Contains("\"years_dotnet\":\"25\"", sent["json"]);
+        Assert.Contains("\"email\":\"ada@example.com\"", sent["json"]);
     }
 
     [SkippableFact]
@@ -2153,6 +2343,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("fluent", Assert.Single(_posts)["99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222"]);
+    }
+
+    [SkippableFact]
+    public async Task A_radio_group_titled_by_plain_text_above_its_options_is_discovered_by_that_title()
+    {
+        // vector (ClearCompany): the packet's two questions were their radios' UUID names, so the
+        // drafter answered questions it could not read (#280).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/clearcompany-radios");
+        Assert.NotNull(questions);
+        var visa = Assert.Single(questions!, q => q.Id == "1c711a4a-04d7-68be-7d6f-9d960fdee434-0");
+        Assert.Equal("Are you authorized to work in the United States for any employer without requiring visa sponsorship?", visa.Label);
+        Assert.True(visa.Required);
+        Assert.Equal(["Yes", "No"], visa.Options);
+        var sponsor = Assert.Single(questions!, q => q.Id == "8037008b-b4f8-e65c-86a7-b9d495808d9c-0");
+        Assert.Equal("Will you now or in the future require sponsorship?", sponsor.Label);
+        // And the title is not mistaken for the name box's label.
+        Assert.Equal("First Name", Assert.Single(questions!, q => q.Id == "first_name").Label);
     }
 
     [SkippableFact]
@@ -2661,6 +2870,45 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Console.WriteLine($"LIVE REAL: submitted={real.Submitted} unmapped=[{string.Join(", ", real.Unmapped)}] error={real.Error}");
         Assert.False(real.Submitted); // the POST was aborted; a confirmation here would mean the block failed
         Assert.DoesNotMatch("(?i)is required|select a country|enter your location", real.Error);
+    }
+
+    /// <summary>
+    /// The same live check for any posting the browser drives: set <c>APPLYTRACK_LIVE_URL</c>
+    /// (an Ashby, Lever, Workable or long-tail posting) and the form is discovered as the worker
+    /// discovers it, every question gets a stock answer, and the dry run and then the real run
+    /// are driven with <b>every non-GET request aborted at the browser</b>. The real run's
+    /// verdict is printed — this is how "no Submit button found" on ElevenLabs was reproduced
+    /// off pluto (#280). Never runs in CI.
+    /// </summary>
+    [SkippableFact]
+    public async Task Live_posting_is_discovered_filled_and_its_submit_found_with_posts_blocked()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_URL") ?? "";
+        Skip.If(url.Length == 0, "set APPLYTRACK_LIVE_URL to a posting to run this");
+        var provider = ApplyTrack.Api.Agent.AtsProvider.Detect(url, "");
+        var options = new BrowserOptions { Endpoint = _ws, TimeoutSeconds = 120, BlockSubmissions = true };
+        var questions = await new FormDiscoverer(options, NullLogger<FormDiscoverer>.Instance).DiscoverAsync(url);
+        Assert.NotNull(questions);
+        var packet = new AgentPacket { ApplicationName = "live.md", Provider = provider, Questions = questions! };
+        var ctx = new ApplyTrack.Api.Agent.AnswerContext(
+            new Resume { FullName = "Ada Byte", Location = "Omaha, NE", Links = [new ResumeLink("LinkedIn", "https://linkedin.com/in/ada"), new ResumeLink("GitHub", "https://github.com/ada")] },
+            new AgentSettings { Phone = "4025550100", SalaryExpectation = "150000", WorkAuthorization = "US citizen" },
+            "ada@example.com", "", "");
+        foreach (var q in packet.Questions.Where(q => q.Kind != PacketQuestion.Eeo && q.Type != PacketQuestion.File))
+        {
+            var (answer, _) = ApplyTrack.Api.Agent.AnswerDrafter.Deterministic(q, ctx);
+            packet.Answers[q.Id] = answer ?? (q.Options.Count > 0 ? q.Options[0] : q.Type == PacketQuestion.Textarea ? "Stand-in text." : "n/a");
+        }
+        Console.WriteLine($"LIVE QUESTIONS: {string.Join(" | ", packet.Questions.Select(q => $"{q.Id}={q.Label}[{q.Type}{(q.Required ? "*" : "")}]"))}");
+
+        var submitter = new BrowserSubmitter(options, NullLogger<BrowserSubmitter>.Instance);
+        var dry = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: true, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE DRY: filled={dry.Filled} mapped=[{string.Join(", ", dry.Mapped)}] unmapped=[{string.Join(", ", dry.Unmapped)}] error={dry.Error}");
+        var real = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: false, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE REAL: submitted={real.Submitted} unmapped=[{string.Join(", ", real.Unmapped)}] error={real.Error}");
+        Assert.False(real.Submitted); // the POST was aborted; a confirmation here would mean the block failed
+        Assert.DoesNotContain("no Submit button found", real.Error);
     }
 
     private sealed class PassThroughFactory(HttpClient client) : IHttpClientFactory

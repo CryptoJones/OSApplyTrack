@@ -34,7 +34,8 @@ public sealed partial class LinkedInSessionRenewer : ILinkedInSessionRenewer
     /// <summary>The cookie lasts a year; the kept session is renewed well inside that.</summary>
     public static readonly TimeSpan SessionLife = TimeSpan.FromDays(300);
     /// <summary>What the moo says when LinkedIn wants the tap in its app.</summary>
-    public const string AppTapMessage = "🔐 LinkedIn wants you to confirm the agent's sign-in: open the LinkedIn app on your phone and tap Yes on the sign-in prompt (it waits a few minutes)";
+    public const string AppTapMessage = "🔐 LinkedIn wants you to confirm the agent's sign-in: open the LinkedIn app on your phone and tap Yes on the sign-in prompt — it waits 4 minutes. "
+        + "Missed it? Press Sign in now under Settings · Agent · Board accounts when you have your phone, and the prompt comes again within a minute.";
 
     [GeneratedRegex(@"^\s*sign in\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex SignInButton();

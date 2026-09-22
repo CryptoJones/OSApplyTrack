@@ -124,7 +124,9 @@ public sealed class AgentEvidenceRepo
                     WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name) AS runs,
                    (SELECT count(*)::int FROM agent_evidence e
                     WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
-                      AND e.kind = 'failed' AND e.created_at > now() - @window) AS recentfailures
+                      AND e.kind = 'failed' AND e.created_at > now() - @window
+                      AND NOT (e.detail ? 'awaiting_session'
+                               OR COALESCE(e.detail->>'reason', '') || ' ' || COALESCE(e.detail->>'error', '') ~ 'LinkedIn showed its signed-out page|LinkedIn asked to sign in')) AS recentfailures
             """ + "\n" + ErroredFrom + " ORDER BY last.created_at, a.name",
             new { t = _t, window = failureWindow });
         return rows.Select(r => new Errored(r.ApplicationName, r.Company, r.Role, r.Link, r.Source,

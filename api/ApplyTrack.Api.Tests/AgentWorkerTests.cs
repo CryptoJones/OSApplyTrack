@@ -8,6 +8,7 @@ using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Endpoints;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Notifications;
@@ -199,8 +200,10 @@ public class AgentWorkerTests(PostgresFixture pg)
         var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
             codes: new FakeCodeSource(() => null), linkedin: renewer);
 
-        Assert.Equal(1, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
-        Assert.Equal([("ada@example.com", "hunter2", true)], renewer.Attempts);   // the mailbox is offered for a PIN
+        // The renewal query is cross-tenant: other tests' due accounts may be signed in on the same call.
+        Assert.True(await worker.RenewLinkedInSessionsAsync(CancellationToken.None) >= 1);
+        Assert.Contains(("ada@example.com", "hunter2", true), renewer.Attempts);   // the mailbox is offered for a PIN
+        var attempts = renewer.Attempts.Count;
         var (cipher, expires) = await conn.QuerySingleAsync<(string, DateTime?)>(
             "SELECT session_ciphertext, session_expires_at FROM board_accounts WHERE tenant_id = @t AND host = 'linkedin.com'", new { t });
         Assert.Equal(session, Protector.Unprotect(cipher));
@@ -208,7 +211,7 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Contains(("", AgentEventRepo.Kinds.PortalSession), await EventsAsync(conn, t));
         // Fresh now: nothing is due, and the account is not signed in again.
         Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
-        Assert.Single(renewer.Attempts);
+        Assert.Equal(attempts, renewer.Attempts.Count);
     }
 
     [Fact]
@@ -241,6 +244,99 @@ public class AgentWorkerTests(PostgresFixture pg)
         var reasons = (await conn.QueryAsync<string>(
             "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t AND kind = 'error'", new { t })).ToList();
         Assert.Contains(reasons, r => r.Contains("tap in the LinkedIn app"));
+    }
+
+    [Fact]
+    public async Task A_sign_in_now_is_taken_at_once_despite_the_six_hour_wait_and_only_once()
+    {
+        // The tap in the LinkedIn app has to come within minutes of the sign-in, and the pass's
+        // own clock puts it at no hour anyone chose: every attempt from 2026-09-21 to 09-22 ran
+        // out unanswered. Sign in now (POST /api/board-accounts/{host}/renew) runs it when the
+        // person has their phone; a request is taken once, so a try that fails waits to be asked.
+        var (conn, t) = await SeedLinkedInTenantAsync("hunter2", mailbox: false);
+        await using var _ = conn;
+        var renewer = new FakeLinkedInRenewer(_ => throw new PortalRenewalException("LinkedIn waited 240 s for the tap in the LinkedIn app and none came"));
+        var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), linkedin: renewer);
+        var accounts = new BoardAccountRepo(conn, t, Protector, NullLogger<BoardAccountRepo>.Instance);
+
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Single(renewer.Attempts);
+
+        Assert.True(await accounts.RequestRenewalAsync("www.linkedin.com"));
+        Assert.NotNull(Assert.Single(await accounts.ListAsync()).RenewRequestedAt);
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Equal(2, renewer.Attempts.Count);
+        // Taken: the row is clear and the next pass waits again.
+        Assert.Null(Assert.Single(await accounts.ListAsync()).RenewRequestedAt);
+        Assert.Equal(0, await worker.RenewLinkedInSessionsAsync(CancellationToken.None));
+        Assert.Equal(2, renewer.Attempts.Count);
+        // Only a signed-in source's account keeps a session to renew.
+        await accounts.UpsertAsync("career4.successfactors.com", "ada@example.com", "pw");
+        await Assert.ThrowsAsync<AppValidationException>(() => accounts.RequestRenewalAsync("career4.successfactors.com"));
+        Assert.False(await accounts.RequestRenewalAsync("app.joinhandshake.com"));   // no account saved there
+    }
+
+    [Fact]
+    public async Task An_easy_apply_run_with_no_kept_linkedin_session_stands_down_and_goes_again_once_one_is_kept()
+    {
+        // Signed out, LinkedIn serves the posting with "Sign in" and "Join now" and nothing can be
+        // attempted: twenty-five packets each spent a browser trip and a retry finding that out.
+        // Now the run stands down before the browser, the reconciler leaves it alone (a retry
+        // would stand down the same way, and it is not a failure of the packet's), and the
+        // renewal that keeps a session queues it again itself — including runs from before the
+        // rule, which said it in words.
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        await conn.ExecuteAsync("UPDATE agent_settings SET linkedin_easy = true WHERE tenant_id = @t", new { t });
+        var apps = new ApplicationRepo(conn, t);
+        foreach (var (name, id) in new[] { ("high-engineer.md", "4468125457"), ("mid-engineer.md", "4468125458") })
+        {
+            var rec = await apps.GetAsync(name);
+            await apps.UpdateStructuredAsync(name, rec!.Fields with { Link = $"https://www.linkedin.com/jobs/view/{id}", Source = AtsProvider.LinkedInEasySource }, null);
+        }
+        var accounts = new BoardAccountRepo(conn, t, Protector, NullLogger<BoardAccountRepo>.Instance);
+        await accounts.UpsertAsync("linkedin.com", "ada-easy@example.com", "hunter2");
+        // mid: a run from before the rule, which found the signed-out page in the browser.
+        await new AgentEvidenceRepo(conn, t, Protector).RecordAsync("mid-engineer.md", AgentEvidenceRepo.Kinds.Failed,
+            "https://www.linkedin.com/jobs/view/4468125458", "",
+            new { error = "LinkedIn showed its signed-out page — the kept session is not valid in the browser; it is renewed on the next pass, and nothing was attempted", dry_run = true, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>() }, null);
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(FakeSubmitter.Clean(link)));
+        var session = LinkedInSessionRenewer.Encode("AQEDA-fresh", "ajax:1");
+        var renewer = new FakeLinkedInRenewer(_ => new PortalSession(session, DateTimeOffset.UtcNow.AddDays(300)));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake, linkedin: renewer);
+
+        Assert.Equal(1, await worker.DrainSubmitsAsync(CancellationToken.None));
+
+        Assert.Empty(fake.Runs);   // the browser was never opened
+        var last = (await EvidenceAsync(conn, t, "high-engineer.md")).Last();
+        Assert.Equal("failed", last.Kind);
+        var detail = JsonDocument.Parse(last.Detail).RootElement;
+        Assert.Equal("linkedin.com", detail.GetProperty("awaiting_session").GetString());
+        Assert.Contains("Sign in now", detail.GetProperty("reason").GetString());
+        Assert.True(ReadyReconciler.WaitedOnSession("failed", detail, "www.linkedin.com"));
+        Assert.False(ReadyReconciler.IsTransientFailure("failed", detail));
+        // The reconciler: not on its clock, and not counted against the packet.
+        var healed = await ReadyReconciler.ReconcileAsync(conn, t, Protector, longTail: true, linkedInEasy: true);
+        Assert.Equal(0, healed.Count);
+        Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+        var errors = await new AgentEvidenceRepo(conn, t, Protector).ErroredAsync(ReadyReconciler.Window);
+        Assert.Equal(0, errors.Single(e => e.ApplicationName == "high-engineer.md").RecentFailures);
+        Assert.Contains("Sign in now", ErrorsEndpoints.Describe(errors.Single(e => e.ApplicationName == "high-engineer.md"), longTail: true, linkedInEasy: true).Why);
+
+        // The renewal keeps a session: both stood-down runs are queued again, as dry runs. (The
+        // renewal query is cross-tenant, so other tests' due accounts may be signed in here too.)
+        Assert.True(await worker.RenewLinkedInSessionsAsync(CancellationToken.None) >= 1);
+        Assert.Contains(renewer.Attempts, a => a.User == "ada-easy@example.com");
+        var queued = (await QueuedAsync(conn, t)).OrderBy(q => q.Name).ToList();
+        Assert.Equal([("high-engineer.md", true, false), ("mid-engineer.md", true, false)], queued);
+        Assert.Equal(2, (await EventsAsync(conn, t)).Count(e => e.Kind == AgentEventRepo.Kinds.Requeued));
+        // And with the session kept, the run reaches the browser.
+        Assert.Equal(2, await worker.DrainSubmitsAsync(CancellationToken.None));
+        Assert.Equal(2, fake.Runs.Count);
     }
 
     private static async Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>
@@ -468,6 +564,8 @@ public class AgentWorkerTests(PostgresFixture pg)
         // the drop has to say so.
         var (conn, t) = await SeedTenantAsync(enabled: true);
         await using var _ = conn;
+        // The queue is drained across tenants: settle what other tests left, so the count is this one's.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
         await new SubmitRequestRepo(conn, t).EnqueueAsync("no-such-role.md", dryRun: true);
         using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString,
             new CapturingNotifier());
