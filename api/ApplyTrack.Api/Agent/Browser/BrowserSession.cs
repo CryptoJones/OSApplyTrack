@@ -569,6 +569,20 @@ public sealed partial class BrowserSession : IAsyncDisposable
             return;
         }
 
+        // Where Apply points, read before the click: Allstate's is a target="_blank" anchor to
+        // Workday, and when the tab it opens never reaches this context the run had nothing to
+        // go on and said "no form appeared" about a page it had never left (#280). The href
+        // names the ATS even then.
+        string applyHost = "";
+        try
+        {
+            if (await apply.GetAttributeAsync("href") is { Length: > 0 } href
+                && Uri.TryCreate(new Uri(Page.Url), href, out var to)
+                && (to.Scheme == Uri.UriSchemeHttp || to.Scheme == Uri.UriSchemeHttps))
+                applyHost = to.Host;
+        }
+        catch (PlaywrightException) { /* a button, not a link */ }
+
         var popup = new TaskCompletionSource<IPage>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnPage(object? _, IPage p) => popup.TrySetResult(p);
         _context.Page += OnPage;
@@ -621,6 +635,12 @@ public sealed partial class BrowserSession : IAsyncDisposable
         {
             while (true)
             {
+                // The Page event is the usual way a new tab arrives, but a tab opened before the
+                // handler was attached — or one the event never fired for — is still in the
+                // context, so the context's own list is asked too.
+                if (!adopted && !popup.Task.IsCompletedSuccessfully
+                    && _context.Pages.FirstOrDefault(p => p != Page && !p.IsClosed) is { } stray)
+                    popup.TrySetResult(stray);
                 if (!adopted && popup.Task.IsCompletedSuccessfully)
                 {
                     adopted = true;
@@ -655,24 +675,29 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
         }
         finally { _context.Page -= OnPage; }
-        RevealNote = NoFormNote(Refused, Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "");
+        RevealNote = NoFormNote(Refused, Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "", applyHost);
     }
 
     /// <summary>
     /// Why an Apply click produced no form. Workday, Taleo and iCIMS are hosts the route guard
     /// lets through — they host forms — so the run <i>lands</i> on them rather than being
     /// refused, finds a sign-in and nothing to fill, and used to say only "no form appeared
-    /// within 10 s" (Allstate, UnitedHealth Group). Where it ended up says what is needed (#280).
+    /// within 10 s" (Allstate, UnitedHealth Group). Where it ended up says what is needed (#280) —
+    /// and when the tab Apply opened never arrived, where its link <i>pointed</i> says it instead.
     /// </summary>
-    public static string NoFormNote(IReadOnlyList<string> refused, string landedHost)
+    public static string NoFormNote(IReadOnlyList<string> refused, string landedHost, string applyHost = "")
     {
         const string NeedsAccount = ", which only takes applications from a signed-in candidate account — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting";
         if (refused.Count > 0)
             return AccountOnlyAts(refused[0]) is { } ats
                 ? $"Apply leads to {refused[0]} ({ats}){NeedsAccount}"
                 : $"Apply led off the posting's site to {refused[0]}, which the browser refuses to follow";
-        return AccountOnlyAts(landedHost) is { } landed
-            ? $"Apply leads to {landedHost} ({landed}){NeedsAccount}"
+        if (AccountOnlyAts(landedHost) is { } landed)
+            return $"Apply leads to {landedHost} ({landed}){NeedsAccount}";
+        if (AccountOnlyAts(applyHost) is { } pointed)
+            return $"Apply leads to {applyHost} ({pointed}){NeedsAccount}";
+        return applyHost.Length > 0 && !HostAllowed(applyHost, landedHost)
+            ? $"Apply opens {applyHost} in a new tab, and no form appeared within 10 s"
             : "Apply was clicked but no form appeared within 10 s";
     }
 
