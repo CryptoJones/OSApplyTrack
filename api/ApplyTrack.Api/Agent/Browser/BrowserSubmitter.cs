@@ -1978,8 +1978,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var create = page.Locator("ukg-button[data-automation='registrationDetails-submit-button'], button").Filter(new() { HasTextRegex = new Regex(@"^\s*create account\s*$", RegexOptions.IgnoreCase) }).First;
             if (await create.CountAsync() == 0) return false;
             await create.ClickAsync(new() { Timeout = 10_000 });
-            await page.WaitForTimeoutAsync(4_000);
-            return await page.Locator("ukg-button[data-automation='registrationDetails-submit-button']").CountAsync() == 0;
+            // Gone or hidden means the step was accepted; still there means it was not (a field
+            // the employer's validation refused), and the generic pass will say which.
+            try
+            {
+                await page.Locator("ukg-button[data-automation='registrationDetails-submit-button']").First
+                    .WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 15_000 });
+                return true;
+            }
+            catch (TimeoutException) { return false; }
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
     }
