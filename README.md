@@ -818,7 +818,11 @@ sure" once. Without a saved account the run says which host wants one. The brows
 never creates accounts. A SuccessFactors career site on the employer's own domain
 (Kiewit's, say) is not knowable from the link: the browser learns it at the Apply
 click. The careers site's own job-search and job-alert boxes are never mistaken
-for the form. The agent never guesses on
+for the form. A form in **pages** — ClearCompany's "Page 1 · Page 2 · Page 3",
+evlo's five-step wizard — is walked: the browser presses Next, reads each page the
+way discovery reads a form, fills what the packet knows, and hands back any question
+it has never heard of for the drafter, then runs again; it never turns a page whose
+required question it cannot answer. The agent never guesses on
 EEO/demographic questions (it fills them only from the answers you saved once),
 file fields other than the résumé, or any answer the model wasn't confident
 about — those block Submit until you resolve them.

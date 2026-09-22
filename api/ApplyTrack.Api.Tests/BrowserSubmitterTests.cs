@@ -201,6 +201,34 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <input type="text" placeholder="Search by role, department or location"><a href="/jobs/signin">Sign In</a>
             </body></html>
             """, "text/html"));
+        // A form in pages, rendered by script the way ClearCompany and evlo render theirs: the
+        // résumé on page one, contact and a question of the employer's on page two, a textarea and
+        // the Submit on page three. Nothing is in the document until its page is shown.
+        _fixture.MapGet("/jobs/wizard", () => Results.Content(WizardHtml, "text/html"));
+        // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
+        // radios named by a UUID — no fieldset, no legend, nothing Ashby-shaped (vector, #280).
+        _fixture.MapGet("/jobs/clearcompany-radios", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <div class="form-field qa-radio-field">
+                <span class="control-label field-title">Are you authorized to work in the United States for any employer without requiring visa sponsorship? <span class="required-indicator">*</span></span>
+                <div class="field-holder"><div class="option-holder required" required="required">
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="1c711a4a-04d7-68be-7d6f-9d960fdee434-0" value="5e16a928" required> Yes</label></div>
+                  <div class="child-field-holder"></div>
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="1c711a4a-04d7-68be-7d6f-9d960fdee434-0" value="2e8f3bd2" required> No</label></div>
+                </div></div>
+              </div>
+              <div class="form-field qa-radio-field">
+                <span class="control-label field-title">Will you now or in the future require sponsorship? <span class="required-indicator">*</span></span>
+                <div class="field-holder"><div class="option-holder required" required="required">
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="8037008b-b4f8-e65c-86a7-b9d495808d9c-0" value="a1" required> Yes</label></div>
+                  <div class="radio option-item"><label><input type="radio" class="form-radio" name="8037008b-b4f8-e65c-86a7-b9d495808d9c-0" value="b2" required> No</label></div>
+                </div></div>
+              </div>
+              <button id="submit_app" type="submit">Submit Application</button>
+            </form></body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -1455,6 +1483,51 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Answers = new() { ["first_name"] = "Ada" },
     };
 
+    private const string WizardHtml = """
+        <html><body>
+          <h1>Backend Engineer</h1><p>1. Upload Resume 2. Contact Information 3. About you</p>
+          <div id="page"></div>
+          <script>
+            const state = {};
+            const pages = [
+              `<h2>Upload Resume</h2><label for="resume">Resume</label><input id="resume" name="resume" type="file" required>
+               <button type="button" id="next">Next</button>`,
+              `<h2>Contact Information</h2>
+               <label for="first_name">First Name</label><input id="first_name" name="first_name" required>
+               <label for="last_name">Last Name</label><input id="last_name" name="last_name" required>
+               <label for="email">Email</label><input id="email" name="email" type="email" required>
+               <label for="years_dotnet">How many years have you worked with .NET?</label><input id="years_dotnet" name="years_dotnet" required>
+               <button type="button" id="next">Next</button>`,
+              `<h2>About you</h2>
+               <label for="question_3">Describe a system you scaled.</label><textarea id="question_3" name="question_3" required></textarea>
+               <button type="submit" id="submit_app">Submit Application</button>`,
+            ];
+            let at = 0;
+            function show() {
+              document.getElementById('page').innerHTML = pages[at];
+              const next = document.getElementById('next');
+              if (next) next.onclick = () => {
+                for (const el of document.querySelectorAll('#page [required]')) {
+                  if (el.type === 'file' ? el.files.length === 0 : !el.value) { el.insertAdjacentHTML('afterend', '<p class="error">This field is required</p>'); return; }
+                  state[el.name] = el.value;
+                }
+                at++; show();
+              };
+              const submit = document.getElementById('submit_app');
+              if (submit) submit.onclick = () => {
+                const ta = document.getElementById('question_3');
+                if (!ta.value) { ta.insertAdjacentHTML('afterend', '<p class="error">This field is required</p>'); return false; }
+                state.question_3 = ta.value;
+                fetch('/apply.json', { method: 'POST', body: JSON.stringify(state) })
+                  .then(() => document.body.innerHTML = '<h1>Thank you for applying!</h1>');
+                return false;
+              };
+            }
+            show();
+          </script>
+        </body></html>
+        """;
+
     private static AgentPacket Packet() => new()
     {
         ApplicationName = "acme-senior-engineer.md",
@@ -1895,8 +1968,48 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     [InlineData("https://acme.example.com/careers/12345", "https://acme.example.com/jobs?id=12345", false)]
     [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://acme.example.com/careers/12345-senior-engineer/apply", false)]
     [InlineData("https://acme.example.com/jobs", "https://acme.example.com/jobs", false)]
+    // Another site's root is a refused or off-site navigation, not the board's listing.
+    [InlineData("https://acme.example.com/careers/12345-senior-engineer", "https://career4.successfactors.com/", false)]
     public void A_link_that_lands_on_the_job_list_is_told_from_one_that_lands_on_the_posting(string link, string landed, bool expected) =>
         Assert.Equal(expected, BrowserSubmitter.RedirectedToJobList(link, landed));
+
+    [SkippableFact]
+    public async Task A_form_in_pages_is_walked_page_by_page_and_a_question_first_met_on_a_later_page_is_handed_back()
+    {
+        // ClearCompany's "Page 1 · Page 2 · Page 3" and evlo's five-step wizard show one page
+        // at a time: discovery read page one, the fill filled it, and the run reported the other
+        // pages' fields unmapped or "no Submit button found" (#280). The walk turns the pages.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(dry.Filled, dry.Error);
+        Assert.False(dry.Submitted);
+        Assert.Contains("resume", dry.Mapped);
+        Assert.Contains("first_name", dry.Mapped);
+        Assert.Contains("email", dry.Mapped);
+        // The employer's own question, first met on page two, is handed back for the drafter.
+        // The walk stops on that page — Next would be refused without it — so page three's
+        // textarea is unmapped too, for now.
+        var met = Assert.Single(dry.Discovered ?? []);
+        Assert.Equal("years_dotnet", met.Id);
+        Assert.Equal("How many years have you worked with .NET?", met.Label);
+        Assert.True(met.Required);
+        Assert.Equal(["question_2", "question_3", "years_dotnet"], dry.Unmapped);   // question_2 is on no page of this form
+        Assert.Empty(_posts);
+
+        // Answered, the real run walks to the last page and sends.
+        packet.Questions.Add(met);
+        packet.Questions.RemoveAll(q => q.Id == "question_2");   // the standard packet's; this form never asks it
+        packet.Answers["years_dotnet"] = "25";
+        packet.Answers["question_3"] = "Moved a monolith's hot path onto a queue.";
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard", packet, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(real.Submitted, real.Error);
+        Assert.Empty(real.Unmapped);
+        var sent = Assert.Single(_posts);
+        Assert.Contains("\"years_dotnet\":\"25\"", sent["json"]);
+        Assert.Contains("\"email\":\"ada@example.com\"", sent["json"]);
+    }
 
     [SkippableFact]
     public async Task A_posting_taken_down_to_a_404_page_is_reported_closed()
@@ -2230,6 +2343,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Equal("fluent", Assert.Single(_posts)["99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222"]);
+    }
+
+    [SkippableFact]
+    public async Task A_radio_group_titled_by_plain_text_above_its_options_is_discovered_by_that_title()
+    {
+        // vector (ClearCompany): the packet's two questions were their radios' UUID names, so the
+        // drafter answered questions it could not read (#280).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/clearcompany-radios");
+        Assert.NotNull(questions);
+        var visa = Assert.Single(questions!, q => q.Id == "1c711a4a-04d7-68be-7d6f-9d960fdee434-0");
+        Assert.Equal("Are you authorized to work in the United States for any employer without requiring visa sponsorship?", visa.Label);
+        Assert.True(visa.Required);
+        Assert.Equal(["Yes", "No"], visa.Options);
+        var sponsor = Assert.Single(questions!, q => q.Id == "8037008b-b4f8-e65c-86a7-b9d495808d9c-0");
+        Assert.Equal("Will you now or in the future require sponsorship?", sponsor.Label);
+        // And the title is not mistaken for the name box's label.
+        Assert.Equal("First Name", Assert.Single(questions!, q => q.Id == "first_name").Label);
     }
 
     [SkippableFact]

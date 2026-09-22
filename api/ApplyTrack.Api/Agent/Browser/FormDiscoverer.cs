@@ -201,6 +201,27 @@ public sealed partial class FormDiscoverer
           const ashbyTitle = (el) => el.closest('fieldset, [class*="_fieldEntry_"], .ashby-application-form-field-entry')
             ?.querySelector('.ashby-application-form-question-title') || null;
           const ashbyRequired = (el) => /(^|\s)_required_/.test(ashbyTitle(el)?.className?.toString() || '');
+          // A radio group titled by plain text above its options — ClearCompany's
+          // <span class="control-label">Are you authorized…? <span>*</span></span> over a div of
+          // <label><input type=radio> Yes</label> rows, no <fieldset>, no <legend> — came back
+          // labelled by its radios' name, a UUID, and the drafter answered a question it could
+          // not read. The title is the first text inside the group's own box (an ancestor holding
+          // no other group's radios) that comes before the first option and belongs to no option.
+          const groupTitle = (el) => {
+            const name = el.getAttribute('name') || '';
+            for (let a = el.parentElement, i = 0; a && a !== document.body && i < 8; a = a.parentElement, i++) {
+              const choices = [...a.querySelectorAll('input[type=radio], input[type=checkbox]')];
+              if (choices.some(c => (c.getAttribute('name') || '') !== name)) break;
+              const first = choices[0];
+              const title = [...a.querySelectorAll('*')].find(x =>
+                x !== first && !x.contains(first) && !x.closest('label') && !x.querySelector('input, select, textarea')
+                && (x.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING)
+                && /[A-Za-z]{3,}/.test(x.innerText || '')
+                && [...x.children].every(c => !/[A-Za-z]{3,}/.test(c.innerText || '')));
+              if (title) return title.innerText.replace(/\s+/g, ' ').trim();
+            }
+            return '';
+          };
           for (const el of document.querySelectorAll('input, select, textarea')) {
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? (el.multiple ? 'select-multiple' : 'select-one') : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
@@ -220,7 +241,7 @@ public sealed partial class FormDiscoverer
               // load; its title's `for` is the field's own id, the same every time. The question is
               // recorded by that, or the packet names a control the next load will not have.
               const stable = ashbyTitle(el)?.getAttribute('for') || '';
-              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || name, tag: 'input', type: 'radio', required, options: [opt] };
+              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || groupTitle(el) || name, tag: 'input', type: 'radio', required, options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // A blank-valued option is the placeholder ("Select…"), not a choice.

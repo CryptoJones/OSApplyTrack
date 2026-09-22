@@ -72,12 +72,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
     /// <summary>
     /// Did the posting's link land on the board's job list instead of the posting? True when
-    /// the posting's own last path segment — its id or slug — is nowhere in the landed
-    /// address and that address is a home or listing page. Public for tests.
+    /// the landed address is on the posting's own site, the posting's own last path segment —
+    /// its id or slug — is nowhere in it, and it is a home or listing page. Public for tests.
     /// </summary>
     public static bool RedirectedToJobList(string link, string landed)
     {
         if (!Uri.TryCreate(link, UriKind.Absolute, out var from) || !Uri.TryCreate(landed, UriKind.Absolute, out var to))
+            return false;
+        // The board's own site only: a navigation the guard refused, or a hop to another host,
+        // is not the board taking the posting down.
+        if (!BrowserSession.HostAllowed(to.Host, from.Host))
             return false;
         var id = from.AbsolutePath.TrimEnd('/').Split('/').LastOrDefault(s => s.Length > 0) ?? "";
         if (id.Length < 4 || to.AbsoluteUri.Contains(id, StringComparison.OrdinalIgnoreCase))
@@ -177,7 +181,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // "88 Open Jobs" and a search box, and the run read that as "no Apply button" three
             // times. The posting's id is gone from the address, the address is a home or a
             // listing, and nothing on it is an application form: closed, not broken.
-            if (RedirectedToJobList(link, page.Url) && !await BrowserSession.ApplicationFormVisibleAsync(page))
+            if (session.Refused.Count == 0 && RedirectedToJobList(link, page.Url) && !await BrowserSession.ApplicationFormVisibleAsync(page))
             {
                 screenshot = await session.ScreenshotAsync();
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
@@ -324,6 +328,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     continue;
                 await FillAsync(form, q, again);
             }
+            // A form in pages — ClearCompany's "Page 1 · Page 2 · Page 3", evlo's five-step wizard
+            // from "Upload Resume" to "Voluntary Self-Identification" — shows one page at a time
+            // and its Submit only on the last. Discovery read page one, the fill above filled it,
+            // and the run then reported the other pages' fields unmapped, or "no Submit button
+            // found". Walk on: press Next, read the page it shows, fill what the packet knows,
+            // hand back what it does not (the worker drafts those and runs again, #278), until a
+            // page carries Submit or nothing carries the form on.
+            var discovered = new List<PacketQuestion>();
+            form = await WalkPagesAsync(session, form, packet, resumePdf, resumeText, coverLetter, mapped, unmapped, discovered, ct);
+            page = session.Page;
 
             // Now ask the FORM what is still missing, not just the packet. The packet is the ATS
             // API's idea of the form and the two drift: Greenhouse's rendered form carries a
@@ -391,11 +405,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                         : "no application form was found on the page — nothing to fill"
                           + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : "")
                           + (session.SignedInAs is { } who ? $" (signed in at {who.Host} as {who.Username})" : ""));
+            var met = discovered.Count > 0 ? discovered : null;
             if (dryRun)
-                return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "");
+                return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "", Discovered: met);
             if (unmapped.Count > 0)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                    "refused to submit: required fields could not be mapped (" + string.Join(", ", unmapped) + ")");
+                    "refused to submit: required fields could not be mapped (" + string.Join(", ", unmapped) + ")", Discovered: met);
 
             var submit = await FindSubmitAsync(form);
             if (submit is null)
@@ -1209,6 +1224,145 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             catch (TimeoutException) { return false; }
         }
         return false;
+    }
+
+    /// <summary>More pages than any real application has; a wizard that will not end is a bug, not a form.</summary>
+    private const int MaxPages = 8;
+
+    // The button that turns a page of a multi-page form: Next, Continue, Save and continue,
+    // Proceed — in the languages the boards render in. Never Submit (that ends the walk), never
+    // an identity provider's, never "later".
+    [GeneratedRegex(@"^\s*(?:next(?:\s+(?:step|page))?|continue|save (?:and|&) (?:continue|next)|proceed|weiter|suivant|siguiente|continuar)\s*(?:→|>|»)?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex NextWords();
+
+    /// <summary>The page-turning button of a form in pages, or null: a visible, enabled Next.</summary>
+    private static async Task<ILocator?> FindNextAsync(IFrame frame)
+    {
+        var notLater = new LocatorFilterOptions { HasNotTextRegex = BrowserSession.LaterWords() };
+        var notIdp = new LocatorFilterOptions { HasNotTextRegex = IdentityProviders() };
+        var candidates = new[]
+        {
+            frame.GetByRole(AriaRole.Button, new() { NameRegex = NextWords() }).Filter(notLater).Filter(notIdp).Last,
+            frame.Locator("a[href], [role=button], input[type=submit], input[type=button]").Filter(new() { HasTextRegex = NextWords() }).Filter(notLater).Filter(notIdp).Last,
+        };
+        foreach (var c in candidates)
+        {
+            try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync() && await c.IsEnabledAsync()) return c; }
+            catch (PlaywrightException) { /* next */ }
+        }
+        return null;
+    }
+
+    /// <summary>Is a Submit the finder would take on this page at all, enabled or not? The walk
+    /// stops at the page that carries it; the finder proper, with its wait, runs at the click.</summary>
+    private static async Task<bool> SubmitOnPageAsync(IFrame page)
+    {
+        var notLater = new LocatorFilterOptions { HasNotTextRegex = BrowserSession.LaterWords() };
+        foreach (var c in new[]
+                 {
+                     page.Locator("#submit_app, [id$='_submitBtn']").Filter(notLater).First,
+                     page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b|submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).First,
+                     page.Locator("button[type=submit], input[type=submit]").Filter(new() { HasTextRegex = new Regex(@"^\s*(?:submit|apply)\b", RegexOptions.IgnoreCase) }).Filter(notLater).First,
+                 })
+        {
+            try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync()) return true; }
+            catch (PlaywrightException) { /* next */ }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Walk a form in pages (see the call site): from the page the fill has just done, press
+    /// Next while there is one and no Submit, read each page the way discovery reads a form,
+    /// fill what the packet knows — a question first met on page one and left unmapped there
+    /// is found and filled where it lives — attach the résumé where a page asks for it, and
+    /// collect what the packet has never heard of into <paramref name="discovered"/>. A page
+    /// whose required question the packet cannot answer is not advanced past: Next would be
+    /// refused by the page's own validation, and the sweep names the field. Returns the frame
+    /// the form ended on; nothing here clicks Submit.
+    /// </summary>
+    private async Task<IFrame> WalkPagesAsync(BrowserSession session, IFrame form, AgentPacket packet,
+        (byte[] Bytes, string Name)? resumePdf, string resumeText, string coverLetter,
+        List<string> mapped, List<string> unmapped, List<PacketQuestion> discovered, CancellationToken ct)
+    {
+        var page = session.Page;
+        for (var turned = 0; turned < MaxPages; turned++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await SubmitOnPageAsync(form)) return form;
+            var next = await FindNextAsync(form);
+            if (next is null) return form;
+            // A required field this page still wants that nobody can fill: stop here, on it.
+            foreach (var (key, label) in await RequiredEmptyAsync(form))
+            {
+                var q = FindQuestion(packet, key, label);
+                if (q is null || !packet.Answers.TryGetValue(q.Id, out var a) || string.IsNullOrWhiteSpace(a) || q.Type == PacketQuestion.File)
+                {
+                    _log.LogInformation("pages: page {Page} still wants \"{Label}\" — not turning it", turned + 1, label.Length > 0 ? label : key);
+                    return form;
+                }
+            }
+            var textBefore = await BodyTextAsync(page.MainFrame);
+            var urlBefore = page.Url;
+            var before = (await FormDiscoverer.ReadQuestionsAsync(page, _log)).Select(q => q.Id).ToHashSet(StringComparer.Ordinal);
+            try { await next.ClickAsync(new() { Timeout = 5_000 }); }
+            catch (TimeoutException) { return form; }
+            catch (PlaywrightException) { return form; }
+            var turnedOver = false;
+            var deadline = DateTime.UtcNow.AddSeconds(12);
+            while (DateTime.UtcNow < deadline)
+            {
+                await page.WaitForTimeoutAsync(500);
+                if (page.Url != urlBefore || await BodyTextAsync(page.MainFrame) != textBefore) { turnedOver = true; break; }
+            }
+            if (!turnedOver) return form;   // the page held: its validation, which the sweep reads
+            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
+            catch (TimeoutException) { /* judged by what renders */ }
+            await BrowserSession.DismissConsentAsync(page);
+            form = await FormFrameAsync(page);
+            var questions = await FormDiscoverer.ReadQuestionsAsync(page, _log);
+            // The same controls at the same address: the page only re-rendered with its
+            // complaints, which the sweep reads. Not a page turned.
+            if (page.Url == urlBefore && questions.Select(q => q.Id).ToHashSet(StringComparer.Ordinal).SetEquals(before))
+                return form;
+            _log.LogInformation("pages: turned to page {Page} at {Url}", turned + 2, page.Url);
+
+            foreach (var live in questions)
+            {
+                ct.ThrowIfCancellationRequested();
+                var q = FindQuestion(packet, live.Id, live.Label);
+                if (q is null)
+                {
+                    if (live.Kind == PacketQuestion.Eeo || !live.Required) continue;
+                    // Unmapped by its id, as the sweep would name it, so the two agree.
+                    if (discovered.All(d => d.Id != live.Id) && !unmapped.Contains(live.Id))
+                    {
+                        unmapped.Add(live.Id);
+                        discovered.Add(live);
+                    }
+                    continue;
+                }
+                if (mapped.Contains(q.Id) && !unmapped.Contains(q.Id)) continue;
+                var filled = false;
+                if (q.Type == PacketQuestion.File)
+                {
+                    if (IsResume(q) && await ResumeOnFileAsync(form)) filled = true;
+                    else if (IsResume(q) && resumePdf is { } pdf) filled = await AttachResumeAsync(form, live, pdf, resumeText);
+                    else if (IsCoverLetter(q) && coverLetter.Length > 0) filled = await EnterCoverLetterAsync(form, coverLetter);
+                }
+                else if (packet.Answers.TryGetValue(q.Id, out var answer) && !string.IsNullOrWhiteSpace(answer))
+                    filled = await PrefilledPickerAsync(form, live) || await FillAsync(form, live, answer);
+                if (filled)
+                {
+                    if (!mapped.Contains(q.Id)) mapped.Add(q.Id);
+                    unmapped.Remove(q.Id);
+                }
+                else if (q.Required && !unmapped.Contains(q.Id))
+                    unmapped.Add(q.Id);
+            }
+            await FillFullNameAsync(form, packet, mapped, unmapped);
+        }
+        return form;
     }
 
     /// <summary>The sign-in's Continue / Verify / Send code button — never an identity
