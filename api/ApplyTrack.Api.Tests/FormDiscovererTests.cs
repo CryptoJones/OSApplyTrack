@@ -56,6 +56,9 @@ public sealed class FormDiscovererTests : IAsyncLifetime
         // (display:none, hidden résumé file input and all) behind an "Apply Now" link.
         _fixture.MapGet("/collapsed", () => Results.Content(CollapsedHtml, "text/html"));
         _fixture.MapGet("/ashby", () => Results.Content(AshbyHtml, "text/html"));
+        // Workable's shape (#280): a screening question is plain text over a control whose
+        // id and name are the same generated hex, with no association between the two.
+        _fixture.MapGet("/workable", () => Results.Content(WorkableHtml, "text/html"));
         _fixture.MapPost("/acme/1234/apply", () => { Interlocked.Increment(ref _posts); return Results.Content("nope"); });
         await _fixture.StartAsync();
         _url = _fixture.Urls.First();
@@ -233,6 +236,31 @@ public sealed class FormDiscovererTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_workable_question_titled_by_plain_text_is_named_by_it_not_by_its_generated_id()
+    {
+        Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
+        // Stevens and Pinewood came back with questions named by a hex blob, so the drafter
+        // answered questions it could not read and so did the person (#280).
+        var discoverer = new FormDiscoverer(
+            new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true }, NullLogger<FormDiscoverer>.Instance);
+
+        var questions = await discoverer.DiscoverAsync($"{_url}/workable");
+
+        Assert.NotNull(questions);
+        var byId = questions!.ToDictionary(q => q.Id);
+        // The properly associated fields are unchanged.
+        Assert.Equal("First name", byId["firstname"].Label);
+        // The screening questions are named by the text above them, and the star is read as required.
+        Assert.Equal("How many years have you worked with .NET?", byId["a3f9c1d2e4b5"].Label);
+        Assert.True(byId["a3f9c1d2e4b5"].Required);
+        Assert.Equal("Describe a system you have owned end to end.", byId["c7e2a8f0b6d1"].Label);
+        Assert.False(byId["c7e2a8f0b6d1"].Required);
+        // A placeholder still wins over the text above: it is the field's own word for itself.
+        Assert.Equal("Portfolio URL", byId["d1b2c3a4e5f6"].Label);
+        Assert.Equal(0, _posts);
+    }
+
+    [SkippableFact]
     public async Task A_form_collapsed_behind_apply_now_is_expanded_so_every_field_is_discovered()
     {
         Skip.IfNot(BrowserSubmitterTests.Available, "Node Playwright is not installed (npm ci)");
@@ -293,6 +321,28 @@ public sealed class FormDiscovererTests : IAsyncLifetime
             dir = dir.Parent;
         return dir?.FullName ?? AppContext.BaseDirectory;
     }
+
+    private const string WorkableHtml = """
+        <html><body><form>
+          <div class="styles--3aPac">
+            <label class="styles--1KJPd" for="firstname">First name</label>
+            <div><input id="firstname" name="firstname" required></div>
+          </div>
+          <div class="styles--3aPac">
+            <div class="styles--2PVaS"><span>How many years have you worked with .NET?</span><span aria-hidden="true">*</span></div>
+            <div><input id="a3f9c1d2e4b5" name="a3f9c1d2e4b5"></div>
+          </div>
+          <div class="styles--3aPac">
+            <div class="styles--2PVaS"><span>Describe a system you have owned end to end.</span></div>
+            <div><textarea id="c7e2a8f0b6d1" name="c7e2a8f0b6d1"></textarea></div>
+          </div>
+          <div class="styles--3aPac">
+            <div class="styles--2PVaS"><span>Links</span></div>
+            <div><input id="d1b2c3a4e5f6" name="d1b2c3a4e5f6" placeholder="Portfolio URL"></div>
+          </div>
+          <button type="submit">Submit application</button>
+        </form></body></html>
+        """;
 
     private const string AshbyHtml = """
         <html><body><form>

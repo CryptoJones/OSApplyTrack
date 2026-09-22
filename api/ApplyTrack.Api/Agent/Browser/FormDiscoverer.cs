@@ -180,7 +180,35 @@ public sealed partial class FormDiscoverer
               const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
               if (l) return l.innerText.trim();
             }
-            return el.getAttribute('placeholder') || el.getAttribute('name') || '';
+            return el.getAttribute('placeholder') || precedingTitle(el) || el.getAttribute('name') || '';
+          };
+          // A field titled by plain text above it and nothing else: no aria, no <label for>,
+          // no wrapping <label>, no <legend>. Workable renders a screening question as a
+          // <div> of text over an input whose id *and* name are the same generated hex, so
+          // the question came back named by that hex — the drafter answered a question it
+          // could not read, and the person saw one too (Stevens, Pinewood; #280). The title
+          // is the nearest text before the control, inside a box holding no other control:
+          // the same rule groupTitle uses for a radio group, for one field.
+          const precedingTitle = (el) => {
+            for (let a = el.parentElement, i = 0; a && a !== document.body && i < 6; a = a.parentElement, i++) {
+              const controls = [...a.querySelectorAll('input, select, textarea')]
+                .filter(c => !['hidden', 'submit', 'button', 'reset', 'image'].includes((c.getAttribute('type') || '').toLowerCase()) && (c === el || visible(c)));
+              if (controls.length > 1) break;
+              const title = [...a.querySelectorAll('*')].find(x =>
+                x !== el && !x.contains(el) && !x.querySelector('input, select, textarea')
+                && (x.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)
+                && /[A-Za-z]{3,}/.test(x.innerText || '')
+                && [...x.children].every(c => !/[A-Za-z]{3,}/.test(c.innerText || '')));
+              if (!title) continue;
+              // Workable puts the question in one <span> and the required star in its
+              // aria-hidden sibling, so the title itself carries no star — take the box
+              // around it when that is all the box adds, and the star is read as required.
+              const box = title.parentElement;
+              const whole = box && !box.querySelector('input, select, textarea')
+                && /^\s*\*|\*\s*$/.test((box.innerText || '').trim()) ? box : title;
+              return whole.innerText.replace(/\s+/g, ' ').trim();
+            }
+            return '';
           };
           // The required star when it sits in the row's <label> rather than on the control or
           // in the label the component names itself by ("Last Name" + <span>*</span>).

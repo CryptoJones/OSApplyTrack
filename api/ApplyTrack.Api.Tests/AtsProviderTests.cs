@@ -132,6 +132,18 @@ public class AtsProviderTests
         Assert.StartsWith(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.NoFormNote(refused.Length > 0 ? [refused] : [], landed));
 
     [Theory]
+    // Allstate's Apply is a target="_blank" anchor to Workday. When the tab it opens never
+    // reaches the context, the run never leaves the posting — so where the link *pointed*
+    // says what is needed, instead of "no form appeared" about a page it never left (#280).
+    [InlineData("allstate.wd5.myworkdayjobs.com", "Apply leads to allstate.wd5.myworkdayjobs.com (Workday), which only takes")]
+    [InlineData("apply.example.net", "Apply opens apply.example.net in a new tab, and no form appeared within 10 s")]
+    // A link to the posting's own site is where the run already is: nothing to add.
+    [InlineData("www.careers.example.com", "Apply was clicked but no form appeared within 10 s")]
+    [InlineData("", "Apply was clicked but no form appeared within 10 s")]
+    public void A_run_whose_new_tab_never_arrived_names_where_apply_pointed(string applyHost, string expected) =>
+        Assert.StartsWith(expected, ApplyTrack.Api.Agent.Browser.BrowserSession.NoFormNote([], "careers.example.com", applyHost));
+
+    [Theory]
     // Only the poller's own flag makes a LinkedIn link an Easy Apply one (#278).
     [InlineData("https://www.linkedin.com/jobs/view/42", "auto:linkedin:easy", AtsProvider.LinkedInEasy)]
     [InlineData("https://linkedin.com/jobs/view/42", "AUTO:LINKEDIN:EASY", AtsProvider.LinkedInEasy)]
