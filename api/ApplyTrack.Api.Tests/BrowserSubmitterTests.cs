@@ -161,6 +161,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <div><span><input type="radio" id="e1" name="99999999-9999-4999-8999-999999999999_22222222-2222-4222-8222-222222222222" value="mid" style="position:absolute;opacity:0;width:0;height:0"></span><label for="e1">Intermediate: Able to understand requirements</label></div>
             </fieldset>
             """), "text/html"));
+        // Greenhouse's "select all that apply": one name, several required boxes, any one will do.
+        _fixture.MapGet("/jobs/multiselect", () => Results.Content(FormHtml.Replace(
+            """<label for="question_7">I accept the privacy policy</label>""", "").Replace(
+            """<input id="question_7" type="checkbox" name="job_application[question_7]" value="accepted" />""",
+            """
+            <fieldset><legend>Which clouds have you worked with?</legend>
+              <label><input type="checkbox" name="job_application[question_9][]" value="aws" aria-required="true"> AWS</label>
+              <label><input type="checkbox" name="job_application[question_9][]" value="gcp" aria-required="true"> GCP</label>
+              <label><input type="checkbox" name="job_application[question_9][]" value="azure" aria-required="true"> Azure</label>
+            </fieldset>
+            """), "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -2181,6 +2192,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("Ada|Byte|5550100|consent=yes", registered);
         var applied = Assert.Single(_posts, p => p.ContainsKey("job_application[first_name]"));
         Assert.Equal("Ada", applied["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_select_all_that_apply_group_is_satisfied_by_any_ticked_box()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Fieldwire: "AWS, Azure" set, and every UNticked box then flagged as a required field
+        // left empty, so a fully answered form was refused the click (#280).
+        var packet = Packet();
+        packet.Questions.Add(new("job_application[question_9][]", "Which clouds have you worked with?", true,
+            PacketQuestion.MultiSelect, ["AWS", "GCP", "Azure"], PacketQuestion.Custom));
+        packet.Answers["job_application[question_9][]"] = "AWS, Azure";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/multiselect", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        // Every named box, not just the first — and not the one that was not named.
+        var post = Assert.Single(_posts);
+        Assert.Equal("aws,azure", post["job_application[question_9][]"].Replace(" ", ""));
     }
 
     [SkippableFact]
