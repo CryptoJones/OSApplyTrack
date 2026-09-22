@@ -56,7 +56,8 @@ public static partial class ReadyReconciler
                            WHERE p.tenant_id = a.tenant_id AND p.application_name = a.name) AS haspacket,
                    (SELECT count(*)::int FROM agent_evidence e
                     WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
-                      AND e.kind = 'failed' AND e.created_at > now() - @window) AS failures,
+                      AND e.kind = 'failed' AND e.created_at > now() - @window
+                      AND NOT (e.detail ? 'awaiting_session')) AS failures,
                    (SELECT count(*)::int FROM agent_events v
                     WHERE v.tenant_id = a.tenant_id AND v.application_name = a.name
                       AND v.kind = 'error' AND v.created_at > now() - @window) AS prepareerrors,
@@ -139,6 +140,56 @@ public static partial class ReadyReconciler
         return retired;
     }
 
+    /// <summary>
+    /// The session on <paramref name="host"/> was just kept: every Ready application whose
+    /// newest evidence is a run that stood down for want of it goes round again as a dry run,
+    /// now. New evidence names the host it waited on (<c>awaiting_session</c>); a run from
+    /// before that said so in words — LinkedIn's signed-out page, or its sign-in — and is
+    /// read by them, so the twenty-five that failed before the rule was written go too.
+    /// </summary>
+    public static async Task<List<string>> RequeueAwaitingSessionAsync(IDbConnection conn, long tenantId, SecretProtector protector, string host)
+    {
+        host = BoardAccount.Normalize(host);
+        var names = (await conn.QueryAsync<string>(
+            """
+            SELECT a.name FROM applications a
+            WHERE a.tenant_id = @t AND a.status = 'ready' AND a.link <> ''
+              AND EXISTS (SELECT 1 FROM agent_packets p WHERE p.tenant_id = a.tenant_id AND p.application_name = a.name)
+              AND NOT EXISTS (SELECT 1 FROM submit_requests r
+                              WHERE r.tenant_id = a.tenant_id AND r.application_name = a.name AND r.done_at IS NULL)
+            ORDER BY a.name
+            """, new { t = tenantId })).ToList();
+        var requeued = new List<string>();
+        if (names.Count == 0)
+            return requeued;
+        var latest = await new AgentEvidenceRepo(conn, tenantId, protector).LatestPerApplicationAsync(names);
+        var queue = new SubmitRequestRepo(conn, tenantId);
+        var events = new AgentEventRepo(conn, tenantId);
+        foreach (var name in names)
+        {
+            if (!latest.TryGetValue(name, out var last) || !WaitedOnSession(last.Kind, last.Detail, host))
+                continue;
+            if (await RequeueAsync(conn, queue, events, name, prepare: false,
+                    new { reason = $"the {host} session was renewed — the run that waited on it is queued again" }))
+                requeued.Add(name);
+        }
+        return requeued;
+    }
+
+    /// <summary>Did this run stand down for want of a kept session on <paramref name="host"/>? Public for tests.</summary>
+    public static bool WaitedOnSession(string kind, JsonElement detail, string host)
+    {
+        if (kind != AgentEvidenceRepo.Kinds.Failed || detail.ValueKind != JsonValueKind.Object)
+            return false;
+        if (detail.TryGetProperty("awaiting_session", out var on) && on.ValueKind == JsonValueKind.String)
+            return string.Equals(BoardAccount.Normalize(on.GetString() ?? ""), BoardAccount.Normalize(host), StringComparison.OrdinalIgnoreCase);
+        if (!BoardAccountRepo.LinkedInHosts.Contains(BoardAccount.Normalize(host), StringComparer.OrdinalIgnoreCase))
+            return false;
+        var why = Text(detail, "reason") + " " + Text(detail, "error");
+        return why.Contains("LinkedIn showed its signed-out page", StringComparison.Ordinal)
+            || why.Contains("LinkedIn asked to sign in", StringComparison.Ordinal);
+    }
+
     /// <summary>The queue row and its audit row land together or not at all: a request
     /// with no <c>requeued</c> event behind it is a run nobody can account for.</summary>
     private static async Task<bool> RequeueAsync(
@@ -164,6 +215,11 @@ public static partial class ReadyReconciler
         if (kind != AgentEvidenceRepo.Kinds.Failed || detail.ValueKind != JsonValueKind.Object)
             return false;
         if (detail.TryGetProperty("captcha", out var captcha) && captcha.ValueKind == JsonValueKind.True)
+            return false;
+        // A run that stood down for want of a kept session is queued again by the renewal
+        // that keeps one (<see cref="RequeueAwaitingSessionAsync"/>), not by the clock: until
+        // then every retry would stand down the same way.
+        if (detail.TryGetProperty("awaiting_session", out _))
             return false;
         // A real run that died may have died after the click. Only a dry run is safe to repeat.
         if (detail.TryGetProperty("dry_run", out var dry) && dry.ValueKind == JsonValueKind.False)

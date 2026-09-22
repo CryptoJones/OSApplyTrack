@@ -68,6 +68,8 @@ public static class ErrorsEndpoints
             why = "Submit was clicked and the board never confirmed — it may have gone through, so it is not retried; check the screenshot and your email";
         else if (e.Link.Length == 0 || !AtsProvider.BrowserCanSubmit(provider, longTail, linkedInEasy))
             why = e.Link.Length == 0 ? "no posting link" : SubmitEndpoints.CannotDrive(provider);
+        else if (ReadyReconciler.WaitedOnSession(AgentEvidenceRepo.Kinds.Failed, e.Detail, "linkedin.com"))
+            why = "waiting for the agent's LinkedIn sign-in — tap Yes in the LinkedIn app when the 🔐 moo arrives, or press Sign in now under Settings · Agent · Board accounts; it runs again by itself once the session is kept";
         else if (!ReadyReconciler.IsTransientFailure(AgentEvidenceRepo.Kinds.Failed, e.Detail))
             why = "the same thing will happen on another run — it needs you, or a fix";
         else if (e.RecentFailures >= ReadyReconciler.MaxFailures)

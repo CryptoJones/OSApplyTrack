@@ -82,6 +82,32 @@ public class BoardAccountEndpointTests : IAsyncLifetime
         Assert.Equal(0, (await ReadJson(await client.GetAsync("/api/board-accounts"))).GetArrayLength());
     }
 
+    [Fact]
+    public async Task Sign_in_now_marks_a_signed_in_sources_account_for_the_worker_and_is_refused_for_any_other()
+    {
+        // The agent renews a kept session on its own clock, and the LinkedIn app's tap has to
+        // come within minutes of it; Sign in now lets the person pick the moment. Only a
+        // LinkedIn, MyGreenhouse or Handshake account keeps a session; the rest are refused,
+        // and an unsaved host is not found.
+        var client = await ClientAsync();
+        await client.PutAsync("/api/board-accounts", Json("""{"host":"linkedin.com","username":"ada@example.com","password":"Sekrit-9$"}"""));
+        await client.PutAsync("/api/board-accounts", Json("""{"host":"career4.successfactors.com","username":"ada@example.com","password":"Sekrit-9$"}"""));
+        var list = (await ReadJson(await client.GetAsync("/api/board-accounts"))).EnumerateArray().ToList();
+        var linkedin = list.Single(a => a.GetProperty("host").GetString() == "linkedin.com");
+        Assert.True(linkedin.GetProperty("keeps_session").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, linkedin.GetProperty("session_expires_at").ValueKind);
+        Assert.Equal(JsonValueKind.Null, linkedin.GetProperty("renew_requested_at").ValueKind);
+        Assert.False(list.Single(a => a.GetProperty("host").GetString() == "career4.successfactors.com").GetProperty("keeps_session").GetBoolean());
+
+        var renew = await client.PostAsync("/api/board-accounts/www.linkedin.com/renew", null);
+        Assert.Equal(HttpStatusCode.Accepted, renew.StatusCode);
+        linkedin = (await ReadJson(renew)).EnumerateArray().Single(a => a.GetProperty("host").GetString() == "linkedin.com");
+        Assert.Equal(JsonValueKind.String, linkedin.GetProperty("renew_requested_at").ValueKind);
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync("/api/board-accounts/career4.successfactors.com/renew", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync("/api/board-accounts/app.joinhandshake.com/renew", null)).StatusCode);
+    }
+
     [Theory]
     [InlineData("successfactors.com", "career4.successfactors.com", true)]
     [InlineData("career4.successfactors.com", "career4.successfactors.com", true)]

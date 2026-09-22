@@ -10,7 +10,12 @@ using Microsoft.Extensions.Logging;
 namespace ApplyTrack.Api.Data;
 
 /// <summary>The client-safe view of one board account: never the password, only whether one is stored.</summary>
-public sealed record BoardAccountView(string Host, string Username, bool HasPassword, DateTimeOffset UpdatedAt);
+/// <param name="KeepsSession">Whether this account is a signed-in source's (LinkedIn, MyGreenhouse,
+/// Handshake), whose session the agent keeps and can be asked to renew.</param>
+/// <param name="SessionExpiresAt">When the kept session runs out; null with none kept.</param>
+/// <param name="RenewRequestedAt">A "Sign in now" the worker has not taken yet.</param>
+public sealed record BoardAccountView(string Host, string Username, bool HasPassword, DateTimeOffset UpdatedAt,
+    bool KeepsSession = false, DateTimeOffset? SessionExpiresAt = null, DateTimeOffset? RenewRequestedAt = null);
 
 /// <summary>The tenant's MyGreenhouse sign-in (#218) and whether a session is kept for it (#221).</summary>
 public sealed record PortalAccount(string Host, string Username, bool HasSession, DateTimeOffset? SessionExpiresAt);
@@ -66,12 +71,22 @@ public sealed class BoardAccountRepo
     /// same list the poller reads (<c>handshake.ACCOUNT_HOSTS</c>).</summary>
     public static readonly string[] HandshakeHosts = ["joinhandshake.com", "app.joinhandshake.com"];
 
+    /// <summary>Every host whose account is a signed-in source's: the agent keeps its session
+    /// and the person can ask for the sign-in now.</summary>
+    public static readonly string[] SessionHosts = [.. PortalHosts, .. LinkedInHosts, .. HandshakeHosts];
+
     /// <summary>The one privileged, cross-tenant query the agent's pass runs (#221): tenants
     /// whose MyGreenhouse account has no kept session, or one that runs out within
-    /// <c>@ahead</c>. Everything after it goes through the tenant-scoped repo.</summary>
+    /// <c>@ahead</c> — or whose person pressed Sign in now, whatever the session's state.
+    /// Everything after it goes through the tenant-scoped repo.</summary>
     public const string PortalRenewalDueSql =
         "SELECT DISTINCT tenant_id FROM board_accounts WHERE host = ANY(@hosts) AND username <> '' "
-        + "AND (session_ciphertext = '' OR session_expires_at IS NULL OR session_expires_at < now() + @ahead) ORDER BY tenant_id";
+        + "AND (session_ciphertext = '' OR session_expires_at IS NULL OR session_expires_at < now() + @ahead OR renew_requested_at IS NOT NULL) ORDER BY tenant_id";
+
+    /// <summary>The submit lane's cheap question between drains: has anyone, on any tenant,
+    /// pressed Sign in now? Only then does it run the renewals ahead of the pass's clock.</summary>
+    public const string AnyRenewalRequestedSql =
+        "SELECT EXISTS (SELECT 1 FROM board_accounts WHERE renew_requested_at IS NOT NULL AND username <> '')";
 
     private readonly IDbConnection _conn;
     private readonly long _t;
@@ -87,16 +102,45 @@ public sealed class BoardAccountRepo
     }
 
     // Npgsql hands a timestamptz back as a UTC DateTime; the view carries it as an offset.
-    private sealed record Row(string Host, string Username, string PasswordCiphertext, DateTime UpdatedAt, string SessionCiphertext = "", DateTime? SessionExpiresAt = null)
+    private sealed record Row(string Host, string Username, string PasswordCiphertext, DateTime UpdatedAt, string SessionCiphertext = "", DateTime? SessionExpiresAt = null, DateTime? RenewRequestedAt = null)
     {
-        public DateTimeOffset UpdatedAtOffset => new(DateTime.SpecifyKind(UpdatedAt, DateTimeKind.Utc));
+        public DateTimeOffset UpdatedAtOffset => Utc(UpdatedAt)!.Value;
+        public static DateTimeOffset? Utc(DateTime? at) => at is { } d ? new DateTimeOffset(DateTime.SpecifyKind(d, DateTimeKind.Utc)) : null;
     }
+
+    /// <summary>Is <paramref name="host"/> a signed-in source's — one whose session the agent keeps?</summary>
+    public static bool KeepsSession(string host) => SessionHosts.Contains(BoardAccount.Normalize(host), StringComparer.OrdinalIgnoreCase);
 
     public async Task<List<BoardAccountView>> ListAsync()
     {
         var rows = await ReadRowsAsync();
-        return rows.Select(r => new BoardAccountView(r.Host, r.Username, r.PasswordCiphertext.Length > 0, r.UpdatedAtOffset)).ToList();
+        return rows.Select(r => new BoardAccountView(r.Host, r.Username, r.PasswordCiphertext.Length > 0, r.UpdatedAtOffset,
+            KeepsSession(r.Host), r.SessionCiphertext.Length > 0 ? Row.Utc(r.SessionExpiresAt) : null, Row.Utc(r.RenewRequestedAt))).ToList();
     }
+
+    /// <summary>
+    /// "Sign in now": ask the agent to renew this account's session on its next tick instead of
+    /// on its own clock — the LinkedIn app's tap or a mailed PIN has to come within minutes of
+    /// the sign-in, so the person picks the moment. Only a signed-in source's account keeps a
+    /// session. False when no account is saved for the host.
+    /// </summary>
+    public async Task<bool> RequestRenewalAsync(string host)
+    {
+        host = BoardAccount.Normalize(host);
+        if (!KeepsSession(host))
+            throw new AppValidationException("only a LinkedIn, MyGreenhouse (greenhouse.io) or Handshake account keeps a session the agent can renew");
+        return await _conn.ExecuteAsync(
+            "UPDATE board_accounts SET renew_requested_at = now() WHERE tenant_id = @t AND host = @host AND username <> ''",
+            new { t = _t, host }) > 0;
+    }
+
+    /// <summary>The worker taking a Sign in now for <paramref name="host"/>: true, and the
+    /// request cleared, when one was pending — so a try that fails does not go round again
+    /// until the person asks again.</summary>
+    public async Task<bool> TakeRenewalRequestAsync(string host) =>
+        await _conn.ExecuteAsync(
+            "UPDATE board_accounts SET renew_requested_at = NULL WHERE tenant_id = @t AND host = @host AND renew_requested_at IS NOT NULL",
+            new { t = _t, host = BoardAccount.Normalize(host) }) > 0;
 
     /// <summary>Every account the browser can sign in with — host, username and the decrypted
     /// password. An account with no password is a sign-in by emailed code under that address
@@ -205,6 +249,7 @@ public sealed class BoardAccountRepo
     private async Task<List<Row>> ReadRowsAsync() =>
         (await _conn.QueryAsync<Row>(
             "SELECT host, username, password_ciphertext AS passwordciphertext, updated_at AS updatedat, "
-            + "session_ciphertext AS sessionciphertext, session_expires_at AS sessionexpiresat FROM board_accounts WHERE tenant_id = @t ORDER BY host",
+            + "session_ciphertext AS sessionciphertext, session_expires_at AS sessionexpiresat, renew_requested_at AS renewrequestedat "
+            + "FROM board_accounts WHERE tenant_id = @t ORDER BY host",
             new { t = _t })).ToList();
 }

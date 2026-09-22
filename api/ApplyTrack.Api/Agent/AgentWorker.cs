@@ -70,6 +70,47 @@ public sealed class AgentWorker : BackgroundService
     public static readonly TimeSpan PortalRenewAhead = TimeSpan.FromDays(2);
     /// <summary>After a renewal attempt, the next for the same tenant waits this long.</summary>
     public static readonly TimeSpan PortalRetry = TimeSpan.FromHours(6);
+    // The three renewals run on the pass's clock and, when someone pressed Sign in now, on
+    // the submit lane's; never both at once — two sign-ins to one account is what LinkedIn
+    // looks for.
+    private readonly SemaphoreSlim _renewing = new(1, 1);
+
+    /// <summary>
+    /// Is this tenant's session on <paramref name="host"/> to be renewed on this call? Yes when
+    /// the person pressed Sign in now (the request is taken and cleared here, so a failed try
+    /// does not go round again unasked); otherwise not within <see cref="PortalRetry"/> of the
+    /// last try — a try that stopped on the LinkedIn app's tap or a mailed PIN waits, so the
+    /// moo is not sent every pass. Either way the try is stamped.
+    /// </summary>
+    private static async Task<bool> DueAsync(BoardAccountRepo accounts, string host, Dictionary<long, DateTime> attempts, long tenantId)
+    {
+        var asked = await accounts.TakeRenewalRequestAsync(host);
+        if (!asked && attempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
+            return false;
+        attempts[tenantId] = DateTime.UtcNow;
+        return true;
+    }
+
+    /// <summary>The three signed-in sources' renewals, one lane at a time. A lane that finds
+    /// the other mid-renewal skips: the pass's next tick, or the submit lane's, comes soon.</summary>
+    public async Task RenewSessionsAsync(CancellationToken ct)
+    {
+        if (!await _renewing.WaitAsync(0, ct))
+            return;
+        try
+        {
+            await RenewPortalSessionsAsync(ct);
+            await RenewLinkedInSessionsAsync(ct);
+            await RenewHandshakeSessionsAsync(ct);
+        }
+        finally { _renewing.Release(); }
+    }
+
+    private async Task<bool> AnyRenewalRequestedAsync(CancellationToken ct)
+    {
+        await using var conn = await _db.OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<bool>(BoardAccountRepo.AnyRenewalRequestedSql);
+    }
     // This container's name: the quadlet/compose service name, or the pod's hostname.
     private readonly string _workerId = Environment.MachineName;
 
@@ -127,9 +168,7 @@ public sealed class AgentWorker : BackgroundService
         {
             try
             {
-                await RenewPortalSessionsAsync(stoppingToken);
-                await RenewLinkedInSessionsAsync(stoppingToken);
-                await RenewHandshakeSessionsAsync(stoppingToken);
+                await RenewSessionsAsync(stoppingToken);
                 await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -154,6 +193,10 @@ public sealed class AgentWorker : BackgroundService
         {
             try
             {
+                // A Sign in now is taken on this lane's clock — seconds, not the pass's minutes —
+                // because the person is standing by with their phone for the tap.
+                if (await AnyRenewalRequestedAsync(stoppingToken))
+                    await RenewSessionsAsync(stoppingToken);
                 await DrainSubmitsAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -399,6 +442,27 @@ public sealed class AgentWorker : BackgroundService
         var dryRun = req.DryRun || settings.DryRun;
         if (!dryRun && packet.BlockingReview().Any())
             dryRun = true;
+        // The candidate's own sign-ins on account-only ATSs (SAP SuccessFactors, #216), and the
+        // kept LinkedIn session the browser starts Easy Apply from (#278).
+        var boardAccounts = await new BoardAccountRepo(conn, t, _protector, _log).TargetsAsync();
+        // No kept LinkedIn session, no Easy Apply run: signed out, LinkedIn serves the posting
+        // with "Sign in" and "Join now" and nothing can be attempted — twenty-five packets each
+        // spent a browser trip and a retry finding that out between 2026-09-21 and 09-22, while
+        // the renewal waited on a tap in the LinkedIn app that came at no hour anyone chose. The
+        // run stands down here, says what it waits on, and is queued again by the renewal that
+        // keeps a session — not by the reconciler's clock, and not against its failure count.
+        if (detected == AtsProvider.LinkedInEasy && BoardAccount.For(boardAccounts, "www.linkedin.com") is not { Session.Length: > 0 })
+        {
+            const string waits = "LinkedIn Easy Apply needs the agent signed in as you, and no session is kept — the sign-in waits on a tap in the LinkedIn app: "
+                + "tap Yes when the 🔐 moo arrives, or press Sign in now under Settings · Agent · Board accounts when you have your phone. "
+                + "Nothing was attempted; this run goes again by itself once the session is kept";
+            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
+                new { reason = waits, dry_run = dryRun, transient = false, awaiting_session = "linkedin.com", mapped = Array.Empty<string>(), unmapped = Array.Empty<string>() }, null);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = "browser: " + waits, rec.Fields.Company, rec.Fields.Role });
+            _log.LogInformation("{Name}: stood down — no LinkedIn session to run Easy Apply with", rec.Name);
+            return false;
+        }
         // One LinkedIn run per tenant at a time, across every worker (#278): two browsers signed
         // in to one personal account at once is exactly what LinkedIn looks for, and it is also
         // what makes the daily cap below a real one rather than a race between two readers of the
@@ -536,9 +600,7 @@ public sealed class AgentWorker : BackgroundService
         try
         {
             outcome = await _submitter.RunAsync(rec.Fields.Link, packet, pdf, dryRun, ct, resumeText, coverLetter,
-                dryRun ? null : AwaitSecurityCodeAsync,
-                // The candidate's own sign-ins on account-only ATSs (SAP SuccessFactors, #216).
-                await new BoardAccountRepo(conn, t, _protector, _log).TargetsAsync());
+                dryRun ? null : AwaitSecurityCodeAsync, boardAccounts);
         }
         // Catch EVERYTHING except cancellation. This filter used to name three types --
         // AppValidationException, PlaywrightException, TimeoutException -- which quietly
@@ -734,14 +796,13 @@ public sealed class AgentWorker : BackgroundService
         foreach (var tenantId in tenants)
         {
             ct.ThrowIfCancellationRequested();
-            if (_portalAttempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
-                continue;
-            _portalAttempts[tenantId] = DateTime.UtcNow;
             await using var conn = await _db.OpenConnectionAsync(ct);
             var accounts = new BoardAccountRepo(conn, tenantId, _protector, _loggers.CreateLogger<BoardAccountRepo>());
             var events = new AgentEventRepo(conn, tenantId);
             var portal = await accounts.PortalAsync();
             if (portal is null) continue;
+            if (!await DueAsync(accounts, portal.Host, _portalAttempts, tenantId))
+                continue;
             var mailbox = await new MailboxSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
             if (mailbox is null)
             {
@@ -789,14 +850,13 @@ public sealed class AgentWorker : BackgroundService
         foreach (var tenantId in tenants)
         {
             ct.ThrowIfCancellationRequested();
-            if (_linkedinAttempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
-                continue;
-            _linkedinAttempts[tenantId] = DateTime.UtcNow;
             await using var conn = await _db.OpenConnectionAsync(ct);
             var accounts = new BoardAccountRepo(conn, tenantId, _protector, _loggers.CreateLogger<BoardAccountRepo>());
             var events = new AgentEventRepo(conn, tenantId);
             var account = await accounts.LinkedInAsync();
             if (account is null) continue;
+            if (!await DueAsync(accounts, account.Host, _linkedinAttempts, tenantId))
+                continue;
             var target = BoardAccount.For(await accounts.TargetsAsync(), account.Host);
             if (target is null || target.Password.Length == 0)
             {
@@ -818,6 +878,11 @@ public sealed class AgentWorker : BackgroundService
                     new { host = account.Host, username = account.Username, expires_at = fresh.ExpiresAt });
                 _log.LogInformation("tenant {TenantId}: LinkedIn session renewed for {User} until {Until:u}", tenantId, account.Username, fresh.ExpiresAt);
                 renewed++;
+                // The Easy Apply runs that stood down for want of this session go again now, not
+                // on the reconciler's six-hour clock and not against its failure count (#278).
+                var again = await ReadyReconciler.RequeueAwaitingSessionAsync(conn, tenantId, _protector, account.Host);
+                if (again.Count > 0)
+                    _log.LogInformation("tenant {TenantId}: {Count} Easy Apply run(s) that waited on the LinkedIn session queued again", tenantId, again.Count);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -847,14 +912,13 @@ public sealed class AgentWorker : BackgroundService
         foreach (var tenantId in tenants)
         {
             ct.ThrowIfCancellationRequested();
-            if (_handshakeAttempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
-                continue;
-            _handshakeAttempts[tenantId] = DateTime.UtcNow;
             await using var conn = await _db.OpenConnectionAsync(ct);
             var accounts = new BoardAccountRepo(conn, tenantId, _protector, _loggers.CreateLogger<BoardAccountRepo>());
             var events = new AgentEventRepo(conn, tenantId);
             var account = await accounts.HandshakeAsync();
             if (account is null) continue;
+            if (!await DueAsync(accounts, account.Host, _handshakeAttempts, tenantId))
+                continue;
             var target = BoardAccount.For(await accounts.TargetsAsync(), account.Host);
             if (target is null || target.Password.Length == 0)
             {

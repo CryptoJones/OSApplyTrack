@@ -72,6 +72,9 @@ public static partial class AtsProvider
         "joinhandshake.com",
         // BestJobTool reposts job listings across boards without direct employer forms.
         "bestjobtool.com",
+        // Adzuna lists other boards' postings; its "Apply" is a tracked redirect off-site, and
+        // driven as a form its page took a click and confirmed nothing (inherent, 2026-09-22).
+        "adzuna.com",
     ];
 
     [GeneratedRegex(@"^auto:(greenhouse|lever):([a-z0-9][a-z0-9._-]*)$", RegexOptions.IgnoreCase)]

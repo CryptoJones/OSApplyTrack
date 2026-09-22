@@ -122,6 +122,8 @@ AGGREGATOR_HOSTS = frozenset({
     "joinhandshake.com",
     # BestJobTool reposts job listings across boards without direct employer forms.
     "bestjobtool.com",
+    # Adzuna lists other boards' postings; its "Apply" is a tracked redirect off-site.
+    "adzuna.com",
 })
 
 # Aggregators whose Apply never reaches anything a person or a browser can fill: one
