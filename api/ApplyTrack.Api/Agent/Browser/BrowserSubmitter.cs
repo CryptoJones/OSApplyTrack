@@ -908,7 +908,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             if (!visible(el)) continue;
             let empty;
-            if (type === 'checkbox') empty = !el.checked;
+            if (type === 'checkbox') {
+              // A box that shares its name with others is one choice of a "select all that apply"
+              // group (Greenhouse: question_N[]); the group is answered when ANY is ticked. Judged
+              // box by box, every unticked one read as a required field left empty, and Fieldwire's
+              // fully answered form was refused the click (#280).
+              const name = el.getAttribute('name') || '';
+              const group = name ? [...document.querySelectorAll(`input[type=checkbox][name="${CSS.escape(name)}"]`)] : [el];
+              empty = !group.some(c => c.checked);
+              if (empty && group.length > 1) { add(name, labelFor(el)); continue; }
+            }
             else if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               empty = ![...document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)].some(r => r.checked);
