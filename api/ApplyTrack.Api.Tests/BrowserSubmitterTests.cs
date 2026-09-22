@@ -2209,6 +2209,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Empty(outcome.Unmapped);
+        // Every named box, not just the first — and not the one that was not named.
+        var post = Assert.Single(_posts);
+        Assert.Equal("aws,azure", post["job_application[question_9][]"].Replace(" ", ""));
     }
 
     [SkippableFact]

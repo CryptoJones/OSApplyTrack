@@ -1517,7 +1517,33 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var want = Affirmative(answer);
         try
         {
-            if (await box.CountAsync() == 0) return null;
+            var boxes = await page.Locator(boxSelector).CountAsync();
+            if (boxes == 0) return null;
+            // Several boxes under one name are a "select all that apply": the answer names the
+            // ones to tick, comma-separated, by value or by label. Read as one yes/no, "AWS, Azure"
+            // ticked the first box alone (#280).
+            if (boxes > 1)
+            {
+                var wanted = answer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var ticked = 0;
+                for (var i = 0; i < boxes; i++)
+                {
+                    var member = page.Locator(boxSelector).Nth(i);
+                    var value = await member.GetAttributeAsync("value") ?? "";
+                    var text = await ChoiceLabelAsync(member);
+                    var hit = wanted.Any(w => Same(value, w) || Same(text, w) || Loosely(text, w));
+                    if (await member.IsCheckedAsync() != hit)
+                    {
+                        try { await member.SetCheckedAsync(hit, new() { Timeout = 3_000 }); }
+                        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+                        {
+                            await member.EvaluateAsync("el => { const l = (el.id && el.getRootNode().querySelector(`label[for=\"${CSS.escape(el.id)}\"]`)) || el.closest('label'); (l || el).click(); }");
+                        }
+                    }
+                    if (hit) ticked++;
+                }
+                return ticked > 0;
+            }
             // Ashby's yes/no is two buttons (data-option, aria-pressed) and a hidden checkbox that
             // only mirrors them. Unchecked already "matched" an answer of No, so the question was
             // reported answered with nothing pressed — and gravie's real submit came back "the form
