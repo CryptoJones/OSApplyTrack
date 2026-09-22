@@ -69,6 +69,17 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
+        // The three shapes a posting with no Easy Apply entry can have (#278). Signed in, so the
+        // guest page's "Join now"/"Sign in" check does not catch these first.
+        // 1. LinkedIn already holds an application for it.
+        _fixture.MapGet("/li/jobs/view/applied", () => Results.Content(
+            "<html><body><h1>Senior .NET Engineer</h1><span>Applied on September 21, 2026</span><button>Save</button></body></html>", "text/html"));
+        // 2. The employer takes it on its own site: an Apply that is not Easy Apply, leading off LinkedIn.
+        _fixture.MapGet("/li/jobs/view/offsite", () => Results.Content(
+            "<html><body><h1>Senior .NET Engineer</h1><a href=\"https://careers.acme-corp.example/job/42\">Apply on company website</a><button>Save</button></body></html>", "text/html"));
+        // 3. Neither: the run can only say what the page said.
+        _fixture.MapGet("/li/jobs/view/silent", () => Results.Content(
+            "<html><body><h1>This job is not available in your region</h1><button>Save</button></body></html>", "text/html"));
         _fixture.MapGet("/li/login", () => Results.Content("<html><body><h1>Sign in</h1></body></html>", "text/html"));
         // The posting's page as a signed-out visitor gets it: public, with a plain Apply.
         _fixture.MapGet("/li/jobs/view/guest", () => Results.Content(
@@ -2199,6 +2210,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Filled, outcome.Error);
         Assert.Empty(outcome.Unmapped);
         Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task A_posting_with_no_easy_apply_entry_says_which_of_the_two_things_it_saw()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // "already applied to, or the employer moved it to its own site" guessed between two
+        // outcomes that want opposite things, and twenty-six runs came back on it after the
+        // 1.50.0 session lapse — every one unreadable (#278).
+        var applied = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/applied", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("already sent", applied.Error);
+        Assert.True(applied.Closed);   // finished: it stops coming back round
+
+        var offsite = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/offsite", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("careers.acme-corp.example", offsite.Error);
+        Assert.False(offsite.Closed);  // a lead to re-stage, not a dead one
+        Assert.DoesNotContain("already", offsite.Error);
+
+        // Neither: no guess at all, just what the page said.
+        var silent = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/silent", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("no Apply of any kind", silent.Error);
+        Assert.Contains("not available in your region", silent.Error);
     }
 
     [SkippableFact]
