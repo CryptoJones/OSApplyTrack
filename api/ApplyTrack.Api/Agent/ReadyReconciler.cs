@@ -57,7 +57,8 @@ public static partial class ReadyReconciler
                    (SELECT count(*)::int FROM agent_evidence e
                     WHERE e.tenant_id = a.tenant_id AND e.application_name = a.name
                       AND e.kind = 'failed' AND e.created_at > now() - @window
-                      AND NOT (e.detail ? 'awaiting_session')) AS failures,
+                      AND NOT (e.detail ? 'awaiting_session'
+                               OR COALESCE(e.detail->>'reason', '') || ' ' || COALESCE(e.detail->>'error', '') ~ 'LinkedIn showed its signed-out page|LinkedIn asked to sign in')) AS failures,
                    (SELECT count(*)::int FROM agent_events v
                     WHERE v.tenant_id = a.tenant_id AND v.application_name = a.name
                       AND v.kind = 'error' AND v.created_at > now() - @window) AS prepareerrors,

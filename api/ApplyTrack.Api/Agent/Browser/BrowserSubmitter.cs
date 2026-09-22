@@ -369,7 +369,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
             var submit = await FindSubmitAsync(form);
             if (submit is null)
-                return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "no Submit button found");
+                return new SubmitOutcome(true, false, page.Url, "", await session.ScreenshotAsync(), unmapped, mapped,
+                    "no Submit button found — " + await ButtonsSeenAsync(form));
             // What the click actually sent. Greenhouse's form runs reCAPTCHA Enterprise first
             // and only then POSTs the application as JSON — to boards.greenhouse.io, a host the
             // page itself is not on — and a failed POST shows "There was an error processing
@@ -2054,12 +2055,56 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // boards put theirs in a footer bar outside any <form>.
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
         };
+        // A button that is there but disabled is waited on, briefly: a board that disables
+        // Submit while it settles a value (an upload, an autocomplete) enables it again.
+        ILocator? disabled = null;
         foreach (var c in candidates)
         {
-            try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync() && await c.IsEnabledAsync()) return c; }
+            try
+            {
+                if (await c.CountAsync() == 0 || !await c.IsVisibleAsync()) continue;
+                if (await c.IsEnabledAsync()) return c;
+                disabled ??= c;
+            }
             catch (PlaywrightException) { /* next */ }
         }
+        if (disabled is not null)
+        {
+            for (var i = 0; i < 20; i++)
+            {
+                await page.WaitForTimeoutAsync(500);
+                try { if (await disabled.IsEnabledAsync()) return disabled; }
+                catch (PlaywrightException) { break; }
+            }
+        }
         return null;
+    }
+
+    /// <summary>
+    /// What the page offered instead of a Submit button the finder recognised: every button-like
+    /// control's text, marked hidden or disabled where it is, so "no Submit button found" says
+    /// what was there. ElevenLabs' real run said it nine times with "Submit Application" in
+    /// plain view in its own screenshot, and this is what tells the next one apart (#280).
+    /// </summary>
+    private static async Task<string> ButtonsSeenAsync(IFrame page)
+    {
+        try
+        {
+            var seen = await page.EvaluateAsync<string[]>("""
+                () => {
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  return [...document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')]
+                    .map(b => {
+                      const text = (b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+                      if (!text) return '';
+                      return text + (shown(b) ? '' : ' (hidden)') + (b.disabled || b.getAttribute('aria-disabled') === 'true' ? ' (disabled)' : '');
+                    }).filter(Boolean).slice(0, 12);
+                }
+                """);
+            return seen.Length == 0 ? "no buttons on the page at all" : "buttons on the page: " + string.Join(", ", seen.Select(s => $"\"{s}\""));
+        }
+        catch (PlaywrightException) { return "the page could not be read"; }
     }
 
     /// <summary>A string as an XPath literal — quotes of either kind survive.</summary>

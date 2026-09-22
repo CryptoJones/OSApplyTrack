@@ -172,6 +172,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <label><input type="checkbox" name="job_application[question_9][]" value="azure" aria-required="true"> Azure</label>
             </fieldset>
             """), "text/html"));
+        // Ashby's shape: the Submit outside any <form>, disabled while the board settles a value,
+        // enabled two seconds later; and a page whose only buttons are none the finder knows.
+        _fixture.MapGet("/jobs/submit-settles", () => Results.Content(
+            """
+            <html><body>
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <button type="submit" class="ashby-application-form-submit-button" disabled
+                      onclick="fetch('/apply.json',{method:'POST',body:'x'}).then(()=>document.body.insertAdjacentHTML('beforeend','<p>Thank you for applying!</p>'));return false">Submit Application</button>
+              <script>setTimeout(() => document.querySelector('button[type=submit]').disabled = false, 2000);</script>
+            </body></html>
+            """, "text/html"));
+        _fixture.MapGet("/jobs/no-submit", () => Results.Content(
+            """
+            <html><body>
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <button type="button">Autofill from resume</button>
+              <button type="button" style="display:none">Send it</button>
+              <button type="button" disabled>Continue</button>
+            </body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/forbidden", () => Results.Content("<html><body><center><h1>403 Forbidden</h1></center></body></html>", "text/html", null, 403));
         // Allstate: the Apply link's accessible name opens with the job title (#280).
         _fixture.MapGet("/jobs/apply-named-for-the-job", () => Results.Content(
@@ -1495,6 +1515,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_submit_that_is_disabled_while_the_board_settles_is_waited_on_and_a_missing_one_names_what_was_there()
+    {
+        // ElevenLabs' real run said "no Submit button found" nine times with "Submit Application"
+        // in plain view in its own screenshot (#280). The finder now waits for a button that is
+        // there but disabled, and when nothing it knows is on the page it says what is.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-senior-engineer.md", Provider = "ashby",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var settled = await Submitter().RunAsync($"{_fixtureUrl}/jobs/submit-settles", packet, null, dryRun: false);
+        Assert.True(settled.Submitted, settled.Error);
+
+        var none = await Submitter().RunAsync($"{_fixtureUrl}/jobs/no-submit", packet, null, dryRun: false);
+        Assert.False(none.Submitted);
+        Assert.StartsWith("no Submit button found — buttons on the page: ", none.Error);
+        Assert.Contains("\"Autofill from resume\", \"Send it (hidden)\", \"Continue (disabled)\"", none.Error);
+    }
+
+    [SkippableFact]
     public async Task A_resume_field_called_cv_gets_the_resume()
     {
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
@@ -2661,6 +2703,45 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Console.WriteLine($"LIVE REAL: submitted={real.Submitted} unmapped=[{string.Join(", ", real.Unmapped)}] error={real.Error}");
         Assert.False(real.Submitted); // the POST was aborted; a confirmation here would mean the block failed
         Assert.DoesNotMatch("(?i)is required|select a country|enter your location", real.Error);
+    }
+
+    /// <summary>
+    /// The same live check for any posting the browser drives: set <c>APPLYTRACK_LIVE_URL</c>
+    /// (an Ashby, Lever, Workable or long-tail posting) and the form is discovered as the worker
+    /// discovers it, every question gets a stock answer, and the dry run and then the real run
+    /// are driven with <b>every non-GET request aborted at the browser</b>. The real run's
+    /// verdict is printed — this is how "no Submit button found" on ElevenLabs was reproduced
+    /// off pluto (#280). Never runs in CI.
+    /// </summary>
+    [SkippableFact]
+    public async Task Live_posting_is_discovered_filled_and_its_submit_found_with_posts_blocked()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_URL") ?? "";
+        Skip.If(url.Length == 0, "set APPLYTRACK_LIVE_URL to a posting to run this");
+        var provider = ApplyTrack.Api.Agent.AtsProvider.Detect(url, "");
+        var options = new BrowserOptions { Endpoint = _ws, TimeoutSeconds = 120, BlockSubmissions = true };
+        var questions = await new FormDiscoverer(options, NullLogger<FormDiscoverer>.Instance).DiscoverAsync(url);
+        Assert.NotNull(questions);
+        var packet = new AgentPacket { ApplicationName = "live.md", Provider = provider, Questions = questions! };
+        var ctx = new ApplyTrack.Api.Agent.AnswerContext(
+            new Resume { FullName = "Ada Byte", Location = "Omaha, NE", Links = [new ResumeLink("LinkedIn", "https://linkedin.com/in/ada"), new ResumeLink("GitHub", "https://github.com/ada")] },
+            new AgentSettings { Phone = "4025550100", SalaryExpectation = "150000", WorkAuthorization = "US citizen" },
+            "ada@example.com", "", "");
+        foreach (var q in packet.Questions.Where(q => q.Kind != PacketQuestion.Eeo && q.Type != PacketQuestion.File))
+        {
+            var (answer, _) = ApplyTrack.Api.Agent.AnswerDrafter.Deterministic(q, ctx);
+            packet.Answers[q.Id] = answer ?? (q.Options.Count > 0 ? q.Options[0] : q.Type == PacketQuestion.Textarea ? "Stand-in text." : "n/a");
+        }
+        Console.WriteLine($"LIVE QUESTIONS: {string.Join(" | ", packet.Questions.Select(q => $"{q.Id}={q.Label}[{q.Type}{(q.Required ? "*" : "")}]"))}");
+
+        var submitter = new BrowserSubmitter(options, NullLogger<BrowserSubmitter>.Instance);
+        var dry = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: true, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE DRY: filled={dry.Filled} mapped=[{string.Join(", ", dry.Mapped)}] unmapped=[{string.Join(", ", dry.Unmapped)}] error={dry.Error}");
+        var real = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: false, resumeText: "Ada Byte. Ships .NET.");
+        Console.WriteLine($"LIVE REAL: submitted={real.Submitted} unmapped=[{string.Join(", ", real.Unmapped)}] error={real.Error}");
+        Assert.False(real.Submitted); // the POST was aborted; a confirmation here would mean the block failed
+        Assert.DoesNotContain("no Submit button found", real.Error);
     }
 
     private sealed class PassThroughFactory(HttpClient client) : IHttpClientFactory

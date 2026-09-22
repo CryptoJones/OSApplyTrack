@@ -82,26 +82,43 @@ public sealed class AgentWorker : BackgroundService
     /// last try — a try that stopped on the LinkedIn app's tap or a mailed PIN waits, so the
     /// moo is not sent every pass. Either way the try is stamped.
     /// </summary>
-    private static async Task<bool> DueAsync(BoardAccountRepo accounts, string host, Dictionary<long, DateTime> attempts, long tenantId)
+    /// <param name="onlyRequested">The submit lane's mode: only a Sign in now is taken, never a
+    /// renewal the pass would make on its own clock — so the request is not queued behind a
+    /// MyGreenhouse sign-in waiting minutes on its emailed code.</param>
+    private static async Task<bool> DueAsync(BoardAccountRepo accounts, string host, Dictionary<long, DateTime> attempts, long tenantId, bool onlyRequested)
     {
         var asked = await accounts.TakeRenewalRequestAsync(host);
+        if (onlyRequested && !asked)
+            return false;
         if (!asked && attempts.TryGetValue(tenantId, out var last) && DateTime.UtcNow - last < PortalRetry)
             return false;
         attempts[tenantId] = DateTime.UtcNow;
         return true;
     }
 
+    /// <summary>
+    /// One renewal of this tenant's session on <paramref name="host"/> across every worker: the
+    /// attempt runs under a Postgres advisory lock on <paramref name="conn"/>, which is the
+    /// tenant's own for the one iteration and released with it (the pool's reset on close
+    /// drops advisory locks; so does Postgres if the worker dies). Two workers signing in to
+    /// one account at once is what LinkedIn looks for, and the in-process clock
+    /// (<see cref="DueAsync"/>) cannot see another container's. False when another holds it.
+    /// </summary>
+    private static async Task<bool> TryLockRenewalAsync(NpgsqlConnection conn, long tenantId, string host) =>
+        await conn.ExecuteScalarAsync<bool>("SELECT pg_try_advisory_lock(hashtext(@key))",
+            new { key = $"applytrack:renew:{host}:{tenantId}" });
+
     /// <summary>The three signed-in sources' renewals, one lane at a time. A lane that finds
     /// the other mid-renewal skips: the pass's next tick, or the submit lane's, comes soon.</summary>
-    public async Task RenewSessionsAsync(CancellationToken ct)
+    public async Task RenewSessionsAsync(CancellationToken ct, bool onlyRequested = false)
     {
         if (!await _renewing.WaitAsync(0, ct))
             return;
         try
         {
-            await RenewPortalSessionsAsync(ct);
-            await RenewLinkedInSessionsAsync(ct);
-            await RenewHandshakeSessionsAsync(ct);
+            await RenewLinkedInSessionsAsync(ct, onlyRequested);
+            await RenewHandshakeSessionsAsync(ct, onlyRequested);
+            await RenewPortalSessionsAsync(ct, onlyRequested);
         }
         finally { _renewing.Release(); }
     }
@@ -196,7 +213,7 @@ public sealed class AgentWorker : BackgroundService
                 // A Sign in now is taken on this lane's clock — seconds, not the pass's minutes —
                 // because the person is standing by with their phone for the tap.
                 if (await AnyRenewalRequestedAsync(stoppingToken))
-                    await RenewSessionsAsync(stoppingToken);
+                    await RenewSessionsAsync(stoppingToken, onlyRequested: true);
                 await DrainSubmitsAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -785,7 +802,7 @@ public sealed class AgentWorker : BackgroundService
     /// cookie is sealed onto the account row. Needs a browser and a mailbox reader; a tenant
     /// is tried at most once per <see cref="PortalRetry"/>. Public for tests.
     /// </summary>
-    public async Task<int> RenewPortalSessionsAsync(CancellationToken ct)
+    public async Task<int> RenewPortalSessionsAsync(CancellationToken ct, bool onlyRequested = false)
     {
         if (_portal is null || _codes is null) return 0;
         long[] tenants;
@@ -801,7 +818,7 @@ public sealed class AgentWorker : BackgroundService
             var events = new AgentEventRepo(conn, tenantId);
             var portal = await accounts.PortalAsync();
             if (portal is null) continue;
-            if (!await DueAsync(accounts, portal.Host, _portalAttempts, tenantId))
+            if (!await DueAsync(accounts, portal.Host, _portalAttempts, tenantId, onlyRequested) || !await TryLockRenewalAsync(conn, tenantId, portal.Host))
                 continue;
             var mailbox = await new MailboxSettingsRepo(conn, tenantId, _protector, _loggers.CreateLogger<MailboxSettingsRepo>()).GetTargetAsync();
             if (mailbox is null)
@@ -839,7 +856,7 @@ public sealed class AgentWorker : BackgroundService
     /// row. Needs a browser; a tenant is tried at most once per <see cref="PortalRetry"/>.
     /// Public for tests.
     /// </summary>
-    public async Task<int> RenewLinkedInSessionsAsync(CancellationToken ct)
+    public async Task<int> RenewLinkedInSessionsAsync(CancellationToken ct, bool onlyRequested = false)
     {
         if (_linkedin is null) return 0;
         long[] tenants;
@@ -855,7 +872,7 @@ public sealed class AgentWorker : BackgroundService
             var events = new AgentEventRepo(conn, tenantId);
             var account = await accounts.LinkedInAsync();
             if (account is null) continue;
-            if (!await DueAsync(accounts, account.Host, _linkedinAttempts, tenantId))
+            if (!await DueAsync(accounts, account.Host, _linkedinAttempts, tenantId, onlyRequested) || !await TryLockRenewalAsync(conn, tenantId, account.Host))
                 continue;
             var target = BoardAccount.For(await accounts.TargetsAsync(), account.Host);
             if (target is null || target.Password.Length == 0)
@@ -901,7 +918,7 @@ public sealed class AgentWorker : BackgroundService
     /// account row. Handshake emails no code, so this needs no mailbox. Needs a browser; a
     /// tenant is tried at most once per <see cref="PortalRetry"/>. Public for tests.
     /// </summary>
-    public async Task<int> RenewHandshakeSessionsAsync(CancellationToken ct)
+    public async Task<int> RenewHandshakeSessionsAsync(CancellationToken ct, bool onlyRequested = false)
     {
         if (_handshake is null) return 0;
         long[] tenants;
@@ -917,7 +934,7 @@ public sealed class AgentWorker : BackgroundService
             var events = new AgentEventRepo(conn, tenantId);
             var account = await accounts.HandshakeAsync();
             if (account is null) continue;
-            if (!await DueAsync(accounts, account.Host, _handshakeAttempts, tenantId))
+            if (!await DueAsync(accounts, account.Host, _handshakeAttempts, tenantId, onlyRequested) || !await TryLockRenewalAsync(conn, tenantId, account.Host))
                 continue;
             var target = BoardAccount.For(await accounts.TargetsAsync(), account.Host);
             if (target is null || target.Password.Length == 0)
