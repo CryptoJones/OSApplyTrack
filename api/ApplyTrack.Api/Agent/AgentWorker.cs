@@ -40,6 +40,9 @@ public sealed class AgentWorker : BackgroundService
     // Requests whose run met new questions and answered them: worth one more dry run (#278).
     private readonly HashSet<long> _dryAgain = [];
     private readonly IAccountCreator? _accountCreator;
+    /// <summary>Runs whose lead moved to the employer's own application (#308): they go round again
+    /// with the packet rebuilt for that form.</summary>
+    private readonly HashSet<long> _prepareAgain = [];
     /// <summary>Runs whose new questions came from behind an email sign-in: they go round again as
     /// real runs, since a dry run stops at the sign-in and would never see them (#280).</summary>
     private readonly HashSet<long> _realAgain = [];
@@ -301,6 +304,12 @@ public sealed class AgentWorker : BackgroundService
                 if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: true))
                     _log.LogInformation("{Name}: new questions answered, queued for another dry run", req.ApplicationName);
             }
+            else if (_prepareAgain.Remove(req.Id))
+            {
+                await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
+                if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: true, prepare: true))
+                    _log.LogInformation("{Name}: queued to prepare on the employer's own application", req.ApplicationName);
+            }
             else if (_realAgain.Remove(req.Id))
             {
                 await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
@@ -460,6 +469,15 @@ public sealed class AgentWorker : BackgroundService
         // was taught (#180) still says "unknown", and would be driven at the posting page
         // instead of its form. Read it from the link every run, and keep the packet honest (#203).
         var detected = AtsProvider.Detect(rec.Fields.Link, rec.Fields.Source);
+        // A LinkedIn posting staged as a listing, not as Easy Apply, is still LinkedIn's page to
+        // read: signed in, the driver either finds Easy Apply on it after all, or learns where
+        // the employer's own Apply leads and moves the lead there (#308). Without this such a
+        // lead is "aggregator", which nothing drives, and sits in Ready for good.
+        if (detected == AtsProvider.Aggregator && settings.LinkedInEasy
+            && Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var onLinkedIn)
+            && (onLinkedIn.Host == "linkedin.com" || onLinkedIn.Host.EndsWith(".linkedin.com", StringComparison.Ordinal))
+            && onLinkedIn.AbsolutePath.StartsWith("/jobs/view/", StringComparison.Ordinal))
+            detected = AtsProvider.LinkedInEasy;
         if (packet.Provider != detected)
         {
             packet.Provider = detected;
@@ -712,7 +730,7 @@ public sealed class AgentWorker : BackgroundService
         // blocks the submission.
         var latency = await DiscoveryAgeSecondsAsync(conn, t, rec.Name);
         await evidence.RecordAsync(rec.Name, kind, outcome.Url, outcome.Confirmation,
-            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou }, outcome.Screenshot);
+            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou, reached_submit = outcome.ReachedSubmit }, outcome.Screenshot);
         await events.RecordAsync(kind, rec.Name, new
         {
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
@@ -735,6 +753,19 @@ public sealed class AgentWorker : BackgroundService
                 if (answered > 0 && !extended.BlockingReview().Any())
                     (outcome.BehindSignIn && !req.DryRun ? _realAgain : _dryAgain).Add(req.Id);
             }
+        }
+
+        // A LinkedIn posting whose Apply leads to the employer's own site will never offer Easy
+        // Apply: the lead moves to that link and its packet is rebuilt for the employer's form.
+        // It cannot loop — the new link is not LinkedIn's, so this branch never meets it again.
+        if (outcome.OffsiteLink.Length > 0 && Uri.TryCreate(outcome.OffsiteLink, UriKind.Absolute, out var employer)
+            && Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var posted) && posted.Host.EndsWith("linkedin.com", StringComparison.OrdinalIgnoreCase)
+            && employer.Scheme is "http" or "https" && !employer.Host.EndsWith("linkedin.com", StringComparison.OrdinalIgnoreCase))
+        {
+            await apps.UpdateStructuredAsync(rec.Name, rec.Fields with { Link = outcome.OffsiteLink }, null);
+            await events.RecordAsync(AgentEventRepo.Kinds.Requeued, rec.Name, new { reason = "moved to the employer's own application", link = outcome.OffsiteLink });
+            _log.LogInformation("{Name}: LinkedIn's Apply leads to {Host}; the lead moves there", rec.Name, employer.Host);
+            _prepareAgain.Add(req.Id);
         }
 
         // Stopped at an ATS that only takes applications from a candidate account, none saved:
@@ -794,8 +825,10 @@ public sealed class AgentWorker : BackgroundService
         //     by a blocking review item the fill then cleared. Promoting it re-queues the
         //     same real run, which is downgraded again: the unbounded loop of #302. A
         //     promotion that comes back as a dry run must not re-promote.
-        //   - something was actually filled (Mapped.Count > 0). A run that mapped nothing
-        //     has proved nothing about the form, whatever else it reports (#302).
+        //   - something was actually filled (Mapped.Count > 0), or the run walked the form to
+        //     the board's own Submit (ReachedSubmit). A run that mapped nothing and got nowhere
+        //     has proved nothing about the form (#302); a LinkedIn Easy Apply dialog that only
+        //     shows the candidate's pre-filled contact details maps nothing and is ready to send.
         //   - the tenant has explicitly turned dry-run off (settings.DryRun == false)
         //   - no required field went unmapped
         //   - no REQUIRED question is still waiting on the user (an optional one the model
@@ -805,7 +838,7 @@ public sealed class AgentWorker : BackgroundService
         // on is picked up later by ReadyPromoter — on the flip, or on the next pass (#185).
         return kind == AgentEvidenceRepo.Kinds.DryRun
             && req.DryRun
-            && outcome.Mapped.Count > 0
+            && (outcome.Mapped.Count > 0 || outcome.ReachedSubmit)
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
             && !packet.BlockingReview().Any();

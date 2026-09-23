@@ -84,8 +84,9 @@ internal static partial class LinkedInEasyApply
     /// LinkedIn renders an offsite Apply as a control saying so, and the link it opens is the
     /// employer's; an Easy Apply one never leaves linkedin.com.
     /// </summary>
-    private static async Task<string> OffsiteApplyAsync(IPage page)
+    private static async Task<string> OffsiteApplyAsync(BrowserSession session)
     {
+        var page = session.Page;
         try
         {
             var href = await page.EvaluateAsync<string?>("""
@@ -102,10 +103,42 @@ internal static partial class LinkedInEasyApply
                   return null;
                 }
                 """);
-            return href is { Length: > 0 } && Uri.TryCreate(href, UriKind.Absolute, out var to) ? to.Host : "";
+            if (href is { Length: > 0 } && Uri.TryCreate(href, UriKind.Absolute, out _)) return href;
+
+            // The live shape (AVER, Deloitte, UMB …, 2026-09-23): "Apply ↗" is a BUTTON with no
+            // address — "Responses managed off LinkedIn" — that opens the employer's page in a new
+            // tab. Pressing it applies to nothing; it only opens that page, and the route guard
+            // refuses to follow it off LinkedIn, which is exactly how its address is learned.
+            var apply = page.GetByRole(AriaRole.Button, new() { NameRegex = PlainApply() }).First;
+            if (await apply.CountAsync() == 0 || !await apply.IsVisibleAsync()) return "";
+            // The address is read from the page's own window.open, which is replaced for the one
+            // click: nothing opens, nothing is sent, and a tab the remote browser would open
+            // without ever reporting it (the Allstate adoption problem, #280) is not needed.
+            await page.EvaluateAsync("""
+                () => { window.__osatOpened = ''; window.open = (u) => { window.__osatOpened = String(u || ''); return null; }; }
+                """);
+            var before = session.RefusedUrls.Count;
+            await apply.ClickAsync(new() { Timeout = 5_000 });
+            var deadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < deadline)
+            {
+                string opened;
+                try { opened = await page.EvaluateAsync<string>("() => window.__osatOpened || ''"); }
+                catch (PlaywrightException) { opened = ""; }   // the page itself navigated
+                if (opened.Length > 0 && Uri.TryCreate(new Uri(page.Url), opened, out var to) && to.Scheme.StartsWith("http", StringComparison.Ordinal))
+                    return to.AbsoluteUri;
+                var refused = session.RefusedUrls;
+                if (refused.Count > before) return refused[before];
+                await page.WaitForTimeoutAsync(300);
+            }
+            return "";
         }
         catch (PlaywrightException) { return ""; }
+        catch (TimeoutException) { return ""; }
     }
+
+    [GeneratedRegex(@"^\s*apply\b(?!.*easy)", RegexOptions.IgnoreCase)]
+    private static partial Regex PlainApply();
 
     /// <summary>What the page actually said, for a failure that can name nothing better: its first
     /// line of real text. A run that reports only what it could not find is unreadable (#280).</summary>
@@ -156,8 +189,11 @@ internal static partial class LinkedInEasyApply
                 // after the 1.50.0 session lapse, every one of them unreadable.
                 if (Applied().IsMatch(body))
                     return Fail("LinkedIn says this application was already sent — nothing to do", closed: true);
-                if (await OffsiteApplyAsync(page) is { Length: > 0 } offsite)
-                    return Fail($"the employer takes this application on its own site ({offsite}), not through Easy Apply — re-stage the lead on that link or apply by Copy answers and open");
+                if (await OffsiteApplyAsync(session) is { Length: > 0 } offsite)
+                {
+                    var host = Uri.TryCreate(offsite, UriKind.Absolute, out var at) ? at.Host : offsite;
+                    return Fail($"the employer takes this application on its own site ({host}), not through Easy Apply — the lead moves to that link") with { OffsiteLink = offsite };
+                }
                 return Fail("no Easy Apply button on the posting, and no Apply of any kind: " + Seen(body));
             }
             await entry.ClickAsync(new() { Timeout = 10_000 });
@@ -206,7 +242,8 @@ internal static partial class LinkedInEasyApply
                     if (dryRun)
                     {
                         await LeaveAsync(page, save: false);
-                        return new SubmitOutcome(true, false, page.Url, "", shot, unmapped, mapped, "", Discovered: discovered);
+                        return new SubmitOutcome(true, false, page.Url, "", shot, unmapped, mapped, "", Discovered: discovered,
+                            ReachedSubmit: true);
                     }
                     return await SubmitAsync(session, page, mapped, unmapped, shot);
                 }

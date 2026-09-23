@@ -22,12 +22,18 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// <param name="BehindSignIn">The form was only reached by signing in by email, which only a real run does:
 /// a dry run stops at the sign-in. When such a run hands questions back, the run that follows has to be a
 /// real one too, or it can never see the form they came from (micro1, #280).</param>
+/// <param name="ReachedSubmit">A dry run that walked the form all the way to the board's own Submit and stopped there —
+/// proof the form is finishable even when it asked for nothing to be filled: LinkedIn's Easy Apply pre-fills a
+/// candidate's contact details, and a dialog with no questions maps nothing and is still ready to send.</param>
+/// <param name="OffsiteLink">Where a LinkedIn posting's plain Apply actually leads — the employer's own
+/// application — so the lead can be re-staged on it instead of waiting on an Easy Apply that will never come.</param>
 /// <param name="NeedsAccountAt">The host of a sign-in or sign-up that stood between the run and the form, where no
 /// saved board account applies — the place a candidate account would have to be created (#277).</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false,
-    List<PacketQuestion>? Discovered = null, bool BehindSignIn = false, string NeedsAccountAt = "");
+    List<PacketQuestion>? Discovered = null, bool BehindSignIn = false, string NeedsAccountAt = "",
+    bool ReachedSubmit = false, string OffsiteLink = "");
 
 /// <summary>
 /// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the

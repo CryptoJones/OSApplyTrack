@@ -769,6 +769,71 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.DoesNotContain(await QueuedAsync(conn, t), q => q.Name == "high-engineer.md" && !q.DryRun);
     }
 
+    [Fact]
+    public async Task A_dry_run_that_filled_nothing_but_reached_the_boards_submit_is_promoted()
+    {
+        // LinkedIn pre-fills a candidate's contact details: an Easy Apply dialog with no
+        // questions maps nothing and is ready to send. Two of the first real submissions
+        // recorded mapped = [] — and the #302 bar parked every such dry run in Ready for good.
+        // Walking to the board's own Submit is the proof the empty list is not.
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        await evidence.RecordAsync("high-engineer.md", "dry_run", "https://careers.example.com/high-engineer.md", "",
+            new { dry_run = true, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>(), error = "", reached_submit = true }, null);
+
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Contains(await QueuedAsync(conn, t), q => q.Name == "high-engineer.md" && !q.DryRun);
+    }
+
+    [Fact]
+    public async Task A_run_that_reached_submit_with_nothing_to_fill_promotes_itself_but_never_a_downgraded_one()
+    {
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(true, false, link, "", null, [], [], "", ReachedSubmit: true)));
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        // The dry run promoted; the real run it queued then ran (the fake answers dry-run
+        // shaped), and came back a dry run — which must not promote a third time (#302).
+        Assert.Equal(2, fake.Runs.Count);
+        Assert.True(fake.Runs[0].DryRun);
+        Assert.False(fake.Runs[1].DryRun);
+        Assert.Empty(await QueuedAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task A_linkedin_lead_whose_apply_leads_to_the_employer_moves_there_and_is_prepared_again()
+    {
+        // "Apply ↗ — Responses managed off LinkedIn": no Easy Apply will ever come. Eleven such
+        // leads sat in Ready on 2026-09-23 reading "no Apply of any kind" (#308).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md", rec!.Fields with { Link = "https://www.linkedin.com/jobs/view/4468596011/" }, null);
+        const string employer = "https://careers.aver.example/jobs/42?src=li";
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(false, false, link, "", null, [], [], "the employer takes this application on its own site", OffsiteLink: employer)));
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal(employer, (await apps.GetAsync("high-engineer.md"))!.Fields.Link);
+        Assert.Contains(("high-engineer.md", "requeued"), await EventsAsync(conn, t));
+    }
+
     private static Task<List<(string Name, bool DryRun, bool Prepare)>> QueuedAsync(NpgsqlConnection conn, long t) =>
         conn.QueryAsync<(string, bool, bool)>(
             "SELECT application_name, dry_run, prepare FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL ORDER BY 1",

@@ -119,6 +119,7 @@ public class SecurityCodeMailboxTests
     [Theory]
     [InlineData("Security code for your application to Aperia", "Aperia", true)]
     [InlineData("Security code for your application to GitLab", "GitLab Inc.", true)]
+    [InlineData("Security code for your application to Dragos", "Dragos, Inc.", true)]   // the comma kept it unread
     [InlineData("Security code for your application to Miris", "Aperia", false)]
     [InlineData("Thank you for applying to Aperia", "Aperia", false)]
     public void The_subject_must_be_a_security_code_for_this_company(string subject, string company, bool expected) =>

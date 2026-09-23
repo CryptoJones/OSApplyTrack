@@ -27,6 +27,41 @@ public class AnswerDrafterTests
         "ada@example.com", letter, "We need a .NET engineer.");
 
     [Fact]
+    public async Task The_model_is_shown_the_persons_own_past_answers_so_a_reworded_question_gets_the_same_answer()
+    {
+        // The bank matches a question by its exact words, so "Are you legally eligible to work
+        // in the United States?" missed the answer already given to "Are you authorized to work
+        // in the US?" and came back to the person on every new form. The drafter now sees what
+        // the person has answered and is told to reuse it for the same question reworded.
+        var q = new PacketQuestion("q1", "Are you legally eligible to work in the United States without sponsorship?", true,
+            PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom);
+        var stub = new StubLlmClient((_, _, _) => "{\"answers\":[{\"id\":\"q1\",\"answer\":\"Yes\"}]}");
+        var pinned = new Dictionary<string, string>
+        {
+            ["are you authorized to work in the us"] = "Yes",
+            ["how many years of work experience do you have with wcag"] = "3",
+            [AnswerBankRepo.FirstNameKey] = "Ada",
+        };
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub)).DraftAsync([q], Ctx(), Cfg, pinned: pinned);
+
+        Assert.Equal("Yes", answers["q1"]);
+        Assert.Empty(review);
+        Assert.Contains("OWN PAST ANSWERS", stub.LastUserPrompt);
+        Assert.Contains("- are you authorized to work in the us → Yes", stub.LastUserPrompt);
+        Assert.Contains("- how many years of work experience do you have with wcag → 3", stub.LastUserPrompt);
+        Assert.DoesNotContain("first name →", stub.LastUserPrompt);   // answered from the résumé, not matched
+        Assert.Contains("Only the same fact counts", stub.LastSystemPrompt);
+    }
+
+    [Fact]
+    public void With_nothing_banked_the_model_is_told_so()
+    {
+        Assert.Equal("(none yet)", AnswerDrafter.PastAnswers(null));
+        Assert.Equal("(none yet)", AnswerDrafter.PastAnswers(new Dictionary<string, string> { [AnswerBankRepo.LastNameKey] = "Byte" }));
+    }
+
+    [Fact]
     public async Task A_saved_demographic_answer_goes_on_a_form_that_offers_it_and_is_never_flagged()
     {
         var gender = new PacketQuestion("gender", "Gender", false, PacketQuestion.Select,
