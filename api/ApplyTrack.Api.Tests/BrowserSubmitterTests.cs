@@ -92,6 +92,11 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             + "<button aria-label=\"Apply to Senior .Net Application Developer on company website\" "
             + "onclick=\"window.open(location.origin.replace('127.0.0.1', 'localhost') + '/careers/job/42?src=li', '_blank')\">Apply</button>"
             + "<button>Save</button></body></html>", "text/html"));
+        // 2c. The live markup (AVER, 2026-09-23): an <a target=_blank> through LinkedIn's interstitial.
+        _fixture.MapGet("/li/jobs/view/offsite-safety", () => Results.Content(
+            "<html><body><h1>Senior .Net Application Developer</h1><p>Responses managed off LinkedIn</p>"
+            + "<a href=\"https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fapp%2Ejobvite%2Ecom%2FCompanyJobs%2FCareers%2Easpx%3Fk%3DApply%26j%3DoDawAfwD&amp;urlhash=kjaF\" "
+            + "target=\"_blank\" aria-label=\"Apply on company website\"><span>Apply</span></a><button>Save</button></body></html>", "text/html"));
         // 3. Neither: the run can only say what the page said.
         _fixture.MapGet("/li/jobs/view/silent", () => Results.Content(
             "<html><body><h1>This job is not available in your region</h1><button>Save</button></body></html>", "text/html"));
@@ -2634,6 +2639,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.StartsWith("http://localhost:", button.OffsiteLink);
         Assert.EndsWith("/careers/job/42?src=li", button.OffsiteLink);
         Assert.False(button.Closed);
+
+        var safety = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/offsite-safety", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("own site (app.jobvite.com)", safety.Error);
+        Assert.Equal("https://app.jobvite.com/CompanyJobs/Careers.aspx?k=Apply&j=oDawAfwD", safety.OffsiteLink);
 
         // Neither: no guess at all, just what the page said.
         var silent = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/silent", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
