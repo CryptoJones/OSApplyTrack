@@ -35,14 +35,18 @@ public interface IAccountCreator
 /// written; a host none covers is reported by name. No captcha or bot-check is ever bypassed:
 /// such a wall ends the attempt, and it is the person's.
 /// </summary>
-public sealed partial class AccountCreator(BrowserOptions options, ILogger<AccountCreator> log) : IAccountCreator
+public sealed partial class AccountCreator(BrowserOptions options, ILogger<AccountCreator> log,
+    IReadOnlyDictionary<string, string>? extraRecipes = null) : IAccountCreator
 {
     public const string Workday = "Workday";
     public const string Haystack = "Haystack";
+    public const string Taleo = "Oracle Taleo";
 
     public string? Recipe(string host)
     {
         host = BoardAccount.Normalize(host);
+        if (extraRecipes is not null && extraRecipes.TryGetValue(host, out var extra)) return extra;
+        if (host.EndsWith(".taleo.net", StringComparison.Ordinal)) return Taleo;
         if (host.EndsWith(".myworkdayjobs.com", StringComparison.Ordinal) || host.EndsWith(".myworkdaysite.com", StringComparison.Ordinal))
             return Workday;
         if (host == "haystack.cv") return Haystack;
@@ -63,10 +67,16 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         if (email.Length == 0 || !email.Contains('@'))
             return new(null, "no application email to register with — set one in Settings · Agent");
 
-        var password = NewPassword();
+        // Taleo's policy names letters and digits and some tenants refuse anything else.
+        var password = NewPassword(symbols: recipe != Taleo);
         var account = new BoardAccount(host, email, password);
         // The session may go to the host being registered on and nowhere else it has not been sent.
-        var start = recipe == Haystack ? "https://haystack.cv/auth?mode=signup" : postingLink;
+        var start = recipe switch
+        {
+            Haystack => "https://haystack.cv/auth?mode=signup",
+            Taleo => TaleoLoginUrl(host, postingLink),
+            _ => postingLink,
+        };
         await using (var session = await BrowserSession.OpenAsync(options, start, ct, [account], reveal: false))
         {
             try
@@ -74,6 +84,7 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
                 var registered = recipe switch
                 {
                     Workday => await RegisterWorkdayAsync(session.Page, email, password),
+                    Taleo => await RegisterTaleoAsync(session.Page, email, password),
                     _ => await RegisterHaystackAsync(session.Page, email, password),
                 };
                 if (registered is not null) return registered;
@@ -84,7 +95,12 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         }
 
         // Proved in a fresh browser, or not kept at all.
-        var signIn = recipe == Workday ? WorkdaySignInUrl(postingLink) : "https://haystack.cv/auth?mode=signin";
+        var signIn = recipe switch
+        {
+            Workday => WorkdaySignInUrl(postingLink),
+            Taleo => TaleoLoginUrl(host, postingLink),
+            _ => "https://haystack.cv/auth?mode=signin",
+        };
         await using var proof = await BrowserSession.OpenAsync(options, signIn, ct, [account], reveal: false);
         try
         {
@@ -130,6 +146,39 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         else await Auto(page, "createAccountSubmitButton").ClickAsync();
         await page.WaitForTimeoutAsync(2_500);
         return await RefusalAsync(page, "Workday");
+    }
+
+    // Oracle Taleo, mapped read-only on upmcjobs.taleo.net (2026-09-23): every tenant signs in at
+    // /careersection/iam/accessmanagement/login.jsf, whose "New User" opens New User Registration —
+    // User Name, Password, Re-enter Password, Email Address, Re-enter Email Address, Register. The
+    // policy: at least 7 characters with a lowercase letter, an uppercase letter and a number. The
+    // user name is the email, so the account is signed in to with what Board accounts shows.
+    private static async Task<AccountCreation?> RegisterTaleoAsync(IPage page, string email, string password)
+    {
+        static ILocator Id(IPage p, string id) => p.Locator($"[id='dialogTemplate-dialogForm-{id}']");
+        await BrowserSession.DismissConsentAsync(page);
+        await ClickIfVisibleAsync(Id(page, "login-register"));
+        if (!await WaitVisibleAsync(Id(page, "passwordConfirm"), 10_000))
+            return new(null, "Taleo showed no New User Registration form");
+        if (await HasCaptchaAsync(page))
+            return new(null, "Taleo's registration is behind a captcha — that one is yours to create");
+        await Id(page, "userName").FillAsync(email);
+        await Id(page, "password").FillAsync(password);
+        await Id(page, "passwordConfirm").FillAsync(password);
+        await Id(page, "email").FillAsync(email);
+        await Id(page, "emailConfirm").FillAsync(email);
+        await Id(page, "defaultCmd").ClickAsync();
+        await page.WaitForTimeoutAsync(2_500);
+        return await RefusalAsync(page, "Taleo");
+    }
+
+    /// <summary>A Taleo tenant's sign-in: on the posting's own address when it is that tenant, else the host's.</summary>
+    public static string TaleoLoginUrl(string host, string postingLink)
+    {
+        var origin = Uri.TryCreate(postingLink, UriKind.Absolute, out var u) && BoardAccount.Normalize(u.Host) == BoardAccount.Normalize(host)
+            ? u.GetLeftPart(UriPartial.Authority)
+            : "https://" + host;
+        return origin + "/careersection/iam/accessmanagement/login.jsf?lang=en";
     }
 
     // haystack.cv, mapped read-only (2026-09-22): "Create your candidate account" — I'm a
@@ -221,15 +270,16 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
     }
 
     /// <summary>24 characters from every class a password policy asks for, from the OS's CSPRNG.</summary>
-    public static string NewPassword()
+    public static string NewPassword(bool symbols = true)
     {
-        const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ", lower = "abcdefghijkmnopqrstuvwxyz", digits = "23456789", symbols = "!@#$%^&*-_=+?";
-        const string all = upper + lower + digits + symbols;
+        const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ", lower = "abcdefghijkmnopqrstuvwxyz", digits = "23456789", marks = "!@#$%^&*-_=+?";
+        var all = upper + lower + digits + (symbols ? marks : "");
         var chars = new List<char>
         {
             upper[RandomNumberGenerator.GetInt32(upper.Length)], lower[RandomNumberGenerator.GetInt32(lower.Length)],
-            digits[RandomNumberGenerator.GetInt32(digits.Length)], symbols[RandomNumberGenerator.GetInt32(symbols.Length)],
+            digits[RandomNumberGenerator.GetInt32(digits.Length)],
         };
+        if (symbols) chars.Add(marks[RandomNumberGenerator.GetInt32(marks.Length)]);
         while (chars.Count < 24) chars.Add(all[RandomNumberGenerator.GetInt32(all.Length)]);
         for (var i = chars.Count - 1; i > 0; i--)
         {
@@ -256,7 +306,7 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
     private static async Task<bool> HasCaptchaAsync(IPage page) =>
         await page.Locator("iframe[src*='recaptcha'], iframe[src*='hcaptcha'], iframe[src*='turnstile'], .g-recaptcha, .h-captcha").CountAsync() > 0;
 
-    [GeneratedRegex(@"already (?:has an account|have an account|registered|exists|in use)|account (?:with this email )?already exists|email (?:address )?is already", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"already (?:has an account|have an account|registered|exists|in use|used|taken)|account (?:with this email )?already exists|email (?:address )?is already", RegexOptions.IgnoreCase)]
     private static partial Regex AlreadyRegistered();
 
     [GeneratedRegex(@"check your (?:e-?mail|inbox)|verify your (?:e-?mail|account)|confirm your (?:e-?mail|account)|we(?:'ve| have)? sent (?:you )?(?:an? )?(?:e-?mail|link|code)|verification (?:e-?mail|link|code)", RegexOptions.IgnoreCase)]

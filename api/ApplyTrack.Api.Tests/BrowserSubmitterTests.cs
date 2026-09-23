@@ -353,6 +353,29 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
                 ? Results.Content("<html><body><h1>Candidate Home</h1><p>My Applications</p></body></html>", "text/html")
                 : Results.Content(WorkdaySignInHtml.Replace("<!--ERR-->", "<div role=\"alert\">Wrong email or password</div>"), "text/html");
         });
+        // Oracle Taleo's IAM pages as upmcjobs.taleo.net serves them (#277): Candidate Login with
+        // New User, then New User Registration; the user name is the email.
+        _fixture.MapGet("/careersection/iam/accessmanagement/login.jsf", () => Results.Content(TaleoLoginHtml, "text/html"));
+        _fixture.MapPost("/taleo/register", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            var user = f["userName"].ToString();
+            lock (_wdAccounts)
+            {
+                if (_wdAccounts.ContainsKey(user))
+                    return Results.Content(TaleoLoginHtml.Replace("<!--ERR-->", "<div class=\"errorMessage\">This user name is already used.</div>"), "text/html");
+                _wdAccounts[user] = (f["password"].ToString(), true);
+            }
+            return Results.Content("<html><body><h1>Welcome</h1><p>Your account was created.</p></body></html>", "text/html");
+        });
+        _fixture.MapPost("/taleo/signin", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            bool ok;
+            lock (_wdAccounts) ok = _wdAccounts.TryGetValue(f["name1"].ToString(), out var a) && a.Password == f["password"].ToString();
+            return ok ? Results.Content("<html><body><h1>My Account</h1></body></html>", "text/html")
+                : Results.Content(TaleoLoginHtml.Replace("<!--ERR-->", "<div class=\"errorMessage\">Invalid user name or password</div>"), "text/html");
+        });
         // micro1's shape (#280): the email gate is all a dry run can reach, so the packet knows
         // one optional Email box — and the form behind the sign-in asks for none of it.
         _fixture.MapGet("/jobs/sign-in-unseen", () => Results.Content(SignInPostingHtml.Replace("sign-in-MODE", "sign-in-unseen"), "text/html"));
@@ -1035,6 +1058,31 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="e">Email Address</label><input id="e" name="email" data-automation-id="email" type="text" />
           <label for="p">Password</label><input id="p" name="password" data-automation-id="password" type="password" />
           <button type="submit" data-automation-id="signInSubmitButton">Sign In</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string TaleoLoginHtml = """
+        <html><body>
+        <h1>Candidate Login</h1><!--ERR-->
+        <form id="login" method="post" action="/taleo/signin">
+          <label for="dialogTemplate-dialogForm-login-name1">User Name</label>
+          <input type="text" name="name1" id="dialogTemplate-dialogForm-login-name1" />
+          <label for="dialogTemplate-dialogForm-login-password">Password</label>
+          <input type="password" name="password" id="dialogTemplate-dialogForm-login-password" />
+          <input type="button" id="dialogTemplate-dialogForm-login-defaultCmd" value="Login" onclick="this.form.submit()" />
+          <input type="button" id="dialogTemplate-dialogForm-login-register" value="New User"
+                 onclick="document.getElementById('login').style.display='none';document.getElementById('reg').style.display='block'" />
+        </form>
+        <form id="reg" method="post" action="/taleo/register" style="display:none">
+          <h2>New User Registration</h2>
+          <label for="dialogTemplate-dialogForm-userName">User Name</label><input type="text" name="userName" id="dialogTemplate-dialogForm-userName" />
+          <label for="dialogTemplate-dialogForm-password">Password</label><input type="password" name="password" id="dialogTemplate-dialogForm-password" />
+          <label for="dialogTemplate-dialogForm-passwordConfirm">Re-enter Password</label><input type="password" name="passwordConfirm" id="dialogTemplate-dialogForm-passwordConfirm" />
+          <label for="dialogTemplate-dialogForm-email">Email Address</label><input type="text" name="email" id="dialogTemplate-dialogForm-email" />
+          <label for="dialogTemplate-dialogForm-emailConfirm">Re-enter Email Address</label><input type="text" name="emailConfirm" id="dialogTemplate-dialogForm-emailConfirm" />
+          <input type="button" id="dialogTemplate-dialogForm-defaultCmd" value="Register"
+                 onclick="if (/[^A-Za-z0-9]/.test(document.getElementById('dialogTemplate-dialogForm-password').value)) alert('bad'); else this.form.submit()" />
         </form>
         </body></html>
         """;
@@ -2016,6 +2064,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         lock (_wdAccounts) Assert.Equal("the person's own", _wdAccounts["ada@example.com"].Password);
     }
 
+    [SkippableFact]
+    public async Task A_taleo_account_is_registered_with_a_letters_and_digits_password_and_proved_by_signing_in()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var creator = new AccountCreator(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 },
+            NullLogger<AccountCreator>.Instance, new Dictionary<string, string> { ["127.0.0.1"] = AccountCreator.Taleo });
+        var made = await creator.CreateAsync("127.0.0.1", $"{_fixtureUrl}/careersection/10000/jobdetail.ftl?job=1", "ada@example.com",
+            (_, _) => Task.FromResult<string?>(null), CancellationToken.None);
+
+        Assert.NotNull(made.Account);
+        Assert.Matches("^[A-Za-z0-9]{24}$", made.Account!.Password);
+        lock (_wdAccounts) Assert.Equal(made.Account.Password, _wdAccounts["ada@example.com"].Password);
+
+        var again = await creator.CreateAsync("127.0.0.1", $"{_fixtureUrl}/careersection/10000/jobdetail.ftl?job=1", "ada@example.com",
+            (_, _) => Task.FromResult<string?>(null), CancellationToken.None);
+        Assert.Null(again.Account);
+        Assert.True(again.AlreadyExists);
+    }
+
     [Fact]
     public void Workday_signs_in_at_the_tenant_site_login_and_a_host_with_no_recipe_says_so()
     {
@@ -2026,7 +2093,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var creator = new AccountCreator(new BrowserOptions(), NullLogger<AccountCreator>.Instance);
         Assert.Equal(AccountCreator.Workday, creator.Recipe("acme.wd5.myworkdayjobs.com"));
         Assert.Equal(AccountCreator.Haystack, creator.Recipe("www.haystack.cv"));
-        Assert.Null(creator.Recipe("uhg.taleo.net"));
+        Assert.Equal(AccountCreator.Taleo, creator.Recipe("uhg.taleo.net"));
+        Assert.Null(creator.Recipe("careers-mheducation.icims.com"));
+        Assert.Equal("https://uhg.taleo.net/careersection/iam/accessmanagement/login.jsf?lang=en",
+            AccountCreator.TaleoLoginUrl("uhg.taleo.net", "https://careers.unitedhealthgroup.com/job/123"));
         var pw = AccountCreator.NewPassword();
         Assert.Equal(24, pw.Length);
         Assert.Matches("[A-Z]", pw); Assert.Matches("[a-z]", pw); Assert.Matches("[0-9]", pw); Assert.Matches(@"[^A-Za-z0-9]", pw);
