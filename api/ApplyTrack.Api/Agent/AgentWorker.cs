@@ -494,12 +494,23 @@ public sealed class AgentWorker : BackgroundService
             try { await conn.ExecuteAsync("SELECT pg_advisory_unlock(hashtext(@key))", new { key = linkedInLock }); }
             catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "linkedin lock release failed"); }
         }
+        // Over the daily cap, the run stands down — it does NOT quietly become a dry run (#302).
+        // A downgrade there produced a clean dry run, which promoted itself to a real run, which
+        // was downgraded again: an unbounded loop that opened LinkedIn's dialog every half minute
+        // and never sent anything. Nothing is attempted, nothing is promoted, and the reconciler
+        // queues it again on a later pass — tomorrow, when the window has moved.
         if (!dryRun && detected == AtsProvider.LinkedInEasy
             && await evidence.SubmittedSinceAsync("linkedin.com", DailyWindow) >= LinkedInEasyDailyCap)
         {
-            dryRun = true;
+            const string capped = "LinkedIn Easy Apply: {0} already sent in the last day — nothing was attempted; this one goes out once the day's window has moved";
+            var reason = string.Format(capped, LinkedInEasyDailyCap);
+            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
+                new { reason, dry_run = false, transient = false, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>() }, null);
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
-                new { reason = $"LinkedIn Easy Apply: {LinkedInEasyDailyCap} sent in the last day — this one ran as a dry run and goes out tomorrow", rec.Fields.Company, rec.Fields.Role });
+                new { reason, rec.Fields.Company, rec.Fields.Role });
+            _log.LogInformation("{Name}: stood down — LinkedIn Easy Apply daily cap reached", rec.Name);
+            await ReleaseLinkedInAsync();
+            return false;
         }
 
         var resumes = new ResumeRepo(conn, t, _protector);
@@ -740,6 +751,13 @@ public sealed class AgentWorker : BackgroundService
         // helps if they actually look — and an application that is never sent is not a safe
         // outcome, it is a guaranteed miss. Every condition below has to hold:
         //   - this run was a dry run that came back clean (kind == DryRun)
+        //   - the run was REQUESTED as a dry run (req.DryRun). A run asked for as real that
+        //     ran as a dry run anyway was downgraded somewhere above — by the daily cap, or
+        //     by a blocking review item the fill then cleared. Promoting it re-queues the
+        //     same real run, which is downgraded again: the unbounded loop of #302. A
+        //     promotion that comes back as a dry run must not re-promote.
+        //   - something was actually filled (Mapped.Count > 0). A run that mapped nothing
+        //     has proved nothing about the form, whatever else it reports (#302).
         //   - the tenant has explicitly turned dry-run off (settings.DryRun == false)
         //   - no required field went unmapped
         //   - no REQUIRED question is still waiting on the user (an optional one the model
@@ -748,6 +766,8 @@ public sealed class AgentWorker : BackgroundService
         // because its kind will never be DryRun. A packet filled while the switch was still
         // on is picked up later by ReadyPromoter — on the flip, or on the next pass (#185).
         return kind == AgentEvidenceRepo.Kinds.DryRun
+            && req.DryRun
+            && outcome.Mapped.Count > 0
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
             && !packet.BlockingReview().Any();
