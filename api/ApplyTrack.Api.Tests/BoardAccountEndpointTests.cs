@@ -116,6 +116,21 @@ public class BoardAccountEndpointTests : IAsyncLifetime
     [InlineData("successfactors.com", "kiewitcareers.kiewit.com", false)]
     [InlineData("successfactors.com", "notsuccessfactors.com", false)]
     [InlineData("127.0.0.1", "127.0.0.1", true)]
+    // Every Workday, Taleo and iCIMS employer keeps its own accounts: the shared domain is no key (#277).
+    [InlineData("broadridge.wd5.myworkdayjobs.com", "cvshealth.wd1.myworkdayjobs.com", false)]
+    [InlineData("broadridge.wd5.myworkdayjobs.com", "broadridge.wd5.myworkdayjobs.com", true)]
+    [InlineData("uhg.taleo.net", "kiewit.taleo.net", false)]
+    [InlineData("careers-mheducation.icims.com", "careers-other.icims.com", false)]
+    [InlineData("ultipro.com", "recruiting.ultipro.com", true)]   // UKG's one sign-in serves every board
     public void An_account_covers_its_host_its_subdomains_and_its_registrable_domain_and_nothing_else(string saved, string host, bool expected) =>
         Assert.Equal(expected, new BoardAccount(saved, "ada", "pw").Covers(host));
+
+    [Fact]
+    public void The_account_saved_for_the_exact_host_is_offered_before_one_that_merely_covers_it()
+    {
+        var accounts = new[] { new BoardAccount("successfactors.com", "shared", "pw"), new BoardAccount("career4.successfactors.com", "exact", "pw") };
+        Assert.Equal("exact", BoardAccount.For(accounts, "career4.successfactors.com")!.Username);
+        Assert.Equal("shared", BoardAccount.For(accounts, "career5.successfactors.com")!.Username);
+        Assert.Null(BoardAccount.For([new BoardAccount("broadridge.wd5.myworkdayjobs.com", "a", "pw")], "voya.wd1.myworkdayjobs.com"));
+    }
 }

@@ -102,6 +102,21 @@ internal sealed class FakeSubmitter(
         new(true, true, link, "Thank you for applying!", null, [], ["std:first_name", "std:email"], "");
 }
 
+/// <summary>Account creation without a browser (#277): hands back what it is told to, and says where it was asked.</summary>
+internal sealed class FakeAccountCreator(Func<string, ApplyTrack.Api.Agent.Browser.AccountCreation> create) : ApplyTrack.Api.Agent.Browser.IAccountCreator
+{
+    public List<string> Hosts { get; } = [];
+
+    public string? Recipe(string host) => host.EndsWith(".myworkdayjobs.com", StringComparison.Ordinal) ? "Workday" : null;
+
+    public Task<ApplyTrack.Api.Agent.Browser.AccountCreation> CreateAsync(string host, string postingLink, string email,
+        Func<ApplyTrack.Api.Agent.Browser.CodeRequest, CancellationToken, Task<string?>> relay, CancellationToken ct)
+    {
+        lock (Hosts) Hosts.Add(host);
+        return Task.FromResult(create(host));
+    }
+}
+
 /// <summary>The MyGreenhouse sign-in without a browser (#221): hands back a session, or throws.</summary>
 internal sealed class FakePortalRenewer(Func<string, ApplyTrack.Api.Agent.Browser.PortalSession> renew) : ApplyTrack.Api.Agent.Browser.IPortalSessionRenewer
 {

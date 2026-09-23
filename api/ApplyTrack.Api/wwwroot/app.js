@@ -2296,7 +2296,9 @@ function agentMarkup(s, events) {
     const d = e.detail || {};
     const what = e.kind === "verdict"
       ? `<span class="link-status ${d.decision === "proceed" ? "ok" : "bad"}">${escapeHtml(d.decision || "?")}</span> ${escapeHtml(d.rationale || "")}`
-      : `<span class="link-status bad">${escapeHtml(e.kind)}</span> ${escapeHtml(d.reason || "")}`;
+      : e.kind === "account_created"
+        ? `<span class="link-status ok">account created</span> ${escapeHtml(d.note || d.host || "")}`
+        : `<span class="link-status bad">${escapeHtml(e.kind === "account_not_created" ? "no account created" : e.kind)}</span> ${escapeHtml(d.reason || d.note || "")}`;
     const who = e.application_name
       ? `<button class="btn btn-ghost btn-xs mono" data-open="${escapeHtml(e.application_name)}" type="button">${escapeHtml(e.application_name)}</button>`
       : "";
@@ -2338,7 +2340,7 @@ function agentMarkup(s, events) {
           <input id="a-long" type="checkbox"${s.long_tail ? " checked" : ""} />
           <span>Let the browser fill forms on ATSs it doesn't know (the long tail)</span>
         </label>
-        <p class="field-help">Greenhouse, Lever and Ashby forms are understood. Anything else is filled by field label alone, and the agent refuses to click if a required field can't be mapped. Off by default; Workday is always yours to do by hand.</p>
+        <p class="field-help">Greenhouse, Lever and Ashby forms are understood. Anything else is filled by field label alone, and the agent refuses to click if a required field can't be mapped. Off by default.</p>
       </div>
 
       <div class="mt-4">
@@ -2355,6 +2357,14 @@ function agentMarkup(s, events) {
           <span>Score new listings with Jev instead of keyword matching</span>
         </label>
         <p class="field-help" id="a-jev-help">Off by default. On, the poller asks TypeSafe's Jev model whether each new listing's own work is the kind your keywords describe — so a sales role at an AI company no longer matches on "AI", and a "Data Engineer" posting matches without naming a keyword — and that fit is held to the discovery minimum fit score. Each new listing's title and description are sent to TypeSafe. It works only when the operator has set <code>TYPESAFE_API_KEY</code> on the poller; without one, or if the service fails, keyword matching decides as before.</p>
+      </div>
+
+      <div class="mt-4">
+        <label class="source-row">
+          <input id="a-create-accounts" type="checkbox"${s.create_accounts ? " checked" : ""} aria-describedby="a-create-accounts-help" />
+          <span>Create a candidate account when an application needs one</span>
+        </label>
+        <p class="field-help" id="a-create-accounts-help">Off by default. Some systems (Workday, haystack.cv) only take applications from a signed-in candidate. On, when a run stops at one and no account is saved for it, the agent <strong>registers a real account in your name</strong> with your application email and a strong generated password, confirms it from your mailbox, signs in with it to prove it works, and only then saves it under Board accounts — for that one employer. Each account created is listed in the agent's activity. It never gets past a captcha, and if an account already exists it tells you instead of resetting it.</p>
       </div>
 
       <div class="mt-4 agent-grid">
@@ -2491,6 +2501,7 @@ function wireAgent() {
       long_tail: $("#a-long").checked,
       linkedin_easy: $("#a-li-easy").checked,
       jev_classify: $("#a-jev").checked,
+      create_accounts: $("#a-create-accounts").checked,
       min_fit_score: Number($("#a-min").value),
       max_per_run: Number($("#a-run").value),
       max_per_day: Number($("#a-day").value),
