@@ -19,10 +19,13 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// exist once they are reached (LinkedIn Easy Apply, #278). The worker adds them to the packet and drafts answers.</param>
 /// <param name="Captcha">The form guards submit with an interactive captcha. Not a defect to retry and not
 /// something to solve — the posting has to be finished by hand with Copy answers and open.</param>
+/// <param name="BehindSignIn">The form was only reached by signing in by email, which only a real run does:
+/// a dry run stops at the sign-in. When such a run hands questions back, the run that follows has to be a
+/// real one too, or it can never see the form they came from (micro1, #280).</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false,
-    List<PacketQuestion>? Discovered = null);
+    List<PacketQuestion>? Discovered = null, bool BehindSignIn = false);
 
 /// <summary>
 /// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the
@@ -246,6 +249,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // says so. A real run signs in as the candidate and parks the way the Greenhouse
             // security code does — the person relays the code, or the link, the board emailed,
             // and the run carries on in this same session to the form the board now shows.
+            var behindSignIn = false;
             if (await OnlyEmailFieldsAsync(form))
             {
                 var stopped = await SignInAsync(session, form, packet, awaitSecurityCode, ct, accounts);
@@ -253,6 +257,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     return stopped with { Url = session.Page.Url, Screenshot = await session.ScreenshotAsync() };
                 page = session.Page;
                 form = await FormFrameAsync(page);
+                behindSignIn = true;
             }
 
             foreach (var q in packet.Questions)
@@ -395,6 +400,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (mapped.Count == 0 && await BrowserSession.SocialSignUpWallAsync(page) is { Count: > 0 } wall)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     BrowserSession.SocialWallNote(page.Url, wall));
+            // Signed in by email and shown a form the packet has never seen: the packet was built
+            // from the sign-in page, the only thing a dry run can reach, so of course nothing in
+            // it matches (micro1, #280). The form's questions go back to be drafted, exactly as a
+            // page of a wizard does (#278), and the run that follows signs in again to fill them.
+            if (mapped.Count == 0 && behindSignIn && !AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame)))
+            {
+                var unseen = (await FormDiscoverer.ReadQuestionsAsync(page, _log))
+                    .Where(live => live.Kind != PacketQuestion.Eeo && FindQuestion(packet, live.Id, live.Label) is null)
+                    .ToList();
+                if (unseen.Count > 0)
+                    return new SubmitOutcome(false, false, page.Url, "", screenshot, [.. unseen.Where(q => q.Required).Select(q => q.Id)], mapped,
+                        $"signed in — the form behind the sign-in asks {unseen.Count} question{(unseen.Count == 1 ? "" : "s")} the packet had never seen; "
+                        + "they go to the drafter and the run signs in again to fill them",
+                        Discovered: unseen, BehindSignIn: true);
+            }
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame))

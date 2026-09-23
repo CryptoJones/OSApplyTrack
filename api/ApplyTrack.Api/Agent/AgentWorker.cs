@@ -39,6 +39,9 @@ public sealed class AgentWorker : BackgroundService
     private static readonly TimeSpan WorkdayRecheck = TimeSpan.FromHours(12);
     // Requests whose run met new questions and answered them: worth one more dry run (#278).
     private readonly HashSet<long> _dryAgain = [];
+    /// <summary>Runs whose new questions came from behind an email sign-in: they go round again as
+    /// real runs, since a dry run stops at the sign-in and would never see them (#280).</summary>
+    private readonly HashSet<long> _realAgain = [];
 
     private readonly NpgsqlDataSource _db;
     private readonly AgentOptions _options;
@@ -295,6 +298,12 @@ public sealed class AgentWorker : BackgroundService
                 await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
                 if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: true))
                     _log.LogInformation("{Name}: new questions answered, queued for another dry run", req.ApplicationName);
+            }
+            else if (_realAgain.Remove(req.Id))
+            {
+                await using var conn = await _db.OpenConnectionAsync(CancellationToken.None);
+                if (await new SubmitRequestRepo(conn, req.TenantId).EnqueueAsync(req.ApplicationName, dryRun: false))
+                    _log.LogInformation("{Name}: the form behind the sign-in is answered, queued to sign in and submit", req.ApplicationName);
             }
             // Promote AFTER the completion above, never from inside RunSubmitAsync. The queue
             // is keyed on (tenant, application) and CompleteAsync stamps done_at on that row,
@@ -718,8 +727,11 @@ public sealed class AgentWorker : BackgroundService
             if (work.Cfg.IsConfigured)
             {
                 var (answered, extended) = await _packets.ExtendAsync(rec, packet, met, work.Inputs, work.Scope, ct);
+                // Behind an email sign-in only a real run can reach the form, and only a run the
+                // person asked for as real signs in at all — so it goes again as what it was. It
+                // cannot loop: the next run knows every question this one met.
                 if (answered > 0 && !extended.BlockingReview().Any())
-                    _dryAgain.Add(req.Id);
+                    (outcome.BehindSignIn && !req.DryRun ? _realAgain : _dryAgain).Add(req.Id);
             }
         }
 

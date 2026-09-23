@@ -28,7 +28,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 {
     private static readonly string RepoRoot = FindRepoRoot();
     private static readonly string Cli = Path.Combine(RepoRoot, "node_modules", "playwright-core", "cli.js");
-    public static bool Available => File.Exists(Cli);
+    /// <summary>A Playwright server to drive instead of starting one — <c>APPLYTRACK_LIVE_WS</c>,
+    /// with <c>APPLYTRACK_LIVE_PROXY</c> as its egress — so the live checks below run against the
+    /// production browser and proxy themselves, which is where ElevenLabs fails and nowhere else (#280).</summary>
+    private static readonly string LiveWs = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_WS") ?? "";
+    private static readonly string LiveProxy = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_PROXY") ?? "";
+    public static bool Available => LiveWs.Length > 0 || File.Exists(Cli);
 
     private Process? _server;
     private string _ws = "";
@@ -40,6 +45,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     public async Task InitializeAsync()
     {
         if (!Available) return;
+        if (LiveWs.Length > 0) { _ws = LiveWs; return; }
         _server = Process.Start(new ProcessStartInfo("node", $"\"{Cli}\" run-server --port 0 --host 127.0.0.1")
         {
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, WorkingDirectory = RepoRoot,
@@ -314,6 +320,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/sign-in-code/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "code"), "text/html"));
         _fixture.MapGet("/jobs/sign-in-link/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "link"), "text/html"));
         _fixture.MapGet("/jobs/sign-in-code/form", (string email) => Results.Content(SignedInFormHtml.Replace("EMAIL", email), "text/html"));
+        // micro1's shape (#280): the email gate is all a dry run can reach, so the packet knows
+        // one optional Email box — and the form behind the sign-in asks for none of it.
+        _fixture.MapGet("/jobs/sign-in-unseen", () => Results.Content(SignInPostingHtml.Replace("sign-in-MODE", "sign-in-unseen"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-unseen/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "code")
+            .Replace("/jobs/sign-in-code/form", "/jobs/sign-in-unseen/form"), "text/html"));
+        _fixture.MapGet("/jobs/sign-in-unseen/form", () => Results.Content(UnseenFormHtml, "text/html"));
         _fixture.MapGet("/jobs/sign-in-link/verify", (string token) => token == "abc123"
             ? Results.Content(SignedInFormHtml.Replace("EMAIL", "ada@example.com"), "text/html")
             : Results.Content("<html><body><h1>This link has expired.</h1></body></html>", "text/html"));
@@ -956,6 +968,18 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="first_name">First Name</label><input id="first_name" name="job_application[first_name]" />
           <label for="last_name">Last Name</label><input id="last_name" name="job_application[last_name]" />
           <label for="email">Email</label><input id="email" name="job_application[email]" type="email" value="EMAIL" />
+          <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string UnseenFormHtml = """
+        <html><body>
+        <h1>Backend Engineer</h1>
+        <form id="real" method="post" action="/apply">
+          <label for="full_name">Full name *</label><input id="full_name" name="full_name" required />
+          <label for="years">Years of backend experience *</label><input id="years" name="years" required />
+          <label for="why">Why this role?</label><textarea id="why" name="why"></textarea>
           <button type="submit">Submit application</button>
         </form>
         </body></html>
@@ -1891,6 +1915,55 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         ],
         Answers = new() { ["std:first_name"] = "Ada", ["std:last_name"] = "Lovelace", ["std:email"] = "ada@example.com" },
     };
+
+    private static AgentPacket GatePacket() => new()
+    {
+        ApplicationName = "micro1-backend-engineer.md", Provider = "unknown",
+        Questions = [new("email_id", "Email", false, PacketQuestion.Text, [], PacketQuestion.Standard)],
+        Answers = new() { ["email_id"] = "ada@example.com" },
+    };
+
+    [SkippableFact]
+    public async Task A_form_behind_an_email_sign_in_that_the_packet_never_saw_hands_its_questions_back()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Was: "nothing on this form could be filled — the packet's questions match none of its
+        // fields", a dead end, since the packet was built from the sign-in page (micro1, #280).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-unseen", GatePacket(), null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>("482913"));
+
+        Assert.False(outcome.Submitted);
+        Assert.True(outcome.BehindSignIn);
+        Assert.NotNull(outcome.Discovered);
+        var labels = outcome.Discovered!.Select(q => q.Label).ToList();
+        Assert.Contains(labels, l => l.StartsWith("Full name", StringComparison.Ordinal));
+        Assert.Contains(labels, l => l.StartsWith("Years of backend experience", StringComparison.Ordinal));
+        Assert.Contains("never seen", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task Once_the_questions_behind_the_sign_in_are_answered_the_next_run_signs_in_and_submits()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var first = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-unseen", GatePacket(), null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>("482913"));
+        var packet = GatePacket();
+        foreach (var q in first.Discovered!)
+        {
+            packet.Questions.Add(q);
+            packet.Answers[q.Id] = q.Label.StartsWith("Full name", StringComparison.Ordinal) ? "Ada Lovelace" : q.Label.StartsWith("Years", StringComparison.Ordinal) ? "12" : "The work.";
+        }
+
+        var second = await Submitter().RunAsync($"{_fixtureUrl}/jobs/sign-in-unseen", packet, null, dryRun: false,
+            awaitSecurityCode: (_, _) => Task.FromResult<string?>("482913"));
+
+        Assert.True(second.Submitted, second.Error);
+        Assert.Null(second.Discovered);
+        var sent = Assert.Single(_posts);
+        Assert.Equal("Ada Lovelace", sent["full_name"]);
+        Assert.Equal("12", sent["years"]);
+    }
 
     [SkippableFact]
     public async Task A_sign_in_code_the_board_emails_is_relayed_and_the_run_goes_on_to_the_form_behind_it()
@@ -2920,7 +2993,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var url = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_URL") ?? "";
         Skip.If(url.Length == 0, "set APPLYTRACK_LIVE_URL to a posting to run this");
         var provider = ApplyTrack.Api.Agent.AtsProvider.Detect(url, "");
-        var options = new BrowserOptions { Endpoint = _ws, TimeoutSeconds = 120, BlockSubmissions = true };
+        var options = new BrowserOptions { Endpoint = _ws, Proxy = LiveProxy, TimeoutSeconds = 120, BlockSubmissions = true };
         var questions = await new FormDiscoverer(options, NullLogger<FormDiscoverer>.Instance).DiscoverAsync(url);
         Assert.NotNull(questions);
         var packet = new AgentPacket { ApplicationName = "live.md", Provider = provider, Questions = questions! };
