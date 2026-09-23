@@ -133,6 +133,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// did not end with a form — the reason a "no form found" outcome can name (#180).</summary>
     public string RevealNote { get; private set; } = "";
 
+    /// <summary>The host of a sign-in the run met with no saved account for it, or of an
+    /// account-only ATS Apply led to — where a candidate account would have to exist (#277).</summary>
+    public string NeedsAccountAt { get; private set; } = "";
+
     private BrowserSession(IPlaywright playwright, IBrowser browser, IBrowserContext context, IPage page)
     {
         _playwright = playwright;
@@ -675,7 +679,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
         }
         finally { _context.Page -= OnPage; }
-        RevealNote = NoFormNote(Refused, Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "", applyHost);
+        var landedAt = Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "";
+        RevealNote = NoFormNote(Refused, landedAt, applyHost);
+        if (AccountOnlyAts(landedAt) is not null) NeedsAccountAt = landedAt;
+        else if (Refused.Count > 0 && AccountOnlyAts(Refused[0]) is not null) NeedsAccountAt = Refused[0];
+        else if (AccountOnlyAts(applyHost) is not null) NeedsAccountAt = applyHost;
     }
 
     /// <summary>
@@ -779,13 +787,19 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// the page moved on; false — with the reason in <see cref="RevealNote"/> — when there is
     /// no account for this host or the board refused the sign-in. Never creates an account.
     /// </summary>
-    private async Task<bool> TrySignInAsync()
+    /// <summary>Sign in on the page on screen with <paramref name="account"/> — how a newly created
+    /// account is proved before it is kept (#277). True when the sign-in form went away.</summary>
+    public async Task<bool> SignInAsAsync(BoardAccount account) =>
+        await SignInFormVisibleAsync(Page) && await TrySignInAsync(account);
+
+    private async Task<bool> TrySignInAsync(BoardAccount? with = null)
     {
         var host = Uri.TryCreate(Page.Url, UriKind.Absolute, out var here) ? here.Host : "";
-        var account = BoardAccount.For(_accounts, host);
+        var account = with ?? BoardAccount.For(_accounts, host);
         var ats = AccountOnlyAts(host);
         if (account is null)
         {
+            NeedsAccountAt = host;
             RevealNote = $"Apply leads to a sign-in at {host}{(ats is null ? "" : $" ({ats})")} and no account is saved for it — save yours under Settings · Agent · Board accounts and the browser will sign in, or apply by Copy answers and open the posting";
             return false;
         }

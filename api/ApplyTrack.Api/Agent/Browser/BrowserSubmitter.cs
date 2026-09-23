@@ -22,10 +22,12 @@ namespace ApplyTrack.Api.Agent.Browser;
 /// <param name="BehindSignIn">The form was only reached by signing in by email, which only a real run does:
 /// a dry run stops at the sign-in. When such a run hands questions back, the run that follows has to be a
 /// real one too, or it can never see the form they came from (micro1, #280).</param>
+/// <param name="NeedsAccountAt">The host of a sign-in or sign-up that stood between the run and the form, where no
+/// saved board account applies — the place a candidate account would have to be created (#277).</param>
 public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false,
-    List<PacketQuestion>? Discovered = null, bool BehindSignIn = false);
+    List<PacketQuestion>? Discovered = null, bool BehindSignIn = false, string NeedsAccountAt = "");
 
 /// <summary>
 /// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the
@@ -149,6 +151,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             opened = await BrowserSession.OpenAsync(_options, embed, ct, accounts);
         }
         await using var session = opened;
+        var outcome = await RunOnPageAsync(session, link, packet, resumePdf, dryRun, ct, resumeText, coverLetter, awaitSecurityCode, accounts);
+        // The run stopped at a sign-in no saved account covers: say which host, so the worker
+        // can create the account there when the tenant has said it may (#277).
+        return !outcome.Submitted && session.NeedsAccountAt.Length > 0 && BoardAccount.For(accounts, session.NeedsAccountAt) is null
+            ? outcome with { NeedsAccountAt = session.NeedsAccountAt }
+            : outcome;
+    }
+
+    private async Task<SubmitOutcome> RunOnPageAsync(
+        BrowserSession session, string link, AgentPacket packet, (byte[] Bytes, string Name)? resumePdf, bool dryRun,
+        CancellationToken ct, string resumeText, string coverLetter,
+        Func<CodeRequest, CancellationToken, Task<string?>>? awaitSecurityCode, IReadOnlyList<BoardAccount>? accounts)
+    {
         var page = session.Page;
         var mapped = new List<string>();
         var unmapped = new List<string>();

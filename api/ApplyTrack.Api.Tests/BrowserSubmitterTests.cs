@@ -39,6 +39,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     private string _ws = "";
     private WebApplication? _fixture;
     private string _fixtureUrl = "";
+    private readonly Dictionary<string, (string Password, bool Verified)> _wdAccounts = [];
+    private string _wdHoneypot = "";
     private readonly List<Dictionary<string, string>> _posts = [];
     private readonly List<Dictionary<string, string>> _laterPosts = [];
 
@@ -320,6 +322,37 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/sign-in-code/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "code"), "text/html"));
         _fixture.MapGet("/jobs/sign-in-link/auth", () => Results.Content(SignInAuthHtml.Replace("MODE", "link"), "text/html"));
         _fixture.MapGet("/jobs/sign-in-code/form", (string email) => Results.Content(SignedInFormHtml.Replace("EMAIL", email), "text/html"));
+        // Workday's candidate-account flow, in the data-automation-ids mapped on a live tenant
+        // (#277): cookie notice, Apply, Apply Manually, Create Account, a mailed verification link,
+        // and the tenant's /login. The fixture keeps the accounts it was given.
+        _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R1", () => Results.Content(WorkdayPostingHtml, "text/html"));
+        _fixture.MapPost("/wd/register", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            lock (_wdAccounts)
+            {
+                var email = f["email"].ToString();
+                _wdHoneypot = f["beecatcher"].ToString();
+                // Workday declines an address that already has an account without a word.
+                if (!_wdAccounts.ContainsKey(email)) _wdAccounts[email] = (f["password"].ToString(), false);
+            }
+            return Results.Content("<html><body><h1>Check your email</h1><p>We sent you a link to verify your account.</p></body></html>", "text/html");
+        });
+        _fixture.MapGet("/wd/verify", (string email) =>
+        {
+            lock (_wdAccounts) if (_wdAccounts.TryGetValue(email, out var a)) _wdAccounts[email] = (a.Password, true);
+            return Results.Content("<html><body><h1>Your account is verified</h1></body></html>", "text/html");
+        });
+        _fixture.MapGet("/wd/en-US/Careers/login", () => Results.Content(WorkdaySignInHtml, "text/html"));
+        _fixture.MapPost("/wd/signin", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            bool ok;
+            lock (_wdAccounts) ok = _wdAccounts.TryGetValue(f["email"].ToString(), out var a) && a.Verified && a.Password == f["password"].ToString();
+            return ok
+                ? Results.Content("<html><body><h1>Candidate Home</h1><p>My Applications</p></body></html>", "text/html")
+                : Results.Content(WorkdaySignInHtml.Replace("<!--ERR-->", "<div role=\"alert\">Wrong email or password</div>"), "text/html");
+        });
         // micro1's shape (#280): the email gate is all a dry run can reach, so the packet knows
         // one optional Email box — and the form behind the sign-in asks for none of it.
         _fixture.MapGet("/jobs/sign-in-unseen", () => Results.Content(SignInPostingHtml.Replace("sign-in-MODE", "sign-in-unseen"), "text/html"));
@@ -969,6 +1002,39 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="last_name">Last Name</label><input id="last_name" name="job_application[last_name]" />
           <label for="email">Email</label><input id="email" name="job_application[email]" type="email" value="EMAIL" />
           <button type="submit">Submit application</button>
+        </form>
+        </body></html>
+        """;
+
+    private const string WorkdayPostingHtml = """
+        <html><body>
+        <div id="notice"><button data-automation-id="legalNoticeAcceptButton" onclick="document.getElementById('notice').remove()">Accept Cookies</button></div>
+        <h1>Engineer</h1>
+        <a href="#" data-automation-id="adventureButton" onclick="document.getElementById('how').style.display='block';return false">Apply</a>
+        <div id="how" style="display:none"><a href="#" data-automation-id="applyManually" onclick="document.getElementById('create').style.display='block';return false">Apply Manually</a></div>
+        <form id="create" method="post" action="/wd/register" style="display:none">
+          <h2>Create Account</h2>
+          <label for="e">Email Address</label><input id="e" name="email" data-automation-id="email" type="text" />
+          <label for="p">Password</label><input id="p" name="password" data-automation-id="password" type="password" />
+          <label for="v">Verify New Password</label><input id="v" name="verifyPassword" data-automation-id="verifyPassword" type="password" />
+          <input name="beecatcher" data-automation-id="beecatcher" style="position:absolute;left:-9999px" tabindex="-1" />
+          <label><input type="checkbox" data-automation-id="createAccountCheckbox" /> I agree</label>
+          <div style="position:relative">
+            <button type="button" data-automation-id="createAccountSubmitButton">Create Account</button>
+            <div data-automation-id="click_filter" aria-label="Create Account" style="position:absolute;inset:0"
+                 onclick="if(document.getElementById('p').value===document.getElementById('v').value) document.getElementById('create').submit()"></div>
+          </div>
+        </form>
+        </body></html>
+        """;
+
+    private const string WorkdaySignInHtml = """
+        <html><body>
+        <h2>Sign In</h2><!--ERR-->
+        <form method="post" action="/wd/signin">
+          <label for="e">Email Address</label><input id="e" name="email" data-automation-id="email" type="text" />
+          <label for="p">Password</label><input id="p" name="password" data-automation-id="password" type="password" />
+          <button type="submit" data-automation-id="signInSubmitButton">Sign In</button>
         </form>
         </body></html>
         """;
@@ -1915,6 +1981,57 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         ],
         Answers = new() { ["std:first_name"] = "Ada", ["std:last_name"] = "Lovelace", ["std:email"] = "ada@example.com" },
     };
+
+    private AccountCreator Creator() =>
+        new(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<AccountCreator>.Instance);
+
+    [SkippableFact]
+    public async Task A_workday_account_is_created_verified_from_the_mailbox_and_proved_by_signing_in_before_it_is_kept()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        CodeRequest? asked = null;
+        var made = await Creator().CreateAsync("acme.wd5.myworkdayjobs.com", $"{_fixtureUrl}/wd/en-US/Careers/job/Omaha/Engineer_R1", "ada@example.com",
+            (ask, _) => { asked = ask; return Task.FromResult<string?>($"{_fixtureUrl}/wd/verify?email=ada%40example.com"); }, CancellationToken.None);
+
+        Assert.NotNull(made.Account);
+        Assert.Equal("acme.wd5.myworkdayjobs.com", made.Account!.Host);
+        Assert.Equal("ada@example.com", made.Account.Username);
+        Assert.Equal("ada@example.com", asked!.Recipient);
+        lock (_wdAccounts) Assert.Equal(made.Account.Password, _wdAccounts["ada@example.com"].Password);
+        Assert.Equal("", _wdHoneypot);   // the honeypot stays empty
+        Assert.True(made.Account.Password.Length >= 20);
+    }
+
+    [SkippableFact]
+    public async Task An_address_that_already_has_a_workday_account_is_reported_and_nothing_is_kept()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        lock (_wdAccounts) _wdAccounts["ada@example.com"] = ("the person's own", true);
+        var made = await Creator().CreateAsync("acme.wd5.myworkdayjobs.com", $"{_fixtureUrl}/wd/en-US/Careers/job/Omaha/Engineer_R1", "ada@example.com",
+            (_, _) => Task.FromResult<string?>($"{_fixtureUrl}/wd/verify?email=ada%40example.com"), CancellationToken.None);
+
+        Assert.Null(made.Account);
+        Assert.True(made.AlreadyExists);
+        Assert.Contains("already exists", made.Note);
+        lock (_wdAccounts) Assert.Equal("the person's own", _wdAccounts["ada@example.com"].Password);
+    }
+
+    [Fact]
+    public void Workday_signs_in_at_the_tenant_site_login_and_a_host_with_no_recipe_says_so()
+    {
+        Assert.Equal("https://acme.wd5.myworkdayjobs.com/en-US/Careers/login",
+            AccountCreator.WorkdaySignInUrl("https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/Omaha/Engineer_R1"));
+        Assert.Equal("https://acme.wd5.myworkdayjobs.com/External/login",
+            AccountCreator.WorkdaySignInUrl("https://acme.wd5.myworkdayjobs.com/External/job/Remote/Dev_R2"));
+        var creator = new AccountCreator(new BrowserOptions(), NullLogger<AccountCreator>.Instance);
+        Assert.Equal(AccountCreator.Workday, creator.Recipe("acme.wd5.myworkdayjobs.com"));
+        Assert.Equal(AccountCreator.Haystack, creator.Recipe("www.haystack.cv"));
+        Assert.Null(creator.Recipe("uhg.taleo.net"));
+        var pw = AccountCreator.NewPassword();
+        Assert.Equal(24, pw.Length);
+        Assert.Matches("[A-Z]", pw); Assert.Matches("[a-z]", pw); Assert.Matches("[0-9]", pw); Assert.Matches(@"[^A-Za-z0-9]", pw);
+        Assert.NotEqual(pw, AccountCreator.NewPassword());
+    }
 
     private static AgentPacket GatePacket() => new()
     {

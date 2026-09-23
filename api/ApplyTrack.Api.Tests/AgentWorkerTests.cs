@@ -36,7 +36,8 @@ public class AgentWorkerTests(PostgresFixture pg)
         StubLlmClient stub, string connectionString, CapturingNotifier notifier, LlmOptions? llm = null,
         BrowserOptions? browser = null, JobPageFetcher? fetcher = null,
         IBrowserSubmitter? submitter = null, ISecurityCodeSource? codes = null, INotifier? telegram = null,
-        AgentOptions? options = null, IPortalSessionRenewer? portal = null, ILinkedInSessionRenewer? linkedin = null)
+        AgentOptions? options = null, IPortalSessionRenewer? portal = null, ILinkedInSessionRenewer? linkedin = null,
+        IAccountCreator? accountCreator = null)
     {
         var evaluator = new LeadEvaluator(
             new FitJudge(new StructuredCompleter(stub)), fetcher ?? new JobPageFetcher(),
@@ -57,7 +58,7 @@ public class AgentWorkerTests(PostgresFixture pg)
             llm ?? new LlmOptions { BaseUrl = "http://stub/v1", Model = "stub-model" },
             Protector, evaluator, builder, ready, browserOptions,
             submitter ?? new BrowserSubmitter(browserOptions, NullLogger<BrowserSubmitter>.Instance), NullLoggerFactory.Instance,
-            codes, telegram, portal, linkedin);
+            codes, telegram, portal, linkedin, accountCreator: accountCreator);
     }
 
     private async Task<(NpgsqlConnection Conn, long Tenant)> SeedTenantAsync(bool enabled, bool telegram = true, bool allowed = true)
@@ -951,6 +952,49 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Equal("12", packet.Answers[question]);
         Assert.Equal("12", fake.Runs[1].Answers[question]);
         Assert.Equal(0, await PendingSubmitsAsync(conn, t));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_run_stopped_at_an_account_only_ats_creates_the_account_only_when_the_tenant_allows_it(bool allowed)
+    {
+        // Workday takes applications only from a signed-in candidate, per employer (#277). With
+        // create_accounts on, the account is registered, proved, sealed under Board accounts and
+        // recorded, and the run goes round again signed in. Off, nothing is registered anywhere.
+        var (conn, t, notifier) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var settings = await new AgentSettingsRepo(conn, t).GetAsync();
+        settings.CreateAccounts = allowed;
+        await new AgentSettingsRepo(conn, t).UpsertAsync(settings);
+        const string host = "acme.wd5.myworkdayjobs.com";
+        var runs = 0;
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(++runs == 1
+            ? new SubmitOutcome(false, false, link, "", null, [], [], $"Apply leads to a sign-in at {host} (Workday) and no account is saved for it", NeedsAccountAt: host)
+            : FakeSubmitter.Clean(link)));
+        var creator = new FakeAccountCreator(h => new AccountCreation(new BoardAccount(h, "ada@example.com", "Gen3rated!pw"), $"created a candidate account at {h}"));
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: fake, accountCreator: creator);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        var saved = await new BoardAccountRepo(conn, t, Protector, NullLogger.Instance).TargetsAsync();
+        if (allowed)
+        {
+            Assert.Equal([host], creator.Hosts);
+            var account = Assert.Single(saved, a => a.Host == host);
+            Assert.Equal("Gen3rated!pw", account.Password);
+            Assert.Contains(("high-engineer.md", "account_created"), await EventsAsync(conn, t));
+            Assert.Equal(2, runs);
+        }
+        else
+        {
+            Assert.Empty(creator.Hosts);
+            Assert.DoesNotContain(saved, a => a.Host == host);
+            Assert.Equal(1, runs);
+        }
     }
 
     [Fact]

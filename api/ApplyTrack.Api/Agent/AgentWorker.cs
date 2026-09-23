@@ -39,6 +39,7 @@ public sealed class AgentWorker : BackgroundService
     private static readonly TimeSpan WorkdayRecheck = TimeSpan.FromHours(12);
     // Requests whose run met new questions and answered them: worth one more dry run (#278).
     private readonly HashSet<long> _dryAgain = [];
+    private readonly IAccountCreator? _accountCreator;
     /// <summary>Runs whose new questions came from behind an email sign-in: they go round again as
     /// real runs, since a dry run stops at the sign-in and would never see them (#280).</summary>
     private readonly HashSet<long> _realAgain = [];
@@ -140,9 +141,10 @@ public sealed class AgentWorker : BackgroundService
         PacketReadyNotifier notifier, BrowserOptions browser, IBrowserSubmitter submitter,
         ILoggerFactory loggers, ISecurityCodeSource? codes = null, INotifier? telegram = null,
         IPortalSessionRenewer? portal = null, ILinkedInSessionRenewer? linkedin = null,
-        IHandshakeSessionRenewer? handshake = null)
+        IHandshakeSessionRenewer? handshake = null, IAccountCreator? accountCreator = null)
     {
         _codes = codes;
+        _accountCreator = accountCreator ?? (browser.IsConfigured ? new AccountCreator(browser, loggers.CreateLogger<AccountCreator>()) : null);
         _telegram = telegram;
         _portal = portal ?? (browser.IsConfigured ? new PortalSessionRenewer(browser, loggers.CreateLogger<PortalSessionRenewer>()) : null);
         _linkedin = linkedin ?? (browser.IsConfigured ? new LinkedInSessionRenewer(browser, loggers.CreateLogger<LinkedInSessionRenewer>()) : null);
@@ -732,6 +734,30 @@ public sealed class AgentWorker : BackgroundService
                 // cannot loop: the next run knows every question this one met.
                 if (answered > 0 && !extended.BlockingReview().Any())
                     (outcome.BehindSignIn && !req.DryRun ? _realAgain : _dryAgain).Add(req.Id);
+            }
+        }
+
+        // Stopped at an ATS that only takes applications from a candidate account, none saved:
+        // with the tenant's say-so, register one, prove it, keep it, and go round again (#277).
+        // It cannot loop: the next run has the account, and an attempt that kept nothing asks
+        // for no re-run.
+        if (outcome.NeedsAccountAt.Length > 0 && settings.CreateAccounts && _accountCreator?.Recipe(outcome.NeedsAccountAt) is { } ats)
+        {
+            // The address applications go out under, which is the one the mailbox reads —
+            // the verification mail has to arrive somewhere the agent can open.
+            var applyAs = BrowserSubmitter.CandidateEmail(packet);
+            var made = await _accountCreator.CreateAsync(outcome.NeedsAccountAt, rec.Fields.Link, applyAs, AwaitSecurityCodeAsync, ct);
+            if (made.Account is { } account)
+            {
+                await new BoardAccountRepo(conn, t, _protector, _log).UpsertAsync(account.Host, account.Username, account.Password);
+                await events.RecordAsync(AgentEventRepo.Kinds.AccountCreated, rec.Name, new { host = account.Host, ats, username = account.Username, note = made.Note });
+                _log.LogInformation("{Name}: {Note}", rec.Name, made.Note);
+                _dryAgain.Add(req.Id);
+            }
+            else
+            {
+                await events.RecordAsync(AgentEventRepo.Kinds.AccountNotCreated, rec.Name, new { host = outcome.NeedsAccountAt, ats, note = made.Note, already_exists = made.AlreadyExists });
+                _log.LogInformation("{Name}: no account kept at {Host}: {Note}", rec.Name, outcome.NeedsAccountAt, made.Note);
             }
         }
 

@@ -29,6 +29,12 @@ public sealed class AgentEventRepo
         public const string PortalSession = "portal_session";
         /// <summary>The pass put a stuck Ready application back in the submit queue (#274).</summary>
         public const string Requeued = "requeued";
+        /// <summary>The agent registered a candidate account at an ATS, proved it by signing in,
+        /// and saved it under Board accounts (#277). Every one is recorded — it is an account in
+        /// the person's name at an employer.</summary>
+        public const string AccountCreated = "account_created";
+        /// <summary>The agent tried to register a candidate account and did not keep one (#277).</summary>
+        public const string AccountNotCreated = "account_not_created";
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)

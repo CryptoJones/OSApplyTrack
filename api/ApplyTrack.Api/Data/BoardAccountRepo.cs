@@ -36,12 +36,28 @@ public sealed record BoardAccount(string Host, string Username, string Password,
         if (h.Length == 0 || mine.Length == 0) return false;
         if (h == mine || h.EndsWith("." + mine, StringComparison.Ordinal)) return true;
         static string Reg(string x) { var p = x.Split('.'); return p.Length <= 2 ? x : string.Join('.', p[^2..]); }
-        return Reg(h) == Reg(mine);
+        // On an ATS where every employer keeps its own candidate accounts, sharing the ATS's
+        // domain says nothing: Broadridge's Workday account is no key to CVS Health's (#277).
+        return Reg(h) == Reg(mine) && !PerEmployerAts.Contains(Reg(h));
     }
 
-    /// <summary>The account for a host, or null.</summary>
-    public static BoardAccount? For(IEnumerable<BoardAccount>? accounts, string host) =>
-        accounts?.FirstOrDefault(a => a.Covers(host));
+    /// <summary>ATS domains whose employers each keep their own candidate accounts, so an account
+    /// covers only the host it was saved for and its subdomains.</summary>
+    public static readonly HashSet<string> PerEmployerAts =
+        new(StringComparer.Ordinal) { "myworkdayjobs.com", "myworkdaysite.com", "taleo.net", "icims.com" };
+
+    /// <summary>The account for a host, or null — the one saved for that exact host first. Every
+    /// Workday employer is a <c>*.myworkdayjobs.com</c> host with its own candidate accounts, so
+    /// an account created at one must never be the first offered at another (#277).</summary>
+    public static BoardAccount? For(IEnumerable<BoardAccount>? accounts, string host)
+    {
+        if (accounts is null) return null;
+        var list = accounts as IReadOnlyCollection<BoardAccount> ?? accounts.ToList();
+        var h = Normalize(host);
+        return list.FirstOrDefault(a => Normalize(a.Host) == h)
+            ?? list.FirstOrDefault(a => h.EndsWith("." + Normalize(a.Host), StringComparison.Ordinal))
+            ?? list.FirstOrDefault(a => a.Covers(host));
+    }
 
     /// <summary>A host as stored and compared: lower-case, no scheme, no path, no leading www.</summary>
     public static string Normalize(string host)
