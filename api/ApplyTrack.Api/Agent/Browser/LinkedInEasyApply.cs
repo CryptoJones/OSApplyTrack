@@ -70,6 +70,53 @@ internal static partial class LinkedInEasyApply
     [GeneratedRegex(@"application (was )?sent|your application was sent|application submitted", RegexOptions.IgnoreCase)]
     private static partial Regex Sent();
 
+    /// <summary>
+    /// LinkedIn's mark on a posting it already holds an application for: "Applied" as a status
+    /// pill, or "Application submitted"/"You applied" with when. Distinct from <see cref="Sent()"/>,
+    /// which reads the confirmation the dialog shows in the moment it is sent.
+    /// </summary>
+    [GeneratedRegex(@"\bapplied on\b|\byou applied\b|\bapplication submitted\b|^\s*applied\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+    private static partial Regex Applied();
+
+    /// <summary>
+    /// The employer's own application URL, when the posting's Apply leads off LinkedIn — the
+    /// host alone, which is what the person needs to know. Empty when there is no Apply at all.
+    /// LinkedIn renders an offsite Apply as a control saying so, and the link it opens is the
+    /// employer's; an Easy Apply one never leaves linkedin.com.
+    /// </summary>
+    private static async Task<string> OffsiteApplyAsync(IPage page)
+    {
+        try
+        {
+            var href = await page.EvaluateAsync<string?>("""
+                () => {
+                  const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                  for (const el of document.querySelectorAll('a[href], button')) {
+                    if (!shown(el)) continue;
+                    const name = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
+                    if (!/\bapply\b/i.test(name) || /easy apply/i.test(name)) continue;
+                    const href = el.getAttribute('href') || '';
+                    if (/^https?:/i.test(href) && !/(^|\.)linkedin\.com$/i.test(new URL(href).hostname)) return href;
+                  }
+                  return null;
+                }
+                """);
+            return href is { Length: > 0 } && Uri.TryCreate(href, UriKind.Absolute, out var to) ? to.Host : "";
+        }
+        catch (PlaywrightException) { return ""; }
+    }
+
+    /// <summary>What the page actually said, for a failure that can name nothing better: its first
+    /// line of real text. A run that reports only what it could not find is unreadable (#280).</summary>
+    private static string Seen(string body)
+    {
+        var line = body.Split('\n').Select(l => l.Trim())
+            .FirstOrDefault(l => l.Length > 3 && l.Any(char.IsLetter)) ?? "";
+        return line.Length == 0 ? "the page had no text at all"
+            : "the page reads \"" + (line.Length > 120 ? line[..120] + "…" : line) + "\"";
+    }
+
     public static async Task<SubmitOutcome> RunAsync(BrowserSession session, AgentPacket packet, bool dryRun, ILogger log, CancellationToken ct)
     {
         var page = session.Page;
@@ -99,9 +146,19 @@ internal static partial class LinkedInEasyApply
                 var head = body.Length > 800 ? body[..800] : body;
                 if (head.Contains("Join now", StringComparison.OrdinalIgnoreCase) && head.Contains("Sign in", StringComparison.OrdinalIgnoreCase))
                     return Fail("LinkedIn showed its signed-out page — the kept session is not valid in the browser; it is renewed on the next pass, and nothing was attempted");
-                return Fail(SignedOut().IsMatch(page.Url)
-                    ? "LinkedIn asked to sign in — the kept session has lapsed or been challenged"
-                    : "no Easy Apply button on the posting — already applied to, or the employer moved it to its own site");
+                if (SignedOut().IsMatch(page.Url))
+                    return Fail("LinkedIn asked to sign in — the kept session has lapsed or been challenged");
+                // "already applied to, or the employer moved it to its own site" guessed between two
+                // outcomes that want opposite things: an application already sent is finished, and an
+                // offsite Apply is a lead to re-stage on the employer's own link. The page says which
+                // (#278): LinkedIn marks a posting it has an application for, and an Apply that is not
+                // Easy Apply carries the employer's URL. Twenty-six runs came back on this one line
+                // after the 1.50.0 session lapse, every one of them unreadable.
+                if (Applied().IsMatch(body))
+                    return Fail("LinkedIn says this application was already sent — nothing to do", closed: true);
+                if (await OffsiteApplyAsync(page) is { Length: > 0 } offsite)
+                    return Fail($"the employer takes this application on its own site ({offsite}), not through Easy Apply — re-stage the lead on that link or apply by Copy answers and open");
+                return Fail("no Easy Apply button on the posting, and no Apply of any kind: " + Seen(body));
             }
             await entry.ClickAsync(new() { Timeout = 10_000 });
             await page.Locator(Modal).First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 15_000 });
