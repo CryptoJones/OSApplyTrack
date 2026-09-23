@@ -43,6 +43,7 @@ public sealed class ResumeRepo
                 'location', location,
                 'summary', summary,
                 'experience', experience,
+                'education', education,
                 'skills', skills,
                 'certifications', certifications,
                 'links', links
@@ -89,10 +90,10 @@ public sealed class ResumeRepo
             """
             INSERT INTO resume_profiles
                 (tenant_id, full_name, headline, location, summary,
-                 experience, skills, certifications, links, updated_at)
+                 experience, education, skills, certifications, links, updated_at)
             VALUES
                 (@t, @full, @headline, @location, @summary,
-                 CAST(@experience AS jsonb), CAST(@skills AS jsonb),
+                 CAST(@experience AS jsonb), CAST(@education AS jsonb), CAST(@skills AS jsonb),
                  CAST(@certs AS jsonb), CAST(@links AS jsonb), now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 full_name      = EXCLUDED.full_name,
@@ -100,6 +101,7 @@ public sealed class ResumeRepo
                 location       = EXCLUDED.location,
                 summary        = EXCLUDED.summary,
                 experience     = EXCLUDED.experience,
+                education      = EXCLUDED.education,
                 skills         = EXCLUDED.skills,
                 certifications = EXCLUDED.certifications,
                 links          = EXCLUDED.links,
@@ -113,6 +115,7 @@ public sealed class ResumeRepo
                 r.Location,
                 r.Summary,
                 experience = JsonSerializer.Serialize(r.Experience, JsonOpts),
+                education = JsonSerializer.Serialize(r.Education, JsonOpts),
                 skills = JsonSerializer.Serialize(r.Skills, JsonOpts),
                 certs = JsonSerializer.Serialize(r.Certifications, JsonOpts),
                 links = JsonSerializer.Serialize(r.Links, JsonOpts),

@@ -75,7 +75,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     // prose ("no longer supported", etc.) never trips it.
     // "Page not found" is what Greenhouse serves for a posting that has been taken down
     // outright (Cresteo and Varicent on 2026-09-13): no gone-notice, no form, a 404 page.
-    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening) is (?:no longer available|closed|not available anymore)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening|opportunity) is (?:no longer available|closed|not available anymore|currently not available)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
 
     [GeneratedRegex(@"/(?:home|careers?|jobs?|openings|positions|opportunities|search|job-?board)/?$", RegexOptions.IgnoreCase)]
@@ -231,6 +231,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 catch (TimeoutException) { /* judged by what renders */ }
                 await BrowserSession.DismissConsentAsync(page);
             }
+            // UKG's application asks for work history and education as rows of its own, in
+            // panels the ATS fills from its parse of the résumé — rows it leaves half-empty,
+            // or none at all — and each row's Company, Title, School and Degree is required
+            // (#277). Filled from the structured résumé, and only with what it states.
+            foreach (var id in await FillUkgSectionsAsync(page, packet.Resume, _log))
+                if (!mapped.Contains(id)) mapped.Add(id);
             // A pre-screening step before the form — Paycor asks "Will you require sponsorship?"
             // on a page of radios and a Continue, and the reveal, finding no form and no Apply,
             // dead-ended at "no Apply button or link on the page" (#239). Answer the step from the
@@ -2250,6 +2256,149 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             catch (TimeoutException) { return false; }
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    /// <summary>
+    /// UKG's Work Experience and Education panels (mapped on OneStream's board, 2026-09-23): each
+    /// row is Job Title / Company / Location / From month+year / To month+year / Description, or
+    /// School / Degree (both type-aheads) / Major / From / To; "Add Experience" and "Add Education"
+    /// open a row, and the panel's "Add" keeps it. Rows the ATS parsed from the résumé have their
+    /// blanks filled from the résumé row at the same place; with no rows at all, the most recent
+    /// three jobs and every school are added. A month the résumé does not state is left blank —
+    /// never guessed — and the required-field sweep then names it for the person.
+    /// Returns the ids of the rows' fields it filled.
+    /// </summary>
+    public static async Task<List<string>> FillUkgSectionsAsync(IPage page, Resume? resume, ILogger? log = null)
+    {
+        var filled = new List<string>();
+        if (resume is null) return filled;
+        try
+        {
+            var work = page.Locator("#WorkExperienceSection");
+            var school = page.Locator("#EducationSection");
+            if (await work.CountAsync() == 0 && await school.CountAsync() == 0) return filled;
+
+            if (await work.CountAsync() > 0 && resume.Experience.Count > 0)
+            {
+                var jobs = resume.Experience.Where(e => e.Company.Length > 0 && e.Title.Length > 0).ToList();
+                var rows = await work.Locator("[data-automation='company-textbox']").CountAsync();
+                if (rows == 0)
+                    foreach (var (job, n) in jobs.Take(3).Select((j, n) => (j, n)))
+                    {
+                        if (!await OpenUkgRowAsync(page, work, "Add Experience")) break;
+                        // The row being edited is the only one whose boxes are on screen.
+                        await FillUkgRowAsync(work, -1, job.Title, job.Company, job.Dates, filled, "NewWorkExperience", n);
+                        if (!await KeepUkgRowAsync(work)) break;
+                    }
+                else
+                    for (var i = 0; i < rows && i < jobs.Count; i++)
+                        await FillUkgRowAsync(work, i, jobs[i].Title, jobs[i].Company, jobs[i].Dates, filled, "NewWorkExperience", i);
+            }
+
+            if (await school.CountAsync() > 0 && resume.Education.Count > 0)
+            {
+                var rows = await school.Locator("[data-automation='school-textbox']").CountAsync();
+                if (rows == 0)
+                    foreach (var (e, n) in resume.Education.Select((e, n) => (e, n)))
+                    {
+                        if (!await OpenUkgRowAsync(page, school, "Add Education")) break;
+                        await FillUkgSchoolAsync(school, -1, e, filled, n);
+                        if (!await KeepUkgRowAsync(school)) break;
+                    }
+                else
+                    for (var i = 0; i < rows && i < resume.Education.Count; i++)
+                        await FillUkgSchoolAsync(school, i, resume.Education[i], filled, i);
+            }
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            log?.LogInformation("ukg sections: stopped — {Reason}", ex.Message.Split('\n')[0]);
+        }
+        return filled;
+    }
+
+    private static async Task<bool> OpenUkgRowAsync(IPage page, ILocator panel, string label)
+    {
+        var add = panel.Locator($"button[aria-label='{label}']").First;
+        if (await add.CountAsync() == 0 || !await add.IsEnabledAsync()) return false;
+        await add.ClickAsync(new() { Timeout = 5_000 });
+        await page.WaitForTimeoutAsync(600);
+        return true;
+    }
+
+    /// <summary>The row's Save keeps it; until it does, the panel will not open another. False when
+    /// the row stayed open — the board refused a value — so the rest is left for the person.</summary>
+    private static async Task<bool> KeepUkgRowAsync(ILocator panel)
+    {
+        var save = panel.Locator("[data-automation='save-button']:visible").First;
+        if (await save.CountAsync() == 0) return false;
+        await save.ClickAsync(new() { Timeout = 5_000 });
+        try { await save.WaitForAsync(new() { State = WaitForSelectorState.Hidden, Timeout = 10_000 }); return true; }
+        catch (TimeoutException) { return false; }
+    }
+
+    /// <summary>Row <paramref name="i"/>'s field, or — with i &lt; 0 — the one on screen: the row being edited.</summary>
+    private static ILocator UkgField(ILocator panel, string automation, int i) =>
+        i < 0 ? panel.Locator($"[data-automation='{automation}']:visible").First : panel.Locator($"[data-automation='{automation}']").Nth(i);
+
+    private static async Task FillUkgRowAsync(ILocator panel, int i, string title, string company, string dates, List<string> filled, string prefix, int n)
+    {
+        await FillBlankAsync(UkgField(panel, "job-title-textbox", i), title, $"{prefix}_JobTitle{n}", filled);
+        await FillBlankAsync(UkgField(panel, "company-textbox", i), company, $"{prefix}_Organization{n}", filled);
+        await FillUkgDatesAsync(panel, i, dates, $"{prefix}_From{n}", filled);
+    }
+
+    private static async Task FillUkgSchoolAsync(ILocator panel, int i, ResumeEducation e, List<string> filled, int n)
+    {
+        await FillTypeaheadAsync(UkgField(panel, "school-textbox", i), e.School, $"NewEducation_SchoolId{n}", filled);
+        await FillTypeaheadAsync(UkgField(panel, "degree-textbox", i), e.Degree, $"NewEducation_DegreeId{n}", filled);
+        await FillUkgDatesAsync(panel, i, e.Dates, $"NewEducation_From{n}", filled);
+    }
+
+    /// <summary>"Mar 2026 - Present", "Dec 2015 - Feb 2021", "2014 - 2015": the months and years the
+    /// résumé states, into the row's From and To. A present role leaves To empty.</summary>
+    private static async Task FillUkgDatesAsync(ILocator panel, int i, string dates, string id, List<string> filled)
+    {
+        var parts = Regex.Split(dates, @"\s*[–—-]\s*");
+        var (fromMonth, fromYear) = MonthYear(parts.ElementAtOrDefault(0) ?? "");
+        var (toMonth, toYear) = MonthYear(parts.ElementAtOrDefault(1) ?? "");
+        if (fromMonth.Length > 0) await SelectBlankAsync(UkgField(panel, "from-month-dropdown", i), fromMonth);
+        if (fromYear.Length > 0 && await FillBlankAsync(UkgField(panel, "from-year-textbox", i), fromYear, id, filled)) { }
+        if (toMonth.Length > 0) await SelectBlankAsync(UkgField(panel, "to-month-dropdown", i), toMonth);
+        if (toYear.Length > 0) await FillBlankAsync(UkgField(panel, "to-year-textbox", i), toYear, id + "_to", filled);
+    }
+
+    private static (string Month, string Year) MonthYear(string text)
+    {
+        var m = Regex.Match(text, @"(?:(?<mon>[A-Za-z]{3})[a-z]*\.?\s+)?(?<year>(?:19|20)\d{2})");
+        return m.Success ? (m.Groups["mon"].Success ? char.ToUpperInvariant(m.Groups["mon"].Value[0]) + m.Groups["mon"].Value[1..].ToLowerInvariant() : "", m.Groups["year"].Value) : ("", "");
+    }
+
+    private static async Task<bool> FillBlankAsync(ILocator box, string value, string id, List<string> filled)
+    {
+        if (value.Length == 0 || await box.CountAsync() == 0 || (await box.InputValueAsync()).Trim().Length > 0) return false;
+        await box.FillAsync(value, new() { Timeout = 5_000 });
+        filled.Add(id);
+        return true;
+    }
+
+    private static async Task FillTypeaheadAsync(ILocator box, string value, string id, List<string> filled)
+    {
+        if (!await FillBlankAsync(box, value, id, filled)) return;
+        // A type-ahead offers matches; the first is taken when it is there, else the typed text stands.
+        await box.Page.WaitForTimeoutAsync(800);
+        var pick = box.Page.Locator(".tt-menu .tt-suggestion:visible, ul.typeahead li:visible, [role=listbox] [role=option]:visible").First;
+        if (await pick.CountAsync() > 0) await pick.ClickAsync(new() { Timeout = 3_000 });
+        else await box.PressAsync("Tab");
+    }
+
+    private static async Task SelectBlankAsync(ILocator select, string label)
+    {
+        if (await select.CountAsync() == 0) return;
+        var current = await select.EvaluateAsync<string>("s => s.value || ''");
+        if (current.Length > 0) return;
+        try { await select.SelectOptionAsync(new SelectOptionValue { Label = label }, new() { Timeout = 3_000 }); }
+        catch (PlaywrightException) { /* the board words its months otherwise; the sweep names it */ }
     }
 
     private static (string First, string Last) SplitName(string full, string first, string last)

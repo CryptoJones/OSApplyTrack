@@ -9,6 +9,10 @@ namespace ApplyTrack.Api.Data;
 /// <summary>One role in the candidate's history (a repeating résumé section).</summary>
 public sealed record ResumeExperience(string Company, string Title, string Dates, List<string> Highlights);
 
+/// <summary>One school and what was earned there. <see cref="Dates"/> is free text ("2012 – 2016").
+/// Filled in for forms that ask for education row by row — UKG's Education panel (#277).</summary>
+public sealed record ResumeEducation(string School, string Degree, string Field, string Dates);
+
 /// <summary>A labelled external link (portfolio, GitHub, …).</summary>
 public sealed record ResumeLink(string Label, string Url);
 
@@ -25,6 +29,7 @@ public sealed class Resume
     public string Location { get; set; } = "";
     public string Summary { get; set; } = "";
     public List<ResumeExperience> Experience { get; set; } = [];
+    public List<ResumeEducation> Education { get; set; } = [];
     public List<string> Skills { get; set; } = [];
     public List<string> Certifications { get; set; } = [];
     public List<ResumeLink> Links { get; set; } = [];
@@ -47,6 +52,7 @@ public sealed class Resume
             Location = GetString(data, "location"),
             Summary = GetString(data, "summary"),
             Experience = CleanExperience(data),
+            Education = CleanEducation(data),
             Skills = CleanList(data, "skills"),
             Certifications = CleanList(data, "certifications"),
             Links = CleanLinks(data),
@@ -75,6 +81,12 @@ public sealed class Resume
                 foreach (var h in e.Highlights)
                     sb.AppendLine($"  - {h}");
             }
+        }
+        if (Education.Count > 0)
+        {
+            sb.AppendLine().AppendLine("Education:");
+            foreach (var e in Education)
+                sb.AppendLine("- " + string.Join(" · ", new[] { e.Degree, e.Field, e.School, e.Dates }.Where(s => s.Length > 0)));
         }
         if (Skills.Count > 0)
             sb.AppendLine().AppendLine($"Skills: {string.Join(", ", Skills)}");
@@ -107,6 +119,21 @@ public sealed class Resume
             var s = (el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString())?.Trim() ?? "";
             if (s.Length > 0 && seen.Add(s.ToLowerInvariant()))
                 outList.Add(s);
+        }
+        return outList;
+    }
+
+    private static List<ResumeEducation> CleanEducation(JsonElement obj)
+    {
+        var outList = new List<ResumeEducation>();
+        if (obj.ValueKind != JsonValueKind.Object
+            || !obj.TryGetProperty("education", out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return outList;
+        foreach (var entry in arr.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            var e = new ResumeEducation(GetString(entry, "school"), GetString(entry, "degree"), GetString(entry, "field"), GetString(entry, "dates"));
+            if (e.School.Length > 0 || e.Degree.Length > 0) outList.Add(e);
         }
         return outList;
     }

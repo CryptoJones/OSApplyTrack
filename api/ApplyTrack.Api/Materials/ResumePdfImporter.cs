@@ -58,11 +58,61 @@ public static partial class ResumePdfImporter
 
     internal static Resume FromText(string text)
     {
+        var summary = BuildResumeText(text);
         return new Resume
         {
-            Summary = BuildResumeText(text),
+            Summary = summary,
+            Education = EducationFrom(summary),
         };
     }
+
+    /// <summary>
+    /// The schools under a résumé's EDUCATION heading, for forms that ask for them row by row
+    /// (UKG, #277). A school is the line before a degree line ("Bachelor of Science, Computer
+    /// Science"); a trailing date range on the school's line is its dates. Lines that name no
+    /// school ("Graduate &amp; Professional Certificates") are left for the person. Public for tests.
+    /// </summary>
+    public static List<ResumeEducation> EducationFrom(string text)
+    {
+        var lines = text.Split('\n').Select(l => l.Trim()).ToList();
+        var start = lines.FindIndex(l => EducationHeading().IsMatch(l));
+        var found = new List<ResumeEducation>();
+        if (start < 0) return found;
+        string? school = null, dates = "";
+        for (var i = start + 1; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            if (line.Length == 0) continue;
+            if (SectionHeading().IsMatch(line)) break;
+            if (DegreeWords().IsMatch(line))
+            {
+                if (school is null) continue;
+                var comma = line.IndexOf(',');
+                var inWord = Regex.Match(line, @"^(.+?)\s+in\s+(.+)$", RegexOptions.IgnoreCase);
+                var (degree, field) = comma > 0 ? (line[..comma].Trim(), line[(comma + 1)..].Trim())
+                    : inWord.Success ? (inWord.Groups[1].Value.Trim(), inWord.Groups[2].Value.Trim()) : (line, "");
+                found.Add(new ResumeEducation(school, degree, field, dates ?? ""));
+                school = null;
+                continue;
+            }
+            var d = TrailingDates().Match(line);
+            school = d.Success ? line[..d.Index].Trim() : line;
+            dates = d.Success ? d.Value.Trim() : "";
+        }
+        return found;
+    }
+
+    [GeneratedRegex(@"^education(\s+(and|&)\s+\w+)?:?$", RegexOptions.IgnoreCase)]
+    private static partial Regex EducationHeading();
+
+    [GeneratedRegex(@"^[A-Z][A-Z &/,-]{3,}$")]
+    private static partial Regex SectionHeading();
+
+    [GeneratedRegex(@"\b(bachelor|master|micromaster|associate|doctor|ph\.?d|mba|b\.?s\.?c?|m\.?s\.?c?|b\.?a|m\.?a|diploma|degree)\b|’s in|'s in", RegexOptions.IgnoreCase)]
+    private static partial Regex DegreeWords();
+
+    [GeneratedRegex(@"\s+((19|20)\d{2}|[A-Z][a-z]{2,8}\.? (19|20)\d{2})\s*([–-]\s*((19|20)\d{2}|[A-Z][a-z]{2,8}\.? (19|20)\d{2}|present|current))?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex TrailingDates();
 
     private static bool LooksLikePdf(byte[] bytes) =>
         bytes.Length >= 5

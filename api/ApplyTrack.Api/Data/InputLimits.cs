@@ -115,6 +115,19 @@ public static class InputLimits
             }
         }
 
+        if (data.TryGetProperty("education", out var education) && education.ValueKind == JsonValueKind.Array)
+        {
+            Count("education", education.GetArrayLength(), ResumeExperience);
+            foreach (var entry in education.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object) continue;
+                JsonText(entry, "school", ResumeHeading);
+                JsonText(entry, "degree", ResumeHeading);
+                JsonText(entry, "field", ResumeHeading);
+                JsonText(entry, "dates", ResumeHeading);
+            }
+        }
+
         if (data.TryGetProperty("links", out var links) && links.ValueKind == JsonValueKind.Array)
         {
             Count("links", links.GetArrayLength(), ResumeLinks);

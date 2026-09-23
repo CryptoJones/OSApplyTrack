@@ -547,6 +547,7 @@ public sealed class AgentWorker : BackgroundService
         var pdf = await resumes.GetPdfAsync();
         // The same résumé as text, for a board whose uploader will not take the file.
         var resumeText = resume.Summary;
+        packet.Resume = resume;
         // The drafted letter, for a form whose cover letter is a required file field.
         var coverLetter = await new CoverLetterRepo(conn, t, _protector).GetBodyAsync(rec.Name) ?? "";
         // The standard fields — name, email, phone, links — come from the profile as it is
