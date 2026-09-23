@@ -206,7 +206,8 @@ internal static partial class LinkedInEasyApply
                     if (dryRun)
                     {
                         await LeaveAsync(page, save: false);
-                        return new SubmitOutcome(true, false, page.Url, "", shot, unmapped, mapped, "", Discovered: discovered);
+                        return new SubmitOutcome(true, false, page.Url, "", shot, unmapped, mapped, "", Discovered: discovered,
+                            ReachedSubmit: true);
                     }
                     return await SubmitAsync(session, page, mapped, unmapped, shot);
                 }

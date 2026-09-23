@@ -184,7 +184,10 @@ public sealed class AgentEvidenceRepo
         // were promoted every pass on the strength of it. An EMPTY mapped list is that
         // signal. An ABSENT one is a row from before the field was recorded, and is judged
         // by the rest of the bar rather than parked on a question it was never asked.
-        if (detail.TryGetProperty("mapped", out var m) && m.ValueKind == JsonValueKind.Array && m.GetArrayLength() == 0)
+        // A run that reached the board's own Submit is the exception: LinkedIn pre-fills a
+        // candidate's contact details, so a dialog with no questions maps nothing and is ready.
+        if (detail.TryGetProperty("mapped", out var m) && m.ValueKind == JsonValueKind.Array && m.GetArrayLength() == 0
+            && !(detail.TryGetProperty("reached_submit", out var r) && r.ValueKind == JsonValueKind.True))
             return false;
         return true;
     }

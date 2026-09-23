@@ -712,7 +712,7 @@ public sealed class AgentWorker : BackgroundService
         // blocks the submission.
         var latency = await DiscoveryAgeSecondsAsync(conn, t, rec.Name);
         await evidence.RecordAsync(rec.Name, kind, outcome.Url, outcome.Confirmation,
-            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou }, outcome.Screenshot);
+            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou, reached_submit = outcome.ReachedSubmit }, outcome.Screenshot);
         await events.RecordAsync(kind, rec.Name, new
         {
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
@@ -794,8 +794,10 @@ public sealed class AgentWorker : BackgroundService
         //     by a blocking review item the fill then cleared. Promoting it re-queues the
         //     same real run, which is downgraded again: the unbounded loop of #302. A
         //     promotion that comes back as a dry run must not re-promote.
-        //   - something was actually filled (Mapped.Count > 0). A run that mapped nothing
-        //     has proved nothing about the form, whatever else it reports (#302).
+        //   - something was actually filled (Mapped.Count > 0), or the run walked the form to
+        //     the board's own Submit (ReachedSubmit). A run that mapped nothing and got nowhere
+        //     has proved nothing about the form (#302); a LinkedIn Easy Apply dialog that only
+        //     shows the candidate's pre-filled contact details maps nothing and is ready to send.
         //   - the tenant has explicitly turned dry-run off (settings.DryRun == false)
         //   - no required field went unmapped
         //   - no REQUIRED question is still waiting on the user (an optional one the model
@@ -805,7 +807,7 @@ public sealed class AgentWorker : BackgroundService
         // on is picked up later by ReadyPromoter — on the flip, or on the next pass (#185).
         return kind == AgentEvidenceRepo.Kinds.DryRun
             && req.DryRun
-            && outcome.Mapped.Count > 0
+            && (outcome.Mapped.Count > 0 || outcome.ReachedSubmit)
             && !settings.DryRun
             && outcome.Unmapped.Count == 0
             && !packet.BlockingReview().Any();
