@@ -1,0 +1,1030 @@
+{
+ "L001": {
+  "fit": true,
+  "why": ".NET/C# full-stack development"
+ },
+ "L002": {
+  "fit": true,
+  "why": "AI/ML engineering"
+ },
+ "L003": {
+  "fit": true,
+  "why": ".NET/C# application development"
+ },
+ "L004": {
+  "fit": true,
+  "why": "C# backend messaging services (gRPC, IoT device messaging)"
+ },
+ "L005": {
+  "fit": true,
+  "why": ".NET/C# microservices engineering"
+ },
+ "L006": {
+  "fit": true,
+  "why": ".NET/C# microservices architecture, hands-on"
+ },
+ "L007": {
+  "fit": true,
+  "why": "forward-deployed engineer building AI solutions (AI engineering)"
+ },
+ "L008": {
+  "fit": true,
+  "why": "backend software engineering: API design, relational databases, production services"
+ },
+ "L009": {
+  "fit": false,
+  "why": "presales solutions engineer"
+ },
+ "L010": {
+  "fit": false,
+  "why": "ServiceNow platform developer"
+ },
+ "L011": {
+  "fit": false,
+  "why": "Java application team lead, not backend/.NET/AI/data focus"
+ },
+ "L012": {
+  "fit": false,
+  "why": "IT desktop/Intune go-live engineer (\"go\" bait)"
+ },
+ "L013": {
+  "fit": true,
+  "why": "MLOps platform engineering (Databricks, MLflow)"
+ },
+ "L014": {
+  "fit": false,
+  "why": "entry-level COBOL/mainframe developer (\"go\" in stack list)"
+ },
+ "L015": {
+  "fit": true,
+  "why": "data science with LLM/RAG"
+ },
+ "L016": {
+  "fit": true,
+  "why": "data architecture and analytics/BI"
+ },
+ "L017": {
+  "fit": false,
+  "why": "data governance / master-data process role, not analysis"
+ },
+ "L018": {
+  "fit": true,
+  "why": "hands-on analytics (SQL, Python, BI)"
+ },
+ "L019": {
+  "fit": true,
+  "why": "data analyst"
+ },
+ "L020": {
+  "fit": true,
+  "why": "data architect / ETL / data engineering"
+ },
+ "L021": {
+  "fit": true,
+  "why": "data scientist, machine learning"
+ },
+ "L022": {
+  "fit": true,
+  "why": "data engineer (pipelines)"
+ },
+ "L023": {
+  "fit": false,
+  "why": "data entry"
+ },
+ "L024": {
+  "fit": true,
+  "why": "data engineer (ETL)"
+ },
+ "L025": {
+  "fit": false,
+  "why": "Adobe Analytics martech implementation consulting"
+ },
+ "L026": {
+  "fit": true,
+  "why": "data / analytics engineering"
+ },
+ "L027": {
+  "fit": false,
+  "why": "toxicology scientist"
+ },
+ "L028": {
+  "fit": false,
+  "why": "director of BI, people/finance leadership role"
+ },
+ "L029": {
+  "fit": true,
+  "why": "product data analyst"
+ },
+ "L030": {
+  "fit": true,
+  "why": "analytics engineer"
+ },
+ "L031": {
+  "fit": true,
+  "why": "data / analytics engineer"
+ },
+ "L032": {
+  "fit": true,
+  "why": "BI analyst"
+ },
+ "L033": {
+  "fit": true,
+  "why": "research data engineer (ETL)"
+ },
+ "L034": {
+  "fit": true,
+  "why": "data analyst"
+ },
+ "L035": {
+  "fit": true,
+  "why": "data engineer, backend + ETL"
+ },
+ "L036": {
+  "fit": true,
+  "why": "data engineering"
+ },
+ "L037": {
+  "fit": true,
+  "why": "AI product engineer (model evaluation, AI-powered products)"
+ },
+ "L038": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L039": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L040": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L041": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L042": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L043": {
+  "fit": false,
+  "why": "community organizer (political)"
+ },
+ "L044": {
+  "fit": false,
+  "why": "growth product manager"
+ },
+ "L045": {
+  "fit": true,
+  "why": ".NET software engineer"
+ },
+ "L046": {
+  "fit": false,
+  "why": "frontend engineer"
+ },
+ "L047": {
+  "fit": true,
+  "why": "backend software engineer"
+ },
+ "L048": {
+  "fit": false,
+  "why": "pricing executive (benefits/\"leveraging\" bait)"
+ },
+ "L049": {
+  "fit": false,
+  "why": "customer success manager"
+ },
+ "L050": {
+  "fit": false,
+  "why": "Shopify developer"
+ },
+ "L051": {
+  "fit": true,
+  "why": "Go backend engineer"
+ },
+ "L052": {
+  "fit": true,
+  "why": "AI agent engineering"
+ },
+ "L053": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L054": {
+  "fit": false,
+  "why": "technical product lead (product role)"
+ },
+ "L055": {
+  "fit": false,
+  "why": "generic software engineer at an infra company; posting shows no backend/AI work"
+ },
+ "L056": {
+  "fit": false,
+  "why": "HR operations"
+ },
+ "L057": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L058": {
+  "fit": false,
+  "why": "people/talent operations"
+ },
+ "L059": {
+  "fit": false,
+  "why": "clinical data management specialist, not analysis/engineering"
+ },
+ "L060": {
+  "fit": false,
+  "why": "social media comms"
+ },
+ "L061": {
+  "fit": false,
+  "why": "AI output rating / annotation, not engineering"
+ },
+ "L062": {
+  "fit": false,
+  "why": "customer support"
+ },
+ "L063": {
+  "fit": true,
+  "why": "AI engineer, data APIs"
+ },
+ "L064": {
+  "fit": false,
+  "why": "Oracle Fusion SCM consultant"
+ },
+ "L065": {
+  "fit": false,
+  "why": "course designer"
+ },
+ "L066": {
+  "fit": true,
+  "why": "backend engineer building AI agents"
+ },
+ "L067": {
+  "fit": false,
+  "why": "IT workplace / automation admin"
+ },
+ "L068": {
+  "fit": false,
+  "why": "solutions delivery manager"
+ },
+ "L069": {
+  "fit": false,
+  "why": "product designer"
+ },
+ "L070": {
+  "fit": true,
+  "why": "engineering across distributed systems, data infra, agent systems"
+ },
+ "L071": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L072": {
+  "fit": true,
+  "why": "distributed backend systems in Go"
+ },
+ "L073": {
+  "fit": true,
+  "why": "backend workflow/claims engineering"
+ },
+ "L074": {
+  "fit": true,
+  "why": "Go backend engineer (payments)"
+ },
+ "L075": {
+  "fit": false,
+  "why": "customer service rep (\"storage\" bait)"
+ },
+ "L076": {
+  "fit": false,
+  "why": "sales development rep"
+ },
+ "L077": {
+  "fit": true,
+  "why": "Java backend services"
+ },
+ "L078": {
+  "fit": false,
+  "why": "head of security"
+ },
+ "L079": {
+  "fit": true,
+  "why": "data analyst"
+ },
+ "L080": {
+  "fit": true,
+  "why": "data analyst assistant (data organization, visualization)"
+ },
+ "L081": {
+  "fit": false,
+  "why": "market research for lead gen"
+ },
+ "L082": {
+  "fit": false,
+  "why": "data entry"
+ },
+ "L083": {
+  "fit": false,
+  "why": "customer success"
+ },
+ "L084": {
+  "fit": false,
+  "why": "head of customer experience"
+ },
+ "L085": {
+  "fit": false,
+  "why": "customer value / account role"
+ },
+ "L086": {
+  "fit": true,
+  "why": "forward-deployed engineer building integrations for an AI-agent product"
+ },
+ "L087": {
+  "fit": false,
+  "why": "sales intern"
+ },
+ "L088": {
+  "fit": false,
+  "why": "GTM / sales associate"
+ },
+ "L089": {
+  "fit": true,
+  "why": "robot learning (ML) engineer"
+ },
+ "L090": {
+  "fit": false,
+  "why": "finance leadership"
+ },
+ "L091": {
+  "fit": true,
+  "why": "data & analytics engineer"
+ },
+ "L092": {
+  "fit": false,
+  "why": "corporate development"
+ },
+ "L093": {
+  "fit": false,
+  "why": "sales"
+ },
+ "L094": {
+  "fit": true,
+  "why": "backend services and data pipelines (Kotlin/Python)"
+ },
+ "L095": {
+  "fit": false,
+  "why": "account management"
+ },
+ "L096": {
+  "fit": false,
+  "why": "procurement working student"
+ },
+ "L097": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L098": {
+  "fit": false,
+  "why": "revenue operations"
+ },
+ "L099": {
+  "fit": true,
+  "why": "hands-on healthcare data science / data processing"
+ },
+ "L100": {
+  "fit": false,
+  "why": "controller (finance)"
+ },
+ "L101": {
+  "fit": false,
+  "why": "sales"
+ },
+ "L102": {
+  "fit": false,
+  "why": "growth marketer"
+ },
+ "L103": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L104": {
+  "fit": false,
+  "why": "legal engineer manager"
+ },
+ "L105": {
+  "fit": false,
+  "why": "founders' office intern"
+ },
+ "L106": {
+  "fit": false,
+  "why": "strategy/bizops intern"
+ },
+ "L107": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L108": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L109": {
+  "fit": false,
+  "why": "founder's associate, product"
+ },
+ "L110": {
+  "fit": false,
+  "why": "customer success / agent onboarding intern"
+ },
+ "L111": {
+  "fit": false,
+  "why": "customer success intern"
+ },
+ "L112": {
+  "fit": false,
+  "why": "deployment strategist, customer success"
+ },
+ "L113": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L114": {
+  "fit": false,
+  "why": "CRM lifecycle marketing"
+ },
+ "L115": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L116": {
+  "fit": false,
+  "why": "data & AI strategy consulting (not hands-on)"
+ },
+ "L117": {
+  "fit": false,
+  "why": "data & AI strategy consulting (not hands-on)"
+ },
+ "L118": {
+  "fit": false,
+  "why": "data & AI strategy consulting manager"
+ },
+ "L119": {
+  "fit": false,
+  "why": "AI governance / regulatory risk"
+ },
+ "L120": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L121": {
+  "fit": true,
+  "why": "backend engineer"
+ },
+ "L122": {
+  "fit": false,
+  "why": "product owner"
+ },
+ "L123": {
+  "fit": false,
+  "why": "product designer"
+ },
+ "L124": {
+  "fit": false,
+  "why": "solutions engineer (presales)"
+ },
+ "L125": {
+  "fit": false,
+  "why": "posting gives no detail beyond \"senior software engineer\""
+ },
+ "L126": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L127": {
+  "fit": false,
+  "why": "sales engineer (\"Storage\" bait)"
+ },
+ "L128": {
+  "fit": true,
+  "why": "backend engineer"
+ },
+ "L129": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L130": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L131": {
+  "fit": true,
+  "why": "backend engineer"
+ },
+ "L132": {
+  "fit": false,
+  "why": "full-stack product engineer"
+ },
+ "L133": {
+  "fit": false,
+  "why": "Java & React full-stack via marketplace blurb"
+ },
+ "L134": {
+  "fit": false,
+  "why": "DevOps/SRE director"
+ },
+ "L135": {
+  "fit": true,
+  "why": "hands-on chief architect of backend platform"
+ },
+ "L136": {
+  "fit": false,
+  "why": "full-stack + mobile greenfield rebuild lead"
+ },
+ "L137": {
+  "fit": false,
+  "why": "React Native mobile developer"
+ },
+ "L138": {
+  "fit": false,
+  "why": "presales solutions engineer"
+ },
+ "L139": {
+  "fit": false,
+  "why": "PeopleSoft developer"
+ },
+ "L140": {
+  "fit": false,
+  "why": "customer support manager"
+ },
+ "L141": {
+  "fit": true,
+  "why": "backend engineer"
+ },
+ "L142": {
+  "fit": true,
+  "why": "Java backend developer"
+ },
+ "L143": {
+  "fit": true,
+  "why": "Node.js backend developer"
+ },
+ "L144": {
+  "fit": true,
+  "why": "Python backend developer"
+ },
+ "L145": {
+  "fit": true,
+  "why": "backend engineer (IAM services)"
+ },
+ "L146": {
+  "fit": true,
+  "why": "API/integration engineering"
+ },
+ "L147": {
+  "fit": true,
+  "why": "backend services and public REST API"
+ },
+ "L148": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L149": {
+  "fit": false,
+  "why": "full-stack developer"
+ },
+ "L150": {
+  "fit": true,
+  "why": "data scientist, ML infrastructure"
+ },
+ "L151": {
+  "fit": true,
+  "why": "data scientist"
+ },
+ "L152": {
+  "fit": false,
+  "why": "solutions architect (presales)"
+ },
+ "L153": {
+  "fit": false,
+  "why": "UiPath/Power Platform RPA developer"
+ },
+ "L154": {
+  "fit": false,
+  "why": "full-stack SDE"
+ },
+ "L155": {
+  "fit": false,
+  "why": "Rails/React full-stack"
+ },
+ "L156": {
+  "fit": true,
+  "why": "developer advocate"
+ },
+ "L157": {
+  "fit": false,
+  "why": "full-stack Go/React product engineer"
+ },
+ "L158": {
+  "fit": false,
+  "why": "security operations"
+ },
+ "L159": {
+  "fit": false,
+  "why": "cloud platform architect (infra)"
+ },
+ "L160": {
+  "fit": true,
+  "why": "developer advocate"
+ },
+ "L161": {
+  "fit": false,
+  "why": "billing platform configuration (Zuora/CPQ)"
+ },
+ "L162": {
+  "fit": false,
+  "why": "DevOps professional services"
+ },
+ "L163": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L164": {
+  "fit": false,
+  "why": "full-stack Go/React product engineer"
+ },
+ "L165": {
+  "fit": false,
+  "why": "SOC manager"
+ },
+ "L166": {
+  "fit": false,
+  "why": "DevOps engineer"
+ },
+ "L167": {
+  "fit": false,
+  "why": "application security"
+ },
+ "L168": {
+  "fit": false,
+  "why": "technical support"
+ },
+ "L169": {
+  "fit": false,
+  "why": "GRC analyst"
+ },
+ "L170": {
+  "fit": false,
+  "why": "account executive"
+ },
+ "L171": {
+  "fit": false,
+  "why": "Azure security engineer"
+ },
+ "L172": {
+  "fit": false,
+  "why": "customer advocacy marketing (not developer community)"
+ },
+ "L173": {
+  "fit": true,
+  "why": "product documentation / technical writing"
+ },
+ "L174": {
+  "fit": false,
+  "why": "project manager"
+ },
+ "L175": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L176": {
+  "fit": false,
+  "why": "post-sales analytics onboarding"
+ },
+ "L177": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L178": {
+  "fit": false,
+  "why": "internal web tooling / dashboards (web dev)"
+ },
+ "L179": {
+  "fit": false,
+  "why": "cloud / DevOps"
+ },
+ "L180": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L181": {
+  "fit": true,
+  "why": "AI engineering (production AI tools, agents)"
+ },
+ "L182": {
+  "fit": false,
+  "why": "go-to-market engineer (\"go\" bait)"
+ },
+ "L183": {
+  "fit": true,
+  "why": "data analyst"
+ },
+ "L184": {
+  "fit": true,
+  "why": "data engineering tech lead"
+ },
+ "L185": {
+  "fit": true,
+  "why": "machine learning engineer"
+ },
+ "L186": {
+  "fit": false,
+  "why": "SRE"
+ },
+ "L187": {
+  "fit": false,
+  "why": "endpoint client software"
+ },
+ "L188": {
+  "fit": true,
+  "why": ".NET & Azure API/integration development"
+ },
+ "L189": {
+  "fit": false,
+  "why": "full-stack engineer"
+ },
+ "L190": {
+  "fit": true,
+  "why": "generative AI engineering"
+ },
+ "L191": {
+  "fit": true,
+  "why": "backend-led developer: APIs and distributed systems"
+ },
+ "L192": {
+  "fit": false,
+  "why": "full-stack, JS/React-heavy"
+ },
+ "L193": {
+  "fit": false,
+  "why": "generic software engineering intern"
+ },
+ "L194": {
+  "fit": false,
+  "why": "Ruby on Rails developer"
+ },
+ "L195": {
+  "fit": false,
+  "why": "product tech lead on code-change tooling, not backend/AI/data"
+ },
+ "L196": {
+  "fit": false,
+  "why": "Delphi ERP developer"
+ },
+ "L197": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L198": {
+  "fit": true,
+  "why": "backend tooling and integrations"
+ },
+ "L199": {
+  "fit": true,
+  "why": "backend integration APIs"
+ },
+ "L200": {
+  "fit": true,
+  "why": "Go backend engineer"
+ },
+ "L201": {
+  "fit": false,
+  "why": "full-stack engineer"
+ },
+ "L202": {
+  "fit": true,
+  "why": "backend platform / external APIs"
+ },
+ "L203": {
+  "fit": false,
+  "why": "consultancy generalist staff engineer / client lead"
+ },
+ "L204": {
+  "fit": false,
+  "why": "SRE"
+ },
+ "L205": {
+  "fit": true,
+  "why": "backend core APIs"
+ },
+ "L206": {
+  "fit": false,
+  "why": "device agent software"
+ },
+ "L207": {
+  "fit": false,
+  "why": "device agent software"
+ },
+ "L208": {
+  "fit": true,
+  "why": "backend engineer"
+ },
+ "L209": {
+  "fit": true,
+  "why": "backend APIs in Go"
+ },
+ "L210": {
+  "fit": true,
+  "why": "backend Go microservices"
+ },
+ "L211": {
+  "fit": false,
+  "why": "full-stack engineer"
+ },
+ "L212": {
+  "fit": true,
+  "why": "backend microservices"
+ },
+ "L213": {
+  "fit": false,
+  "why": "account manager"
+ },
+ "L214": {
+  "fit": false,
+  "why": "regulatory manager"
+ },
+ "L215": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L216": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L217": {
+  "fit": true,
+  "why": "C# developer"
+ },
+ "L218": {
+  "fit": true,
+  "why": "AI agents and data pipelines"
+ },
+ "L219": {
+  "fit": true,
+  "why": "developer educator / technical education"
+ },
+ "L220": {
+  "fit": true,
+  "why": "backend distributed systems and APIs (Python)"
+ },
+ "L221": {
+  "fit": false,
+  "why": "posting gives no detail on the work"
+ },
+ "L222": {
+  "fit": true,
+  "why": "Go backend services"
+ },
+ "L223": {
+  "fit": true,
+  "why": "Go backend services"
+ },
+ "L224": {
+  "fit": false,
+  "why": "GTM program manager"
+ },
+ "L225": {
+  "fit": true,
+  "why": "developer relations & community"
+ },
+ "L226": {
+  "fit": false,
+  "why": "developer marketing"
+ },
+ "L227": {
+  "fit": true,
+  "why": "backend/AI agent commerce platform"
+ },
+ "L228": {
+  "fit": true,
+  "why": "AI platform and data infrastructure"
+ },
+ "L229": {
+  "fit": false,
+  "why": "social media manager"
+ },
+ "L230": {
+  "fit": true,
+  "why": "forward-deployed engineer building AI solutions"
+ },
+ "L231": {
+  "fit": false,
+  "why": "presales engineer"
+ },
+ "L232": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L233": {
+  "fit": true,
+  "why": "AI engineer"
+ },
+ "L234": {
+  "fit": true,
+  "why": "LLM inference systems engineering"
+ },
+ "L235": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L236": {
+  "fit": true,
+  "why": "C#/.NET backend engineer"
+ },
+ "L237": {
+  "fit": true,
+  "why": "ML inference performance engineering"
+ },
+ "L238": {
+  "fit": true,
+  "why": "machine learning engineer"
+ },
+ "L239": {
+  "fit": true,
+  "why": "data science intern"
+ },
+ "L240": {
+  "fit": true,
+  "why": "ML systems research engineering"
+ },
+ "L241": {
+  "fit": true,
+  "why": "data scientist"
+ },
+ "L242": {
+  "fit": true,
+  "why": "LLM safety research"
+ },
+ "L243": {
+  "fit": false,
+  "why": "product manager"
+ },
+ "L244": {
+  "fit": false,
+  "why": "data engineering sales specialist"
+ },
+ "L245": {
+  "fit": false,
+  "why": "engineering manager"
+ },
+ "L246": {
+  "fit": false,
+  "why": "senior director managing 20+ analytics engineers"
+ },
+ "L247": {
+  "fit": true,
+  "why": "ML post-training research engineer"
+ },
+ "L248": {
+  "fit": true,
+  "why": "machine learning engineer"
+ },
+ "L249": {
+  "fit": false,
+  "why": "fraud researcher (trust & safety)"
+ },
+ "L250": {
+  "fit": true,
+  "why": "AI/ML platform architecture"
+ },
+ "L251": {
+  "fit": true,
+  "why": "data analysis and agentic AI automation"
+ },
+ "L252": {
+  "fit": false,
+  "why": "security risk analyst"
+ },
+ "L253": {
+  "fit": true,
+  "why": "hands-on ML player-coach"
+ },
+ "L254": {
+  "fit": true,
+  "why": "data engineer"
+ },
+ "L255": {
+  "fit": true,
+  "why": "hands-on analytics engineering / data quality"
+ },
+ "L256": {
+  "fit": true,
+  "why": "AI software engineering"
+ },
+ "L257": {
+  "fit": false,
+  "why": "customer-facing AI architect / advisor"
+ }
+}

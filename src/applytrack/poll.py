@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
@@ -330,6 +331,97 @@ def classify(title: str, description: str, keywords: Iterable[str]) -> tuple[int
     body_hits = len(hits) - title_hits
     score = 50 + 9 * title_hits + 3 * body_hits if title_hits else 40 + 5 * body_hits
     return min(100, score), hits
+
+
+# -- semantic fit (opt-in, #300) ----------------------------------------------
+#
+# The keyword regex can only ask "does this posting share words with the list?" Jev
+# (TypeSafe's System One model) is asked the question the regex approximates -- is this
+# posting's own work the kind of work the keywords describe? -- and answers with a
+# calibrated probability. It is one plain REST call, off unless a tenant turns it on
+# AND the operator sets TYPESAFE_API_KEY, and any failure falls back to classify() for
+# the rest of the run: a self-hoster with no key loses nothing. Measured against the
+# keyword score on 257 hand-labelled live listings in tools/jev_eval/.
+
+JEV_INSTRUCTIONS = (
+    "`profile.keywords` lists the kinds of work a job seeker does. Is `posting` a job whose "
+    "actual day-to-day work is one of those kinds of work? Judge the role itself -- what the "
+    "hired person will spend their time doing. A posting that only mentions a keyword in the "
+    "company blurb, the product description, the benefits, or a list of tools the team happens "
+    "to use is NOT a match: a salesperson, recruiter, product manager or support agent at an AI "
+    "or data company is not doing AI or data work."
+)
+_JEV_CRITERIA = {
+    "true": "The role's own work is one of the kinds of work in `profile.keywords`",
+    "false": "A different kind of job, even if it shares words with `profile.keywords`",
+}
+# Well under the model's 32k-token state limit, and what the evaluation measured.
+_JEV_MAX_DESCRIPTION = 6000
+
+
+class JevJudge:
+    """Asks Jev for a 0-100 fit per listing; ``None`` means "use the keyword score"."""
+
+    def __init__(self, api_key: str, *, base_url: str = "", model: str = "",
+                 client: httpx.Client | None = None) -> None:
+        self._url = (base_url or "https://api.typesafe.ai").rstrip("/") + "/v1/systemone"
+        self._model = model or "jev-latest"
+        self._headers = {"Authorization": f"Bearer {api_key}"}
+        self._client = client or httpx.Client(timeout=15.0)
+        self.broken = False
+
+    def fit(self, item: Listing, keywords: Iterable[str]) -> int | None:
+        if self.broken:
+            return None
+        body = {
+            "model": self._model,
+            "state": {
+                "profile": {"keywords": [k for k in keywords if k]},
+                "posting": {
+                    "title": item.role, "company": item.company, "location": item.location,
+                    "description": item.description[:_JEV_MAX_DESCRIPTION],
+                },
+            },
+            "questions": {"fit": {"type": "noul", "instructions": JEV_INSTRUCTIONS,
+                                  "criteria": _JEV_CRITERIA}},
+        }
+        try:
+            res = self._client.post(self._url, json=body, headers=self._headers)
+            res.raise_for_status()
+            p = float(res.json()["answers"]["fit"]["noul"])
+        except Exception as exc:  # noqa: BLE001 - any failure means "keywords decide"
+            # One failure ends Jev for this run: an outage or a revoked key must not cost a
+            # timeout per listing. The keyword score decides the rest of the pass.
+            self.broken = True
+            logger.warning("jev: %s — keyword scoring for the rest of this run", exc)
+            return None
+        if not 0.0 <= p <= 1.0:
+            self.broken = True
+            return None
+        return round(100 * p)
+
+    def close(self) -> None:
+        self._client.close()
+
+
+def jev_judge_for(repo: object) -> JevJudge | None:
+    """A judge when this tenant opted in (``agent_settings.jev_classify``) and the operator
+    configured a key; otherwise None, and :func:`classify` alone decides."""
+    enabled = getattr(repo, "jev_classify_enabled", None)
+    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    if not key or enabled is None:
+        return None
+    try:
+        if not enabled():
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable setting is an off setting
+        logger.warning("jev: could not read the tenant's setting; using keywords", exc_info=True)
+        return None
+    return JevJudge(
+        key,
+        base_url=os.environ.get("TYPESAFE_BASE_URL", ""),
+        model=os.environ.get("JEV_MODEL", ""),
+    )
 
 
 def _looks_remote(item: Listing) -> bool:
@@ -1348,6 +1440,7 @@ def score_and_stage(
         if verify_links
         else None
     )
+    judge = jev_judge_for(repo)
     added: list[str] = []
     try:
         for item in listings:
@@ -1368,7 +1461,13 @@ def score_and_stage(
                 continue
 
             score, hits = classify(item.role, item.description, profile.keywords)
-            if not hits or score < profile.min_fit_score:
+            # Opted in: Jev's fit replaces the keyword score, held to the same floor. It is
+            # asked even with no keyword hit -- most of what it catches is a role the list
+            # never names ("Data Engineer", "Backend Software Engineer") (#300).
+            fit = judge.fit(item, profile.keywords) if judge is not None else None
+            if fit is not None:
+                score = fit
+            if (fit is None and not hits) or score < profile.min_fit_score:
                 seen.add(item.link, slug)
                 continue
 
@@ -1421,7 +1520,7 @@ def score_and_stage(
                 seen.add(listing_link, slug)
                 continue
 
-            fields = _to_fields(item, profile.default_lane, score, hits)
+            fields = _to_fields(item, profile.default_lane, score, hits, judged=fit is not None)
             try:
                 name = repo.add_lead(fields)
             except psycopg.errors.UniqueViolation:
@@ -1445,17 +1544,20 @@ def score_and_stage(
     finally:
         if verify_client is not None:
             verify_client.close()
+        if judge is not None:
+            judge.close()
 
     return added
 
 
-def _to_fields(item: Listing, lane: str, score: int, hits: list[str]) -> AppFields:
+def _to_fields(
+    item: Listing, lane: str, score: int, hits: list[str], *, judged: bool = False
+) -> AppFields:
     snippet = item.description[:280].rstrip()
-    matched = ", ".join(hits[:6])
-    notes = (
-        f"**Auto-discovered** via {item.source}. "
-        f"Matched keywords: {matched}.\n\n{snippet}"
-    ).strip()
+    matched = f"Matched keywords: {', '.join(hits[:6])}." if hits else ""
+    if judged:
+        matched = f"Fit {score}/100 by Jev. {matched}".strip()
+    notes = f"**Auto-discovered** via {item.source}. {matched}\n\n{snippet}".strip()
     return AppFields(
         company=item.company,
         role=item.role,
