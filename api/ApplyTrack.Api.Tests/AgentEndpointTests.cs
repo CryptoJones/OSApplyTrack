@@ -192,6 +192,18 @@ public class AgentEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Jev_scoring_is_off_by_default_and_saves_for_any_account()
+    {
+        // A discovery setting, not an auto-apply one: no allowlist row is needed (#300).
+        Assert.False((await ReadJson(await _client.GetAsync("/api/agent-settings")))
+            .GetProperty("jev_classify").GetBoolean());
+        var on = await ReadJson(await _client.PutAsync("/api/agent-settings", Json("""{"jev_classify":true}""")));
+        Assert.True(on.GetProperty("jev_classify").GetBoolean());
+        Assert.True((await ReadJson(await _client.GetAsync("/api/agent-settings")))
+            .GetProperty("jev_classify").GetBoolean());
+    }
+
+    [Fact]
     public async Task An_account_off_the_operators_allowlist_cannot_switch_the_agent_on()
     {
         // Every test tenant is allowlisted by default; this one is not.

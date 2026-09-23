@@ -94,6 +94,7 @@ public static class AgentEndpoints
         country = s.Country,
         long_tail = s.LongTail,
         linkedin_easy = s.LinkedInEasy,
+        jev_classify = s.JevClassify,
         // Whether a worker runs on this instance at all — in this process, or as the
         // separate agent container that has checked in (agent_workers) — so the UI can
         // say "saved, but nothing will happen until the operator starts the agent".

@@ -146,6 +146,8 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-applytrack}"
       DRAIN_INTERVAL: ${DRAIN_INTERVAL:-60}
       POLL_INTERVAL: ${POLL_INTERVAL:-3600}
+      # Optional (#300): lets tenants who opt in score listings with Jev. Blank = keywords.
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
     networks:
       - database
       - egress

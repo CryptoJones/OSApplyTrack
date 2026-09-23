@@ -1,0 +1,2870 @@
+{
+ "L001": {
+  "baseline": true,
+  "baseline_score": 65,
+  "hits": [
+   ".net",
+   "dotnet",
+   "c#"
+  ],
+  "noul": true,
+  "noul_p": 0.87,
+  "score": true,
+  "score_fit": 87
+ },
+ "L002": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "ai engineer",
+   "ml engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 99
+ },
+ "L003": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   ".net",
+   "c#"
+  ],
+  "noul": true,
+  "noul_p": 0.8,
+  "score": true,
+  "score_fit": 91
+ },
+ "L004": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "c#"
+  ],
+  "noul": true,
+  "noul_p": 0.66,
+  "score": true,
+  "score_fit": 56
+ },
+ "L005": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   ".net",
+   "c#",
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.83,
+  "score": true,
+  "score_fit": 90
+ },
+ "L006": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   ".net",
+   "c#",
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.71,
+  "score": true,
+  "score_fit": 83
+ },
+ "L007": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 76
+ },
+ "L008": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 85
+ },
+ "L009": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.33,
+  "score": false,
+  "score_fit": 42
+ },
+ "L010": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   ".net"
+  ],
+  "noul": false,
+  "noul_p": 0.31,
+  "score": false,
+  "score_fit": 39
+ },
+ "L011": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.17,
+  "score": false,
+  "score_fit": 29
+ },
+ "L012": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.2,
+  "score": false,
+  "score_fit": 30
+ },
+ "L013": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "mlops"
+  ],
+  "noul": true,
+  "noul_p": 0.71,
+  "score": true,
+  "score_fit": 80
+ },
+ "L014": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.27,
+  "score": false,
+  "score_fit": 40
+ },
+ "L015": {
+  "baseline": true,
+  "baseline_score": 68,
+  "hits": [
+   "llm",
+   "rag",
+   "data science",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.9,
+  "score": true,
+  "score_fit": 99
+ },
+ "L016": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "data analytics",
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.73,
+  "score": true,
+  "score_fit": 96
+ },
+ "L017": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.57,
+  "score": true,
+  "score_fit": 79
+ },
+ "L018": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.68,
+  "score": true,
+  "score_fit": 76
+ },
+ "L019": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.86,
+  "score": true,
+  "score_fit": 98
+ },
+ "L020": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "generative ai",
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 98
+ },
+ "L021": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "machine learning",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 98
+ },
+ "L022": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.76,
+  "score": true,
+  "score_fit": 94
+ },
+ "L023": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.13,
+  "score": false,
+  "score_fit": 18
+ },
+ "L024": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.87,
+  "score": true,
+  "score_fit": 96
+ },
+ "L025": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.4,
+  "score": true,
+  "score_fit": 66
+ },
+ "L026": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "analytics engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 97
+ },
+ "L027": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.73,
+  "score": true,
+  "score_fit": 95
+ },
+ "L028": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.65,
+  "score": true,
+  "score_fit": 83
+ },
+ "L029": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "data analyst",
+   "data science"
+  ],
+  "noul": true,
+  "noul_p": 0.83,
+  "score": true,
+  "score_fit": 96
+ },
+ "L030": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "data analytics",
+   "analytics engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 99
+ },
+ "L031": {
+  "baseline": true,
+  "baseline_score": 65,
+  "hits": [
+   "data analytics",
+   "analytics engineer",
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 99
+ },
+ "L032": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 97
+ },
+ "L033": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.82,
+  "score": true,
+  "score_fit": 98
+ },
+ "L034": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L035": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.81,
+  "score": true,
+  "score_fit": 95
+ },
+ "L036": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.7,
+  "score": true,
+  "score_fit": 95
+ },
+ "L037": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.64,
+  "score": true,
+  "score_fit": 85
+ },
+ "L038": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 1
+ },
+ "L039": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.12,
+  "score": false,
+  "score_fit": 12
+ },
+ "L040": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.06,
+  "score": false,
+  "score_fit": 1
+ },
+ "L041": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "developer experience"
+  ],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 5
+ },
+ "L042": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 1
+ },
+ "L043": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 0
+ },
+ "L044": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data scientist"
+  ],
+  "noul": false,
+  "noul_p": 0.14,
+  "score": false,
+  "score_fit": 25
+ },
+ "L045": {
+  "baseline": true,
+  "baseline_score": 65,
+  "hits": [
+   ".net",
+   "c#",
+   "asp.net"
+  ],
+  "noul": true,
+  "noul_p": 0.93,
+  "score": true,
+  "score_fit": 97
+ },
+ "L046": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai engineer"
+  ],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 34
+ },
+ "L047": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.86,
+  "score": true,
+  "score_fit": 99
+ },
+ "L048": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L049": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L050": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 33
+ },
+ "L051": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 33
+ },
+ "L052": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 100
+ },
+ "L053": {
+  "baseline": true,
+  "baseline_score": 60,
+  "hits": [
+   "agentic",
+   "large language model",
+   "machine learning",
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 5
+ },
+ "L054": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "llm"
+  ],
+  "noul": false,
+  "noul_p": 0.13,
+  "score": false,
+  "score_fit": 13
+ },
+ "L055": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "machine learning"
+  ],
+  "noul": true,
+  "noul_p": 0.62,
+  "score": true,
+  "score_fit": 57
+ },
+ "L056": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L057": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.2,
+  "score": false,
+  "score_fit": 21
+ },
+ "L058": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 1
+ },
+ "L059": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.42,
+  "score": true,
+  "score_fit": 59
+ },
+ "L060": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "llm"
+  ],
+  "noul": false,
+  "noul_p": 0.19,
+  "score": false,
+  "score_fit": 22
+ },
+ "L061": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.24,
+  "score": false,
+  "score_fit": 53
+ },
+ "L062": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L063": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "ai engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.84,
+  "score": true,
+  "score_fit": 97
+ },
+ "L064": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "ai engineer",
+   "etl"
+  ],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 29
+ },
+ "L065": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 13
+ },
+ "L066": {
+  "baseline": true,
+  "baseline_score": 68,
+  "hits": [
+   "backend engineer",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L067": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.36,
+  "score": false,
+  "score_fit": 55
+ },
+ "L068": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 2
+ },
+ "L069": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "machine learning"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L070": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": true,
+  "noul_p": 0.64,
+  "score": true,
+  "score_fit": 80
+ },
+ "L071": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L072": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.38,
+  "score": false,
+  "score_fit": 55
+ },
+ "L073": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.51,
+  "score": true,
+  "score_fit": 58
+ },
+ "L074": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.19,
+  "score": false,
+  "score_fit": 37
+ },
+ "L075": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L076": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "genai"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L077": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.16,
+  "score": false,
+  "score_fit": 40
+ },
+ "L078": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 32
+ },
+ "L079": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "data analytics",
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L080": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 94
+ },
+ "L081": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 2
+ },
+ "L082": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.07,
+  "score": false,
+  "score_fit": 5
+ },
+ "L083": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L084": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 1
+ },
+ "L085": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L086": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.34,
+  "score": false,
+  "score_fit": 46
+ },
+ "L087": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L088": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 0
+ },
+ "L089": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 95
+ },
+ "L090": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.33,
+  "score": false,
+  "score_fit": 47
+ },
+ "L091": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "data analytics",
+   "analytics engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.9,
+  "score": true,
+  "score_fit": 96
+ },
+ "L092": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.06,
+  "score": false,
+  "score_fit": 5
+ },
+ "L093": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L094": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "llm",
+   "ai agent",
+   "data analytics"
+  ],
+  "noul": true,
+  "noul_p": 0.53,
+  "score": true,
+  "score_fit": 67
+ },
+ "L095": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 0
+ },
+ "L096": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L097": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.36,
+  "score": false,
+  "score_fit": 27
+ },
+ "L098": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 1
+ },
+ "L099": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "data analytics",
+   "data science"
+  ],
+  "noul": true,
+  "noul_p": 0.73,
+  "score": true,
+  "score_fit": 97
+ },
+ "L100": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 3
+ },
+ "L101": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 0
+ },
+ "L102": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 1
+ },
+ "L103": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L104": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 0
+ },
+ "L105": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L106": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 0
+ },
+ "L107": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L108": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L109": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.26,
+  "score": false,
+  "score_fit": 47
+ },
+ "L110": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "prompt engineer",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.22,
+  "score": false,
+  "score_fit": 24
+ },
+ "L111": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "prompt engineer",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.24,
+  "score": false,
+  "score_fit": 29
+ },
+ "L112": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "prompt engineer",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.32,
+  "score": false,
+  "score_fit": 42
+ },
+ "L113": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L114": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.16,
+  "score": false,
+  "score_fit": 29
+ },
+ "L115": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L116": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.56,
+  "score": true,
+  "score_fit": 79
+ },
+ "L117": {
+  "baseline": true,
+  "baseline_score": 70,
+  "hits": [
+   "agentic",
+   "llm",
+   "machine learning",
+   "applied ai",
+   "generative ai",
+   "data scientist"
+  ],
+  "noul": false,
+  "noul_p": 0.4,
+  "score": true,
+  "score_fit": 61
+ },
+ "L118": {
+  "baseline": true,
+  "baseline_score": 65,
+  "hits": [
+   "agentic",
+   "machine learning",
+   "applied ai",
+   "genai",
+   "data scientist"
+  ],
+  "noul": false,
+  "noul_p": 0.36,
+  "score": false,
+  "score_fit": 42
+ },
+ "L119": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "generative ai"
+  ],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 30
+ },
+ "L120": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L121": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "backend engineer",
+   "agentic"
+  ],
+  "noul": true,
+  "noul_p": 0.76,
+  "score": true,
+  "score_fit": 91
+ },
+ "L122": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.25,
+  "score": false,
+  "score_fit": 39
+ },
+ "L123": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L124": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.16,
+  "score": false,
+  "score_fit": 19
+ },
+ "L125": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": true,
+  "noul_p": 0.57,
+  "score": true,
+  "score_fit": 56
+ },
+ "L126": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L127": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 1
+ },
+ "L128": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "backend engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.88,
+  "score": true,
+  "score_fit": 93
+ },
+ "L129": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.75,
+  "score": true,
+  "score_fit": 91
+ },
+ "L130": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.72,
+  "score": true,
+  "score_fit": 86
+ },
+ "L131": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "backend engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 98
+ },
+ "L132": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.47,
+  "score": true,
+  "score_fit": 61
+ },
+ "L133": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "c#",
+   "ai engineer",
+   "llm"
+  ],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 34
+ },
+ "L134": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 31
+ },
+ "L135": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "data science"
+  ],
+  "noul": true,
+  "noul_p": 0.73,
+  "score": true,
+  "score_fit": 82
+ },
+ "L136": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "ai engineer",
+   "generative ai"
+  ],
+  "noul": true,
+  "noul_p": 0.64,
+  "score": true,
+  "score_fit": 69
+ },
+ "L137": {
+  "baseline": true,
+  "baseline_score": 80,
+  "hits": [
+   ".net",
+   "c#",
+   "ai engineer",
+   "llm",
+   "machine learning",
+   "ai agent",
+   "mlops",
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.07,
+  "score": false,
+  "score_fit": 33
+ },
+ "L138": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 1
+ },
+ "L139": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 31
+ },
+ "L140": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.04,
+  "score": false,
+  "score_fit": 0
+ },
+ "L141": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.57,
+  "score": true,
+  "score_fit": 76
+ },
+ "L142": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.35,
+  "score": false,
+  "score_fit": 51
+ },
+ "L143": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "backend developer",
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.38,
+  "score": true,
+  "score_fit": 63
+ },
+ "L144": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "backend developer"
+  ],
+  "noul": false,
+  "noul_p": 0.45,
+  "score": true,
+  "score_fit": 60
+ },
+ "L145": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "backend engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.87,
+  "score": true,
+  "score_fit": 88
+ },
+ "L146": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.38,
+  "score": false,
+  "score_fit": 53
+ },
+ "L147": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "c#"
+  ],
+  "noul": true,
+  "noul_p": 0.76,
+  "score": true,
+  "score_fit": 86
+ },
+ "L148": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "data science",
+   "data scientist",
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 93
+ },
+ "L149": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.26,
+  "score": false,
+  "score_fit": 45
+ },
+ "L150": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "ml engineer",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 99
+ },
+ "L151": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "data science",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 98
+ },
+ "L152": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.06,
+  "score": false,
+  "score_fit": 1
+ },
+ "L153": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "ai engineer",
+   "agentic",
+   "llm"
+  ],
+  "noul": false,
+  "noul_p": 0.34,
+  "score": true,
+  "score_fit": 55
+ },
+ "L154": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "llm"
+  ],
+  "noul": false,
+  "noul_p": 0.39,
+  "score": false,
+  "score_fit": 48
+ },
+ "L155": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "llm",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.52,
+  "score": true,
+  "score_fit": 62
+ },
+ "L156": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "developer advocate"
+  ],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 87
+ },
+ "L157": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.49,
+  "score": true,
+  "score_fit": 59
+ },
+ "L158": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "llm",
+   "ai/ml"
+  ],
+  "noul": false,
+  "noul_p": 0.07,
+  "score": false,
+  "score_fit": 33
+ },
+ "L159": {
+  "baseline": true,
+  "baseline_score": 60,
+  "hits": [
+   "developer experience",
+   "llm",
+   "ai/ml",
+   "mlops"
+  ],
+  "noul": false,
+  "noul_p": 0.25,
+  "score": false,
+  "score_fit": 46
+ },
+ "L160": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "developer advocate"
+  ],
+  "noul": true,
+  "noul_p": 0.81,
+  "score": true,
+  "score_fit": 88
+ },
+ "L161": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "ai agent",
+   "etl"
+  ],
+  "noul": false,
+  "noul_p": 0.13,
+  "score": false,
+  "score_fit": 29
+ },
+ "L162": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.07,
+  "score": false,
+  "score_fit": 32
+ },
+ "L163": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "data science",
+   "data scientist"
+  ],
+  "noul": false,
+  "noul_p": 0.21,
+  "score": false,
+  "score_fit": 18
+ },
+ "L164": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.53,
+  "score": true,
+  "score_fit": 61
+ },
+ "L165": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 18
+ },
+ "L166": {
+  "baseline": true,
+  "baseline_score": 85,
+  "hits": [
+   ".net",
+   "c#",
+   "developer experience",
+   "ai engineer",
+   "llm",
+   "machine learning",
+   "ai agent",
+   "mlops",
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.23,
+  "score": false,
+  "score_fit": 34
+ },
+ "L167": {
+  "baseline": true,
+  "baseline_score": 60,
+  "hits": [
+   "microservices",
+   "agentic",
+   "llm",
+   "ai/ml"
+  ],
+  "noul": false,
+  "noul_p": 0.12,
+  "score": false,
+  "score_fit": 34
+ },
+ "L168": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.06,
+  "score": false,
+  "score_fit": 1
+ },
+ "L169": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.03,
+  "score": false,
+  "score_fit": 24
+ },
+ "L170": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L171": {
+  "baseline": true,
+  "baseline_score": 65,
+  "hits": [
+   "machine learning",
+   "rag",
+   "generative ai",
+   "genai",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.34,
+  "score": false,
+  "score_fit": 47
+ },
+ "L172": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.11,
+  "score": false,
+  "score_fit": 9
+ },
+ "L173": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 89
+ },
+ "L174": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "machine learning",
+   "ai/ml"
+  ],
+  "noul": false,
+  "noul_p": 0.12,
+  "score": false,
+  "score_fit": 6
+ },
+ "L175": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai/ml"
+  ],
+  "noul": false,
+  "noul_p": 0.17,
+  "score": false,
+  "score_fit": 7
+ },
+ "L176": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "agentic",
+   "data analytics",
+   "etl"
+  ],
+  "noul": false,
+  "noul_p": 0.48,
+  "score": true,
+  "score_fit": 67
+ },
+ "L177": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.29,
+  "score": false,
+  "score_fit": 14
+ },
+ "L178": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "machine learning"
+  ],
+  "noul": false,
+  "noul_p": 0.16,
+  "score": false,
+  "score_fit": 40
+ },
+ "L179": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai/ml"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 33
+ },
+ "L180": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai/ml"
+  ],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 92
+ },
+ "L181": {
+  "baseline": true,
+  "baseline_score": 60,
+  "hits": [
+   "llm",
+   "applied ai",
+   "rag",
+   "generative ai"
+  ],
+  "noul": true,
+  "noul_p": 0.9,
+  "score": true,
+  "score_fit": 99
+ },
+ "L182": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.58,
+  "score": true,
+  "score_fit": 59
+ },
+ "L183": {
+  "baseline": true,
+  "baseline_score": 70,
+  "hits": [
+   "machine learning",
+   "data analytics",
+   "data analyst",
+   "data science",
+   "data scientist",
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L184": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "agentic",
+   "data science",
+   "etl"
+  ],
+  "noul": true,
+  "noul_p": 0.84,
+  "score": true,
+  "score_fit": 96
+ },
+ "L185": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "machine learning"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L186": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "c#"
+  ],
+  "noul": false,
+  "noul_p": 0.3,
+  "score": false,
+  "score_fit": 35
+ },
+ "L187": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "c#"
+  ],
+  "noul": false,
+  "noul_p": 0.28,
+  "score": false,
+  "score_fit": 38
+ },
+ "L188": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   ".net",
+   "asp.net",
+   "web api"
+  ],
+  "noul": true,
+  "noul_p": 0.76,
+  "score": true,
+  "score_fit": 68
+ },
+ "L189": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.6,
+  "score": true,
+  "score_fit": 59
+ },
+ "L190": {
+  "baseline": true,
+  "baseline_score": 80,
+  "hits": [
+   "agentic",
+   "machine learning",
+   "prompt engineer",
+   "rag",
+   "langchain",
+   "generative ai",
+   "genai",
+   "ai/ml"
+  ],
+  "noul": true,
+  "noul_p": 0.93,
+  "score": true,
+  "score_fit": 100
+ },
+ "L191": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "backend developer"
+  ],
+  "noul": true,
+  "noul_p": 0.56,
+  "score": true,
+  "score_fit": 62
+ },
+ "L192": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.39,
+  "score": false,
+  "score_fit": 53
+ },
+ "L193": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "backend engineer",
+   "data analyst"
+  ],
+  "noul": true,
+  "noul_p": 0.5,
+  "score": false,
+  "score_fit": 45
+ },
+ "L194": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   ".net",
+   "c#"
+  ],
+  "noul": false,
+  "noul_p": 0.2,
+  "score": false,
+  "score_fit": 44
+ },
+ "L195": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.82,
+  "score": true,
+  "score_fit": 90
+ },
+ "L196": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   ".net",
+   "c#"
+  ],
+  "noul": false,
+  "noul_p": 0.35,
+  "score": false,
+  "score_fit": 45
+ },
+ "L197": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.19,
+  "score": false,
+  "score_fit": 15
+ },
+ "L198": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "backend engineer"
+  ],
+  "noul": false,
+  "noul_p": 0.49,
+  "score": true,
+  "score_fit": 66
+ },
+ "L199": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "backend engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.54,
+  "score": true,
+  "score_fit": 68
+ },
+ "L200": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.63,
+  "score": true,
+  "score_fit": 75
+ },
+ "L201": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.45,
+  "score": true,
+  "score_fit": 56
+ },
+ "L202": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   "agentic",
+   "machine learning",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.52,
+  "score": true,
+  "score_fit": 69
+ },
+ "L203": {
+  "baseline": true,
+  "baseline_score": 75,
+  "hits": [
+   ".net",
+   "c#",
+   "agentic",
+   "llm",
+   "large language model",
+   "machine learning",
+   "ai/ml"
+  ],
+  "noul": true,
+  "noul_p": 0.67,
+  "score": true,
+  "score_fit": 70
+ },
+ "L204": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.13,
+  "score": false,
+  "score_fit": 32
+ },
+ "L205": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.51,
+  "score": true,
+  "score_fit": 70
+ },
+ "L206": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.44,
+  "score": false,
+  "score_fit": 49
+ },
+ "L207": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "ai agent"
+  ],
+  "noul": false,
+  "noul_p": 0.37,
+  "score": false,
+  "score_fit": 47
+ },
+ "L208": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.72,
+  "score": true,
+  "score_fit": 82
+ },
+ "L209": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "microservices",
+   "data analytics"
+  ],
+  "noul": true,
+  "noul_p": 0.54,
+  "score": true,
+  "score_fit": 66
+ },
+ "L210": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.25,
+  "score": false,
+  "score_fit": 50
+ },
+ "L211": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "microservices"
+  ],
+  "noul": false,
+  "noul_p": 0.4,
+  "score": false,
+  "score_fit": 52
+ },
+ "L212": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "c#"
+  ],
+  "noul": true,
+  "noul_p": 0.71,
+  "score": true,
+  "score_fit": 77
+ },
+ "L213": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 0
+ },
+ "L214": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.02,
+  "score": false,
+  "score_fit": 1
+ },
+ "L215": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "data science",
+   "data scientist"
+  ],
+  "noul": false,
+  "noul_p": 0.06,
+  "score": false,
+  "score_fit": 1
+ },
+ "L216": {
+  "baseline": true,
+  "baseline_score": 55,
+  "hits": [
+   ".net",
+   "c#",
+   "entity framework"
+  ],
+  "noul": true,
+  "noul_p": 0.7,
+  "score": true,
+  "score_fit": 88
+ },
+ "L217": {
+  "baseline": true,
+  "baseline_score": 68,
+  "hits": [
+   ".net",
+   "c#",
+   "entity framework",
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 97
+ },
+ "L218": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L219": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "developer educator"
+  ],
+  "noul": true,
+  "noul_p": 0.82,
+  "score": true,
+  "score_fit": 95
+ },
+ "L220": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "ai/ml",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.56,
+  "score": true,
+  "score_fit": 70
+ },
+ "L221": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.81,
+  "score": true,
+  "score_fit": 93
+ },
+ "L222": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "developer experience"
+  ],
+  "noul": false,
+  "noul_p": 0.33,
+  "score": false,
+  "score_fit": 50
+ },
+ "L223": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.1,
+  "score": false,
+  "score_fit": 35
+ },
+ "L224": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.1,
+  "score": false,
+  "score_fit": 7
+ },
+ "L225": {
+  "baseline": true,
+  "baseline_score": 68,
+  "hits": [
+   "developer relations",
+   "community manager"
+  ],
+  "noul": true,
+  "noul_p": 0.92,
+  "score": true,
+  "score_fit": 95
+ },
+ "L226": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.31,
+  "score": false,
+  "score_fit": 43
+ },
+ "L227": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 82
+ },
+ "L228": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L229": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.14,
+  "score": false,
+  "score_fit": 14
+ },
+ "L230": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "agentic"
+  ],
+  "noul": true,
+  "noul_p": 0.73,
+  "score": true,
+  "score_fit": 77
+ },
+ "L231": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.14,
+  "score": false,
+  "score_fit": 8
+ },
+ "L232": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.4,
+  "score": false,
+  "score_fit": 23
+ },
+ "L233": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "ai engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.94,
+  "score": true,
+  "score_fit": 100
+ },
+ "L234": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "llm"
+  ],
+  "noul": true,
+  "noul_p": 0.61,
+  "score": true,
+  "score_fit": 88
+ },
+ "L235": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data science"
+  ],
+  "noul": false,
+  "noul_p": 0.1,
+  "score": false,
+  "score_fit": 2
+ },
+ "L236": {
+  "baseline": true,
+  "baseline_score": 80,
+  "hits": [
+   ".net",
+   "c#",
+   "back-end engineer",
+   "microservices"
+  ],
+  "noul": true,
+  "noul_p": 0.96,
+  "score": true,
+  "score_fit": 100
+ },
+ "L237": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.81,
+  "score": true,
+  "score_fit": 92
+ },
+ "L238": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "machine learning",
+   "ai/ml"
+  ],
+  "noul": true,
+  "noul_p": 0.95,
+  "score": true,
+  "score_fit": 100
+ },
+ "L239": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "machine learning",
+   "data science"
+  ],
+  "noul": true,
+  "noul_p": 0.91,
+  "score": true,
+  "score_fit": 99
+ },
+ "L240": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.8,
+  "score": true,
+  "score_fit": 98
+ },
+ "L241": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.89,
+  "score": true,
+  "score_fit": 99
+ },
+ "L242": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "large language model"
+  ],
+  "noul": true,
+  "noul_p": 0.56,
+  "score": true,
+  "score_fit": 83
+ },
+ "L243": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ml engineer"
+  ],
+  "noul": false,
+  "noul_p": 0.05,
+  "score": false,
+  "score_fit": 0
+ },
+ "L244": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": false,
+  "noul_p": 0.08,
+  "score": false,
+  "score_fit": 3
+ },
+ "L245": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "agentic"
+  ],
+  "noul": false,
+  "noul_p": 0.19,
+  "score": false,
+  "score_fit": 8
+ },
+ "L246": {
+  "baseline": true,
+  "baseline_score": 68,
+  "hits": [
+   "data analytics",
+   "analytics engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.79,
+  "score": true,
+  "score_fit": 80
+ },
+ "L247": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.72,
+  "score": true,
+  "score_fit": 96
+ },
+ "L248": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "machine learning",
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.95,
+  "score": true,
+  "score_fit": 100
+ },
+ "L249": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data scientist"
+  ],
+  "noul": true,
+  "noul_p": 0.72,
+  "score": true,
+  "score_fit": 91
+ },
+ "L250": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "ai/ml"
+  ],
+  "noul": true,
+  "noul_p": 0.68,
+  "score": true,
+  "score_fit": 87
+ },
+ "L251": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.84,
+  "score": true,
+  "score_fit": 96
+ },
+ "L252": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "data analytics"
+  ],
+  "noul": false,
+  "noul_p": 0.27,
+  "score": false,
+  "score_fit": 48
+ },
+ "L253": {
+  "baseline": true,
+  "baseline_score": 62,
+  "hits": [
+   "machine learning",
+   "ml engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.88,
+  "score": true,
+  "score_fit": 84
+ },
+ "L254": {
+  "baseline": false,
+  "baseline_score": 0,
+  "hits": [],
+  "noul": true,
+  "noul_p": 0.77,
+  "score": true,
+  "score_fit": 96
+ },
+ "L255": {
+  "baseline": true,
+  "baseline_score": 59,
+  "hits": [
+   "analytics engineer"
+  ],
+  "noul": true,
+  "noul_p": 0.75,
+  "score": true,
+  "score_fit": 83
+ },
+ "L256": {
+  "baseline": false,
+  "baseline_score": 50,
+  "hits": [
+   "agentic",
+   "ai agent"
+  ],
+  "noul": true,
+  "noul_p": 0.94,
+  "score": true,
+  "score_fit": 100
+ },
+ "L257": {
+  "baseline": false,
+  "baseline_score": 45,
+  "hits": [
+   "llm"
+  ],
+  "noul": true,
+  "noul_p": 0.51,
+  "score": true,
+  "score_fit": 66
+ }
+}

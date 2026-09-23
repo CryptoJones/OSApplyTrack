@@ -130,6 +130,8 @@ services:
       dockerfile: Dockerfile.poller
     environment:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:-JanewayDidNothingWrong}@db:5432/${POSTGRES_DB:-applytrack}"
+      # Optional (#300): lets tenants who opt in score listings with Jev. Blank = keywords.
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

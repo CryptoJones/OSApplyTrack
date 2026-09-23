@@ -2349,6 +2349,14 @@ function agentMarkup(s, events) {
         <p class="field-help" id="a-li-easy-help">Off by default. On, LinkedIn postings that only take Easy Apply are staged (they were skipped before) and the browser fills LinkedIn's own dialog using the LinkedIn account saved under Board accounts. <strong>This automates your personal LinkedIn account, which LinkedIn's terms do not allow</strong>; an account it notices can be restricted, and it is the same account your LinkedIn search runs on. It sends at most ten a day, never follows the company for you, and stops at any sign-in or security check.</p>
       </div>
 
+      <div class="mt-4">
+        <label class="source-row">
+          <input id="a-jev" type="checkbox"${s.jev_classify ? " checked" : ""} aria-describedby="a-jev-help" />
+          <span>Score new listings with Jev instead of keyword matching</span>
+        </label>
+        <p class="field-help" id="a-jev-help">Off by default. On, the poller asks TypeSafe's Jev model whether each new listing's own work is the kind your keywords describe — so a sales role at an AI company no longer matches on "AI", and a "Data Engineer" posting matches without naming a keyword — and that fit is held to the discovery minimum fit score. Each new listing's title and description are sent to TypeSafe. It works only when the operator has set <code>TYPESAFE_API_KEY</code> on the poller; without one, or if the service fails, keyword matching decides as before.</p>
+      </div>
+
       <div class="mt-4 agent-grid">
         <div>
           <label class="field-label" for="a-min">Min fit score</label>
@@ -2482,6 +2490,7 @@ function wireAgent() {
       dry_run: $("#a-dry").checked,
       long_tail: $("#a-long").checked,
       linkedin_easy: $("#a-li-easy").checked,
+      jev_classify: $("#a-jev").checked,
       min_fit_score: Number($("#a-min").value),
       max_per_run: Number($("#a-run").value),
       max_per_day: Number($("#a-day").value),

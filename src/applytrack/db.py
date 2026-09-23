@@ -140,6 +140,17 @@ class PollRepo:
             row = cur.fetchone()
         return row is not None and row[0] == "true"
 
+    def jev_classify_enabled(self) -> bool:
+        """Whether this tenant has opted in to Jev's semantic fit in place of the keyword
+        score (#300). Read like ``linkedin_easy``: an unmigrated database answers False."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_jsonb(s) ->> 'jev_classify' FROM agent_settings s WHERE tenant_id = %s",
+                (self._t,),
+            )
+            row = cur.fetchone()
+        return row is not None and row[0] == "true"
+
     def save_linkedin_session(self, session: str, expires_at: object) -> None:
         """Keep the LinkedIn session sealed on the board-account row (blank clears it)."""
         self._save_session(linkedin.ACCOUNT_HOSTS, session, expires_at)
