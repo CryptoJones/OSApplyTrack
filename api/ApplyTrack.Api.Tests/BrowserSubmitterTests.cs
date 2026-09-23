@@ -383,6 +383,38 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             return ok ? Results.Content("<html><body><h1>My Account</h1></body></html>", "text/html")
                 : Results.Content(TaleoLoginHtml.Replace("<!--ERR-->", "<div class=\"errorMessage\">Invalid user name or password</div>"), "text/html");
         });
+        // UKG's one sign-in for every board (#277): the posting's Apply → Welcome / Sign in →
+        // Sign up → Create your account (Email address, Password, Continue).
+        _fixture.MapGet("/ukgs/posting", () => Results.Content(
+            "<html><body><h1>Software Engineer II</h1><button data-automation=\"apply-now-button\" onclick=\"location.href='/ukgs/u/login'\">Apply</button></body></html>", "text/html"));
+        _fixture.MapGet("/ukgs/u/login", () => Results.Content(UkgLoginHtml, "text/html"));
+        _fixture.MapGet("/ukgs/u/signup", () => Results.Content(
+            "<html><body><h1>Create your account</h1><form method=\"post\" action=\"/ukgs/signup\">"
+            + "<label for=\"email\">Email address *</label><input type=\"text\" name=\"email\" id=\"email\" />"
+            + "<label for=\"password\">Password *</label><input type=\"password\" name=\"password\" id=\"password\" />"
+            + "<button type=\"submit\" name=\"action\">Continue</button></form></body></html>", "text/html"));
+        _fixture.MapPost("/ukgs/signup", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            lock (_wdAccounts)
+            {
+                if (_wdAccounts.ContainsKey(f["email"].ToString()))
+                    return Results.Content("<html><body><h1>Create your account</h1><div role=\"alert\">The user already exists.</div></body></html>", "text/html");
+                _wdAccounts[f["email"].ToString()] = (f["password"].ToString(), true);
+            }
+            return Results.Content("<html><body><h1>Welcome to OneStream careers</h1></body></html>", "text/html");
+        });
+        _fixture.MapPost("/ukgs/signin", async (HttpRequest req) =>
+        {
+            var f = await req.ReadFormAsync();
+            bool ok;
+            lock (_wdAccounts) ok = _wdAccounts.TryGetValue(f["username"].ToString(), out var a) && a.Password == f["password"].ToString();
+            return ok ? Results.Content("<html><body><h1>Candidate profile</h1></body></html>", "text/html")
+                : Results.Content(UkgLoginHtml.Replace("<!--ERR-->", "<div role=\"alert\">Wrong email or password.</div>"), "text/html");
+        });
+        // UKG's Work Experience / Education panels as OneStream's board draws them (#277): an
+        // "Add …" opens a row of boxes, the row's Save turns it to text and lets the next open.
+        _fixture.MapGet("/ukgs/sections", () => Results.Content(UkgSectionsHtml, "text/html"));
         // micro1's shape (#280): the email gate is all a dry run can reach, so the packet knows
         // one optional Email box — and the form behind the sign-in asks for none of it.
         _fixture.MapGet("/jobs/sign-in-unseen", () => Results.Content(SignInPostingHtml.Replace("sign-in-MODE", "sign-in-unseen"), "text/html"));
@@ -1066,6 +1098,51 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <label for="p">Password</label><input id="p" name="password" data-automation-id="password" type="password" />
           <button type="submit" data-automation-id="signInSubmitButton">Sign In</button>
         </form>
+        </body></html>
+        """;
+
+    private const string UkgSectionsHtml = """
+        <html><body>
+        <div id="WorkExperienceSection" data-automation="work-experience-panel"><h2>Work Experience</h2>
+          <div class="kept"></div>
+          <button type="button" aria-label="Add Experience" onclick="openRow(this.parentNode, 'job')">+</button>
+        </div>
+        <div id="EducationSection" data-automation="education-panel"><h2>Education</h2>
+          <div class="kept"></div>
+          <button type="button" aria-label="Add Education" onclick="openRow(this.parentNode, 'school')">+</button>
+        </div>
+        <script>
+          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map(m => `<option>${m}</option>`).join('');
+          function openRow(panel, kind) {
+            const row = document.createElement('div'); row.className = 'editing';
+            row.innerHTML = (kind === 'job'
+              ? '<input data-automation="job-title-textbox" required><input data-automation="company-textbox" required>'
+              : '<input data-automation="school-textbox" required><input data-automation="degree-textbox" required>')
+              + `<select data-automation="from-month-dropdown"><option value="">Choose...</option>${months}</select>`
+              + '<input data-automation="from-year-textbox">'
+              + `<select data-automation="to-month-dropdown"><option value="">Choose...</option>${months}</select>`
+              + '<input data-automation="to-year-textbox">'
+              + '<button data-automation="save-button">Save</button>';
+            row.querySelector('[data-automation=save-button]').onclick = () => {
+              const v = [...row.querySelectorAll('input,select')].map(e => e.value).join(' | ');
+              panel.querySelector('.kept').insertAdjacentHTML('beforeend', `<p class="item">${v}</p>`);
+              row.remove();
+            };
+            panel.insertBefore(row, panel.querySelector('button[aria-label]'));
+          }
+        </script>
+        </body></html>
+        """;
+
+    private const string UkgLoginHtml = """
+        <html><body>
+        <h1>Welcome, come on in!</h1><!--ERR-->
+        <form method="post" action="/ukgs/signin">
+          <label for="username">Email address *</label><input type="text" name="username" id="username" />
+          <label for="password">Password *</label><input type="password" name="password" id="password" />
+          <button type="submit" name="action">Sign in</button>
+        </form>
+        <p>Don't have an account? <a href="/ukgs/u/signup">Sign up</a></p>
         </body></html>
         """;
 
@@ -2090,6 +2167,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(again.AlreadyExists);
     }
 
+    [SkippableFact]
+    public async Task A_ukg_account_is_signed_up_through_the_postings_apply_and_kept_for_every_ukg_board()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var creator = new AccountCreator(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 },
+            NullLogger<AccountCreator>.Instance, new Dictionary<string, string> { ["127.0.0.1"] = AccountCreator.Ukg });
+        var made = await creator.CreateAsync("127.0.0.1", $"{_fixtureUrl}/ukgs/posting", "ada@example.com",
+            (_, _) => Task.FromResult<string?>(null), CancellationToken.None);
+
+        Assert.True(made.Account is not null, made.Note);
+        Assert.Equal("ultipro.com", made.Account!.Host);   // one sign-in for every UKG board
+        lock (_wdAccounts) Assert.Equal(made.Account.Password, _wdAccounts["ada@example.com"].Password);
+
+        var again = await creator.CreateAsync("127.0.0.1", $"{_fixtureUrl}/ukgs/posting", "ada@example.com",
+            (_, _) => Task.FromResult<string?>(null), CancellationToken.None);
+        Assert.Null(again.Account);
+        Assert.True(again.AlreadyExists);
+    }
+
     [Fact]
     public void Workday_signs_in_at_the_tenant_site_login_and_a_host_with_no_recipe_says_so()
     {
@@ -2101,13 +2197,49 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal(AccountCreator.Workday, creator.Recipe("acme.wd5.myworkdayjobs.com"));
         Assert.Equal(AccountCreator.Haystack, creator.Recipe("www.haystack.cv"));
         Assert.Equal(AccountCreator.Taleo, creator.Recipe("uhg.taleo.net"));
-        Assert.Null(creator.Recipe("careers-mheducation.icims.com"));
+        Assert.Equal(AccountCreator.Ukg, creator.Recipe("signin-us.ultipro.com"));
+        Assert.Equal(AccountCreator.Icims, creator.Recipe("careers-mheducation.icims.com"));
         Assert.Equal("https://uhg.taleo.net/careersection/iam/accessmanagement/login.jsf?lang=en",
             AccountCreator.TaleoLoginUrl("uhg.taleo.net", "https://careers.unitedhealthgroup.com/job/123"));
         var pw = AccountCreator.NewPassword();
         Assert.Equal(24, pw.Length);
         Assert.Matches("[A-Z]", pw); Assert.Matches("[a-z]", pw); Assert.Matches("[0-9]", pw); Assert.Matches(@"[^A-Za-z0-9]", pw);
         Assert.NotEqual(pw, AccountCreator.NewPassword());
+    }
+
+    [SkippableFact]
+    public async Task Ukg_work_and_education_rows_are_added_from_the_resume_and_a_month_it_does_not_state_is_left_blank()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var resume = new Resume
+        {
+            Experience =
+            [
+                new("Ronin 48", "Principal Software Architect", "Mar 2026 - Present", []),
+                new("CrowdStrike", "Senior Technical Support Engineer", "Aug 2022 - Mar 2024", []),
+                new("Alpine Testing Solutions", "Software Developer", "2014 - 2015", []),
+                new("Too Old Inc", "Intern", "2010 - 2011", []),
+            ],
+            Education = [new("Eastern University", "MS", "Applied AI", "2026 – Present"), new("University of Maryland University College", "Bachelor of Science", "CIS", "")],
+        };
+        var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.ConnectAsync(_ws);
+        var page = await browser.NewPageAsync();
+        await page.GotoAsync($"{_fixtureUrl}/ukgs/sections");
+
+        var filled = await BrowserSubmitter.FillUkgSectionsAsync(page, resume);
+
+        var kept = (await page.Locator(".kept .item").AllInnerTextsAsync())
+            .Select(t => System.Text.RegularExpressions.Regex.Replace(t, @"\s+", " ").Trim()).ToList();
+        Assert.Equal(5, kept.Count);   // the three most recent jobs, and both schools
+        Assert.Equal("Principal Software Architect | Ronin 48 | Mar | 2026 | |", kept[0]);
+        Assert.Equal("Senior Technical Support Engineer | CrowdStrike | Aug | 2022 | Mar | 2024", kept[1]);
+        Assert.Equal("Software Developer | Alpine Testing Solutions | | 2014 | | 2015", kept[2]);   // no month stated, none chosen
+        Assert.Equal("Eastern University | MS | | 2026 | |", kept[3]);
+        Assert.StartsWith("University of Maryland University College | Bachelor of Science", kept[4]);
+        Assert.Contains("NewWorkExperience_Organization2", filled);
+        Assert.Contains("NewEducation_DegreeId1", filled);
+        playwright.Dispose();
     }
 
     private static AgentPacket GatePacket() => new()
@@ -3597,6 +3729,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
         // Five of one day's "no application form was found" runs were Workable 410s (#203).
         Assert.True(BrowserSubmitter.IsClosedPosting("This job is not available anymore"));
+        Assert.True(BrowserSubmitter.IsClosedPosting("This opportunity is currently not available. Take a look at other opportunities."));   // UKG (onestream, #277)
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/gone-410", Packet(), (Pdf, "resume.pdf"), dryRun: true);
         Assert.True(outcome.Closed);
         Assert.Contains("HTTP 410", outcome.Error);

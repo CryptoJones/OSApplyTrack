@@ -2079,6 +2079,14 @@ function resumePreviewText(r) {
       (e.highlights || []).filter(Boolean).forEach((h) => lines.push(`  - ${h}`));
     });
   }
+  const education = r.education || [];
+  if (education.length) {
+    lines.push("", "Education:");
+    education.forEach((e) => {
+      const head = [e.degree, e.field, e.school, e.dates].filter(Boolean).join(" · ");
+      if (head) lines.push(`- ${head}`);
+    });
+  }
   if ((r.skills || []).length) lines.push("", `Skills: ${(r.skills || []).join(", ")}`);
   if ((r.certifications || []).length) lines.push("", `Certifications: ${(r.certifications || []).join(", ")}`);
   if ((r.links || []).length) {
@@ -2364,7 +2372,7 @@ function agentMarkup(s, events) {
           <input id="a-create-accounts" type="checkbox"${s.create_accounts ? " checked" : ""} aria-describedby="a-create-accounts-help" />
           <span>Create a candidate account when an application needs one</span>
         </label>
-        <p class="field-help" id="a-create-accounts-help">Off by default. Some systems (Workday, Oracle Taleo, haystack.cv) only take applications from a signed-in candidate. On, when a run stops at one and no account is saved for it, the agent <strong>registers a real account in your name</strong> with your application email and a strong generated password, confirms it from your mailbox, signs in with it to prove it works, and only then saves it under Board accounts — for that one employer. Each account created is listed in the agent's activity. It never gets past a captcha, and if an account already exists it tells you instead of resetting it.</p>
+        <p class="field-help" id="a-create-accounts-help">Off by default. Some systems (Workday, Oracle Taleo, UKG, haystack.cv) only take applications from a signed-in candidate. On, when a run stops at one and no account is saved for it, the agent <strong>registers a real account in your name</strong> with your application email and a strong generated password, confirms it from your mailbox, signs in with it to prove it works, and only then saves it under Board accounts — for that one employer. Each account created is listed in the agent's activity. It never gets past a captcha, and if an account already exists it tells you instead of resetting it.</p>
       </div>
 
       <div class="mt-4 agent-grid">

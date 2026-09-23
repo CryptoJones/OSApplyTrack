@@ -41,12 +41,16 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
     public const string Workday = "Workday";
     public const string Haystack = "Haystack";
     public const string Taleo = "Oracle Taleo";
+    public const string Ukg = "UKG";
+    public const string Icims = "iCIMS";
 
     public string? Recipe(string host)
     {
         host = BoardAccount.Normalize(host);
         if (extraRecipes is not null && extraRecipes.TryGetValue(host, out var extra)) return extra;
         if (host.EndsWith(".taleo.net", StringComparison.Ordinal)) return Taleo;
+        if (host == "ultipro.com" || host.EndsWith(".ultipro.com", StringComparison.Ordinal)) return Ukg;
+        if (host.EndsWith(".icims.com", StringComparison.Ordinal)) return Icims;
         if (host.EndsWith(".myworkdayjobs.com", StringComparison.Ordinal) || host.EndsWith(".myworkdaysite.com", StringComparison.Ordinal))
             return Workday;
         if (host == "haystack.cv") return Haystack;
@@ -69,7 +73,8 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
 
         // Taleo's policy names letters and digits and some tenants refuse anything else.
         var password = NewPassword(symbols: recipe != Taleo);
-        var account = new BoardAccount(host, email, password);
+        // UKG's sign-in is one account for every board it hosts, kept under the domain (#277).
+        var account = new BoardAccount(recipe == Ukg ? "ultipro.com" : host, email, password);
         // The session may go to the host being registered on and nowhere else it has not been sent.
         var start = recipe switch
         {
@@ -85,6 +90,8 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
                 {
                     Workday => await RegisterWorkdayAsync(session.Page, email, password),
                     Taleo => await RegisterTaleoAsync(session.Page, email, password),
+                    Ukg => await RegisterUkgAsync(session.Page, email, password),
+                    Icims => await IcimsAsync(session.Page),
                     _ => await RegisterHaystackAsync(session.Page, email, password),
                 };
                 if (registered is not null) return registered;
@@ -99,12 +106,14 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         {
             Workday => WorkdaySignInUrl(postingLink),
             Taleo => TaleoLoginUrl(host, postingLink),
+            Ukg => postingLink,
             _ => "https://haystack.cv/auth?mode=signin",
         };
         await using var proof = await BrowserSession.OpenAsync(options, signIn, ct, [account], reveal: false);
         try
         {
             if (recipe == Workday) await OpenWorkdaySignInAsync(proof.Page);
+            if (recipe == Ukg) await OpenUkgSignInAsync(proof.Page);
             if (await proof.SignInAsAsync(account))
             {
                 log.LogInformation("account created and proved at {Host} for {Email}", host, email);
@@ -170,6 +179,55 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         await Id(page, "defaultCmd").ClickAsync();
         await page.WaitForTimeoutAsync(2_500);
         return await RefusalAsync(page, "Taleo");
+    }
+
+    // UKG (UltiPro), mapped read-only on OneStream's board (2026-09-23): the posting's Apply goes
+    // to signin-us.ultipro.com — one Auth0-style sign-in for every UKG board — whose "Sign up"
+    // is Create your account: Email address, Password, Continue. The employer's own profile step
+    // after the first sign-in is the application run's to fill (AdvanceUkgProfileAsync).
+    private static async Task<AccountCreation?> RegisterUkgAsync(IPage page, string email, string password)
+    {
+        await OpenUkgSignInAsync(page);
+        var signUp = page.Locator("a[href*='/u/signup'], a:has-text('Sign up')").First;
+        if (!await WaitVisibleAsync(signUp, 10_000))
+            return new(null, "UKG's sign-in offered no Sign up");
+        await signUp.ClickAsync();
+        if (!await WaitVisibleAsync(page.Locator("input#email, input[name='email']"), 10_000))
+            return new(null, "UKG's Create your account form did not appear");
+        if (await HasCaptchaAsync(page))
+            return new(null, "UKG's sign-up is behind a captcha — that one is yours to create");
+        await page.Locator("input#email, input[name='email']").First.FillAsync(email);
+        await page.Locator("input#password, input[name='password']").First.FillAsync(password);
+        await page.Locator("button[type='submit'][name='action'], button[type='submit']").First.ClickAsync();
+        await page.WaitForTimeoutAsync(3_000);
+        return await RefusalAsync(page, "UKG");
+    }
+
+    // iCIMS, mapped read-only on HealthEdge's portal (2026-09-23): Apply opens the login in an
+    // iframe — an email, a privacy acknowledgement that enables Next — under an hCaptcha
+    // challenge, and asks for the password on a later page. A captcha is the person's, never
+    // the agent's; and an email-then-password sign-in is not one this can prove the account
+    // with. So iCIMS is named, and says which of the two stopped it — nothing is registered.
+    private static async Task<AccountCreation?> IcimsAsync(IPage page)
+    {
+        await BrowserSession.DismissConsentAsync(page);
+        foreach (var f in page.Frames)
+            await ClickIfVisibleAsync(f.Locator("a.iCIMS_ApplyOnlineButton, a:has-text('Apply for this job online'), a[title*='Apply' i]").First);
+        await page.WaitForTimeoutAsync(4_000);
+        var captcha = page.Frames.Any(f => f.Url.Contains("hcaptcha.com", StringComparison.OrdinalIgnoreCase) || f.Url.Contains("recaptcha", StringComparison.OrdinalIgnoreCase))
+                      || await HasCaptchaAsync(page);
+        return new(null, captcha
+            ? "iCIMS asks for a captcha before it will take an email — creating the account there is yours to do; save it under Settings · Agent · Board accounts afterwards"
+            : "iCIMS signs in by email first and password after, which the agent cannot prove an account with — create it yourself and save it under Settings · Agent · Board accounts");
+    }
+
+    /// <summary>From a UKG posting to its sign-in: press Apply and wait for the sign-in to render.</summary>
+    private static async Task OpenUkgSignInAsync(IPage page)
+    {
+        if (await BrowserSession.SignInFormVisibleAsync(page)) return;
+        await BrowserSession.DismissConsentAsync(page);
+        await ClickIfVisibleAsync(page.Locator("[data-automation='apply-now-button'], ukg-button:has-text('Apply'), button:has-text('Apply'), a:has-text('Apply')").First);
+        await WaitVisibleAsync(page.Locator("input[type='password']"), 15_000);
     }
 
     /// <summary>A Taleo tenant's sign-in: on the posting's own address when it is that tenant, else the host's.</summary>

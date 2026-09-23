@@ -67,6 +67,11 @@ public sealed class AgentPacket
     public DateTimeOffset? NotifiedAt { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
 
+    /// <summary>The structured résumé, for a run to fill forms that ask for it row by row (UKG's
+    /// Work Experience and Education panels, #277). Set by the worker for the run; never stored.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Resume? Resume { get; set; }
+
     /// <summary>Recompute the review list after an edit: a required question with a blank
     /// answer blocks, a previously flagged question stays flagged only while still blank.
     /// File and EEO questions never block — files are attached at submit and EEO is
