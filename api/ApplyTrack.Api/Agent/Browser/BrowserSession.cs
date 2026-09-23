@@ -117,6 +117,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
     private readonly IBrowser _browser;
     private readonly IBrowserContext _context;
     private readonly List<string> _refused = [];
+    private readonly List<string> _refusedUrls = [];
     private IReadOnlyList<BoardAccount> _accounts = [];
 
     /// <summary>The account the session signed in with, when Apply led to a sign-in (#216); null otherwise.</summary>
@@ -128,6 +129,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
 
     /// <summary>Hosts a top-level navigation was refused for — for the error message.</summary>
     public IReadOnlyList<string> Refused { get { lock (_refused) return _refused.ToList(); } }
+    /// <summary>The full addresses of the refused navigations, in order — where a link that left the
+    /// posting's site was actually going (LinkedIn's off-site Apply, #308).</summary>
+    public IReadOnlyList<string> RefusedUrls { get { lock (_refused) return _refusedUrls.ToList(); } }
 
     /// <summary>What happened while looking for the form behind an Apply button, when that
     /// did not end with a form — the reason a "no form found" outcome can name (#180).</summary>
@@ -207,7 +211,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             if (req.IsNavigationRequest && req.Frame.ParentFrame is null && !HostAllowed(u.Host, allowedHost)
                 && BoardAccount.For(session._accounts, u.Host) is null)
             {
-                lock (session._refused) session._refused.Add(u.Host);
+                lock (session._refused) { session._refused.Add(u.Host); session._refusedUrls.Add(u.AbsoluteUri); }
                 await route.AbortAsync();
                 return;
             }

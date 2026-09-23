@@ -85,6 +85,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // 2. The employer takes it on its own site: an Apply that is not Easy Apply, leading off LinkedIn.
         _fixture.MapGet("/li/jobs/view/offsite", () => Results.Content(
             "<html><body><h1>Senior .NET Engineer</h1><a href=\"https://careers.acme-corp.example/job/42\">Apply on company website</a><button>Save</button></body></html>", "text/html"));
+        // 2b. The live shape (AVER, 2026-09-23): "Apply ↗" is a button with no address that opens the
+        //     employer's page in a new tab — "Responses managed off LinkedIn".
+        _fixture.MapGet("/li/jobs/view/offsite-button", () => Results.Content(
+            "<html><body><h1>Senior .Net Application Developer</h1><p>Responses managed off LinkedIn</p>"
+            + "<button aria-label=\"Apply to Senior .Net Application Developer on company website\" "
+            + "onclick=\"window.open(location.origin.replace('127.0.0.1', 'localhost') + '/careers/job/42?src=li', '_blank')\">Apply</button>"
+            + "<button>Save</button></body></html>", "text/html"));
         // 3. Neither: the run can only say what the page said.
         _fixture.MapGet("/li/jobs/view/silent", () => Results.Content(
             "<html><body><h1>This job is not available in your region</h1><button>Save</button></body></html>", "text/html"));
@@ -2487,6 +2494,14 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("careers.acme-corp.example", offsite.Error);
         Assert.False(offsite.Closed);  // a lead to re-stage, not a dead one
         Assert.DoesNotContain("already", offsite.Error);
+
+        // The button that opens the employer's page: pressed, its address is learned from the
+        // navigation the guard refuses, and the lead can move there.
+        var button = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/offsite-button", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("own site (localhost)", button.Error);
+        Assert.StartsWith("http://localhost:", button.OffsiteLink);
+        Assert.EndsWith("/careers/job/42?src=li", button.OffsiteLink);
+        Assert.False(button.Closed);
 
         // Neither: no guess at all, just what the page said.
         var silent = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/silent", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);

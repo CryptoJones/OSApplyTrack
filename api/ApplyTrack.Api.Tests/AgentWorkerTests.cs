@@ -810,6 +810,30 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Empty(await QueuedAsync(conn, t));
     }
 
+    [Fact]
+    public async Task A_linkedin_lead_whose_apply_leads_to_the_employer_moves_there_and_is_prepared_again()
+    {
+        // "Apply ↗ — Responses managed off LinkedIn": no Easy Apply will ever come. Eleven such
+        // leads sat in Ready on 2026-09-23 reading "no Apply of any kind" (#308).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md", rec!.Fields with { Link = "https://www.linkedin.com/jobs/view/4468596011/" }, null);
+        const string employer = "https://careers.aver.example/jobs/42?src=li";
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(false, false, link, "", null, [], [], "the employer takes this application on its own site", OffsiteLink: employer)));
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        Assert.Equal(employer, (await apps.GetAsync("high-engineer.md"))!.Fields.Link);
+        Assert.Contains(("high-engineer.md", "requeued"), await EventsAsync(conn, t));
+    }
+
     private static Task<List<(string Name, bool DryRun, bool Prepare)>> QueuedAsync(NpgsqlConnection conn, long t) =>
         conn.QueryAsync<(string, bool, bool)>(
             "SELECT application_name, dry_run, prepare FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL ORDER BY 1",
