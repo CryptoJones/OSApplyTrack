@@ -179,6 +179,11 @@ public sealed class AgentEvidenceRepo
             return false;
         if (detail.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String && (e.GetString() ?? "").Length > 0)
             return false;
+        // A run that mapped nothing proves nothing about the form, however clean it reads:
+        // the two looping LinkedIn packets of #302 each reported "0 mapped, 0 unmapped" and
+        // were promoted every pass on the strength of it. Something has to have been filled.
+        if (!detail.TryGetProperty("mapped", out var m) || m.ValueKind != JsonValueKind.Array || m.GetArrayLength() == 0)
+            return false;
         return true;
     }
 

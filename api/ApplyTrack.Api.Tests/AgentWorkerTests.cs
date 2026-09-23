@@ -750,6 +750,24 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Equal(0, await PendingSubmitsAsync(conn, t));
     }
 
+    [Fact]
+    public async Task A_dry_run_that_filled_nothing_is_never_promoted_however_clean_it_reads()
+    {
+        // #302: two LinkedIn Easy Apply packets looped every ~32 s for hours — "0 mapped,
+        // 0 unmapped", read as a clean dry run, promoted to a real run that came back a dry
+        // run again. A run that mapped nothing has proved nothing about the form.
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: false);
+        await using var _ = conn;
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        await evidence.RecordAsync("high-engineer.md", "dry_run", "https://careers.example.com/high-engineer.md", "",
+            new { dry_run = true, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>(), error = "" }, null);
+
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(), browser: FakeBrowser);
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(await QueuedAsync(conn, t), q => q.Name == "high-engineer.md" && !q.DryRun);
+    }
+
     private static Task<List<(string Name, bool DryRun, bool Prepare)>> QueuedAsync(NpgsqlConnection conn, long t) =>
         conn.QueryAsync<(string, bool, bool)>(
             "SELECT application_name, dry_run, prepare FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL ORDER BY 1",
