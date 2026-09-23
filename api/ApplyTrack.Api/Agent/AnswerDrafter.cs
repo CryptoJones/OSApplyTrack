@@ -142,7 +142,7 @@ public sealed partial class AnswerDrafter
             {
                 try
                 {
-                    var drafted = await AskModelAsync(forModel.Take(MaxModelQuestions).ToList(), ctx, cfg, ct);
+                    var drafted = await AskModelAsync(forModel.Take(MaxModelQuestions).ToList(), ctx, cfg, ct, pinned);
                     foreach (var q in forModel)
                     {
                         if (drafted.TryGetValue(q.Id, out var a) && !string.IsNullOrWhiteSpace(a))
@@ -529,6 +529,27 @@ public sealed partial class AnswerDrafter
         return string.Equals(label, id, StringComparison.Ordinal) && Identifierish().IsMatch(label);
     }
 
+    /// <summary>The person's own banked answers, one per line, for the model to match a reworded
+    /// question against (the bank's key is the question, lower-cased). Name fields are left out:
+    /// they are answered from the résumé, not asked. Public for tests.</summary>
+    public static string PastAnswers(IReadOnlyDictionary<string, string>? pinned)
+    {
+        if (pinned is null || pinned.Count == 0) return "(none yet)";
+        var lines = pinned
+            .Where(p => p.Key is not AnswerBankRepo.FirstNameKey and not AnswerBankRepo.LastNameKey && p.Value.Trim().Length > 0)
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Take(MaxPastAnswers)
+            .Select(p => $"- {p.Key} → {Collapse(p.Value, 300)}")
+            .ToList();
+        return lines.Count == 0 ? "(none yet)" : string.Join("\n", lines);
+    }
+
+    private static string Collapse(string text, int max)
+    {
+        var one = Regex.Replace(text.Trim(), @"\s+", " ");
+        return one.Length > max ? one[..max] + "…" : one;
+    }
+
     private static string? Link(Resume r, string host) =>
         r.Links.FirstOrDefault(l => l.Url.Contains(host, StringComparison.OrdinalIgnoreCase)
                                     || l.Label.Contains(host, StringComparison.OrdinalIgnoreCase))?.Url;
@@ -538,8 +559,13 @@ public sealed partial class AnswerDrafter
                                     && !l.Url.Contains("github", StringComparison.OrdinalIgnoreCase))?.Url
         ?? r.Links.FirstOrDefault()?.Url;
 
+    /// <summary>At most this many of the person's own answers go to the model, newest-keyed first
+    /// being immaterial: the bank is small, and this only bounds a pathological one.</summary>
+    private const int MaxPastAnswers = 150;
+
     private async Task<Dictionary<string, string>> AskModelAsync(
-        List<PacketQuestion> questions, AnswerContext ctx, EffectiveLlmConfig cfg, CancellationToken ct)
+        List<PacketQuestion> questions, AnswerContext ctx, EffectiveLlmConfig cfg, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? pinned = null)
     {
         var system =
             """
@@ -556,6 +582,13 @@ public sealed partial class AnswerDrafter
             ("only if referred by an employee"). If the hint asks for something the brief
             cannot supply in the form requested, answer null rather than converting or
             guessing.
+
+            The candidate's OWN PAST ANSWERS are facts from the candidate, and outrank the
+            brief. When a question asks the SAME THING as one of them in other words ("Are
+            you authorized to work in the US?" / "Are you legally eligible to work in the
+            United States?"), give that answer — fitted to this question's options and
+            format. Only the same fact counts: "years of experience with Blazor" is not
+            "years of experience with .NET", however alike the sentences look.
 
             An OPTIONAL question you have no real answer to must be null. Never fill one
             with a placeholder like "None", "N/A" or a restatement of the question —
@@ -586,6 +619,9 @@ public sealed partial class AnswerDrafter
 
             ELIGIBILITY (fixed facts):
             {ctx.Settings.ToEligibilityBrief()}
+
+            CANDIDATE'S OWN PAST ANSWERS (question → answer, as they answered it):
+            {PastAnswers(pinned)}
 
             CANDIDATE BRIEF (the only facts you may use):
             {ctx.Resume.ToBrief()}
