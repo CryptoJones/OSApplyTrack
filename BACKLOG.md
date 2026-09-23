@@ -32,6 +32,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 
 ## Discovery and workflow
 
+- [ ] [#302 — Agent: a clean dry run is promoted to a real submission that runs as a dry run again — an unbounded loop against LinkedIn](https://github.com/CryptoJones/OSApplyTrack/issues/302) (two Easy Apply packets looped every ~32 s in production on 1.51.0, 142 iterations, opening LinkedIn's dialog and Discarding each time — a run asked for as real was downgraded to a dry run mid-flight, and the clean dry run promoted itself back to a real run. Fix in [#303](https://github.com/CryptoJones/OSApplyTrack/pull/303): promotion also requires the run to have been *requested* as a dry run, so nothing downgraded can re-promote; the LinkedIn daily cap stands the run down before the browser instead of silently downgrading it; and a run that mapped nothing is no longer "clean" — in the worker and in `IsCleanDryRun`, which is the same bar `ReadyPromoter` uses every pass)
 - [x] [#69 — Allow sorting by fit, date posted, or company name](https://github.com/CryptoJones/OSApplyTrack/issues/69)
 - [x] [#70 — Allow adding custom RSS feeds for job listings](https://github.com/CryptoJones/OSApplyTrack/issues/70)
 - [x] [#77 — Add RemoteFirstJobs and WorkAnywhere.pro as built-in sources, and the remaining We Work Remotely category feeds](https://github.com/CryptoJones/OSApplyTrack/issues/77)
