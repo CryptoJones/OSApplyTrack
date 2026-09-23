@@ -70,7 +70,11 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
     public static bool SubjectMatches(string subject, string company)
     {
         if (!SecurityCodeSubject().IsMatch(subject)) return false;
+        // The company's first WORD, punctuation off: "Dragos, Inc." is filed as "Dragos," and
+        // Greenhouse's subject says "…your application to Dragos" — the comma alone kept the
+        // code unread for eight minutes, twice, on a real submission.
         var first = company.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        first = first.Trim().Trim(',', '.', ';', ':', '!', '?', '"', '\'', '(', ')', '&');
         return first.Length == 0 || subject.Contains(first, StringComparison.OrdinalIgnoreCase);
     }
 
