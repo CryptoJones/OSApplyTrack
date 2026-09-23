@@ -98,7 +98,13 @@ internal static partial class LinkedInEasyApply
                     const name = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
                     if (!/\bapply\b/i.test(name) || /easy apply/i.test(name)) continue;
                     const href = el.getAttribute('href') || '';
-                    if (/^https?:/i.test(href) && !/(^|\.)linkedin\.com$/i.test(new URL(href).hostname)) return href;
+                    if (!/^https?:/i.test(href)) continue;
+                    const to = new URL(href);
+                    if (!/(^|\.)linkedin\.com$/i.test(to.hostname)) return href;
+                    // The live shape (2026-09-23): "Apply on company website" is an <a target=_blank>
+                    // through LinkedIn's own interstitial, /safety/go/?url=<the employer's address>.
+                    const out = to.searchParams.get('url');
+                    if (out && /^https?:/i.test(out) && !/(^|\.)linkedin\.com$/i.test(new URL(out).hostname)) return out;
                   }
                   return null;
                 }
