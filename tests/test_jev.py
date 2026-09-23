@@ -13,14 +13,40 @@ import pytest
 from applytrack import poll
 from applytrack.criteria import Criteria
 from applytrack.poll import JevJudge, Listing, classify, jev_judge_for, score_and_stage
-from tests.test_poll import FakeRepo
+from applytrack.store import AppFields
 
 KEYWORDS = [".net", "asp.net", "backend engineer", "rag", "ml engineer", "go"]
 
 
+class FakeRepo:
+    """The narrow LeadRepo ``score_and_stage`` needs, in memory, with no Jev setting."""
+
+    def __init__(self) -> None:
+        self.added: list[AppFields] = []
+
+    def load_profile(self) -> Criteria:
+        return Criteria(keywords=KEYWORDS, min_fit_score=55)
+
+    def iter_existing(self) -> list[tuple[str, str, str]]:
+        return []
+
+    def blacklist_companies(self) -> list[str]:
+        return []
+
+    def load_seen(self) -> tuple[set[str], set[str]]:
+        return set(), set()
+
+    def mark_seen(self, url_key: str, slug_key: str) -> None:
+        pass
+
+    def add_lead(self, fields: AppFields) -> str:
+        self.added.append(fields)
+        return f"{fields.company}-{fields.role}"
+
+
 class JevRepo(FakeRepo):
-    def __init__(self, *, opted_in: bool = True, **kw: object) -> None:
-        super().__init__(profile=Criteria(keywords=KEYWORDS, min_fit_score=55), **kw)  # type: ignore[arg-type]
+    def __init__(self, *, opted_in: bool = True) -> None:
+        super().__init__()
         self._opted_in = opted_in
 
     def jev_classify_enabled(self) -> bool:
