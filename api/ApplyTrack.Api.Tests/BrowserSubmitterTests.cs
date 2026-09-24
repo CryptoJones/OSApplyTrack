@@ -366,7 +366,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <script>
               document.getElementById('up').onclick = () => {
                 const i = document.createElement('input'); i.type = 'file';
-                i.onchange = () => { const f = i.files[0]; document.getElementById('picked').textContent = f.name; document.getElementById('resume_name').value = f.name; };
+                i.onchange = async () => { const f = i.files[0]; document.getElementById('picked').textContent = f.name;
+                  document.getElementById('resume_name').value = f.name + ':' + await f.text(); };
                 i.click();
               };
             </script></body></html>
@@ -3186,7 +3187,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/button-resume", packet, (Pdf, "resume.pdf"), dryRun: false);
 
         Assert.True(outcome.Submitted, outcome.Error);
-        Assert.Equal("resume.pdf", Assert.Single(_posts)["resume_name"]);
+        // The name and the bytes: what the picker was handed is the PDF itself.
+        // (A posted form sends its line breaks as CRLF.)
+        Assert.Equal("resume.pdf:" + Encoding.ASCII.GetString(Pdf), Assert.Single(_posts)["resume_name"].Replace("\r\n", "\n"));
     }
 
     [SkippableFact]

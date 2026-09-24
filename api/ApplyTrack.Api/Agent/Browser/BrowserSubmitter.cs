@@ -1534,6 +1534,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     unmapped.Add(q.Id);
             }
             await FillFullNameAsync(form, packet, mapped, unmapped);
+            // A later page's "Upload Resume/CV" button, as on the first (#330).
+            if (resumePdf is { } buttonPdf && !mapped.Contains("resume")
+                && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
+                && await UploadResumeByButtonAsync(form, buttonPdf))
+                mapped.Add("resume");
         }
         return form;
 
