@@ -966,14 +966,14 @@ textarea:focus-visible {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 10%, var(--surface));
 }
-.badge[data-status="lead"], .pipe-stat[data-status="lead"] { --stage: #2979b8; }
-.badge[data-status="ready"], .pipe-stat[data-status="ready"] { --stage: #0f806d; }
+.badge[data-status="lead"], .pipe-stat[data-status="lead"] { --stage: #226fab; }
+.badge[data-status="ready"], .pipe-stat[data-status="ready"] { --stage: #0e7d6a; }
 .badge[data-status="applied"], .pipe-stat[data-status="applied"] { --stage: #7357b7; }
-.badge[data-status="screen"], .pipe-stat[data-status="screen"] { --stage: #a3600a; }
+.badge[data-status="screen"], .pipe-stat[data-status="screen"] { --stage: #a15f09; }
 .badge[data-status="onsite"], .pipe-stat[data-status="onsite"] { --stage: #b84916; }
 .badge[data-status="offer"], .pipe-stat[data-status="offer"] { --stage: #237a43; }
 .badge[data-status="rejected"], .pipe-stat[data-status="rejected"] { --stage: #ad3440; }
-.badge[data-status="passed"], .pipe-stat[data-status="passed"] { --stage: #66737d; }
+.badge[data-status="passed"], .pipe-stat[data-status="passed"] { --stage: #63707a; }
 .badge[data-status] {
   color: color-mix(in srgb, var(--stage) 84%, var(--text));
   background: color-mix(in srgb, var(--stage) 11%, var(--surface));
