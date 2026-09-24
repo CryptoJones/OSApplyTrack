@@ -74,9 +74,10 @@
                 <circle cx="11" cy="11" r="6.5" />
                 <path d="m16 16 4 4" />
               </svg>
-              <input id="search" type="search" autocomplete="off" placeholder="Company, role, or note" />
+              <input id="search" type="search" autocomplete="off" placeholder="Company, role, or note" aria-describedby="search-help" />
             </span>
           </label>
+          <p id="search-help" class="field-help">Searches every application, whatever the filters.</p>
           <div class="filter-row" role="group" aria-label="Filter applications">
             <label for="filter-lane">
               <span>Lane</span>

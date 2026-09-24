@@ -708,7 +708,7 @@ test("a status chip opens that status's applications as a list in the main pane"
   await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
 });
 
-test("the errors chip sits between ready and applied and lists what is stuck, and why", async ({ page }) => {
+test("the errors chip sits between ready and applied and lists what is stuck, and why", async ({ page }, testInfo) => {
   // A failed run used to drop its application back into Ready, where it looked like a
   // packet nobody had tried (#284).
   const readyApps = [
@@ -761,6 +761,18 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
   await expect(page.getByRole("heading", { level: 1, name: "Ready" })).toBeVisible();
   await expect(page.locator("#content")).toContainText("1 application.");
   await expect(page.locator("#content")).not.toContainText(application.company);
+
+  // But a search finds it from anywhere, and says it is stuck (#322): "which page is DTCC on?"
+  // (On a phone the list is its own pane, reached by the Applications button.)
+  if (testInfo.project.name === "mobile") await page.getByRole("button", { name: "Applications", exact: true }).click();
+  await page.getByLabel("Search applications").fill(application.company.split(" ")[0]);
+  const card = page.locator("#application-list .application-card").filter({ hasText: application.company });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("In Errors");
+  await expect(page.locator("#app-count")).toHaveText(/^1 match in all 3 applications$/);
+  // A search is not a Ready selection: no bulk checkboxes over a list of every status.
+  await expect(page.locator("#bulk-bar")).toBeHidden();
+  await expectNoSeriousViolations(page);
 });
 
 test("a signed-in source's board account shows its session and offers Sign in now", async ({ page }) => {
