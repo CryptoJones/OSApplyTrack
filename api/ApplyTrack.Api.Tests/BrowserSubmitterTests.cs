@@ -636,6 +636,24 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Paycor's SubmitResume: a pre-screening step (a sponsorship radio and Continue) before
         // the real form, which Continue navigates to (#239).
         _fixture.MapGet("/jobs/prescreen", () => Results.Content(PreScreenHtml, "text/html"));
+        // ClearCompany, as Vector's live page is (2026-09-24, #324): the pre-screen's Continue
+        // leads to a "begin the application" page whose name and email boxes have no id or name,
+        // and whose required Yes/No is a 1×1 radio pair under a plain-text question.
+        _fixture.MapGet("/jobs/prescreen-cc", () => Results.Content(PreScreenHtml.Replace("'/jobs/1'", "'/jobs/cc-begin'"), "text/html"));
+        _fixture.MapGet("/jobs/cc-begin", () => Results.Content(
+            """
+            <html><head><style>.cc-radio input { width: 1px; height: 1px; }</style></head><body>
+            <form method="post" action="/apply">
+              <p>Enter your information below to begin the application</p>
+              <div><label>First Name</label><input type="text" required></div>
+              <div><label>Last Name</label><input type="text" required></div>
+              <div><label>Email</label><input type="email" required></div>
+              <div class="cc-radio"><span>Would you like to be considered for other positions now or in the future?</span>
+                <label><input type="radio" name="future-consideration" value="yes" required> Yes</label>
+                <label><input type="radio" name="future-consideration" value="no" required> No</label></div>
+              <button type="submit">Continue</button>
+            </form></body></html>
+            """, "text/html"));
         // A cookie banner over the posting page (Zoho Recruit, Workable's job finder): the
         // Apply link is there, but nothing gets clicked through the overlay (#202).
         _fixture.MapGet("/jobs/consent", () => Results.Content(ConsentHtml.Replace("BODY", ConsentPostingBody), "text/html"));
@@ -3115,6 +3133,27 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(await BrowserSession.TakeStandardFlowAsync(page));
         Assert.Contains("/easy-apply", page.Url);
         playwright.Dispose();
+    }
+
+    [SkippableFact]
+    public async Task Required_questions_first_met_behind_a_pre_screen_go_to_the_drafter()
+    {
+        // Vector: refused on "future-consideration" every run, and the model was never asked (#324).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = PreScreenPacket();
+        packet.Questions.RemoveAll(q => q.Id != "sponsorship");
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/prescreen-cc", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Empty(_posts);
+        Assert.Contains("sponsorship", outcome.Mapped);
+        Assert.NotNull(outcome.Discovered);
+        var future = Assert.Single(outcome.Discovered!, q => q.Id == "future-consideration");
+        Assert.Equal("Would you like to be considered for other positions now or in the future?", future.Label);
+        Assert.Equal(["Yes", "No"], future.Options);
+        Assert.Contains(outcome.Discovered!, q => q.Label == "First Name");
+        Assert.Contains(outcome.Discovered!, q => q.Label == "Email");
     }
 
     [SkippableFact]
