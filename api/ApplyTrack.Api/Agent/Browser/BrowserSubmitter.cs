@@ -1402,9 +1402,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
                     {
                         if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
-                            || FindQuestion(packet, live.Id, live.Label) is not null
                             || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
                             continue;
+                        // A question the packet knows but holds no answer for is the person's, as unmapped.
+                        if (FindQuestion(packet, live.Id, live.Label) is { } known)
+                        {
+                            if ((!packet.Answers.TryGetValue(known.Id, out var held) || string.IsNullOrWhiteSpace(held)) && !unmapped.Contains(known.Id))
+                                unmapped.Add(known.Id);
+                            continue;
+                        }
                         _log.LogInformation("pages: Next is disabled and \"{Label}\" is unanswered — handing it back", live.Label);
                         unmapped.Add(live.Id);
                         discovered.Add(live with { Required = true });

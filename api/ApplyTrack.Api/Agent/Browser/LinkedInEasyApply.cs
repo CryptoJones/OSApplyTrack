@@ -439,9 +439,13 @@ internal static partial class LinkedInEasyApply
                     // ArrowDown and Enter blind left SMX's City typed and uncommitted.
                     if (await box.GetAttributeAsync("role") == "combobox" || await box.GetAttributeAsync("aria-autocomplete") is { Length: > 0 })
                     {
-                        var options = page.Locator($"{Modal} [role=listbox] [role=option]:visible, {Modal} .basic-typeahead__selectable:visible");
-                        foreach (var query in new[] { answer, answer.Split(',')[0].Trim() }.Distinct())
+                        var all = page.Locator($"{Modal} [role=listbox] [role=option]:visible, {Modal} .basic-typeahead__selectable:visible");
+                        var parts = answer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                        foreach (var query in new[] { answer, parts.Length > 1 ? parts[0] : answer }.Distinct())
                         {
+                            // The head alone ("Minden") also finds Minden, Germany: take only a
+                            // suggestion that names the rest of the place ("Nebraska") too.
+                            var options = query == answer ? all : all.Filter(new() { HasText = parts[1] });
                             if (query != answer) await box.FillAsync(query, new() { Timeout = 5_000 });
                             for (var i = 0; i < 12 && await options.CountAsync() == 0; i++)
                                 await page.WaitForTimeoutAsync(250);
