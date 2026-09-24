@@ -457,6 +457,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                         + "they go to the drafter and the run signs in again to fill them",
                         Discovered: unseen, BehindSignIn: true);
             }
+            // A required question on the page the run stopped on that the packet has never seen
+            // goes to the drafter too, not only one met by turning a page. Vector (ClearCompany)
+            // answered its pre-screen, pressed Continue, and met "Would you like to be considered
+            // for other positions?" on the page behind it: named unmapped on every run, never
+            // drafted, never answered (#324). Its name, email and phone boxes carry no id or
+            // name at all, so discovery keys them by label and the sweep never names them.
+            // Only what the sweep above found still empty: a field the board prefilled, a box
+            // ticked in a group, or a full-name box the run filled is not a question to hand back.
+            foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
+            {
+                if (!unmapped.Contains(live.Id) || live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File
+                    || FindQuestion(packet, live.Id, live.Label) is not null || discovered.Any(d => d.Id == live.Id))
+                    continue;
+                discovered.Add(live with { Required = true });
+            }
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame))
@@ -466,7 +481,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                         ? "nothing on this form could be filled — the packet's questions match none of its fields"
                         : "no application form was found on the page — nothing to fill"
                           + (session.RevealNote.Length > 0 ? $" ({session.RevealNote})" : "")
-                          + (session.SignedInAs is { } who ? $" (signed in at {who.Host} as {who.Username})" : ""));
+                          + (session.SignedInAs is { } who ? $" (signed in at {who.Host} as {who.Username})" : ""),
+                    // Even with nothing filled, what the page asks and the packet lacks goes to the drafter.
+                    Discovered: discovered.Count > 0 ? discovered : null);
             var met = discovered.Count > 0 ? discovered : null;
             if (dryRun)
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped, "", Discovered: met);
@@ -1035,8 +1052,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (!el.id && !el.getAttribute('name')) {
               // react-select's hidden required input: the combobox beside it is the one to name.
               const owner = el.parentElement?.querySelector('[role=combobox]');
-              if (!owner || (el.value || '').trim().length > 0) continue;
-              add(owner.id || owner.getAttribute('name'), labelFor(owner)); continue;
+              if ((el.value || '').trim().length > 0) continue;
+              if (owner) { add(owner.id || owner.getAttribute('name'), labelFor(owner)); continue; }
+              // A box with no id or name at all — ClearCompany's First Name, Email (#324): named by
+              // its label, the key discovery gives it, so the two agree.
+              if (visible(el) && !['radio', 'checkbox'].includes(type)) { const l = labelFor(el).replace(/^\s*\*\s*/, '').replace(/\*\s*$/, '').replace(/\s+/g, ' ').trim(); if (l) add(l, l); }
+              continue;
             }
             // Oracle's radios have no size; the label drawn beside each is what is on screen (#318).
             const drawnRadio = type === 'radio' && !!el.id && [...document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)].some(visible);
