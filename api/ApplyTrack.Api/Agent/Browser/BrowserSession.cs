@@ -137,6 +137,17 @@ public sealed partial class BrowserSession : IAsyncDisposable
     /// did not end with a form — the reason a "no form found" outcome can name (#180).</summary>
     public string RevealNote { get; private set; } = "";
 
+    /// <summary>The posting's own text as the browser rendered it, read before Apply was
+    /// pressed — an employer page drawn by script (Oracle's) that a plain fetch gets nothing
+    /// of. Empty when it could not be read.</summary>
+    public string PostingText { get; private set; } = "";
+
+    private async Task KeepPostingTextAsync()
+    {
+        try { PostingText = await Page.InnerTextAsync("body", new() { Timeout = 3_000 }); }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* judged without it */ }
+    }
+
     /// <summary>The host of a sign-in the run met with no saved account for it, or of an
     /// account-only ATS Apply led to — where a candidate account would have to exist (#277).</summary>
     public string NeedsAccountAt { get; private set; } = "";
@@ -567,7 +578,12 @@ public sealed partial class BrowserSession : IAsyncDisposable
         // ships the whole form collapsed behind "Apply Now", so counting its hidden résumé input
         // would skip the click and leave the real fields — every text, select and textarea, and
         // the Submit button — hidden and undiscovered.
-        if (await WaitForAsync(Page, 3_000, ApplicationFormRevealedAsync)) return;
+        if (await WaitForAsync(Page, 3_000, ApplicationFormRevealedAsync))
+        {
+            // The form sits on the posting's own page: the page is the posting.
+            await KeepPostingTextAsync();
+            return;
+        }
         // By accessible name first, then by what the control visibly says. Allstate labels its
         // link aria-label="Lead .Net Software Engineer Apply Now open in new window": the name
         // opens with the job title, so nothing "began with apply" and the run reported "no Apply
@@ -618,6 +634,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
         catch (PlaywrightException) { /* a button, not a link */ }
 
+        // The posting, while it is still on screen: Apply replaces it.
+        await KeepPostingTextAsync();
         var popup = new TaskCompletionSource<IPage>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnPage(object? _, IPage p) => popup.TrySetResult(p);
         _context.Page += OnPage;

@@ -354,6 +354,42 @@ public sealed class AgentWorker : BackgroundService
         return new TenantWork(settings, cfg, resume, email, inputs, scope, notifications);
     }
 
+    /// <summary>
+    /// A remote-only profile and an employer page that says otherwise: retire the lead the
+    /// way the Pass button does, with the employer's own words as the reason. The listing it
+    /// came from said remote — LinkedIn's "Tampa, FL (Remote)" over DTCC's "hybrid model of 3
+    /// days onsite" — and only the packet build, which rendered the employer's page, knows
+    /// better. Never judged on a job board's page, only the employer's. True when passed.
+    /// </summary>
+    private async Task<bool> PassIfEmployerNotRemoteAsync(
+        AppRecord rec, AgentPacket packet, Criteria criteria, ApplicationRepo apps, AgentEventRepo events)
+    {
+        // The packet keeps 12,000 characters of the posting; silence past the cut proves nothing.
+        var complete = packet.PostingExcerpt.Length < PacketBuilder.ExcerptLimit;
+        if (!Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var at)
+            || AtsProvider.IsAggregatorHost(at.Host.ToLowerInvariant())
+            || Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, complete) is not { } why)
+            return false;
+        // As it stands now, not as it stood before the build: a person may have marked it
+        // applied meanwhile, and that is never overwritten.
+        var current = await apps.GetAsync(rec.Name);
+        if (current is null || current.Fields.Status is not ("lead" or "ready"))
+            return false;
+        try
+        {
+            await apps.UpdateStructuredAsync(rec.Name, current.Fields with { Status = "passed" },
+                current.Version.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (AppConflictException) { return false; }
+        await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new
+        {
+            reason = "not remote: " + why + " — lead marked passed",
+            rec.Fields.Company, rec.Fields.Role, rec.Fields.Location,
+        });
+        _log.LogInformation("{Name}: {Why}; marked passed", rec.Name, why);
+        return true;
+    }
+
     /// <summary>A verdict as the audit row recorded it, or null when there is none.</summary>
     private static Verdict? RecordedVerdict(AgentEvent? recorded)
     {
@@ -395,6 +431,8 @@ public sealed class AgentWorker : BackgroundService
         try
         {
             var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
+            if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, work.Scope.Apps, events))
+                return null;
             var fresh = await work.Scope.Apps.GetAsync(rec.Name) ?? rec;
             return (fresh, packet);
         }
@@ -1160,6 +1198,8 @@ public sealed class AgentWorker : BackgroundService
                     try
                     {
                         var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
+                        if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, apps, events))
+                            continue;
                         // With a browser that may drive this ATS, the moo waits for the
                         // dry-run fill (the submit lane sends it after the screenshot);
                         // otherwise this is it and the human applies by hand. An aggregator's

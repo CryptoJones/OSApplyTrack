@@ -42,10 +42,13 @@ public sealed partial class FormDiscoverer
     /// Continue before it shows the form, #239). Null leaves any such gate in place — the old
     /// behaviour, which read the gate's questions as if they were the form's.</param>
     /// <summary>The form's questions, or null when the page had no fillable form.</summary>
+    /// <param name="postingText">Handed the posting's rendered text, when there was any.</param>
     public async Task<List<PacketQuestion>?> DiscoverAsync(string link, CancellationToken ct = default,
-        IReadOnlyList<BoardAccount>? accounts = null, Func<PacketQuestion, string?>? preScreen = null)
+        IReadOnlyList<BoardAccount>? accounts = null, Func<PacketQuestion, string?>? preScreen = null,
+        Action<string>? postingText = null)
     {
         await using var session = await BrowserSession.OpenAsync(_options, link, ct, accounts);
+        if (session.PostingText.Length > 0) postingText?.Invoke(session.PostingText);
         // The form is often not there yet (Ashby fetches it after the page is idle) and often
         // not in the page at all (Comeet loads it into a cross-origin iframe): wait for a
         // control to show anywhere, then read every frame, top document first.
