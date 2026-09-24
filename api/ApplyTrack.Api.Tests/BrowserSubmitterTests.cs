@@ -251,6 +251,27 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // résumé on page one, contact and a question of the employer's on page two, a textarea and
         // the Submit on page three. Nothing is in the document until its page is shown.
         _fixture.MapGet("/jobs/wizard", () => Results.Content(WizardHtml, "text/html"));
+        // evlo's page three: "Willing to relocate?" has no star and no aria-required, yet Next
+        // stays disabled until it is answered.
+        _fixture.MapGet("/jobs/wizard-disabled-next", () => Results.Content(
+            """
+            <html><body>
+              <h1>Backend Engineer</h1>
+              <div id="p1">
+                <label for="first_name">First Name</label><input id="first_name" name="first_name" required>
+                <fieldset><legend>Are you willing to relocate?</legend>
+                  <label><input type="radio" name="relocate" value="yes"> Yes</label>
+                  <label><input type="radio" name="relocate" value="no"> No</label>
+                </fieldset>
+                <button type="button" id="next" disabled>Next</button>
+              </div>
+              <div id="p2" style="display:none"><button type="button" id="submit_app">Submit Application</button></div>
+              <script>
+                for (const r of document.querySelectorAll('[name=relocate]')) r.onchange = () => document.getElementById('next').disabled = false;
+                document.getElementById('next').onclick = () => { p1.style.display = 'none'; p2.style.display = 'block'; };
+              </script>
+            </body></html>
+            """, "text/html"));
         // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
         // radios named by a UUID — no fieldset, no legend, nothing Ashby-shaped (vector, #280).
         _fixture.MapGet("/jobs/clearcompany-radios", () => Results.Content(
@@ -2489,6 +2510,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var sent = Assert.Single(_posts);
         Assert.Contains("\"years_dotnet\":\"25\"", sent["json"]);
         Assert.Contains("\"email\":\"ada@example.com\"", sent["json"]);
+    }
+
+    [SkippableFact]
+    public async Task A_page_whose_Next_stays_disabled_hands_back_its_unmarked_questions()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "evlo-backend-engineer.md", Provider = "unknown",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard-disabled-next", packet, null, dryRun: true);
+
+        var met = Assert.Single(dry.Discovered ?? []);
+        Assert.Equal("Are you willing to relocate?", met.Label);
+        Assert.True(met.Required);
+        Assert.Contains(met.Id, dry.Unmapped);
+        Assert.Empty(_posts);
     }
 
     [SkippableFact]

@@ -1342,6 +1342,18 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return null;
     }
 
+    /// <summary>A Next on screen that the page keeps disabled.</summary>
+    private static async Task<bool> DisabledNextAsync(IFrame frame)
+    {
+        var next = frame.GetByRole(AriaRole.Button, new() { NameRegex = NextWords() }).Filter(new() { HasNotTextRegex = BrowserSession.LaterWords() }).Last;
+        try { return await next.CountAsync() > 0 && await next.IsVisibleAsync() && !await next.IsEnabledAsync(); }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>A label that says its question may be left blank.</summary>
+    [GeneratedRegex(@"\boptional\b|used only if|if applicable|if any\b", RegexOptions.IgnoreCase)]
+    private static partial Regex OptionalLabel();
+
     /// <summary>Is a Submit the finder would take on this page at all, enabled or not? The walk
     /// stops at the page that carries it; the finder proper, with its wait, runs at the click.</summary>
     private static async Task<bool> SubmitOnPageAsync(IFrame page)
@@ -1380,7 +1392,25 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             ct.ThrowIfCancellationRequested();
             if (await SubmitOnPageAsync(form)) return form;
             var next = await FindNextAsync(form);
-            if (next is null) return form;
+            if (next is null)
+            {
+                // A Next that is there but disabled: the page wants an answer it never marked
+                // required. evlo's "Willing to relocate?" carries no star and no aria-required,
+                // yet Next stays disabled until it is answered — the run clicked nothing and
+                // reported "no Submit button found". Its unanswered questions go to the drafter.
+                if (await DisabledNextAsync(form))
+                    foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
+                    {
+                        if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
+                            || FindQuestion(packet, live.Id, live.Label) is not null
+                            || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
+                            continue;
+                        _log.LogInformation("pages: Next is disabled and \"{Label}\" is unanswered — handing it back", live.Label);
+                        unmapped.Add(live.Id);
+                        discovered.Add(live with { Required = true });
+                    }
+                return form;
+            }
             // A required field this page still wants that nobody can fill: stop here, on it.
             foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
