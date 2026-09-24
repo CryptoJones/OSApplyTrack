@@ -1342,6 +1342,18 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return null;
     }
 
+    /// <summary>A Next on screen that the page keeps disabled.</summary>
+    private static async Task<bool> DisabledNextAsync(IFrame frame)
+    {
+        var next = frame.GetByRole(AriaRole.Button, new() { NameRegex = NextWords() }).Filter(new() { HasNotTextRegex = BrowserSession.LaterWords() }).Last;
+        try { return await next.CountAsync() > 0 && await next.IsVisibleAsync() && !await next.IsEnabledAsync(); }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>A label that says its question may be left blank.</summary>
+    [GeneratedRegex(@"\boptional\b|used only if|if applicable|if any\b", RegexOptions.IgnoreCase)]
+    private static partial Regex OptionalLabel();
+
     /// <summary>Is a Submit the finder would take on this page at all, enabled or not? The walk
     /// stops at the page that carries it; the finder proper, with its wait, runs at the click.</summary>
     private static async Task<bool> SubmitOnPageAsync(IFrame page)
@@ -1380,7 +1392,31 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             ct.ThrowIfCancellationRequested();
             if (await SubmitOnPageAsync(form)) return form;
             var next = await FindNextAsync(form);
-            if (next is null) return form;
+            if (next is null)
+            {
+                // A Next that is there but disabled: the page wants an answer it never marked
+                // required. evlo's "Willing to relocate?" carries no star and no aria-required,
+                // yet Next stays disabled until it is answered — the run clicked nothing and
+                // reported "no Submit button found". Its unanswered questions go to the drafter.
+                if (await DisabledNextAsync(form))
+                    foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
+                    {
+                        if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
+                            || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
+                            continue;
+                        // A question the packet knows but holds no answer for is the person's, as unmapped.
+                        if (FindQuestion(packet, live.Id, live.Label) is { } known)
+                        {
+                            if ((!packet.Answers.TryGetValue(known.Id, out var held) || string.IsNullOrWhiteSpace(held)) && !unmapped.Contains(known.Id))
+                                unmapped.Add(known.Id);
+                            continue;
+                        }
+                        _log.LogInformation("pages: Next is disabled and \"{Label}\" is unanswered — handing it back", live.Label);
+                        unmapped.Add(live.Id);
+                        discovered.Add(live with { Required = true });
+                    }
+                return form;
+            }
             // A required field this page still wants that nobody can fill: stop here, on it.
             foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
@@ -1571,9 +1607,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var label = await box.EvaluateAsync<string>(
                     "el => (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.closest('label, div, li')?.innerText || ''");
                 if (!TermsWords().IsMatch(label) || OptionalConsent().IsMatch(label) || await box.IsCheckedAsync()) continue;
-                // Oracle hides the real input under a styled label: force the check through.
+                // Oracle draws its box over a hidden input that neither check() nor a forced
+                // check() can reach ("outside of the viewport"); the input's own click() is what
+                // its knockout binding hears — verified on DTCC's live page, 2026-09-23.
                 try { await box.CheckAsync(new() { Timeout = 3_000 }); }
-                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { await box.CheckAsync(new() { Force = true, Timeout = 3_000 }); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { }
+                if (!await box.IsCheckedAsync()) await box.EvaluateAsync("el => el.click()");
             }
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* the Continue that follows reports what the board says */ }
@@ -1609,7 +1648,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   });
                   // A terms box beside the address is part of the sign-in, not a form: Oracle's
                   // "easy-apply/email" step is an email and "I agree with the terms and conditions".
-                  const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox');
+                  // Nor is a honeypot, kept on screen for bots but out of reach of a person: Oracle's
+                  // honey-pot input is aria-hidden with tabindex -1 and hid the sign-in from this check.
+                  const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox'
+                    && !(el.getAttribute('aria-hidden') === 'true' && el.tabIndex < 0) && !/honey-?pot|beecatcher/i.test(el.id + ' ' + el.name));
                   // ...unless the page offers to submit the application itself: then it is the form.
                   if (boxes.length !== live.length && [...document.querySelectorAll('button, input[type=submit], [role=button]')]
                         .some(b => shown(b) && /submit\s+(?:my |your |the )?application/i.test(b.innerText || b.value || ''))) return false;
