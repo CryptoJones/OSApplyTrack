@@ -36,18 +36,27 @@ public static partial class Disqualifiers
     private static partial Regex Remote();
 
     // What an employer writes when the role is not remote: "a flexible/hybrid model of 3 days
-    // onsite" (DTCC), "hybrid role", "4 days a week in the office", "this is an on-site
-    // position". Never "hybrid cloud": hybrid only counts before a word about working.
+    // onsite" (DTCC), "Hybrid — three days at our office", "hybrid role", "4 days a week in
+    // the office", "this is an on-site position". Never "hybrid cloud" or "a hybrid model for
+    // fraud detection": hybrid counts before a word about working, or before a count of days.
     [GeneratedRegex(
-        @"\bhybrid\s+(?:model|role|position|schedule|work(?:ing|place)?|arrangement|environment|setup|opportunity)\b"
+        @"\bhybrid\s+(?:role|position|schedule|work(?:ing|place)?|arrangement|work\s+model)\b"
+        + @"|\bhybrid\b[^.\n]{0,40}?\b(?:\d|one|two|three|four|five)\s+days?\b"
         + @"|\b(?:\d|one|two|three|four|five)\s+days?\s+(?:a\s+week\s+|per\s+week\s+)?(?:on-?site|in(?:\s+the)?\s+office|in-office|in\s+person)\b"
         + @"|\b(?:this|the)\s+(?:is\s+an?\s+|role\s+is\s+(?:an?\s+)?|position\s+is\s+(?:an?\s+)?)(?:on-?site|in-office|in\s+office|hybrid)\b"
         + @"|\b(?:on-?site|in-office)\s+(?:role|position|only)\b|\bnot\s+(?:a\s+)?remote\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NotRemote();
 
-    // Remote said outright — not "distributed", which on a job page is mostly "distributed systems".
-    [GeneratedRegex(@"\bremote(?:ly)?\b|\bwork[- ]from[- ](?:home|anywhere)\b|\bwfh\b|\btelecommut", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    // Remote said of the job — "fully remote", "remote role", "the position is remote",
+    // "Location: Remote", "(Remote)" — never "remote access tools" or "distributed systems".
+    [GeneratedRegex(
+        @"\b(?:fully|100%|completely|entirely)\s+remote\b"
+        + @"|\bremote(?:ly)?[\s-]+(?:role|position|job|work(?:er|ing)?|first|friendly|opportunity|employee|option|eligible|based|within|from|across|anywhere|in\s+the\b)"
+        + @"|\b(?:is|be|are|work|working|role|position|job)\s+(?:\w+\s+)?remote(?:ly)?\b"
+        + @"|\blocation\s*:\s*remote\b|\(remote\)"
+        + @"|\bwork[- ]from[- ](?:home|anywhere)\b|\bwfh\b|\btelecommut",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SaysRemote();
 
     /// <summary>
@@ -57,15 +66,16 @@ public static partial class Disqualifiers
     /// 3 days onsite"; it listed Wingstop as "Dallas, TX (Remote)" over a posting that gives a
     /// street address and never once says remote. <paramref name="employerText"/> must be the
     /// employer's page, never the board's. The reason, or null. A posting too short to judge
-    /// (a page that would not render) is never held against the role.
+    /// (a page that would not render) is never held against the role, nor is silence in
+    /// text that may have been cut short (<paramref name="complete"/> false).
     /// </summary>
-    public static string? EmployerContradictsRemote(string employerText, Criteria criteria)
+    public static string? EmployerContradictsRemote(string employerText, Criteria criteria, bool complete = true)
     {
         if (!criteria.RemoteOnly || string.IsNullOrWhiteSpace(employerText)) return null;
         var m = NotRemote().Match(employerText);
         if (m.Success)
             return $"the employer's own posting says \"{Around(employerText, m)}\" — the profile is remote-only";
-        if (employerText.Length >= 1500 && !SaysRemote().IsMatch(employerText))
+        if (complete && employerText.Length >= 1500 && !SaysRemote().IsMatch(employerText))
             return "the employer's own posting never says the role is remote — the profile is remote-only";
         return null;
     }
@@ -78,6 +88,9 @@ public static partial class Disqualifiers
         var end = Math.Min(stops < 0 ? text.Length : stops, m.Index + m.Length + 100);
         return System.Text.RegularExpressions.Regex.Replace(text[start..end], @"\s+", " ").Trim();
     }
+
+    private static bool UsBased(string country) =>
+        country.Trim().ToLowerInvariant() is "united states" or "united states of america" or "us" or "usa" or "u.s." or "u.s.a.";
 
     /// <summary>The disqualifiers that apply, in plain language; empty means none.</summary>
     public static IReadOnlyList<string> Find(
@@ -109,6 +122,13 @@ public static partial class Disqualifiers
 
         if (criteria.RemoteOnly && OnSite().IsMatch(where) && !Remote().IsMatch(where))
             reasons.Add("on-site role, but the profile is remote-only");
+
+        // Greenhouse's EU job board (job-boards.eu.greenhouse.io) hosts employers' European
+        // openings: a US candidate is out of reach there, whatever the listing says (CJ,
+        // 2026-09-24: "if the URL is job-boards.eu.greenhouse.io it is not a US job").
+        if (UsBased(settings.Country) && Uri.TryCreate(app.Link, UriKind.Absolute, out var link)
+            && link.Host.EndsWith(".eu.greenhouse.io", StringComparison.OrdinalIgnoreCase))
+            reasons.Add("posted on Greenhouse's EU job board — not a US job");
 
         return reasons;
     }

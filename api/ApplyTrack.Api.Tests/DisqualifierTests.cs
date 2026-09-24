@@ -120,4 +120,38 @@ public class DisqualifierTests
     [Fact]
     public void A_page_too_short_to_judge_is_never_held_against_the_role() =>
         Assert.Null(Disqualifiers.EmployerContradictsRemote("Loading…", new Criteria { RemoteOnly = true }));
+
+    [Fact]
+    public void A_hybrid_schedule_in_other_words_is_caught_and_a_hybrid_model_of_something_is_not()
+    {
+        var remoteOnly = new Criteria { RemoteOnly = true };
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote("Hybrid — three days at our office, two days remote.", remoteOnly));
+        // A model built, not a way of working.
+        var fraud = string.Concat(Enumerable.Repeat("Fully remote role. Build a hybrid model for fraud detection. ", 30));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(fraud, remoteOnly));
+    }
+
+    [Fact]
+    public void Remote_said_of_a_tool_is_not_remote_said_of_the_job()
+    {
+        var page = string.Concat(Enumerable.Repeat("You will build remote access tools and distributed systems in our Dallas office. ", 25));
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }));
+    }
+
+    [Fact]
+    public void Silence_in_text_that_may_have_been_cut_short_proves_nothing() =>
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true }, complete: false));
+
+    [Theory]
+    [InlineData("https://job-boards.eu.greenhouse.io/neoris/jobs/4904857101", "United States", true)]
+    [InlineData("https://boards.eu.greenhouse.io/acme/jobs/1", "USA", true)]
+    [InlineData("https://job-boards.greenhouse.io/acme/jobs/1", "United States", false)]
+    [InlineData("https://job-boards.eu.greenhouse.io/neoris/jobs/4904857101", "Germany", false)]
+    [InlineData("https://job-boards.eu.greenhouse.io/neoris/jobs/4904857101", "", false)]
+    public void Greenhouses_EU_board_is_not_a_US_job(string link, string country, bool disqualified)
+    {
+        var app = new AppFields { Company = "NEORIS", Role = ".NET Developer", Location = "Remote", Link = link };
+        var reasons = Disqualifiers.Find(app, "", new Criteria(), new AgentSettings { Country = country });
+        Assert.Equal(disqualified, reasons.Any(r => r.Contains("EU job board")));
+    }
 }

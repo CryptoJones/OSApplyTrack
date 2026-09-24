@@ -364,11 +364,23 @@ public sealed class AgentWorker : BackgroundService
     private async Task<bool> PassIfEmployerNotRemoteAsync(
         AppRecord rec, AgentPacket packet, Criteria criteria, ApplicationRepo apps, AgentEventRepo events)
     {
+        // The packet keeps 12,000 characters of the posting; silence past the cut proves nothing.
+        var complete = packet.PostingExcerpt.Length < PacketBuilder.ExcerptLimit;
         if (!Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var at)
             || AtsProvider.IsAggregatorHost(at.Host.ToLowerInvariant())
-            || Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria) is not { } why)
+            || Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, complete) is not { } why)
             return false;
-        await apps.UpdateStructuredAsync(rec.Name, rec.Fields with { Status = "passed" }, null);
+        // As it stands now, not as it stood before the build: a person may have marked it
+        // applied meanwhile, and that is never overwritten.
+        var current = await apps.GetAsync(rec.Name);
+        if (current is null || current.Fields.Status is not ("lead" or "ready"))
+            return false;
+        try
+        {
+            await apps.UpdateStructuredAsync(rec.Name, current.Fields with { Status = "passed" },
+                current.Version.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (AppConflictException) { return false; }
         await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name, new
         {
             reason = "not remote: " + why + " — lead marked passed",

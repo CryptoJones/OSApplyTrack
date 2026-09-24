@@ -109,6 +109,9 @@ public sealed partial class PacketBuilder
         new("std:cover_letter", "Cover letter", false, PacketQuestion.Textarea, [], PacketQuestion.Standard),
     ];
 
+    /// <summary>How much of the posting a packet keeps.</summary>
+    public const int ExcerptLimit = 12000;
+
     public async Task<AgentPacket> BuildAsync(
         AppRecord rec, Verdict verdict, PacketInputs inputs, PacketScope scope, CancellationToken ct = default)
     {
@@ -199,7 +202,7 @@ public sealed partial class PacketBuilder
         {
             ApplicationName = rec.Name,
             Provider = provider,
-            PostingExcerpt = excerpt.Length > 12000 ? excerpt[..12000] : excerpt,
+            PostingExcerpt = excerpt.Length > ExcerptLimit ? excerpt[..ExcerptLimit] : excerpt,
             Verdict = JsonSerializer.SerializeToElement(verdict, Json),
             Questions = questions,
             Answers = answers,
