@@ -1434,7 +1434,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // The same controls at the same address: the page only re-rendered with its
             // complaints, which the sweep reads. Not a page turned.
             if (page.Url == urlBefore && questions.Select(q => q.Id).ToHashSet(StringComparer.Ordinal).SetEquals(before))
+            {
+                await HandBackIfNextDisabledAsync();
                 return form;
+            }
             _log.LogInformation("pages: turned to page {Page} at {Url}", turned + 2, page.Url);
 
             foreach (var live in questions)

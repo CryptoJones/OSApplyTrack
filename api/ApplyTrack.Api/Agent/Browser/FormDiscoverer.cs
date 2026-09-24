@@ -244,7 +244,8 @@ public sealed partial class FormDiscoverer
               const title = [...a.querySelectorAll('*')].find(x =>
                 // Not an option's own label — but a <label> that holds no control is the title itself
                 // (evlo: <label>Will you … sponsorship …? <span>*</span></label> over a radiogroup).
-                x !== first && !x.contains(first) && !x.closest('label')?.querySelector('input, select, textarea') && !x.querySelector('input, select, textarea')
+                // and never a label bound to some control by `for` (an option's "Yes" set before its radio).
+                x !== first && !x.contains(first) && !x.closest('label')?.querySelector('input, select, textarea') && !x.closest('label[for]') && !x.querySelector('input, select, textarea')
                 && (x.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING)
                 && /[A-Za-z]{3,}/.test(x.innerText || '')
                 && [...x.children].every(c => !/[A-Za-z]{3,}/.test(c.innerText || '')));
@@ -277,7 +278,7 @@ public sealed partial class FormDiscoverer
               const title = el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || groupTitle(el)
                 || el.closest('[role=radiogroup]')?.getAttribute('aria-label') || name;
               // The star on the group's title is the group's: its options' own labels ("Yes") carry none.
-              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title), options: [opt] };
+              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true', options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // A blank-valued option is the placeholder ("Select…"), not a choice.
