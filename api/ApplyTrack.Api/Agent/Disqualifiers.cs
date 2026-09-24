@@ -35,6 +35,50 @@ public static partial class Disqualifiers
     [GeneratedRegex(@"\b(?:remote|work from home|wfh|distributed)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex Remote();
 
+    // What an employer writes when the role is not remote: "a flexible/hybrid model of 3 days
+    // onsite" (DTCC), "hybrid role", "4 days a week in the office", "this is an on-site
+    // position". Never "hybrid cloud": hybrid only counts before a word about working.
+    [GeneratedRegex(
+        @"\bhybrid\s+(?:model|role|position|schedule|work(?:ing|place)?|arrangement|environment|setup|opportunity)\b"
+        + @"|\b(?:\d|one|two|three|four|five)\s+days?\s+(?:a\s+week\s+|per\s+week\s+)?(?:on-?site|in(?:\s+the)?\s+office|in-office|in\s+person)\b"
+        + @"|\b(?:this|the)\s+(?:is\s+an?\s+|role\s+is\s+(?:an?\s+)?|position\s+is\s+(?:an?\s+)?)(?:on-?site|in-office|in\s+office|hybrid)\b"
+        + @"|\b(?:on-?site|in-office)\s+(?:role|position|only)\b|\bnot\s+(?:a\s+)?remote\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NotRemote();
+
+    // Remote said outright — not "distributed", which on a job page is mostly "distributed systems".
+    [GeneratedRegex(@"\bremote(?:ly)?\b|\bwork[- ]from[- ](?:home|anywhere)\b|\bwfh\b|\btelecommut", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SaysRemote();
+
+    /// <summary>
+    /// Does the employer's own posting contradict "remote" for a remote-only profile? A job
+    /// board's listing can say "(Remote)" when the employer's page says otherwise: LinkedIn
+    /// listed DTCC as "Tampa, FL (Remote)" and DTCC's page says "a flexible/hybrid model of
+    /// 3 days onsite"; it listed Wingstop as "Dallas, TX (Remote)" over a posting that gives a
+    /// street address and never once says remote. <paramref name="employerText"/> must be the
+    /// employer's page, never the board's. The reason, or null. A posting too short to judge
+    /// (a page that would not render) is never held against the role.
+    /// </summary>
+    public static string? EmployerContradictsRemote(string employerText, Criteria criteria)
+    {
+        if (!criteria.RemoteOnly || string.IsNullOrWhiteSpace(employerText)) return null;
+        var m = NotRemote().Match(employerText);
+        if (m.Success)
+            return $"the employer's own posting says \"{Around(employerText, m)}\" — the profile is remote-only";
+        if (employerText.Length >= 1500 && !SaysRemote().IsMatch(employerText))
+            return "the employer's own posting never says the role is remote — the profile is remote-only";
+        return null;
+    }
+
+    // The sentence around a match, trimmed for a reason line.
+    private static string Around(string text, Match m)
+    {
+        var start = Math.Max(text.LastIndexOfAny(['.', '\n', '!', '?'], m.Index) + 1, m.Index - 100);
+        var stops = text.IndexOfAny(['.', '\n', '!', '?'], m.Index + m.Length);
+        var end = Math.Min(stops < 0 ? text.Length : stops, m.Index + m.Length + 100);
+        return System.Text.RegularExpressions.Regex.Replace(text[start..end], @"\s+", " ").Trim();
+    }
+
     /// <summary>The disqualifiers that apply, in plain language; empty means none.</summary>
     public static IReadOnlyList<string> Find(
         AppFields app, string postingText, Criteria criteria, AgentSettings settings)

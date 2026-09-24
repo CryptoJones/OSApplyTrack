@@ -72,4 +72,52 @@ public class DisqualifierTests
         Assert.Empty(
             Disqualifiers.Find(App(location: "On-site"), "", new Criteria(), new AgentSettings()));
     }
+
+    // The employer's own pages, as the browser rendered them on 2026-09-24. LinkedIn listed
+    // both as "(Remote)".
+    private const string DtccPage = "Do you want to work on innovative projects? At DTCC, we are at the forefront of innovation.\n"
+        + "DTCC offers a flexible/hybrid model of 3 days onsite and 2 days remote (onsite Tuesdays, Wednesdays and a third day unique to each team or employee).\n"
+        + "The salary range is indicative for roles at the same level within DTCC across all US locations.";
+
+    private static readonly string WingstopPage = "Staff Engineer - .Net / C#\nDallas, TX, United States\n"
+        + string.Concat(Enumerable.Repeat("Design and own distributed backend systems using .NET / C# in a cloud-native AWS environment. ", 16))
+        + "\nLunch provided every Tuesday and Thursday in office\nOnsite game room\nLocations\n2801 N Central Expressway, Dallas, TX, 75204, US";
+
+    [Fact]
+    public void An_employer_page_that_says_hybrid_contradicts_a_remote_listing()
+    {
+        var why = Disqualifiers.EmployerContradictsRemote(DtccPage, new Criteria { RemoteOnly = true });
+        Assert.NotNull(why);
+        Assert.Contains("hybrid model of 3 days onsite", why);
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(DtccPage, new Criteria { RemoteOnly = false }));
+    }
+
+    [Fact]
+    public void A_whole_employer_posting_that_never_says_remote_contradicts_a_remote_listing()
+    {
+        // "distributed backend systems" is not remote; "in office" twice-weekly lunch is no statement.
+        var why = Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true });
+        Assert.Equal("the employer's own posting never says the role is remote — the profile is remote-only", why);
+    }
+
+    [Theory]
+    [InlineData("This role is fully remote within the US. " + "We build hybrid cloud platforms for regulated industries. ")]
+    [InlineData("Work from anywhere in the United States. Our hybrid cloud team ships weekly. ")]
+    public void A_remote_posting_is_never_held_against_the_role(string sentence)
+    {
+        var page = string.Concat(Enumerable.Repeat(sentence, 20));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }));
+    }
+
+    [Theory]
+    [InlineData("This is a hybrid role based in Austin.")]
+    [InlineData("You will work 4 days a week in the office.")]
+    [InlineData("This position is on-site in Denver.")]
+    [InlineData("This is not a remote position.")]
+    public void Plain_statements_that_the_role_is_not_remote_are_caught(string sentence) =>
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(sentence, new Criteria { RemoteOnly = true }));
+
+    [Fact]
+    public void A_page_too_short_to_judge_is_never_held_against_the_role() =>
+        Assert.Null(Disqualifiers.EmployerContradictsRemote("Loading…", new Criteria { RemoteOnly = true }));
 }

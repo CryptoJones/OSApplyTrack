@@ -120,6 +120,7 @@ public sealed partial class PacketBuilder
         // the standard set and the copy-and-open path.
         List<PacketQuestion>? questions = null;
         var greenhouseContent = "";
+        var rendered = "";
         var source = f.Source;
         // A company careers page that embeds a Greenhouse job (?gh_jid=) names its board in
         // the embed script, not in the link; a lead from anywhere but the tenant's own board
@@ -154,7 +155,8 @@ public sealed partial class PacketBuilder
                     q => q.Kind == PacketQuestion.Eeo || q.Type == PacketQuestion.File ? null
                         : pinned.TryGetValue(AnswerBankRepo.KeyFor(q), out var mine) && mine.Length > 0
                             ? AnswerDrafter.FitToOptions(q, mine).Answer
-                            : AnswerDrafter.Deterministic(q, gateCtx).Answer);
+                            : AnswerDrafter.Deterministic(q, gateCtx).Answer,
+                    text => rendered = text);
             }
             catch (Exception ex) when (ex is AppValidationException or Microsoft.Playwright.PlaywrightException or TimeoutException)
             {
@@ -167,6 +169,9 @@ public sealed partial class PacketBuilder
         var excerpt = await _evaluator.ReadPostingAsync(f.Link, ct);
         if (excerpt.Length == 0 && greenhouseContent.Length > 0)
             excerpt = StripHtml(greenhouseContent);
+        // A page drawn by script gives a plain fetch next to nothing; the browser read it whole.
+        if (excerpt.Length < 500 && rendered.Trim().Length > excerpt.Length)
+            excerpt = rendered.Trim();
 
         // 3. The letter: keep an existing one, draft when allowed, never block on it.
         var letter = await scope.Letters.GetBodyAsync(rec.Name) ?? "";
