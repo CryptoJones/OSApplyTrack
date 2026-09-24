@@ -112,6 +112,14 @@ public class AtsProviderTests
         Assert.Equal(expected, AtsProvider.GreenhouseEmbedForm(link));
 
     [Theory]
+    [InlineData("https://www.bridgewaybentech.com/job-posting?gh_jid=8811807002", "<script src=\"https://boards.greenhouse.io/embed/job_board/js?for=bridgewaybenefittechnologies\"></script>",
+        "https://job-boards.greenhouse.io/embed/job_app?for=bridgewaybenefittechnologies&token=8811807002")]
+    [InlineData("https://www.bridgewaybentech.com/job-posting?gh_jid=8811807002", "<p>no board named here</p>", null)]
+    [InlineData("https://www.bridgewaybentech.com/job-posting", "<script src=\"https://boards.greenhouse.io/embed/job_board/js?for=acme\"></script>", null)]
+    public void An_employer_page_embedding_a_greenhouse_job_opens_greenhouses_own_form(string link, string html, string? expected) =>
+        Assert.Equal(expected, AtsProvider.GreenhouseEmbedFormFor(link, html));
+
+    [Theory]
     [InlineData("careers-mheducation.icims.com", "iCIMS")]
     [InlineData("uhg.taleo.net", "Oracle Taleo")]
     [InlineData("allstate.wd5.myworkdayjobs.com", "Workday")]

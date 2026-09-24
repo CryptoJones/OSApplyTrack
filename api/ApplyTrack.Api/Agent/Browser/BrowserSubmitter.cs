@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Globalization;
 using System.Text.RegularExpressions;
 using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Data;
@@ -155,6 +156,20 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         {
             await opened.DisposeAsync();
             opened = await BrowserSession.OpenAsync(_options, embed, ct, accounts);
+        }
+        // An employer page that embeds a Greenhouse job (?gh_jid=) and shows no form: the
+        // embed never rendered here. Greenhouse's own copy of it is the same form (Bridgeway).
+        else if (packet.Provider == AtsProvider.Greenhouse && AtsProvider.GreenhouseEmbedForm(link) is null
+                 && !await BrowserSession.WaitForApplicationFormAsync(opened.Page, 5_000))
+        {
+            string html;
+            try { html = await opened.Page.ContentAsync(); }
+            catch (PlaywrightException) { html = ""; }
+            if (AtsProvider.GreenhouseEmbedFormFor(link, html) is { } form)
+            {
+                await opened.DisposeAsync();
+                opened = await BrowserSession.OpenAsync(_options, form, ct, accounts);
+            }
         }
         await using var session = opened;
         var outcome = await RunOnPageAsync(session, link, packet, resumePdf, dryRun, ct, resumeText, coverLetter, awaitSecurityCode, accounts);
@@ -714,8 +729,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // control IS, not by what the packet says it is.
         if (q.Type is PacketQuestion.Select or PacketQuestion.MultiSelect || await IsComboboxAsync(control))
             return await ChooseAsync(page, control, q, answer);
-        await control.FillAsync(answer);
+        // A native date picker takes only its ISO form: evlo's "earliest date you are available"
+        // is an <input type=date>, the banked answer read "October 1, 2026", and Playwright's
+        // "Malformed value" threw out of the fill and ended the whole run.
+        var inputType = (await control.GetAttributeAsync("type") ?? "").ToLowerInvariant();
+        if (inputType is "date" or "month" or "datetime-local")
+        {
+            if (DateInputValue(answer, inputType) is not { } iso) return false;
+            answer = iso;
+        }
+        try { await control.FillAsync(answer); }
+        catch (PlaywrightException) { return false; }
         return true;
+    }
+
+    /// <summary>An answer in the form a native date, month or datetime-local input accepts, or
+    /// null when it names no date: "October 1, 2026" → "2026-10-01" / "2026-10" / "2026-10-01T09:00".</summary>
+    public static string? DateInputValue(string answer, string inputType)
+    {
+        if (!DateTime.TryParse(answer.Trim(), CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.AllowWhiteSpaces, out var when))
+            return null;
+        return inputType switch
+        {
+            "month" => when.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+            "datetime-local" => when.ToString(when.TimeOfDay == TimeSpan.Zero ? "yyyy-MM-dd'T'09:00" : "yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture),
+            _ => when.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        };
     }
 
     /// <summary>
@@ -1147,6 +1186,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         try
         {
             await box.FillAsync(email, new() { Timeout = 5_000 });
+            // Oracle refuses the address until its terms box is ticked: "You need to agree to
+            // the terms and conditions" was DTCC's whole run.
+            await TickTermsAsync(form);
             var go = await FindContinueAsync(form);
             if (go is not null) await go.ClickAsync(new() { Timeout = 5_000 });
             else await box.PressAsync("Enter");
@@ -1515,6 +1557,31 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
     /// <summary>Every visible, enabled, fillable control on the page is an email box (and there is one).</summary>
+    /// <summary>Tick every unticked checkbox on a sign-in step that reads as agreeing to the
+    /// board's terms or privacy notice — the box a person ticks to be sent the code. Anything
+    /// else (marketing, "remember me") is left as it stands.</summary>
+    private static async Task TickTermsAsync(IFrame page)
+    {
+        try
+        {
+            var boxes = page.Locator("input[type=checkbox]");
+            for (var i = 0; i < await boxes.CountAsync(); i++)
+            {
+                var box = boxes.Nth(i);
+                var label = await box.EvaluateAsync<string>(
+                    "el => (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.closest('label, div, li')?.innerText || ''");
+                if (!TermsWords().IsMatch(label) || await box.IsCheckedAsync()) continue;
+                // Oracle hides the real input under a styled label: force the check through.
+                try { await box.CheckAsync(new() { Timeout = 3_000 }); }
+                catch (PlaywrightException) { await box.CheckAsync(new() { Force = true, Timeout = 3_000 }); }
+            }
+        }
+        catch (PlaywrightException) { /* the Continue that follows reports what the board says */ }
+    }
+
+    [GeneratedRegex(@"\b(?:terms|conditions|privacy (?:policy|notice|statement)|i (?:have read|agree|accept|consent))\b", RegexOptions.IgnoreCase)]
+    private static partial Regex TermsWords();
+
     private static async Task<bool> OnlyEmailFieldsAsync(IFrame page)
     {
         try
@@ -1533,7 +1600,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
                     return !['hidden', 'submit', 'button', 'reset', 'image'].includes(type) && !el.disabled && !widget(el) && shown(el);
                   });
-                  return live.length > 0 && live.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
+                  // A terms box beside the address is part of the sign-in, not a form: Oracle's
+                  // "easy-apply/email" step is an email and "I agree with the terms and conditions".
+                  const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox');
+                  return boxes.length > 0 && boxes.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
                 }
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
@@ -2420,6 +2490,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // SuccessFactors' Apply is a span, not a button: …:_submitBtn (#216).
             page.Locator("[id$='_submitBtn']").Filter(notLater).First,
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            // The same words read from the DOM, not the accessibility tree: while a dialog or
+            // toast holds aria-modal (Ashby's résumé "Dismiss" panel), everything behind it is
+            // aria-hidden and every role query above misses a Submit Application in plain view
+            // — ElevenLabs' real runs listed it among the buttons and still found no Submit (#280).
+            page.Locator("button, [role=button]").Filter(new() { HasTextRegex = new Regex(@"^\s*submit (?:my |your |the )?application\s*$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
             page.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Last,

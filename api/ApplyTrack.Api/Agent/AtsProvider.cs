@@ -267,6 +267,20 @@ public static partial class AtsProvider
         return $"https://{host}/embed/job_app?for={Uri.EscapeDataString(m.Groups[1].Value)}&token={Uri.EscapeDataString(m.Groups[2].Value)}";
     }
 
+    /// <summary>
+    /// Greenhouse's own copy of the form for an employer page that embeds a Greenhouse job
+    /// (<c>?gh_jid=</c>), with the board read off that page's HTML; null when either is missing.
+    /// Bridgeway's careers page renders its embed from a script the browser never ran, so the
+    /// run found "no Apply button or link on the page" on a posting whose packet held all 17
+    /// Greenhouse questions.
+    /// </summary>
+    public static string? GreenhouseEmbedFormFor(string link, string html)
+    {
+        if (GreenhouseEmbed().Match(link ?? "") is not { Success: true } m || FindGreenhouseBoard(html) is not { } board)
+            return null;
+        return $"https://job-boards.greenhouse.io/embed/job_app?for={Uri.EscapeDataString(board)}&token={m.Groups[1].Value}";
+    }
+
     /// <summary>Board token + job id for a Greenhouse posting, from the hosted URL or an
     /// embed's <c>gh_jid</c> plus the poller's <c>auto:greenhouse:{board}</c> source.</summary>
     public static bool TryParseGreenhouse(string link, string source, out string board, out string jobId)

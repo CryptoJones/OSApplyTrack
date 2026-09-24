@@ -367,8 +367,16 @@ internal static partial class LinkedInEasyApply
         foreach (var q in packet.Questions)
             if ((SameLabel(q.Id, label) || SameLabel(q.Label, label)) && packet.Answers.TryGetValue(q.Id, out var a) && a.Trim().Length > 0)
                 return a.Trim();
+        // The contact step's City / Location typeahead is not in the standard set, and a question
+        // only reaches the drafter once a run hands it back; SMX's run did not, and sat on "City"
+        // for want of what the résumé already says. The typeahead takes the first match for it.
+        if (CityLabel().IsMatch(label) && packet.Resume is { Location.Length: > 0 } resume)
+            return AnswerDrafter.StripLocationSuffix(resume.Location);
         return "";
     }
+
+    [GeneratedRegex(@"^\s*(?:city|location|current location|location \(city\))\s*\*?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex CityLabel();
 
     private static bool SameLabel(string a, string b) =>
         string.Equals(Squash(a), Squash(b), StringComparison.OrdinalIgnoreCase);
