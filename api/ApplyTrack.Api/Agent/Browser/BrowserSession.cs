@@ -512,6 +512,30 @@ public sealed partial class BrowserSession : IAsyncDisposable
         .Replace("__FILE_RULE__", "if (type === 'file' && shown(el)) return true;")
         .Replace("__WIDGET__", WidgetJs);
 
+    /// <summary>
+    /// Oracle Recruiting's "easy apply" is not the form: signed in, it opens on "Let's make this
+    /// quick — upload your résumé" (DTCC), or resumes a half-done draft as a block of questions
+    /// at easy-apply/section/N/block/M that the run read as "no application form followed"
+    /// (#318). Both carry "You can also <a>manually</a> fill out your application", which leads
+    /// to the standard apply/section/1 flow the page walker knows. Follow it. True when the page
+    /// left easy-apply for it; false, doing nothing, anywhere else.
+    /// </summary>
+    public static async Task<bool> TakeStandardFlowAsync(IPage page)
+    {
+        if (!page.Url.Contains("/easy-apply", StringComparison.OrdinalIgnoreCase)) return false;
+        var manual = page.Locator("a.quick-apply-flow__manually--link").First;
+        try
+        {
+            await manual.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 10_000 });
+            await DismissConsentAsync(page);
+            await manual.ClickAsync(new() { Timeout = 5_000 });
+            await page.WaitForURLAsync(u => !u.Contains("/easy-apply", StringComparison.OrdinalIgnoreCase), new() { Timeout = 15_000 });
+            return true;
+        }
+        catch (TimeoutException) { return false; }
+        catch (PlaywrightException) { return false; }
+    }
+
     public static Task<bool> WaitForApplicationFormAsync(IPage page, int timeoutMs)
         => WaitForAsync(page, timeoutMs, ApplicationFormVisibleAsync);
 
