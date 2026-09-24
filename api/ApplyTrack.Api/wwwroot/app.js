@@ -389,7 +389,7 @@ function openStatusView({ focus = true } = {}) {
 }
 
 function renderStatusView() {
-  const apps = filteredApps();
+  const apps = filteredApps({ everywhere: false });
   const label = STATUS_LABEL[state.filterStatus] || state.filterStatus;
   const title = label.charAt(0).toUpperCase() + label.slice(1);
   const rows = apps.map((a) => `
@@ -618,18 +618,26 @@ function renderPipelineView(data) {
 
 // ---- Sidebar --------------------------------------------------------------
 
-function filteredApps() {
+// A search looks everywhere (#322): "which page is DTCC on?" had no answer, because DTCC was
+// stuck under Errors and the box only searched the list on screen. The filters narrow a list
+// you are browsing; a search finds the one you are looking for, whatever list it is in.
+const searching = () => state.query.trim().length > 0;
+
+function filteredApps({ everywhere = searching() } = {}) {
   const q = state.query.trim().toLowerCase();
   const errored = state.filterStatus === "ready" ? errorNames() : null;
   const apps = state.apps.filter((a) => {
-    if (state.filterLane && a.lane !== state.filterLane) return false;
-    if (state.filterStatus && a.status !== state.filterStatus) return false;
-    // An errored application has its own view; Ready lists the ones still to try (#284).
-    if (errored && errored.has(a.filename)) return false;
+    if (!everywhere) {
+      if (state.filterLane && a.lane !== state.filterLane) return false;
+      if (state.filterStatus && a.status !== state.filterStatus) return false;
+      // An errored application has its own view; Ready lists the ones still to try (#284).
+      if (errored && errored.has(a.filename)) return false;
+    }
     if (!q) return true;
     return (
       a.company.toLowerCase().includes(q) ||
       a.role.toLowerCase().includes(q) ||
+      a.filename.toLowerCase().includes(q) ||
       (a.snippet || "").toLowerCase().includes(q)
     );
   });
@@ -639,7 +647,7 @@ function filteredApps() {
 // First still-open role (not applied, not passed) — where Pass jumps next. Follows
 // the chosen sort, so "next up" means next in the order actually on screen.
 function nextActionable(excludeName) {
-  const app = filteredApps().find(
+  const app = filteredApps({ everywhere: false }).find(
     (a) => a.filename !== excludeName && statusGroup(a.status) === 0);
   return app ? app.filename : null;
 }
@@ -647,7 +655,8 @@ function nextActionable(excludeName) {
 // The Ready lane is the one place work is done in bulk: prepare / submit / pass the
 // ticked packets, or submit every one whose last dry run was clean, in one request.
 const bulkBarEl = $("#bulk-bar");
-const bulkMode = () => state.filterStatus === "ready";
+// Not while searching: a search lists every status, and bulk actions are Ready's alone.
+const bulkMode = () => state.filterStatus === "ready" && !searching();
 
 function renderBulkBar(visible) {
   if (!bulkBarEl) return;
@@ -716,9 +725,12 @@ async function runBulk(act) {
 
 function renderSidebar() {
   const apps = filteredApps();
+  const stuck = errorNames();
   listEl.innerHTML = "";
   if (apps.length === 0) {
-    listEl.innerHTML = `<li class="empty-result">No applications match the current filters.</li>`;
+    listEl.innerHTML = searching()
+      ? `<li class="empty-result">No application matches “${escapeHtml(state.query.trim())}”.</li>`
+      : `<li class="empty-result">No applications match the current filters.</li>`;
   }
   renderBulkBar(apps);
   apps.forEach((a, i) => {
@@ -749,7 +761,7 @@ function renderSidebar() {
       <span class="application-card-body">
         <span class="application-card-header">
           <span class="ic-title">${escapeHtml(a.company)}</span>
-          ${statusBadge(a.status)}
+          ${statusBadge(a.status)}${stuck.has(a.filename) ? ` <span class="badge" data-status="rejected">In Errors</span>` : ""}
         </span>
         ${a.role ? `<span class="ic-role">${escapeHtml(a.role)}</span>` : ""}
         <span class="ic-meta">${lanePill(a.lane)} ${score} ${posted}
@@ -769,9 +781,11 @@ function renderSidebar() {
   });
   const total = state.apps.length;
   const shown = apps.length;
-  countEl.textContent = shown === total
-    ? `${total} application${total === 1 ? "" : "s"}`
-    : `${shown} of ${total} applications`;
+  countEl.textContent = searching()
+    ? `${shown} match${shown === 1 ? "" : "es"} in all ${total} applications`
+    : shown === total
+      ? `${total} application${total === 1 ? "" : "s"}`
+      : `${shown} of ${total} applications`;
   if (state.mode === "status") {
     if (state.filterStatus) renderStatusView();
     else renderEmpty();
