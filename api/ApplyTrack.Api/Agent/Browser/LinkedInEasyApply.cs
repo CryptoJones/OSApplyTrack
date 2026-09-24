@@ -433,9 +433,24 @@ internal static partial class LinkedInEasyApply
                 {
                     var box = page.Locator($"{Modal} [id=\"{Css(f.ControlId)}\"]").First;
                     await box.FillAsync(answer, new() { Timeout = 5_000 });
-                    // A typeahead (city, school) only takes a value picked from its list.
+                    // A typeahead (city, school) only takes a value picked from its list: the
+                    // suggestion is clicked once the list shows one, and a place the list does not
+                    // know in full ("Minden, Nebraska") is tried by its head ("Minden"). Pressing
+                    // ArrowDown and Enter blind left SMX's City typed and uncommitted.
                     if (await box.GetAttributeAsync("role") == "combobox" || await box.GetAttributeAsync("aria-autocomplete") is { Length: > 0 })
                     {
+                        var options = page.Locator($"{Modal} [role=listbox] [role=option]:visible, {Modal} .basic-typeahead__selectable:visible");
+                        foreach (var query in new[] { answer, answer.Split(',')[0].Trim() }.Distinct())
+                        {
+                            if (query != answer) await box.FillAsync(query, new() { Timeout = 5_000 });
+                            for (var i = 0; i < 12 && await options.CountAsync() == 0; i++)
+                                await page.WaitForTimeoutAsync(250);
+                            if (await options.CountAsync() == 0) continue;
+                            await options.First.ClickAsync(new() { Timeout = 3_000 });
+                            return true;
+                        }
+                        // No list this reader knows: the old way, and the step's own verdict after Next says if it took.
+                        await box.FillAsync(answer, new() { Timeout = 5_000 });
                         await page.WaitForTimeoutAsync(1_200);
                         await box.PressAsync("ArrowDown");
                         await box.PressAsync("Enter");

@@ -1571,9 +1571,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var label = await box.EvaluateAsync<string>(
                     "el => (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.closest('label, div, li')?.innerText || ''");
                 if (!TermsWords().IsMatch(label) || OptionalConsent().IsMatch(label) || await box.IsCheckedAsync()) continue;
-                // Oracle hides the real input under a styled label: force the check through.
+                // Oracle draws its box over a hidden input that neither check() nor a forced
+                // check() can reach ("outside of the viewport"); the input's own click() is what
+                // its knockout binding hears — verified on DTCC's live page, 2026-09-23.
                 try { await box.CheckAsync(new() { Timeout = 3_000 }); }
-                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { await box.CheckAsync(new() { Force = true, Timeout = 3_000 }); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { }
+                if (!await box.IsCheckedAsync()) await box.EvaluateAsync("el => el.click()");
             }
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* the Continue that follows reports what the board says */ }
@@ -1609,7 +1612,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   });
                   // A terms box beside the address is part of the sign-in, not a form: Oracle's
                   // "easy-apply/email" step is an email and "I agree with the terms and conditions".
-                  const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox');
+                  // Nor is a honeypot, kept on screen for bots but out of reach of a person: Oracle's
+                  // honey-pot input is aria-hidden with tabindex -1 and hid the sign-in from this check.
+                  const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox'
+                    && !(el.getAttribute('aria-hidden') === 'true' && el.tabIndex < 0) && !/honey-?pot|beecatcher/i.test(el.id + ' ' + el.name));
                   // ...unless the page offers to submit the application itself: then it is the form.
                   if (boxes.length !== live.length && [...document.querySelectorAll('button, input[type=submit], [role=button]')]
                         .some(b => shown(b) && /submit\s+(?:my |your |the )?application/i.test(b.innerText || b.value || ''))) return false;

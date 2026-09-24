@@ -1211,7 +1211,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         <h1>Senior Software Engineer</h1>
         <div id="step-email">
           <label for="primary-email">Email Address</label><input id="primary-email" type="email" />
-          <input type="checkbox" id="terms" style="opacity:0;position:absolute" /><label for="terms">I agree with the <a href="#">terms and conditions</a></label>
+          <input id="honey-pot-0" aria-hidden="true" tabindex="-1" style="width:300px" />
+          <label for="terms"><input type="checkbox" id="terms" style="position:absolute;left:-9999px" /><span>I agree with the <a href="#">terms and conditions</a></span></label>
           <button type="button" id="next">Next</button>
           <p id="err" style="display:none">You need to agree to the terms and conditions.</p>
         </div>
