@@ -15,6 +15,8 @@ public class DateInputValueTests
     [InlineData("2026-10-01", "date", "2026-10-01")]
     [InlineData("October 1, 2026", "month", "2026-10")]
     [InlineData("October 1, 2026", "datetime-local", "2026-10-01T09:00")]
+    [InlineData("2026-10-01T00:00", "datetime-local", "2026-10-01T00:00")]
+    [InlineData("October 1, 2026 2:30 PM", "datetime-local", "2026-10-01T14:30")]
     [InlineData("Immediately", "date", null)]
     [InlineData("", "date", null)]
     public void An_answer_becomes_what_the_date_input_accepts(string answer, string type, string? expected) =>

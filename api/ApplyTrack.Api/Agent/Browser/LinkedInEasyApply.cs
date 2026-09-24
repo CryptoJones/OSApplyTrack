@@ -370,8 +370,11 @@ internal static partial class LinkedInEasyApply
         // The contact step's City / Location typeahead is not in the standard set, and a question
         // only reaches the drafter once a run hands it back; SMX's run did not, and sat on "City"
         // for want of what the résumé already says. The typeahead takes the first match for it.
-        if (CityLabel().IsMatch(label) && packet.Resume is { Location.Length: > 0 } resume)
-            return AnswerDrafter.StripLocationSuffix(resume.Location);
+        // Only a location that names a city ("Minden, Nebraska"): a bare "United States" would
+        // let the typeahead's first suggestion stand in for a city the résumé never gave.
+        if (CityLabel().IsMatch(label) && packet.Resume is { Location.Length: > 0 } resume
+            && AnswerDrafter.StripLocationSuffix(resume.Location) is { } place && place.Contains(','))
+            return place;
         return "";
     }
 

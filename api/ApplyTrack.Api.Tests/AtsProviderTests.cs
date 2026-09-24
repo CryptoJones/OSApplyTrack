@@ -114,6 +114,8 @@ public class AtsProviderTests
     [Theory]
     [InlineData("https://www.bridgewaybentech.com/job-posting?gh_jid=8811807002", "<script src=\"https://boards.greenhouse.io/embed/job_board/js?for=bridgewaybenefittechnologies\"></script>",
         "https://job-boards.greenhouse.io/embed/job_app?for=bridgewaybenefittechnologies&token=8811807002")]
+    [InlineData("https://acme.eu/careers?gh_jid=42", "<script src=\"https://job-boards.eu.greenhouse.io/embed/job_board/js?for=acme\"></script>",
+        "https://job-boards.eu.greenhouse.io/embed/job_app?for=acme&token=42")]
     [InlineData("https://www.bridgewaybentech.com/job-posting?gh_jid=8811807002", "<p>no board named here</p>", null)]
     [InlineData("https://www.bridgewaybentech.com/job-posting", "<script src=\"https://boards.greenhouse.io/embed/job_board/js?for=acme\"></script>", null)]
     public void An_employer_page_embedding_a_greenhouse_job_opens_greenhouses_own_form(string link, string html, string? expected) =>

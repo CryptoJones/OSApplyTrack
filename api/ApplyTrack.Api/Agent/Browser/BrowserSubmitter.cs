@@ -752,7 +752,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return inputType switch
         {
             "month" => when.ToString("yyyy-MM", CultureInfo.InvariantCulture),
-            "datetime-local" => when.ToString(when.TimeOfDay == TimeSpan.Zero ? "yyyy-MM-dd'T'09:00" : "yyyy-MM-dd'T'HH:mm", CultureInfo.InvariantCulture),
+            "datetime-local" => when.ToString(NamesATime().IsMatch(answer) ? "yyyy-MM-dd'T'HH:mm" : "yyyy-MM-dd'T'09:00", CultureInfo.InvariantCulture),
             _ => when.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
         };
     }
@@ -1570,17 +1570,24 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var box = boxes.Nth(i);
                 var label = await box.EvaluateAsync<string>(
                     "el => (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.closest('label, div, li')?.innerText || ''");
-                if (!TermsWords().IsMatch(label) || await box.IsCheckedAsync()) continue;
+                if (!TermsWords().IsMatch(label) || OptionalConsent().IsMatch(label) || await box.IsCheckedAsync()) continue;
                 // Oracle hides the real input under a styled label: force the check through.
                 try { await box.CheckAsync(new() { Timeout = 3_000 }); }
-                catch (PlaywrightException) { await box.CheckAsync(new() { Force = true, Timeout = 3_000 }); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { await box.CheckAsync(new() { Force = true, Timeout = 3_000 }); }
             }
         }
-        catch (PlaywrightException) { /* the Continue that follows reports what the board says */ }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* the Continue that follows reports what the board says */ }
     }
 
-    [GeneratedRegex(@"\b(?:terms|conditions|privacy (?:policy|notice|statement)|i (?:have read|agree|accept|consent))\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\d{1,2}:\d{2}|\b\d{1,2}\s*(?:am|pm)\b|\bnoon\b|\bmidnight\b", RegexOptions.IgnoreCase)]
+    private static partial Regex NamesATime();
+
+    [GeneratedRegex(@"\b(?:terms|conditions|privacy (?:policy|notice|statement)|i (?:have read|agree|accept))\b", RegexOptions.IgnoreCase)]
     private static partial Regex TermsWords();
+
+    /// <summary>Optional communications a terms-looking label may also mention: never ticked for the candidate.</summary>
+    [GeneratedRegex(@"marketing|newsletter|promotion|offers|updates|job alerts|subscribe|\bsms\b|text messages|future (?:opportunities|roles|openings)|talent (?:community|network|pool)", RegexOptions.IgnoreCase)]
+    private static partial Regex OptionalConsent();
 
     private static async Task<bool> OnlyEmailFieldsAsync(IFrame page)
     {
@@ -1603,6 +1610,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   // A terms box beside the address is part of the sign-in, not a form: Oracle's
                   // "easy-apply/email" step is an email and "I agree with the terms and conditions".
                   const boxes = live.filter(el => (el.getAttribute('type') || '').toLowerCase() !== 'checkbox');
+                  // ...unless the page offers to submit the application itself: then it is the form.
+                  if (boxes.length !== live.length && [...document.querySelectorAll('button, input[type=submit], [role=button]')]
+                        .some(b => shown(b) && /submit\s+(?:my |your |the )?application/i.test(b.innerText || b.value || ''))) return false;
                   return boxes.length > 0 && boxes.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
                 }
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);

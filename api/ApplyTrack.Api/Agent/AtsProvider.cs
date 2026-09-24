@@ -278,7 +278,9 @@ public static partial class AtsProvider
     {
         if (GreenhouseEmbed().Match(link ?? "") is not { Success: true } m || FindGreenhouseBoard(html) is not { } board)
             return null;
-        return $"https://job-boards.greenhouse.io/embed/job_app?for={Uri.EscapeDataString(board)}&token={m.Groups[1].Value}";
+        // The board's region as the page names it: an EU board is served from job-boards.eu.
+        var host = Regex.IsMatch(html, @"(?:job-)?boards\.eu\.greenhouse\.io", RegexOptions.IgnoreCase) ? "job-boards.eu.greenhouse.io" : "job-boards.greenhouse.io";
+        return $"https://{host}/embed/job_app?for={Uri.EscapeDataString(board)}&token={m.Groups[1].Value}";
     }
 
     /// <summary>Board token + job id for a Greenhouse posting, from the hosted URL or an
