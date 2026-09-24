@@ -2905,7 +2905,14 @@ async function loadNotificationsTab(body, gen = settingsGen) {
 
 async function refresh() {
   const list = await api.getConditional("/api/apps", state.appsEtag);
-  if (!list.modified) return false;
+  if (!list.modified) {
+    // What is stuck can change with the list unchanged — a retry that came back clean writes
+    // evidence, not the application — and the "In Errors" tag must follow it (#322).
+    const before = [...errorNames()].sort().join("\n");
+    await loadErrors();
+    if ([...errorNames()].sort().join("\n") !== before) { renderPipeline(); renderSidebar(); }
+    return false;
+  }
 
   // Stats are derived from the same applications table revision, so an unchanged
   // list means they are unchanged too. Fetch them only after an ETag miss.
