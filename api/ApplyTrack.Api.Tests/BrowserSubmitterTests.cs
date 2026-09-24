@@ -351,6 +351,26 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             """<html><body><h1>Let's make this quick</h1><a class="quick-apply-flow__manually--link" href="#">manually</a></body></html>""", "text/html"));
         _fixture.MapGet("/oracle/job/1/apply/section/1", () => Results.Content(
             """<html><body><label for="a">Legal First Name</label><input id="a"><label for="b">Legal Last Name</label><input id="b"></body></html>""", "text/html"));
+        // Flexhire's résumé: an "Upload Resume/CV" button that makes its file input on the click
+        // and opens the picker at once — no file input in the page before it (#330).
+        _fixture.MapGet("/jobs/button-resume", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <label for="last_name">Last Name</label><input id="last_name" name="last_name">
+              <label for="email">Email</label><input id="email" name="email" type="email">
+              <button type="button" id="up">Upload Resume/CV</button><span id="picked"></span>
+              <input type="hidden" name="resume_name" id="resume_name">
+              <button type="submit">Submit Application</button>
+            </form>
+            <script>
+              document.getElementById('up').onclick = () => {
+                const i = document.createElement('input'); i.type = 'file';
+                i.onchange = () => { const f = i.files[0]; document.getElementById('picked').textContent = f.name; document.getElementById('resume_name').value = f.name; };
+                i.click();
+              };
+            </script></body></html>
+            """, "text/html"));
         // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
         // radios named by a UUID — no fieldset, no legend, nothing Ashby-shaped (vector, #280).
         _fixture.MapGet("/jobs/clearcompany-radios", () => Results.Content(
@@ -3154,6 +3174,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal(["Yes", "No"], future.Options);
         Assert.Contains(outcome.Discovered!, q => q.Label == "First Name");
         Assert.Contains(outcome.Discovered!, q => q.Label == "Email");
+    }
+
+    [SkippableFact]
+    public async Task A_resume_taken_only_by_an_upload_button_is_handed_to_the_picker_it_opens()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3" or "resume");
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/button-resume", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("resume.pdf", Assert.Single(_posts)["resume_name"]);
     }
 
     [SkippableFact]

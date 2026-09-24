@@ -1245,7 +1245,8 @@ async function loadEvidence(name) {
     return;
   }
   if (!Array.isArray(items) || !items.length) { out.innerHTML = ""; return; }
-  const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed", awaiting_code: "Waiting for your security code" };
+  const KIND = { dry_run: "Filled (dry run)", submitted: "Submitted", failed: "Failed", awaiting_code: "Waiting for your security code",
+    deferred: "Waiting — LinkedIn's daily limit" };
   // A dry run either proved the form can be finished unattended or stopped on questions
   // only the person can answer; the label says which, and names them (#190).
   const kindLabel = (e) => {

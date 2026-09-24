@@ -21,7 +21,19 @@ public sealed class AgentEvidenceRepo
         public const string Failed = "failed";
         /// <summary>The board emailed the candidate a security code; the run is parked waiting for it.</summary>
         public const string AwaitingCode = "awaiting_code";
+        /// <summary>Nothing was attempted: LinkedIn Easy Apply's daily cap was reached. Not a
+        /// failure — it goes out when the day's window has moved.</summary>
+        public const string Deferred = "deferred";
     }
+
+    /// <summary>A LinkedIn cap stand-down — a <see cref="Kinds.Deferred"/> row, or one written as
+    /// failed before that kind existed, with nothing attempted.</summary>
+    public static bool IsCapStandDown(string kind, JsonElement detail) =>
+        kind == Kinds.Deferred
+        || (kind == Kinds.Failed && detail.ValueKind == JsonValueKind.Object
+            && detail.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String
+            && (r.GetString() ?? "").StartsWith("LinkedIn Easy Apply:", StringComparison.Ordinal)
+            && (r.GetString() ?? "").Contains("already sent in the last day", StringComparison.Ordinal));
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -106,6 +118,13 @@ public sealed class AgentEvidenceRepo
         WHERE a.tenant_id = @t AND a.status = 'ready' AND last.kind = 'failed'
           AND NOT EXISTS (SELECT 1 FROM submit_requests r
                           WHERE r.tenant_id = a.tenant_id AND r.application_name = a.name AND r.done_at IS NULL)
+          -- A LinkedIn cap stand-down is a wait, not a failure (the old ones were written as failed).
+          AND COALESCE(last.detail->>'reason', '') NOT LIKE 'LinkedIn Easy Apply:%already sent in the last day%'
+          -- A packet built after the failure: the application was prepared afresh — LinkedIn's
+          -- Apply led to the employer's own site and the lead moved there — and is ready again.
+          AND NOT EXISTS (SELECT 1 FROM agent_events v
+                          WHERE v.tenant_id = a.tenant_id AND v.application_name = a.name
+                            AND v.kind = 'packet' AND v.created_at > last.created_at)
         """;
 
     /// <summary>

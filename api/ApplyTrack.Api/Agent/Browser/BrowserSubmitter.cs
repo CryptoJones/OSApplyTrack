@@ -367,6 +367,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // Ashby, Lever and a good part of the long tail take one Name box, not first and
             // last: when both halves went unmapped and such a box exists, it gets "First Last".
             await FillFullNameAsync(form, packet, mapped, unmapped);
+            // A résumé taken only through an "Upload Resume/CV" button — no file input until it is
+            // pressed, so discovery never saw a question (Flexhire: "Resume is required", #330).
+            if (resumePdf is { } buttonPdf && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
+                && await UploadResumeByButtonAsync(form, buttonPdf))
+                mapped.Add("resume");
             foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
                 var q = FindQuestion(packet, key, label);
@@ -2245,6 +2250,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             catch (PlaywrightException) { /* try the next */ }
         }
+        // No input to set: an "Upload Resume/CV" button that opens the picker itself (#330).
+        if (await UploadResumeByButtonAsync(page, pdf)) return true;
         // The file would not go. Boards that refuse it almost always offer to take the résumé
         // as text instead, right beside the Attach control — so use their own escape hatch
         // rather than giving up on the posting.
@@ -2290,6 +2297,35 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     }
 
     /// <summary>The page's single file input, or null when there is none or more than one.</summary>
+    /// <summary>
+    /// A résumé the form takes only through a button — "Upload Resume/CV" — that makes its file
+    /// input on the click and opens the picker at once (Flexhire, #330). Pressed the way a person
+    /// presses it, the picker it opens is handed the PDF. Only when the form has no file input of
+    /// its own, and only a button that says résumé or CV. True when the page then shows the file.
+    /// </summary>
+    private static async Task<bool> UploadResumeByButtonAsync(IFrame page, (byte[] Bytes, string Name) pdf)
+    {
+        try
+        {
+            if (await page.Locator("input[type=file]").CountAsync() > 0) return false;
+            var button = page.Locator("button, [role=button], a")
+                .Filter(new() { HasTextRegex = ResumeButton() });
+            ILocator? shown = null;
+            var count = Math.Min(await button.CountAsync(), 6);
+            for (var i = 0; i < count && shown is null; i++)
+                if (await button.Nth(i).IsVisibleAsync()) shown = button.Nth(i);
+            if (shown is null) return false;
+            var chooser = await page.Page.RunAndWaitForFileChooserAsync(
+                () => shown.ClickAsync(new() { Timeout = 5_000 }), new() { Timeout = 8_000 });
+            await chooser.SetFilesAsync(new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes });
+            return await ResumeTookAsync(page, pdf.Name);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    [GeneratedRegex(@"(?:upload|attach|add|choose|select)\s+(?:your\s+|a\s+)?(?:resume|résumé|cv)\b|(?:resume|résumé|cv)\s*(?:/\s*cv\s*)?\s*(?:upload|attach)", RegexOptions.IgnoreCase)]
+    private static partial Regex ResumeButton();
+
     private static async Task<ILocator?> OnlyFileInputAsync(IFrame page)
     {
         try
