@@ -214,6 +214,21 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               <script>setTimeout(() => document.querySelector('button[type=submit]').disabled = false, 2000);</script>
             </body></html>
             """, "text/html"));
+        // ElevenLabs' shape once more: a panel with "Dismiss" holds aria-modal, so everything
+        // behind it is out of the accessibility tree — Submit Application included — while the
+        // button is in plain view, outside any <form>, of type=button.
+        _fixture.MapGet("/jobs/submit-behind-modal", () => Results.Content(
+            """
+            <html><body>
+              <main aria-hidden="true">
+                <label for="first_name">First Name</label><input id="first_name" name="first_name">
+                <button type="button" onclick="fetch('/apply.json',{method:'POST',body:'x'}).then(()=>document.body.insertAdjacentHTML('beforeend','<p>Thank you for applying!</p>'))">Submit Application</button>
+              </main>
+              <div role="dialog" aria-modal="true" style="position:fixed;top:0;right:0;width:200px">
+                <p>Autofill from resume</p><button type="button">Dismiss</button>
+              </div>
+            </body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/no-submit", () => Results.Content(
             """
             <html><body>
@@ -326,6 +341,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         });
         // join.com's page behind Apply: an email box and Continue — a sign-in, not a form.
         _fixture.MapGet("/jobs/sign-in", () => Results.Content(SignInGateHtml, "text/html"));
+        // Oracle Recruiting's "easy-apply/email" step: the address and a terms box that must be
+        // ticked before Continue sends a code (DTCC: "You need to agree to the terms and conditions").
+        _fixture.MapGet("/jobs/oracle-email", () => Results.Content(OracleEmailHtml, "text/html"));
         // The whole of join.com's way in (#210): the posting with its Apply-later trap, Apply now
         // to the email sign-in, Continue, then a code box the emailed code goes into — or a
         // "check your inbox" with nothing to type, and the emailed link opens the form.
@@ -1188,6 +1206,27 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string OracleEmailHtml = """
+        <html><body>
+        <h1>Senior Software Engineer</h1>
+        <div id="step-email">
+          <label for="primary-email">Email Address</label><input id="primary-email" type="email" />
+          <input type="checkbox" id="terms" style="opacity:0;position:absolute" /><label for="terms">I agree with the <a href="#">terms and conditions</a></label>
+          <button type="button" id="next">Next</button>
+          <p id="err" style="display:none">You need to agree to the terms and conditions.</p>
+        </div>
+        <div id="step-code" style="display:none"><p>We sent a 6-digit code to your email.</p>
+          <label for="pin">Code</label><input id="pin" autocomplete="one-time-code" maxlength="6" /></div>
+        <script>
+          document.getElementById('next').addEventListener('click', () => {
+            if (!document.getElementById('terms').checked) { document.getElementById('err').style.display = 'block'; return; }
+            document.getElementById('step-email').style.display = 'none';
+            document.getElementById('step-code').style.display = 'block';
+          });
+        </script>
+        </body></html>
+        """;
+
     private const string SignInGateHtml = """
         <html><body>
         <h1>Founding Engineer</h1>
@@ -1850,6 +1889,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var settled = await Submitter().RunAsync($"{_fixtureUrl}/jobs/submit-settles", packet, null, dryRun: false);
         Assert.True(settled.Submitted, settled.Error);
 
+        var behindModal = await Submitter().RunAsync($"{_fixtureUrl}/jobs/submit-behind-modal", packet, null, dryRun: false);
+        Assert.True(behindModal.Submitted, behindModal.Error);
+
         var none = await Submitter().RunAsync($"{_fixtureUrl}/jobs/no-submit", packet, null, dryRun: false);
         Assert.False(none.Submitted);
         Assert.StartsWith("no Submit button found — buttons on the page: ", none.Error);
@@ -2105,6 +2147,28 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("sign-in", outcome.Error);
         Assert.Contains("signs in as ada@example.com", outcome.Error);
         Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task An_email_step_with_a_terms_box_is_a_sign_in_and_the_box_is_ticked_before_Continue()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = new AgentPacket
+        {
+            ApplicationName = "dtcc-senior-engineer.md", Provider = "unknown",
+            Questions = [new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["email"] = "ada@example.com" },
+        };
+
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-email", packet, null, dryRun: true);
+        Assert.Contains("signs in as ada@example.com", dry.Error);
+
+        CodeRequest? asked = null;
+        Task<string?> Relay(CodeRequest r, CancellationToken _) { asked = r; return Task.FromResult<string?>(null); }
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-email", packet, null, dryRun: false, awaitSecurityCode: Relay);
+        // Continue went through — the terms box was ticked — and the board's code was asked for.
+        Assert.NotNull(asked);
+        Assert.Contains("none was relayed in time", real.Error);
     }
 
     private static AgentPacket JoinPacket() => new()
