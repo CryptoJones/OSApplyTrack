@@ -298,6 +298,57 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               </script>
             </body></html>
             """, "text/html"));
+        // Oracle Recruiting's two choice widgets, in the live markup (DTCC, mapped 2026-09-24, #318):
+        // a radio drawn at 0×0 behind a <label for> per option under a for-less title label, and a
+        // "pill" group — <ul role=radiogroup aria-label=question> of <button role=radio> — with no
+        // input at all (a hidden mirror here only so the post shows what was pressed).
+        _fixture.MapGet("/jobs/oracle-choices", () => Results.Content(
+            """
+            <html><head><style>
+              .input-row__hidden-control { position: absolute; width: 0; height: 0; opacity: 0; margin: 0; padding: 0; border: 0; }
+            </style></head><body><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <label for="last_name">Last Name</label><input id="last_name" name="last_name">
+              <label for="email">Email</label><input id="email" name="email" type="email">
+              <label for="resume">Resume</label><input id="resume" name="resume" type="file">
+              <div class="input-row input-row--radiogroup" role="radiogroup" aria-labelledby="q18-label">
+                <label class="input-row__label input-row__label--required" id="q18-label"><span>Are you 18 years of age or older?</span><span class="input-row__label--required-star" aria-hidden="true"></span></label>
+                <div class="input-row__control-container">
+                  <input type="radio" class="input-row__hidden-control" value="729" id="q18-729" name="300000469539525-22" required="true">
+                  <label class="apply-flow-input-radio" for="q18-729"><span aria-hidden="true">Yes</span></label>
+                  <input type="radio" class="input-row__hidden-control" value="730" id="q18-730" name="300000469539525-22" required="true">
+                  <label class="apply-flow-input-radio" for="q18-730"><span aria-hidden="true">No</span></label>
+                </div>
+              </div>
+              <div class="input-row input-row--has-picker">
+                <label class="input-row__label input-row__label--required" for="hear-1">How did you hear about this position?</label>
+                <div class="input-row__control-container"><ul role="radiogroup" aria-label="How did you hear about this position?" class="cx-select-pills-container">
+                  <li role="presentation"><button type="button" role="radio" aria-checked="false" class="cx-select-pill-section"><span> Agency</span></button></li>
+                  <li role="presentation"><button type="button" role="radio" aria-checked="false" class="cx-select-pill-section"><span> Career site</span></button></li>
+                  <li role="presentation"><button type="button" role="radio" aria-checked="false" class="cx-select-pill-section"><span> Social Media</span></button></li>
+                </ul></div>
+                <input type="hidden" name="hear" id="hear-mirror">
+              </div>
+              <button type="submit">Submit application</button>
+            </form>
+            <script>
+              for (const b of document.querySelectorAll('[role=radio]')) b.onclick = () => {
+                for (const o of b.closest('ul').querySelectorAll('[role=radio]')) o.setAttribute('aria-checked', 'false');
+                b.setAttribute('aria-checked', 'true');
+                document.getElementById('hear-mirror').value = b.innerText.trim();
+              };
+            </script></body></html>
+            """, "text/html"));
+        // Oracle's easy-apply, signed in: a résumé import (or a resumed draft) with "manually" as
+        // the way to the standard flow (#318).
+        _fixture.MapGet("/oracle/job/1/easy-apply", () => Results.Content(
+            """
+            <html><body><h1>Let's make this quick</h1><input type="file" id="quickProfileImport">
+            <span>You can also <a class="quick-apply-flow__manually--link" href="/oracle/job/1/apply/section/1">manually</a> fill out your application.</span>
+            </body></html>
+            """, "text/html"));
+        _fixture.MapGet("/oracle/job/1/apply/section/1", () => Results.Content(
+            """<html><body><label for="a">Legal First Name</label><input id="a"><label for="b">Legal Last Name</label><input id="b"></body></html>""", "text/html"));
         // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
         // radios named by a UUID — no fieldset, no legend, nothing Ashby-shaped (vector, #280).
         _fixture.MapGet("/jobs/clearcompany-radios", () => Results.Content(
@@ -2984,6 +3035,61 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("Will you now or in the future require sponsorship?", sponsor.Label);
         // And the title is not mistaken for the name box's label.
         Assert.Equal("First Name", Assert.Single(questions!, q => q.Id == "first_name").Label);
+    }
+
+    [SkippableFact]
+    public async Task Oracles_drawn_radios_and_button_pills_are_discovered_as_questions()
+    {
+        // DTCC: ten sections of questions, four discovered — the 0×0 radios read as invisible and
+        // the pills, having no input, were never looked at (#318).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/oracle-choices");
+        Assert.NotNull(questions);
+        var age = Assert.Single(questions!, q => q.Id == "300000469539525-22");
+        Assert.Equal("Are you 18 years of age or older?", age.Label);
+        Assert.True(age.Required);
+        Assert.Equal(["Yes", "No"], age.Options);
+        var hear = Assert.Single(questions!, q => q.Label == "How did you hear about this position?");
+        Assert.True(hear.Required);
+        Assert.Equal(PacketQuestion.Select, hear.Type);
+        Assert.Equal(["Agency", "Career site", "Social Media"], hear.Options);
+    }
+
+    [SkippableFact]
+    public async Task Oracles_drawn_radio_and_pill_are_pressed_and_submitted()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3");
+        packet.Questions.Add(new("300000469539525-22", "Are you 18 years of age or older?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom));
+        packet.Questions.Add(new("How did you hear about this position?", "How did you hear about this position?", true,
+            PacketQuestion.Select, ["Agency", "Career site", "Social Media"], PacketQuestion.Custom));
+        packet.Answers["300000469539525-22"] = "Yes";
+        packet.Answers["How did you hear about this position?"] = "Career site";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-choices", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("729", post["300000469539525-22"]);
+        Assert.Equal("Career site", post["hear"]);
+    }
+
+    [SkippableFact]
+    public async Task Oracles_easy_apply_is_left_for_the_standard_flow_and_other_pages_are_not_touched()
+    {
+        // DTCC signed in onto "Let's make this quick" and, the next time, onto a resumed draft at
+        // easy-apply/section/2/block/3 — neither the form the walker knows (#318).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.ConnectAsync(_ws);
+        var page = await browser.NewPageAsync();
+        await page.GotoAsync($"{_fixtureUrl}/oracle/job/1/easy-apply");
+        Assert.True(await BrowserSession.TakeStandardFlowAsync(page));
+        Assert.EndsWith("/apply/section/1", page.Url);
+        Assert.False(await BrowserSession.TakeStandardFlowAsync(page));
+        playwright.Dispose();
     }
 
     [SkippableFact]

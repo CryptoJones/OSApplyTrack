@@ -88,6 +88,32 @@ public class SecurityCodeMailboxTests
     public void The_boards_host_covers_its_subdomains_and_nothing_else(string host, string board, bool expected) =>
         Assert.Equal(expected, ImapSecurityCodeSource.OnBoard(host, board));
 
+    [Theory]
+    [InlineData("ebxr.fa.us2.oraclecloud.com", true)]
+    [InlineData("iaxmqy.fa.ocs.oraclecloud.com", true)]
+    [InlineData("join.com", false)]
+    [InlineData("my.greenhouse.io", false)]
+    public void Oracle_tenants_share_one_sender(string board, bool shared) =>
+        Assert.Equal(shared, ImapSecurityCodeSource.SharedSender(board));
+
+    [Fact]
+    public void A_shared_senders_mail_is_told_apart_by_the_employer_it_names()
+    {
+        // Two Oracle runs two minutes apart: Wingstop's read DTCC's code (#318).
+        const string dtcc = "The Depository Trust & Clearing Corporation (DTCC)";
+        const string wingstop = "Wingstop Restaurants Inc.";
+        var dtccMail = "Verify your email\nThank you for your interest in DTCC. Your verification code is 482913.";
+        var wingstopMail = "Wingstop Careers: your one-time code is 771204";
+        Assert.True(ImapSecurityCodeSource.NamesCompany(dtccMail, dtcc));
+        Assert.False(ImapSecurityCodeSource.NamesCompany(dtccMail, wingstop));
+        Assert.True(ImapSecurityCodeSource.NamesCompany(wingstopMail, wingstop));
+        Assert.False(ImapSecurityCodeSource.NamesCompany(wingstopMail, dtcc));
+        Assert.True(ImapSecurityCodeSource.NamesCompany("the Depository Trust sign-in", dtcc));
+        // A whole word only: "Dragos" is not in "Dragoslav".
+        Assert.False(ImapSecurityCodeSource.NamesCompany("Hello Dragoslav, your code is 123456", "Dragos, Inc."));
+        Assert.True(ImapSecurityCodeSource.NamesCompany("anything", "The Inc."));
+    }
+
     [Fact]
     public void The_mailbox_pins_its_dial_to_public_addresses_and_never_a_private_one()
     {

@@ -111,6 +111,39 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         return Reg(host) == Reg(boardHost);
     }
 
+    // Platforms that sign candidates in for many employers from one sender: every tenant's mail
+    // comes from the same no-reply on the same domain, so the sender cannot say whose code it is.
+    // Two Oracle runs a couple of minutes apart read each other's code (#318).
+    private static readonly string[] SharedSenders = ["oraclecloud.com", "taleo.net"];
+
+    /// <summary>Is this board a tenant of a platform whose sign-in mail is sent for every employer
+    /// alike, so the mail has to name the employer to be this run's?</summary>
+    public static bool SharedSender(string boardHost) =>
+        SharedSenders.Any(d => OnBoard(boardHost, d));
+
+    // Words that say nothing about which employer a mail is for.
+    private static readonly HashSet<string> CompanyFiller = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "the", "a", "an", "of", "and", "inc", "llc", "ltd", "co", "corp", "corporation", "company",
+        "group", "holdings", "plc", "gmbh", "sa", "ag", "restaurants",
+    };
+
+    [GeneratedRegex(@"\(([A-Za-z0-9&]{2,12})\)")]
+    private static partial Regex Parenthesised();
+
+    /// <summary>Does the mail name this company — its first telling word, or the short name it
+    /// carries in parentheses ("The Depository Trust &amp; Clearing Corporation (DTCC)")? A
+    /// company with no telling word matches anything. Public for tests.</summary>
+    public static bool NamesCompany(string text, string company)
+    {
+        var names = Parenthesised().Matches(company).Select(m => m.Groups[1].Value).ToList();
+        var first = Regex.Split(Parenthesised().Replace(company, " "), @"[^\p{L}\p{N}&']+")
+            .FirstOrDefault(w => w.Length >= 2 && !CompanyFiller.Contains(w));
+        if (first is not null) names.Add(first);
+        if (names.Count == 0) return true;
+        return names.Any(n => Regex.IsMatch(text, $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(n)}(?![\p{{L}}\p{{N}}])", RegexOptions.IgnoreCase));
+    }
+
     /// <summary>
     /// What a board's sign-in mail hands the run (#210): the sign-in link on the board's own
     /// host — one that carries a token or names its purpose, never the footer's privacy or
@@ -158,6 +191,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
                 && !msg.Cc.Mailboxes.Any(a => a.Address.Equals(recipient, StringComparison.OrdinalIgnoreCase)))
                 continue;
             var text = msg.TextBody ?? StripHtml(msg.HtmlBody ?? "");
+            if (signIn && SharedSender(boardHost) && !NamesCompany((msg.Subject ?? "") + "\n" + text, company)) continue;
             var code = signIn ? ExtractSignIn(text, boardHost) : ExtractCode(text);
             if (code is not null) return code;
         }

@@ -257,8 +257,11 @@ public sealed partial class FormDiscoverer
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? (el.multiple ? 'select-multiple' : 'select-one') : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
             if (el.disabled || el.readOnly) continue;
-            // Ashby draws its own radio and checkbox and keeps the real input out of sight.
-            const drawn = (type === 'radio' || type === 'checkbox') && !!ashbyTitle(el);
+            // Ashby draws its own radio and checkbox and keeps the real input out of sight; so does
+            // Oracle Recruiting, whose 0×0 radio is pressed through the <label for> drawn beside it —
+            // read as invisible, every yes/no question on DTCC's form went undiscovered (#318).
+            const drawn = (type === 'radio' || type === 'checkbox')
+              && (!!ashbyTitle(el) || (!!el.id && [...document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)].some(visible)));
             if (type !== 'file' && !drawn && !visible(el)) continue;
             // The careers site's own job search and job-alert boxes are not questions (#214).
             if (widget(el)) continue;
@@ -284,6 +287,21 @@ public sealed partial class FormDiscoverer
             // A blank-valued option is the placeholder ("Select…"), not a choice.
             const options = el.tagName === 'SELECT' ? [...el.options].filter(o => o.value !== '').map(o => o.text.trim()) : [];
             out.push({ id: el.id || '', name: el.getAttribute('name') || '', label: labelFor(el).trim(), tag: el.tagName.toLowerCase(), type, required, options });
+          }
+          // A choice drawn as buttons with no input at all: Oracle Recruiting's "pills" — a
+          // <ul role=radiogroup aria-label="How did you hear about this position?"> of
+          // <button role=radio> — for its sponsorship, education and referral questions (#318).
+          // Keyed by the question itself: the group has neither name nor id.
+          for (const g of document.querySelectorAll('[role=radiogroup]')) {
+            if (g.querySelector('input') || !visible(g) || widget(g)) continue;
+            const pills = [...g.querySelectorAll('[role=radio]')];
+            if (pills.length === 0) continue;
+            const by = (g.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ');
+            const label = (g.getAttribute('aria-label') || by).trim();
+            if (!label) continue;
+            const row = g.closest('.input-row');
+            const required = g.getAttribute('aria-required') === 'true' || !!row?.querySelector('.input-row__label--required') || /\*\s*$/.test(label);
+            out.push({ id: '', name: '', label, tag: 'input', type: 'radio', required, options: pills.map(b => (b.innerText || '').trim()) });
           }
           return out;
         }

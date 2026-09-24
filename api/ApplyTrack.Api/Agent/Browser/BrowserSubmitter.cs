@@ -1038,7 +1038,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
               if (!owner || (el.value || '').trim().length > 0) continue;
               add(owner.id || owner.getAttribute('name'), labelFor(owner)); continue;
             }
-            if (!visible(el)) continue;
+            // Oracle's radios have no size; the label drawn beside each is what is on screen (#318).
+            const drawnRadio = type === 'radio' && !!el.id && [...document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)].some(visible);
+            if (!visible(el) && !drawnRadio) continue;
             let empty;
             if (type === 'checkbox') {
               // A box that shares its name with others is one choice of a "select all that apply"
@@ -1056,6 +1058,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             else empty = (el.value || '').trim().length === 0;
             if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
+          }
+          // Oracle's pills: a required question drawn as buttons with nothing pressed (#318).
+          for (const g of document.querySelectorAll('[role=radiogroup]')) {
+            if (g.querySelector('input') || !g.querySelector('[role=radio]') || !visible(g)) continue;
+            if (g.querySelector('[role=radio][aria-checked=true]')) continue;
+            if (g.getAttribute('aria-required') !== 'true' && !g.closest('.input-row')?.querySelector('.input-row__label--required')) continue;
+            const by = (g.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ');
+            add('', g.getAttribute('aria-label') || by);
           }
           return out;
         }
@@ -1196,7 +1206,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (TimeoutException) { return Stop(SignInError + "; the sign-in's Continue did not respond"); }
 
         var step = await AfterContinueAsync(page, textBefore, urlBefore);
-        if (step == SignInStep.Form) return null;
+        if (step == SignInStep.Form)
+        {
+            await BrowserSession.TakeStandardFlowAsync(page);
+            return null;
+        }
         if (step == SignInStep.Nothing)
             return Stop(SignInError + "; Continue was pressed but the page did not change — check the screenshot");
 
@@ -1217,6 +1231,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         else if (!await EnterSignInCodeAsync(page, reply))
             return Stop("the sign-in code could not be entered — if the email carries a link instead, run Submit again and paste that");
 
+        // Oracle: past the code, easy-apply's résumé import or a resumed draft, not the form (#318).
+        await BrowserSession.TakeStandardFlowAsync(page);
         // The form, or the posting again with the candidate now signed in and Apply to press.
         if (!await BrowserSession.WaitForApplicationFormAsync(page, 15_000))
         {
@@ -1872,7 +1888,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     // Bounded, and a timeout caught: it is a System.TimeoutException, not a
                     // PlaywrightException, and a drawn radio (Ashby keeps the real input out of
                     // sight behind a span) would otherwise take its full 20 s and the run with it.
-                    try { await radio.CheckAsync(new() { Timeout = 3_000 }); return true; }
+                    // A radio with no size (Oracle's, #318) is never checkable: straight to its label.
+                    try
+                    {
+                        if (!await radio.IsVisibleAsync()) throw new TimeoutException("drawn radio");
+                        await radio.CheckAsync(new() { Timeout = 3_000 });
+                        return true;
+                    }
                     catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
                     {
                         // Pressed the way a person presses it: by its label.
@@ -1885,6 +1907,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             return false;
         }
+
+        if (await SetPillAsync(page, q, answer) is { } pill) return pill;
 
         var boxSelector = $"input[type=checkbox][id={Quote(id)}], input[type=checkbox][name={Quote(id)}]";
         var box = page.Locator(boxSelector).First;
@@ -1972,6 +1996,55 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             catch (Exception inner) when (inner is PlaywrightException or TimeoutException) { return false; }
         }
+    }
+
+    // Oracle's pill group named for a question, in the page: [role=radiogroup] with no input in it.
+    private const string PillGroupJs = """
+        (label) => {
+          const norm = t => (t || '').replace(/\*/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+          return [...document.querySelectorAll('[role=radiogroup]')].find(g => {
+            if (g.querySelector('input') || !g.querySelector('[role=radio]')) return false;
+            const by = (g.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ');
+            return norm(g.getAttribute('aria-label') || by) === norm(label);
+          });
+        }
+        """;
+
+    /// <summary>
+    /// Press a choice drawn as buttons with no input behind it — Oracle Recruiting's pills, a
+    /// <c>&lt;ul role=radiogroup aria-label="…question…"&gt;</c> of <c>&lt;button role=radio&gt;</c> (#318).
+    /// The group is found by the question it is named for; the pill by its text, exactly and then
+    /// loosely, the way <see cref="SetChoiceAsync"/> matches a radio. Null when no such group
+    /// carries this question; otherwise whether a pill now reads aria-checked.
+    /// </summary>
+    private static async Task<bool?> SetPillAsync(IFrame page, PacketQuestion q, string answer)
+    {
+        var label = PacketQuestion.CleanLabel(q.Label);
+        if (label.Length == 0) return null;
+        try
+        {
+            var state = await page.EvaluateAsync<string>($$"""
+                ([label, answer]) => {
+                  const group = ({{PillGroupJs}})(label);
+                  if (!group) return 'none';
+                  const norm = t => (t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                  const a = norm(answer);
+                  const pills = [...group.querySelectorAll('[role=radio]')];
+                  const loose = o => o.length >= 4 && a.length >= 4 && (o.startsWith(a) || a.startsWith(o));
+                  const pill = pills.find(b => norm(b.innerText) === a) || pills.find(b => loose(norm(b.innerText)));
+                  if (!pill) return 'nomatch';
+                  if (pill.getAttribute('aria-checked') !== 'true') pill.click();
+                  return 'clicked';
+                }
+                """, new[] { label, answer });
+            if (state == "none") return null;
+            if (state == "nomatch") return false;
+            await page.WaitForTimeoutAsync(200);
+            return await page.EvaluateAsync<bool>($$"""
+                (label) => { const g = ({{PillGroupJs}})(label); return !!g && !!g.querySelector('[role=radio][aria-checked=true]'); }
+                """, label);
+        }
+        catch (PlaywrightException) { return null; }
     }
 
     /// <summary>The visible text tied to one radio/checkbox — its own label, or the one wrapping it.</summary>
