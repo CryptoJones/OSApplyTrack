@@ -1263,14 +1263,39 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" id="next">Next</button>
           <p id="err" style="display:none">You need to agree to the terms and conditions.</p>
         </div>
-        <div id="step-code" style="display:none"><p>We sent a 6-digit code to your email.</p>
-          <label for="pin">Code</label><input id="pin" autocomplete="one-time-code" maxlength="6" /></div>
+        <div id="step-code" style="display:none"><h2>Confirm Your Identity</h2>
+          <p>The verification code was sent to this email address. Type the code into the field to confirm your identity.</p>
+          <fieldset><legend>Verification Code</legend>
+            <input id="pin-code-1" type="text" inputmode="numeric" aria-label="Enter verification code digit 1 of six.">
+            <input id="pin-code-2" type="text" inputmode="numeric" aria-label="Enter verification code digit 2 of six.">
+            <input id="pin-code-3" type="text" inputmode="numeric" aria-label="Enter verification code digit 3 of six.">
+            <input id="pin-code-4" type="text" inputmode="numeric" aria-label="Enter verification code digit 4 of six.">
+            <input id="pin-code-5" type="text" inputmode="numeric" aria-label="Enter verification code digit 5 of six.">
+            <input id="pin-code-6" type="text" inputmode="numeric" aria-label="Enter verification code digit 6 of six.">
+          </fieldset>
+          <button type="button" id="verify">Verify</button></div>
+        <div id="step-form" style="display:none">
+          <label for="first_name">First Name</label><input id="first_name" name="first_name" required>
+          <label for="last_name">Last Name</label><input id="last_name" name="last_name" required>
+          <label for="email">Email Address</label><input id="email" name="email" type="email" value="ada@example.com" required>
+          <button type="button" id="submit_app">Submit Application</button></div>
         <script>
+          const pins = [...document.querySelectorAll('[id^=pin-code-]')];
           document.getElementById('next').addEventListener('click', () => {
             if (!document.getElementById('terms').checked) { document.getElementById('err').style.display = 'block'; return; }
             document.getElementById('step-email').style.display = 'none';
             document.getElementById('step-code').style.display = 'block';
           });
+          // Oracle keeps one digit per box: anything more typed into a box is cut to its first digit.
+          for (const b of pins) b.addEventListener('input', () => { b.value = b.value.replace(/\D/g, '').slice(0, 1); });
+          document.getElementById('verify').addEventListener('click', () => {
+            if (pins.map(b => b.value).join('') !== '424242') return;
+            document.getElementById('step-code').style.display = 'none';
+            document.getElementById('step-form').style.display = 'block';
+          });
+          document.getElementById('submit_app').addEventListener('click', () =>
+            fetch('/apply.json', { method: 'POST', body: document.getElementById('first_name').value })
+              .then(() => document.body.innerHTML = '<h1>Thank you for applying!</h1>'));
         </script>
         </body></html>
         """;
@@ -2217,6 +2242,16 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Continue went through — the terms box was ticked — and the board's code was asked for.
         Assert.NotNull(asked);
         Assert.Contains("none was relayed in time", real.Error);
+
+        // With the code relayed it goes one digit per box — Oracle's pin-code-1…6 carry no
+        // maxlength, and the whole code once went into the first box (#318) — and on to the form.
+        packet.Questions.Add(new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Questions.Add(new("last_name", "Last Name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Answers["first_name"] = "Ada";
+        packet.Answers["last_name"] = "Lovelace";
+        Task<string?> Code(CodeRequest r, CancellationToken _) => Task.FromResult<string?>("424242");
+        var signedIn = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-email", packet, null, dryRun: false, awaitSecurityCode: Code);
+        Assert.True(signedIn.Submitted, signedIn.Error);
     }
 
     private static AgentPacket JoinPacket() => new()

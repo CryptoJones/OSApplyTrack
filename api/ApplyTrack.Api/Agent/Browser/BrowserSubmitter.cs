@@ -1070,7 +1070,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var boxes = page.Locator("input[id^='security-input-']:visible");
             if (await boxes.CountAsync() > 0) return true;
             return Regex.IsMatch(await BodyTextAsync(page), @"(?:verification|security) code was sent to", RegexOptions.IgnoreCase)
-                && await page.Locator("input[maxlength='1']:visible").CountAsync() >= 4;
+                && await page.Locator(PerCharacterBoxes).CountAsync() >= 4;
         }
         catch (PlaywrightException) { return false; }
     }
@@ -1081,8 +1081,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     {
         try
         {
-            var boxes = page.Locator("input[id^='security-input-']:visible");
-            if (await boxes.CountAsync() == 0) boxes = page.Locator("input[maxlength='1']:visible");
+            var boxes = page.Locator(PerCharacterBoxes);
             var n = await boxes.CountAsync();
             if (n == 0) return false;
             await boxes.First.ClickAsync();
@@ -1263,6 +1262,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (PlaywrightException) { return false; }
     }
 
+    /// <summary>A code entered one character per box: boxes that say so with maxlength=1, or that
+    /// are numbered by id — "security-input-N", and Oracle Recruiting's "pin-code-1…6", which
+    /// carry no maxlength at all, so the whole emailed code went into the first box (#318).</summary>
+    private const string PerCharacterBoxes =
+        "input[id^='security-input-']:visible, input[id^='pin-code-']:visible, input[maxlength='1']:visible";
+
     private const string CodeBoxSelector =
         "input[autocomplete='one-time-code']:visible, input[inputmode='numeric']:visible, input[maxlength='1']:visible, "
         + "input[name*='code' i]:visible, input[id*='code' i]:visible, input[placeholder*='code' i]:visible, input[aria-label*='code' i]:visible, "
@@ -1283,7 +1288,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             try
             {
                 if (!await HasSignInCodeBoxAsync(frame)) continue;
-                var perCharacter = frame.Locator("input[maxlength='1']:visible");
+                var perCharacter = frame.Locator(PerCharacterBoxes);
                 if (await perCharacter.CountAsync() >= 4)
                 {
                     if (!await EnterSecurityCodeAsync(frame, code)) return false;

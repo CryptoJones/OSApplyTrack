@@ -490,6 +490,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       let texts = 0;
                       for (const el of document.querySelectorAll('input, textarea, select')) {
                         if (widget(el)) continue;
+                        // A code entered a character per box is a verification step, not the form:
+                        // Oracle's six pin-code boxes read as "the form" the moment they appeared (#318).
+                        if (/^(?:pin-code-|security-input-)/.test(el.id) || el.autocomplete === 'one-time-code' || el.getAttribute('maxlength') === '1') continue;
                         const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
                         __FILE_RULE__
                         if (!shown(el)) continue;
