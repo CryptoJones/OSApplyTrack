@@ -1394,27 +1394,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var next = await FindNextAsync(form);
             if (next is null)
             {
-                // A Next that is there but disabled: the page wants an answer it never marked
-                // required. evlo's "Willing to relocate?" carries no star and no aria-required,
-                // yet Next stays disabled until it is answered — the run clicked nothing and
-                // reported "no Submit button found". Its unanswered questions go to the drafter.
-                if (await DisabledNextAsync(form))
-                    foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
-                    {
-                        if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
-                            || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
-                            continue;
-                        // A question the packet knows but holds no answer for is the person's, as unmapped.
-                        if (FindQuestion(packet, live.Id, live.Label) is { } known)
-                        {
-                            if ((!packet.Answers.TryGetValue(known.Id, out var held) || string.IsNullOrWhiteSpace(held)) && !unmapped.Contains(known.Id))
-                                unmapped.Add(known.Id);
-                            continue;
-                        }
-                        _log.LogInformation("pages: Next is disabled and \"{Label}\" is unanswered — handing it back", live.Label);
-                        unmapped.Add(live.Id);
-                        discovered.Add(live with { Required = true });
-                    }
+                await HandBackIfNextDisabledAsync();
                 return form;
             }
             // A required field this page still wants that nobody can fill: stop here, on it.
@@ -1440,7 +1420,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 await page.WaitForTimeoutAsync(500);
                 if (page.Url != urlBefore || await BodyTextAsync(page.MainFrame) != textBefore) { turnedOver = true; break; }
             }
-            if (!turnedOver) return form;   // the page held: its validation, which the sweep reads
+            if (!turnedOver)
+            {
+                // The page held: its validation, which the sweep reads — and a Next it has now disabled.
+                await HandBackIfNextDisabledAsync();
+                return form;
+            }
             try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
             catch (TimeoutException) { /* judged by what renders */ }
             await BrowserSession.DismissConsentAsync(page);
@@ -1449,7 +1434,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // The same controls at the same address: the page only re-rendered with its
             // complaints, which the sweep reads. Not a page turned.
             if (page.Url == urlBefore && questions.Select(q => q.Id).ToHashSet(StringComparer.Ordinal).SetEquals(before))
+            {
+                await HandBackIfNextDisabledAsync();
                 return form;
+            }
             _log.LogInformation("pages: turned to page {Page} at {Url}", turned + 2, page.Url);
 
             foreach (var live in questions)
@@ -1488,6 +1476,33 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             await FillFullNameAsync(form, packet, mapped, unmapped);
         }
         return form;
+
+        // A Next that is there but disabled: the page wants an answer it never marked
+        // required. evlo's "Willing to relocate?" carries no star and no aria-required, yet
+        // Next stays disabled until it is answered — the run clicked nothing and reported
+        // "no Submit button found". Its unanswered questions go to the drafter. Asked before
+        // a click and after one the page refused: evlo's Next starts enabled on a fresh page
+        // and disables itself only once pressed with questions unanswered.
+        async Task HandBackIfNextDisabledAsync()
+        {
+            if (!await DisabledNextAsync(form)) return;
+            foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
+            {
+                if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
+                    || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
+                    continue;
+                // A question the packet knows but holds no answer for is the person's, as unmapped.
+                if (FindQuestion(packet, live.Id, live.Label) is { } known)
+                {
+                    if ((!packet.Answers.TryGetValue(known.Id, out var held) || string.IsNullOrWhiteSpace(held)) && !unmapped.Contains(known.Id))
+                        unmapped.Add(known.Id);
+                    continue;
+                }
+                _log.LogInformation("pages: Next is disabled and \"{Label}\" is unanswered — handing it back", live.Label);
+                unmapped.Add(live.Id);
+                discovered.Add(live with { Required = true });
+            }
+        }
     }
 
     /// <summary>The sign-in's Continue / Verify / Send code button — never an identity

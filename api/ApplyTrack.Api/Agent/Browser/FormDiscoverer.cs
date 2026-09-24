@@ -242,7 +242,10 @@ public sealed partial class FormDiscoverer
               if (choices.some(c => (c.getAttribute('name') || '') !== name)) break;
               const first = choices[0];
               const title = [...a.querySelectorAll('*')].find(x =>
-                x !== first && !x.contains(first) && !x.closest('label') && !x.querySelector('input, select, textarea')
+                // Not an option's own label — but a <label> that holds no control is the title itself
+                // (evlo: <label>Will you … sponsorship …? <span>*</span></label> over a radiogroup).
+                // and never a label bound to some control by `for` (an option's "Yes" set before its radio).
+                x !== first && !x.contains(first) && !x.closest('label')?.querySelector('input, select, textarea') && !x.closest('label[for]') && !x.querySelector('input, select, textarea')
                 && (x.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING)
                 && /[A-Za-z]{3,}/.test(x.innerText || '')
                 && [...x.children].every(c => !/[A-Za-z]{3,}/.test(c.innerText || '')));
@@ -259,6 +262,9 @@ public sealed partial class FormDiscoverer
             if (type !== 'file' && !drawn && !visible(el)) continue;
             // The careers site's own job search and job-alert boxes are not questions (#214).
             if (widget(el)) continue;
+            // Nor is a honeypot, on screen for bots and out of a person's reach: Oracle's aria-hidden,
+            // tabindex -1 "honey-pot" became a question the model could not answer and blocked DTCC.
+            if ((el.getAttribute('aria-hidden') === 'true' && el.tabIndex < 0) || /honey-?pot|beecatcher/i.test((el.id || '') + ' ' + (el.getAttribute('name') || ''))) continue;
             const required = el.required || el.getAttribute('aria-required') === 'true' || ashbyRequired(el) || /^\s*\*|\*\s*$/.test(labelFor(el)) || starred(el);
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
@@ -269,7 +275,10 @@ public sealed partial class FormDiscoverer
               // load; its title's `for` is the field's own id, the same every time. The question is
               // recorded by that, or the packet names a control the next load will not have.
               const stable = ashbyTitle(el)?.getAttribute('for') || '';
-              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || groupTitle(el) || name, tag: 'input', type: 'radio', required, options: [opt] };
+              const title = el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || groupTitle(el)
+                || el.closest('[role=radiogroup]')?.getAttribute('aria-label') || name;
+              // The star on the group's title is the group's: its options' own labels ("Yes") carry none.
+              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true', options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // A blank-valued option is the placeholder ("Select…"), not a choice.

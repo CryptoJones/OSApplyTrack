@@ -253,6 +253,32 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/jobs/wizard", () => Results.Content(WizardHtml, "text/html"));
         // evlo's page three: "Willing to relocate?" has no star and no aria-required, yet Next
         // stays disabled until it is answered.
+        // evlo's page four: the question is a bare <label> with a star over a role=radiogroup,
+        // and Next starts enabled, disabling itself only once pressed with the group unanswered.
+        _fixture.MapGet("/jobs/wizard-next-disables", () => Results.Content(
+            """
+            <html><body>
+              <h1>Backend Engineer</h1>
+              <div id="p1">
+                <label for="first_name">First Name</label><input id="first_name" name="first_name" required>
+                <div><label>Will you now or in the future require sponsorship to work in the U.S.?<span aria-hidden="true"> *</span></label>
+                  <div role="radiogroup" aria-label="Will you now or in the future require sponsorship to work in the U.S.?">
+                    <label for="sp-yes"><input id="sp-yes" type="radio" value="yes" name="eligibility.requiresUsSponsorship"><span>Yes</span></label>
+                    <label for="sp-no"><input id="sp-no" type="radio" value="no" name="eligibility.requiresUsSponsorship"><span>No</span></label>
+                  </div></div>
+                <button type="button" id="next">Next</button>
+              </div>
+              <div id="p2" style="display:none"><button type="button" id="submit_app">Submit Application</button></div>
+              <script>
+                const next = document.getElementById('next');
+                for (const r of document.querySelectorAll('[type=radio]')) r.onchange = () => next.disabled = false;
+                next.onclick = () => {
+                  if (!document.querySelector('[type=radio]:checked')) { next.disabled = true; return; }
+                  p1.style.display = 'none'; p2.style.display = 'block';
+                };
+              </script>
+            </body></html>
+            """, "text/html"));
         _fixture.MapGet("/jobs/wizard-disabled-next", () => Results.Content(
             """
             <html><body>
@@ -2528,6 +2554,13 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("Are you willing to relocate?", met.Label);
         Assert.True(met.Required);
         Assert.Contains(met.Id, dry.Unmapped);
+        Assert.Empty(_posts);
+
+        // Next enabled until pressed, and the question a starred <label> over a role=radiogroup.
+        var pressed = await Submitter().RunAsync($"{_fixtureUrl}/jobs/wizard-next-disables", packet, null, dryRun: true);
+        var asked = Assert.Single(pressed.Discovered ?? []);
+        Assert.StartsWith("Will you now or in the future require sponsorship to work in the U.S.?", asked.Label);
+        Assert.True(asked.Required);
         Assert.Empty(_posts);
     }
 
