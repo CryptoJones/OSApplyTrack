@@ -571,8 +571,10 @@ public sealed class AgentWorker : BackgroundService
         {
             const string capped = "LinkedIn Easy Apply: {0} already sent in the last day — nothing was attempted; this one goes out once the day's window has moved";
             var reason = string.Format(capped, LinkedInEasyDailyCap);
-            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
-                new { reason, dry_run = false, transient = false, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>() }, null);
+            // Deferred, not failed: nothing went wrong, and the reconciler sends it once the
+            // day's window has room — as a failed real run it was never retried at all.
+            await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Deferred, rec.Fields.Link, "",
+                new { reason, dry_run = false, mapped = Array.Empty<string>(), unmapped = Array.Empty<string>() }, null);
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogInformation("{Name}: stood down — LinkedIn Easy Apply daily cap reached", rec.Name);

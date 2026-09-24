@@ -340,6 +340,52 @@ public class AgentWorkerTests(PostgresFixture pg)
         Assert.Equal(2, fake.Runs.Count);
     }
 
+    [Fact]
+    public async Task A_run_stood_down_at_the_linkedin_cap_is_a_wait_not_an_error_and_goes_again_when_the_window_has_room()
+    {
+        // Eight applications sat in Errors for good: the cap stand-down was written as a failed
+        // real run, which nothing retries, whatever the message promised (#330).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        await conn.ExecuteAsync("UPDATE agent_settings SET linkedin_easy = true WHERE tenant_id = @t", new { t });
+        var apps = new ApplicationRepo(conn, t);
+        var rec = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md", rec!.Fields with { Link = "https://www.linkedin.com/jobs/view/4468125457", Source = AtsProvider.LinkedInEasySource }, null);
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id = @t", new { t });
+        // As the old code wrote it, two hours ago.
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_evidence (tenant_id, application_name, kind, url, confirmation, detail, created_at) "
+            + "VALUES (@t, 'high-engineer.md', 'failed', '', '', @d::jsonb, now() - interval '2 hours')",
+            new { t, d = """{"reason":"LinkedIn Easy Apply: 10 already sent in the last day — nothing was attempted; this one goes out once the day's window has moved","dry_run":false,"transient":false}""" });
+
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        Assert.DoesNotContain(await evidence.ErroredAsync(ReadyReconciler.Window), e => e.ApplicationName == "high-engineer.md");
+        var healed = await ReadyReconciler.ReconcileAsync(conn, t, Protector, longTail: true, linkedInEasy: true);
+        Assert.Contains("high-engineer.md", healed.Retried);
+        Assert.Contains(("high-engineer.md", true, false), await QueuedAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task A_lead_that_moved_and_was_prepared_again_is_not_an_error()
+    {
+        // Finastra, Simpson Strong-Tie, UMB: LinkedIn's Apply led to Workday, the lead moved and
+        // a fresh packet was built — and the move's failed row kept all three in Errors (#330).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id = @t", new { t });
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_evidence (tenant_id, application_name, kind, url, confirmation, detail, created_at) "
+            + "VALUES (@t, 'high-engineer.md', 'failed', '', '', @d::jsonb, now())",
+            new { t, d = """{"error":"the employer takes this application on its own site (acme.wd1.myworkdayjobs.com), not through Easy Apply — the lead moves to that link","dry_run":true}""" });
+        var evidence = new AgentEvidenceRepo(conn, t, Protector);
+        Assert.Contains(await evidence.ErroredAsync(ReadyReconciler.Window), e => e.ApplicationName == "high-engineer.md");
+
+        await Task.Delay(50);
+        await new AgentEventRepo(conn, t).RecordAsync(PacketBuilder.PacketEvent, "high-engineer.md", new { provider = "workday" });
+
+        Assert.DoesNotContain(await evidence.ErroredAsync(ReadyReconciler.Window), e => e.ApplicationName == "high-engineer.md");
+    }
+
     private static async Task<List<(string Name, string Kind)>> EventsAsync(NpgsqlConnection conn, long t) =>
         (await conn.QueryAsync<(string, string)>(
             "SELECT application_name, kind FROM agent_events WHERE tenant_id = @t ORDER BY id", new { t })).ToList();

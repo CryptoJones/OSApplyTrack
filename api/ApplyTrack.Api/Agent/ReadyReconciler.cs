@@ -96,7 +96,23 @@ public static partial class ReadyReconciler
                     result.Prepared.Add(c.Name);
                 continue;
             }
-            if (!latest.TryGetValue(c.Name, out var last) || !IsTransientFailure(last.Kind, last.Detail))
+            if (!latest.TryGetValue(c.Name, out var last))
+                continue;
+            // Stood down at LinkedIn Easy Apply's daily cap: nothing was tried, so it is sent again
+            // — as a dry run, which promotes itself — once the day's window has room. Before this it
+            // was a failed real run, never retried, and sat in Errors for good.
+            if (AgentEvidenceRepo.IsCapStandDown(last.Kind, last.Detail))
+            {
+                if (DateTimeOffset.UtcNow - last.CreatedAt < TimeSpan.FromHours(1)
+                    || await new AgentEvidenceRepo(conn, tenantId, protector).SubmittedSinceAsync("linkedin.com", TimeSpan.FromHours(24))
+                        >= AgentWorker.LinkedInEasyDailyCap)
+                    continue;
+                if (await RequeueAsync(conn, queue, events, c.Name, prepare: false,
+                        new { reason = "LinkedIn Easy Apply's daily window has room — dry run queued" }))
+                    result.Retried.Add(c.Name);
+                continue;
+            }
+            if (!IsTransientFailure(last.Kind, last.Detail))
                 continue;
             if (c.Failures >= MaxFailures || DateTimeOffset.UtcNow - last.CreatedAt < RetryAfter)
                 continue;
