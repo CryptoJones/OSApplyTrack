@@ -6,6 +6,8 @@ namespace ApplyTrack.Api.Data;
 /// <summary>Lightweight listing entry for the SPA sidebar (heir to AppSummary).</summary>
 public sealed record AppSummary
 {
+    /// <summary>The application's row id — the number a person can quote and search by (#326).</summary>
+    public long Id { get; init; }
     public string Filename { get; init; } = "";
     public string Company { get; init; } = "";
     public string Role { get; init; } = "";

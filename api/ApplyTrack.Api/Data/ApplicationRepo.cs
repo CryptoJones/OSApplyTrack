@@ -34,6 +34,7 @@ public sealed partial class ApplicationRepo
 
     private sealed record AppRow
     {
+        public long Id { get; init; }
         public string Name { get; init; } = "";
         public string Company { get; init; } = "";
         public string Role { get; init; } = "";
@@ -65,7 +66,7 @@ public sealed partial class ApplicationRepo
     {
         var rows = await _conn.QueryAsync<AppRow>(
             """
-            SELECT name, company, role, lane, status, contact, contact_email,
+            SELECT id, name, company, role, lane, status, contact, contact_email,
                    applied, followup, created, score, link, notes
             FROM applications
             WHERE tenant_id = @t
@@ -75,6 +76,7 @@ public sealed partial class ApplicationRepo
 
         return rows.Select(r => new AppSummary
         {
+            Id = r.Id,
             Filename = r.Name,
             Company = r.Company.Length > 0 ? r.Company : Slug.NameStem(r.Name),
             Role = r.Role,

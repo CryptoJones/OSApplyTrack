@@ -68,12 +68,17 @@ const state = {
   appsEtag: "",
   stats: { status: {}, lane: {} },
   query: "",
+  // The search results view (#326): its own filters and page, so browsing the sidebar's
+  // lists never resets them.
+  searchWhere: "",
+  searchLane: "",
+  searchPage: 0,
   filterLane: "",
   filterStatus: "",
   sort: readStoredSort(),
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors
+  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors | search
   // Ready applications whose last browser run failed (#284): their own chip and view,
   // and no longer counted or listed under Ready.
   errors: [],
@@ -421,6 +426,128 @@ function renderStatusView() {
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
 }
 
+// ---- Search results view ------------------------------------------------------
+// Every match in one table (#326): the application and its number, where it is — the
+// list it sits in, Errors included, one click away — a link that opens it here, and the
+// posting itself. Filtered by where and lane, twenty to a page.
+
+const SEARCH_PAGE = 20;
+
+// Where an application is found in the app: Errors when its last run failed, else its status.
+const whereOf = (a, stuck) => (stuck.has(a.filename) ? "errors" : a.status);
+const whereLabel = (w) => (w === "errors" ? "Errors" : (STATUS_LABEL[w] || w).replace(/^./, (c) => c.toUpperCase()));
+
+function searchResults() {
+  const stuck = errorNames();
+  const q = state.query.trim().toLowerCase();
+  const all = filteredApps({ everywhere: true });
+  // The number typed exactly comes first.
+  all.sort((x, y) => Number(idMatches(y, q)) - Number(idMatches(x, q)));
+  const matches = all.filter((a) =>
+    (!state.searchWhere || whereOf(a, stuck) === state.searchWhere)
+    && (!state.searchLane || a.lane === state.searchLane));
+  return { all, matches, stuck };
+}
+
+function openSearchView({ focus = true } = {}) {
+  if (!searching()) { if (state.mode === "search") renderEmpty(); return; }
+  state.mode = "search";
+  state.current = null;
+  showDetailPane();
+  syncPipelineButton();
+  renderSearchView();
+  if (focus) focusView("h1");
+}
+
+function renderSearchView() {
+  const { all, matches, stuck } = searchResults();
+  const pages = Math.max(1, Math.ceil(matches.length / SEARCH_PAGE));
+  state.searchPage = Math.min(Math.max(0, state.searchPage), pages - 1);
+  const shown = matches.slice(state.searchPage * SEARCH_PAGE, (state.searchPage + 1) * SEARCH_PAGE);
+  const q = state.query.trim();
+  // The filter choices are the places the matches actually are, with how many in each.
+  const whereCounts = {};
+  all.forEach((a) => { const w = whereOf(a, stuck); whereCounts[w] = (whereCounts[w] || 0) + 1; });
+  const whereOrder = ["errors", ...Object.keys(STATUS_LABEL)].filter((w) => whereCounts[w]);
+  const laneCounts = {};
+  all.forEach((a) => { laneCounts[a.lane] = (laneCounts[a.lane] || 0) + 1; });
+  const option = (value, label, n, current) =>
+    `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(label)}${n === undefined ? "" : ` (${n})`}</option>`;
+  const rows = shown.map((a) => {
+    const w = whereOf(a, stuck);
+    const posting = safeUrl(a.link);
+    return `
+    <tr>
+      <td class="mono">${escapeHtml(appId(a) || "—")}</td>
+      <td><a href="#app=${encodeURIComponent(a.filename)}" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</a></td>
+      <td><button type="button" class="link-button" data-where="${escapeHtml(w)}">${escapeHtml(whereLabel(w))}</button></td>
+      <td>${posting ? `<a href="${escapeHtml(posting)}" target="_blank" rel="noopener noreferrer">Posting ↗<span class="sr-only"> for ${escapeHtml(a.company)} (opens in a new tab)</span></a>` : "—"}</td>
+    </tr>`;
+  }).join("");
+  const from = matches.length ? state.searchPage * SEARCH_PAGE + 1 : 0;
+  const to = state.searchPage * SEARCH_PAGE + shown.length;
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Search</div>
+        <h1>Results for “${escapeHtml(q)}”</h1>
+        <p aria-live="polite">${matches.length
+          ? `${from}–${to} of ${matches.length} match${matches.length === 1 ? "" : "es"}${matches.length !== all.length ? ` (${all.length} before filtering)` : ""}.`
+          : all.length ? `No match with these filters — ${all.length} without them.` : "No application matches."}</p>
+      </header>
+      <div class="filter-row" role="group" aria-label="Filter search results">
+        <label for="search-where"><span>Where</span>
+          <select id="search-where">${option("", "Everywhere", all.length, state.searchWhere)}${whereOrder.map((w) => option(w, whereLabel(w), whereCounts[w], state.searchWhere)).join("")}</select>
+        </label>
+        <label for="search-lane"><span>Lane</span>
+          <select id="search-lane">${option("", "All lanes", undefined, state.searchLane)}${Object.keys(laneCounts).sort().map((l) => option(l, LANE_LABEL[l] || l, laneCounts[l], state.searchLane)).join("")}</select>
+        </label>
+      </div>
+      ${shown.length ? `
+      <div class="table-scroll">
+        <table class="pipeline-table">
+          <caption class="sr-only">Applications matching ${escapeHtml(q)}</caption>
+          <thead><tr><th scope="col">Number</th><th scope="col">Application</th><th scope="col">Where it is</th><th scope="col">Posting</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${pages > 1 ? `
+      <nav class="action-row" aria-label="Search result pages">
+        <button type="button" class="btn btn-ghost btn-xs" data-page="-1"${state.searchPage === 0 ? " disabled" : ""}>Previous</button>
+        <span>Page ${state.searchPage + 1} of ${pages}</span>
+        <button type="button" class="btn btn-ghost btn-xs" data-page="1"${state.searchPage >= pages - 1 ? " disabled" : ""}>Next</button>
+      </nav>` : ""}` : ""}
+    </div>`;
+  document.title = `Search: ${q} | ApplyTrack`;
+  contentEl.querySelectorAll("[data-open]").forEach((l) => l.addEventListener("click", (ev) => {
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button === 1) return; // a new tab keeps the link
+    ev.preventDefault();
+    openApp(l.dataset.open);
+  }));
+  contentEl.querySelectorAll("[data-where]").forEach((b) => b.addEventListener("click", () => goToWhere(b.dataset.where)));
+  contentEl.querySelectorAll("[data-page]").forEach((b) => b.addEventListener("click", () => {
+    state.searchPage += Number(b.dataset.page);
+    renderSearchView();
+    focusView("h1");
+  }));
+  const whereSel = document.getElementById("search-where");
+  whereSel.addEventListener("change", () => { state.searchWhere = whereSel.value; state.searchPage = 0; renderSearchView(); document.getElementById("search-where").focus(); });
+  const laneSel2 = document.getElementById("search-lane");
+  laneSel2.addEventListener("change", () => { state.searchLane = laneSel2.value; state.searchPage = 0; renderSearchView(); document.getElementById("search-lane").focus(); });
+}
+
+// Open the list an application sits in: the Errors view, or its status's list. The search
+// is cleared so the sidebar shows that list, not every status.
+function goToWhere(where) {
+  state.query = "";
+  searchEl.value = "";
+  if (where === "errors") { openErrors(); return; }
+  state.filterStatus = where;
+  statusSel.value = where;
+  renderPipeline();
+  openStatusView();
+}
+
 // ---- Errors view -------------------------------------------------------------
 // The applications that are stuck (#284): still Ready, nothing queued, and the last thing
 // the browser did with them was fail. Each row says what went wrong and what happens
@@ -463,7 +590,7 @@ function renderErrorsView() {
     return `
     <tr>
       <td><button type="button" class="link-button" data-open="${escapeHtml(e.name)}">${pipelineRowTitle(e)}</button>
-        <div class="field-help">${escapeHtml(e.provider || "")}${link ? ` · <a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">posting<span class="sr-only"> (opens in a new tab)</span></a>` : ""}</div></td>
+        <div class="field-help">${(() => { const id = appId(state.apps.find((a) => a.filename === e.name)); return id ? `<span class="mono">${escapeHtml(id)}</span> · ` : ""; })()}${escapeHtml(e.provider || "")}${link ? ` · <a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">posting<span class="sr-only"> (opens in a new tab)</span></a>` : ""}</div></td>
       <td>${escapeHtml(e.error || "the run failed")}</td>
       <td>${escapeHtml(new Date(e.at).toLocaleString())}<div class="field-help">${e.runs} run${e.runs === 1 ? "" : "s"}</div></td>
       <td>${next}</td>
@@ -623,6 +750,11 @@ function renderPipelineView(data) {
 // you are browsing; a search finds the one you are looking for, whatever list it is in.
 const searching = () => state.query.trim().length > 0;
 
+// An application's number (#326): its row id, shown as #15339 and found by typing 15339 or
+// #15339 — something to quote and look up, the way a posting has an ID.
+const appId = (a) => (a && a.id ? `#${a.id}` : "");
+const idMatches = (a, q) => /^#?\d+$/.test(q) && String(a.id || "") === q.replace(/^#/, "");
+
 function filteredApps({ everywhere = searching() } = {}) {
   const q = state.query.trim().toLowerCase();
   const errored = state.filterStatus === "ready" ? errorNames() : null;
@@ -635,6 +767,7 @@ function filteredApps({ everywhere = searching() } = {}) {
     }
     if (!q) return true;
     return (
+      idMatches(a, q) ||
       a.company.toLowerCase().includes(q) ||
       a.role.toLowerCase().includes(q) ||
       a.filename.toLowerCase().includes(q) ||
@@ -764,7 +897,7 @@ function renderSidebar() {
           ${statusBadge(a.status)}${stuck.has(a.filename) ? ` <span class="badge" data-status="rejected">In Errors</span>` : ""}
         </span>
         ${a.role ? `<span class="ic-role">${escapeHtml(a.role)}</span>` : ""}
-        <span class="ic-meta">${lanePill(a.lane)} ${score} ${posted}
+        <span class="ic-meta">${a.id ? `<span class="mono">${escapeHtml(appId(a))}</span>` : ""} ${lanePill(a.lane)} ${score} ${posted}
           ${a.applied ? `<span>Applied ${escapeHtml(a.applied)}</span>` : ""}
           ${a.followup ? `<span>Follow-up ${escapeHtml(a.followup)}</span>` : ""}</span>
         ${contactLine}
@@ -790,6 +923,8 @@ function renderSidebar() {
     if (state.filterStatus) renderStatusView();
     else renderEmpty();
   }
+  // A refresh that changed the list changes the results too.
+  else if (state.mode === "search" && searching() && !contentEl.contains(document.activeElement)) renderSearchView();
 }
 
 // ---- Main pane ------------------------------------------------------------
@@ -868,7 +1003,7 @@ function renderView(data) {
     <article class="sheet">
       <header class="view-header">
         <div class="view-heading">
-          <div class="sheet-eyebrow">${statusBadge(f.status)} <span class="filename mono">${escapeHtml(data.filename)}</span></div>
+          <div class="sheet-eyebrow">${statusBadge(f.status)} ${(() => { const id = appId(state.apps.find((a) => a.filename === data.filename)); return id ? `<span class="mono" title="Application number — search for it">${escapeHtml(id)}</span>` : ""; })()} <span class="filename mono">${escapeHtml(data.filename)}</span></div>
           <h2 class="sheet-title">${escapeHtml(f.company || stem(data.filename))}</h2>
           ${f.role ? `<div class="role-title">${escapeHtml(f.role)}</div>` : ""}
         </div>
@@ -2926,7 +3061,32 @@ async function refresh() {
   return true;
 }
 
-searchEl.addEventListener("input", () => { state.query = searchEl.value; renderSidebar(); });
+searchEl.addEventListener("input", () => {
+  state.query = searchEl.value;
+  // A new search starts unfiltered, on its first page: a "Where" left from the last one
+  // hid the very match being looked for.
+  state.searchPage = 0;
+  state.searchWhere = "";
+  state.searchLane = "";
+  renderSidebar();
+  // The results table follows the box when it is on screen, or on a wide screen where the
+  // list and the table sit side by side; on a phone Enter opens it (#326).
+  if (state.mode === "search") { if (searching()) renderSearchView(); else renderEmpty(); }
+  else if (searching() && !window.matchMedia("(max-width: 767px)").matches) openSearchView({ focus: false });
+});
+searchEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && searching()) { e.preventDefault(); openSearchView(); }
+});
+// A #app=<name> link — a search result, a notification, one pasted in — opens that
+// application in the page already open, not only on load.
+window.addEventListener("hashchange", () => {
+  let target = "";
+  try { target = new URLSearchParams(location.hash.slice(1)).get("app") || ""; } catch (_) {}
+  if (target && state.apps.some((a) => a.filename === target)) {
+    openApp(target);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+});
 laneSel.addEventListener("change", () => { state.filterLane = laneSel.value; renderSidebar(); });
 statusSel.addEventListener("change", () => {
   state.filterStatus = statusSel.value;

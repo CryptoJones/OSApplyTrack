@@ -775,6 +775,68 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
   await expectNoSeriousViolations(page);
 });
 
+test("a search lists every match with its number, where it is, and its posting, filtered and paged", async ({ page }, testInfo) => {
+  // "Which page is DTCC on?" (#326): the answer is a number to search for and a table that
+  // says where each match is — Errors included — with links to it and to the posting.
+  const many = Array.from({ length: 23 }, (_, i) => ({
+    ...applications[1], id: 100 + i, filename: `acme-${i}.md`, company: `Acme ${i}`, role: "Engineer",
+    status: i % 2 ? "lead" : "ready", link: `https://jobs.example.com/${i}`,
+  }));
+  const dtcc = { ...application, id: 15339, filename: "dtcc-senior.md", company: "The Depository Trust & Clearing Corporation (DTCC)",
+    role: "Senior Software Engineer", status: "ready", link: "https://ebxr.fa.us2.oraclecloud.com/job/212747" };
+  const stuck = { name: dtcc.filename, company: dtcc.company, role: dtcc.role, link: dtcc.link, provider: "unknown",
+    error: "the sign-in code was taken but no application form followed", at: "2026-09-24T07:26:06Z", runs: 3,
+    captcha: false, next: "you", retry_at: null, why: "the same thing will happen on another run — it needs you, or a fix" };
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    let body = { ok: true };
+    if (path === "/api/auth/me") body = { email: "person@example.com" };
+    else if (path === "/api/apps") body = [dtcc, ...many];
+    else if (path === "/api/stats") body = { status: { ready: 12, lead: 11 }, lane: {}, errors: 1 };
+    else if (path === "/api/errors") body = { count: 1, retrying: 0, needs_you: 1, errors: [stuck] };
+    else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true, browser_available: true, dry_run: false };
+    else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
+    else if (path === `/api/apps/${dtcc.filename}`) body = { ...detail, filename: dtcc.filename, fields: { ...detail.fields, company: dtcc.company, status: "ready" } };
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/");
+
+  // By its number: the one result, where it is, and both links.
+  const box = page.getByLabel("Search applications");
+  await box.fill("#15339");
+  await box.press("Enter");
+  await expect(page.getByRole("heading", { level: 1, name: "Results for “#15339”" })).toBeVisible();
+  const row = page.getByRole("row").filter({ hasText: "DTCC" });
+  await expect(row).toContainText("#15339");
+  await expect(row.getByRole("button", { name: "Errors" })).toBeVisible();
+  await expect(row.getByRole("link", { name: /Posting ↗/ })).toHaveAttribute("href", dtcc.link);
+  await expect(row.getByRole("link", { name: /^The Depository/ })).toHaveAttribute("href", "#app=dtcc-senior.md");
+  await expectNoSeriousViolations(page);
+
+  // Twenty to a page, and the filters narrow it. (On a phone the results replace the list;
+  // the Applications button brings the search box back.)
+  const backToList = async () => {
+    if (testInfo.project.name === "mobile") await page.getByRole("button", { name: "Applications", exact: true }).click();
+  };
+  await backToList();
+  await box.fill("acme");
+  await box.press("Enter");
+  await expect(page.locator("#content")).toContainText("1–20 of 23 matches");
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(page.locator("#content")).toContainText("21–23 of 23 matches");
+  await page.getByLabel("Where").selectOption("lead");
+  await expect(page.locator("#content")).toContainText("1–11 of 11 matches (23 before filtering)");
+
+  // "Where it is" goes there.
+  await backToList();
+  await box.fill("15339");
+  await box.press("Enter");
+  await page.getByRole("row").filter({ hasText: "DTCC" }).getByRole("button", { name: "Errors" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Errors" })).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: "DTCC" })).toContainText("#15339");
+});
+
 test("a signed-in source's board account shows its session and offers Sign in now", async ({ page }) => {
   // The agent renews a kept session on its own six-hour clock, and LinkedIn's app tap has to
   // come within minutes of it; Sign in now lets the person pick the moment. An account that
