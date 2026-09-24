@@ -347,6 +347,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             <span>You can also <a class="quick-apply-flow__manually--link" href="/oracle/job/1/apply/section/1">manually</a> fill out your application.</span>
             </body></html>
             """, "text/html"));
+        _fixture.MapGet("/oracle/job/2/easy-apply", () => Results.Content(
+            """<html><body><h1>Let's make this quick</h1><a class="quick-apply-flow__manually--link" href="#">manually</a></body></html>""", "text/html"));
         _fixture.MapGet("/oracle/job/1/apply/section/1", () => Results.Content(
             """<html><body><label for="a">Legal First Name</label><input id="a"><label for="b">Legal Last Name</label><input id="b"></body></html>""", "text/html"));
         // ClearCompany's radio group: a plain <span> title with a star over label-wrapped
@@ -3077,6 +3079,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task An_unanswered_oracle_radio_is_reported_once_by_its_group_not_by_its_options()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3");
+        packet.Questions.Add(new("How did you hear about this position?", "How did you hear about this position?", true,
+            PacketQuestion.Select, ["Agency", "Career site", "Social Media"], PacketQuestion.Custom));
+        packet.Answers["How did you hear about this position?"] = "Career site";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-choices", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Empty(_posts);
+        // Once, by the group's name — the key discovery gave the question — not by each option's id.
+        Assert.Equal(["300000469539525-22"], outcome.Unmapped);
+        Assert.DoesNotContain("q18-7", outcome.Error);
+    }
+
+    [SkippableFact]
     public async Task Oracles_easy_apply_is_left_for_the_standard_flow_and_other_pages_are_not_touched()
     {
         // DTCC signed in onto "Let's make this quick" and, the next time, onto a resumed draft at
@@ -3089,6 +3110,10 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(await BrowserSession.TakeStandardFlowAsync(page));
         Assert.EndsWith("/apply/section/1", page.Url);
         Assert.False(await BrowserSession.TakeStandardFlowAsync(page));
+        // A way out that goes nowhere is reported as not taken, so the sign-in stops.
+        await page.GotoAsync($"{_fixtureUrl}/oracle/job/2/easy-apply");
+        Assert.False(await BrowserSession.TakeStandardFlowAsync(page));
+        Assert.Contains("/easy-apply", page.Url);
         playwright.Dispose();
     }
 

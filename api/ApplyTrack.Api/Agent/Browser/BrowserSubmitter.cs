@@ -1055,6 +1055,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             else if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               empty = ![...document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)].some(r => r.checked);
+              // Once per group, by its name and the question over it — never by an option (#318).
+              if (empty && drawnRadio) {
+                const g = el.closest('[role=radiogroup]');
+                const by = (g?.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim();
+                add(name || el.id, g?.getAttribute('aria-label') || by || labelFor(el));
+                continue;
+              }
             }
             else empty = (el.value || '').trim().length === 0;
             if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
@@ -1063,9 +1070,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           for (const g of document.querySelectorAll('[role=radiogroup]')) {
             if (g.querySelector('input') || !g.querySelector('[role=radio]') || !visible(g)) continue;
             if (g.querySelector('[role=radio][aria-checked=true]')) continue;
-            if (g.getAttribute('aria-required') !== 'true' && !g.closest('.input-row')?.querySelector('.input-row__label--required')) continue;
             const by = (g.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ');
-            add('', g.getAttribute('aria-label') || by);
+            const title = g.getAttribute('aria-label') || by;
+            // The same rule discovery uses, so a question it calls required is never let through.
+            if (g.getAttribute('aria-required') !== 'true' && !g.closest('.input-row')?.querySelector('.input-row__label--required') && !/\*\s*$/.test(title.trim())) continue;
+            add('', title);
           }
           return out;
         }
@@ -1208,7 +1217,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var step = await AfterContinueAsync(page, textBefore, urlBefore);
         if (step == SignInStep.Form)
         {
-            await BrowserSession.TakeStandardFlowAsync(page);
+            // Easy-apply's draft must never be filled as if it were the form: stop if the way
+            // out did not open (#318).
+            if (!await BrowserSession.TakeStandardFlowAsync(page) && page.Url.Contains("/easy-apply", StringComparison.OrdinalIgnoreCase))
+                return Stop(SignInError + "; Oracle's standard application flow did not open from easy-apply — check the screenshot");
             return null;
         }
         if (step == SignInStep.Nothing)
@@ -1232,7 +1244,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             return Stop("the sign-in code could not be entered — if the email carries a link instead, run Submit again and paste that");
 
         // Oracle: past the code, easy-apply's résumé import or a resumed draft, not the form (#318).
-        await BrowserSession.TakeStandardFlowAsync(page);
+        if (!await BrowserSession.TakeStandardFlowAsync(page) && page.Url.Contains("/easy-apply", StringComparison.OrdinalIgnoreCase))
+            return Stop($"the sign-in {what} was taken but Oracle's standard application flow did not open from easy-apply — check the screenshot");
         // The form, or the posting again with the candidate now signed in and Apply to press.
         if (!await BrowserSession.WaitForApplicationFormAsync(page, 15_000))
         {
@@ -1865,7 +1878,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // half is the question's. Matched by it — whether the packet holds the whole stale name or,
         // as discovery now records, the field half alone.
         var field = AshbyField().Match(id) is { Success: true } m ? m.Groups[1].Value : id;
-        var radios = page.Locator($"input[type=radio][name='{id}'], input[type=radio][name$='_{field}']");
+        var radios = page.Locator($"input[type=radio][name={Quote(id)}], input[type=radio][name$={Quote("_" + field)}]");
         int count;
         try { count = await radios.CountAsync(); }
         catch (PlaywrightException) { return null; }
