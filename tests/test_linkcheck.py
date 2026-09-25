@@ -8,11 +8,13 @@ httpx.MockTransport (so no real network), keeping the suite hermetic.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import httpcore
 import httpx
@@ -52,6 +54,70 @@ def test_internal_ip_literals_are_blocked() -> None:
         "::ffff:127.0.0.1",  # IPv4-mapped loopback
     ):
         assert _host_is_public(host) is False, host
+
+
+# Shared with the API's ScrapeTests so the two SSRF guards can't drift apart (#339).
+_PARITY = json.loads((Path(__file__).parent / "fixtures" / "ssrf_addresses.json").read_text())
+
+
+@pytest.mark.parametrize("ip", _PARITY["blocked"])
+def test_parity_blocked_addresses_are_refused(ip: str) -> None:
+    assert linkcheck._ip_is_public(ip) is False
+
+
+@pytest.mark.parametrize("ip", _PARITY["allowed"])
+def test_parity_public_addresses_are_allowed(ip: str) -> None:
+    assert linkcheck._ip_is_public(ip) is True
+
+
+def test_cgnat_and_other_non_global_ranges_are_blocked() -> None:
+    # Neither private, reserved nor link-local, so the old checks let them through.
+    for host in (
+        "100.100.100.100",  # CGNAT -- Tailscale's MagicDNS / peer API
+        "192.0.2.1",        # TEST-NET-1
+        "198.51.100.1",     # TEST-NET-2
+        "203.0.113.1",      # TEST-NET-3
+        "2001:db8::1",      # IPv6 documentation
+    ):
+        assert _host_is_public(host) is False, host
+
+
+def test_probe_refuses_a_cgnat_host_without_touching_the_network() -> None:
+    status = probe("http://100.100.100.100/v1/status")
+    assert status.ok is False
+    assert "non-public" in status.error
+
+
+def test_fetch_public_refuses_a_redirect_to_cgnat() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://100.100.100.100/"})
+
+    with pytest.raises(PublicFetchError, match="non-public"):
+        fetch_public("http://93.184.216.34/feed", client=_client(handler))
+
+
+@pytest.mark.parametrize("port", ["22", "6379", "8080", "99999"])
+def test_redirect_to_a_non_web_port_is_refused(port: str) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": f"http://1.0.0.1:{port}/x"})
+
+    status = probe("http://93.184.216.34/jobs/1", client=_client(handler))
+    assert status.ok is False
+    assert status.error == "redirect to non-standard port"
+    assert seen == ["http://93.184.216.34/jobs/1"]
+
+
+@pytest.mark.parametrize("location", ["http://1.0.0.1:80/jobs/2", "https://1.0.0.1:443/jobs/2"])
+def test_redirect_to_an_explicit_web_port_is_followed(location: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "93.184.216.34":
+            return httpx.Response(301, headers={"location": location})
+        return httpx.Response(200)
+
+    assert probe("http://93.184.216.34/jobs/1", client=_client(handler)).ok is True
 
 
 def test_probe_refuses_loopback_without_touching_the_network() -> None:

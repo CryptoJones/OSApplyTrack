@@ -296,6 +296,42 @@ public class ScrapeTests
     public void Allows_public_addresses(string ip) =>
         Assert.False(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
 
+    [Theory]
+    [InlineData("2001:0:4136:e378:8000:63bf:f5ff:fffe")] // Teredo, client 10.0.0.1
+    [InlineData("2001:0:6464:6464:8000:63bf:a247:27dd")] // Teredo via a CGNAT server
+    public void Blocks_teredo_carrying_a_private_host(string ip) =>
+        Assert.True(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
+
+    // ---- Parity with the poller's guard (#339) -----------------------------------
+    // tests/fixtures/ssrf_addresses.json is read by tests/test_linkcheck.py as well, so
+    // the API's blocklist and the poller's linkcheck._ip_is_public can't drift apart.
+
+    public static TheoryData<string> ParityBlocked() => ParityCases("blocked");
+    public static TheoryData<string> ParityAllowed() => ParityCases("allowed");
+
+    [Theory]
+    [MemberData(nameof(ParityBlocked))]
+    public void Parity_blocked_addresses_are_refused(string ip) =>
+        Assert.True(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
+
+    [Theory]
+    [MemberData(nameof(ParityAllowed))]
+    public void Parity_public_addresses_are_allowed(string ip) =>
+        Assert.False(JobPageFetcher.IsBlockedAddress(IPAddress.Parse(ip)));
+
+    private static TheoryData<string> ParityCases(string key)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "package.json")))
+            dir = dir.Parent;
+        var path = Path.Combine(dir?.FullName ?? AppContext.BaseDirectory, "tests", "fixtures", "ssrf_addresses.json");
+        using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        var data = new TheoryData<string>();
+        foreach (var ip in doc.RootElement.GetProperty(key).EnumerateArray())
+            data.Add(ip.GetString()!);
+        return data;
+    }
+
     // ---- Whole-fetch budget (#266) ---------------------------------------------
 
     [Fact]

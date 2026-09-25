@@ -183,7 +183,7 @@ public sealed class JobPageFetcher
     }
 
     /// <summary>True for any address a scrape must never touch: loopback, RFC 1918,
-    /// link-local (cloud metadata), CGNAT, benchmark, multicast, unspecified, and the
+    /// link-local (cloud metadata), CGNAT, benchmark, TEST-NET, multicast, unspecified, and the
     /// IPv6 unique-local/site-local equivalents. Public for the test suite.</summary>
     public static bool IsBlockedAddress(IPAddress ip)
     {
@@ -193,6 +193,8 @@ public sealed class JobPageFetcher
         // 64:ff9b::a9fe:a9fe (169.254.169.254) would slip past the v6 checks.
         if (ip.IsIPv4MappedToIPv6)
             ip = ip.MapToIPv4();
+        else if (TryExtractTeredo(ip, out var server, out var client))
+            return IsBlockedAddress(server) || IsBlockedAddress(client);
         else if (TryExtractEmbeddedIPv4(ip, out var embedded))
             return IsBlockedAddress(embedded);
 
@@ -209,13 +211,34 @@ public sealed class JobPageFetcher
                 || (b[0] == 169 && b[1] == 254)         // 169.254/16 link-local + metadata
                 || (b[0] == 172 && (b[1] & 0xF0) == 16) // 172.16/12
                 || (b[0] == 192 && b[1] == 0 && b[2] == 0)   // 192.0.0/24 special-purpose
+                || (b[0] == 192 && b[1] == 0 && b[2] == 2)   // 192.0.2/24 TEST-NET-1
+                || (b[0] == 198 && b[1] == 51 && b[2] == 100) // 198.51.100/24 TEST-NET-2
+                || (b[0] == 203 && b[1] == 0 && b[2] == 113) // 203.0.113/24 TEST-NET-3
                 || (b[0] == 192 && b[1] == 168)         // 192.168/16
                 || (b[0] == 198 && (b[1] & 0xFE) == 18) // 198.18/15 benchmarking
                 || b[0] >= 224;                         // multicast + reserved + broadcast
         }
 
+        var v6 = ip.GetAddressBytes();
         return ip.IsIPv6Multicast || ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal
-            || (ip.GetAddressBytes()[0] & 0xFE) == 0xFC; // fc00::/7 unique local
+            || (v6[0] & 0xFE) == 0xFC                    // fc00::/7 unique local
+            || (v6[0] == 0x20 && v6[1] == 0x01 && v6[2] == 0x0D && v6[3] == 0xB8); // 2001:db8::/32 documentation
+    }
+
+    // Teredo 2001:0000::/32 carries two IPv4 hosts: the server in bits 32-63 and the
+    // client, bit-inverted, in the low 32. Both are judged — the poller's guard does the
+    // same (#339).
+    private static bool TryExtractTeredo(IPAddress ip, out IPAddress server, out IPAddress client)
+    {
+        server = client = IPAddress.None;
+        if (ip.AddressFamily != AddressFamily.InterNetworkV6)
+            return false;
+        var b = ip.GetAddressBytes();
+        if (!(b[0] == 0x20 && b[1] == 0x01 && b[2] == 0 && b[3] == 0))
+            return false;
+        server = new IPAddress(b[4..8]);
+        client = new IPAddress([(byte)~b[12], (byte)~b[13], (byte)~b[14], (byte)~b[15]]);
+        return true;
     }
 
     // Pulls the embedded IPv4 target out of the transitional IPv6 forms that carry one.
