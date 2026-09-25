@@ -11,6 +11,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+import zlib
 from collections.abc import Callable, Iterator
 
 import httpcore
@@ -357,3 +358,80 @@ def test_pinned_client_is_reusable_after_a_deadline() -> None:
             assert client._deadline.at is None  # type: ignore[attr-defined]
     finally:
         server.close()
+
+
+def _gzip(data: bytes) -> bytes:
+    packer = zlib.compressobj(wbits=zlib.MAX_WBITS | 16)
+    return packer.compress(data) + packer.flush()
+
+
+def test_fetch_public_inflates_a_gzipped_feed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "gzip, deflate"
+        return httpx.Response(
+            200,
+            content=iter([_gzip(b"<rss/>")]),
+            headers={"content-encoding": "gzip"},
+            request=request,
+        )
+
+    with _client(handler) as client:
+        assert fetch_public("http://1.1.1.1/feed.rss", client=client) == b"<rss/>"
+
+
+def test_fetch_public_inflates_raw_deflate() -> None:
+    packer = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    raw = packer.compress(b"<rss/>") + packer.flush()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=iter([raw]), headers={"content-encoding": "deflate"}, request=request
+        )
+
+    with _client(handler) as client:
+        assert fetch_public("http://1.1.1.1/feed.rss", client=client) == b"<rss/>"
+
+
+def test_fetch_public_stops_inflating_a_gzip_bomb_at_the_cap() -> None:
+    # ~100 KB on the wire that inflates to 100 MB: the cap has to hold on the
+    # *decoded* size without ever materialising it.
+    bomb = _gzip(b"\0" * (100 * 1024 * 1024))
+    assert len(bomb) < 200 * 1024
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=iter([bomb]), headers={"content-encoding": "gzip"}, request=request
+        )
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="exceeds"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client, max_bytes=64 * 1024)
+
+
+def test_fetch_public_refuses_an_encoding_it_did_not_ask_for() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"content-encoding": "br"}
+        return httpx.Response(200, content=b"??", headers=headers, request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="content-encoding"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client)
+
+
+def test_a_stalled_dns_lookup_is_bounded_by_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+
+    def stalled_getaddrinfo(*args: object, **kwargs: object) -> list[object]:
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", stalled_getaddrinfo)
+    started = time.monotonic()
+    try:
+        with ssrf_safe_client(timeout=5.0) as client, pytest.raises(
+            PublicFetchError, match="deadline"
+        ):
+            fetch_public("http://slow-dns.example/feed", client=client, deadline=0.5)
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
