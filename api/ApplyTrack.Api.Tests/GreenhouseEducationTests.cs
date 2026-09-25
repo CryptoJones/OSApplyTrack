@@ -65,4 +65,13 @@ public class GreenhouseEducationTests
     [InlineData("", null)]
     public void Only_a_stated_finish_year_is_an_end_year(string dates, string? year) =>
         Assert.Equal(year, BrowserSubmitter.EndYear(dates));
+
+    [Theory]
+    [InlineData("5+", "5")]
+    [InlineData("10+ years", "10")]
+    [InlineData("3-5", "3")]
+    [InlineData("07", "7")]
+    [InlineData("none", null)]
+    public void A_linkedin_number_box_gets_the_whole_number_an_answer_states(string answer, string? number) =>
+        Assert.Equal(number, ApplyTrack.Api.Agent.AnswerDrafter.WholeNumber(answer));
 }
