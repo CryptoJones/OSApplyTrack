@@ -320,6 +320,9 @@ public class AuthEndpointTests : IAsyncLifetime
 
         Assert.True(res.Headers.TryGetValues("Content-Security-Policy", out var csp));
         Assert.Contains("script-src 'self'", string.Join(" ", csp));
+        // #342: no remote images, so markdown can't beacon data off-instance.
+        Assert.Contains("img-src 'self' data:;", string.Join(" ", csp));
+        Assert.DoesNotContain("https:", string.Join(" ", csp));
         Assert.True(res.Headers.TryGetValues("X-Content-Type-Options", out var nosniff));
         Assert.Equal("nosniff", string.Join("", nosniff));
         Assert.True(res.Headers.Contains("X-Frame-Options"));

@@ -14,13 +14,16 @@ namespace ApplyTrack.Api.Middleware;
 public sealed class SecurityHeadersMiddleware
 {
     // Same-origin scripts only (theme-init/marked/purify/app.js are all local),
-    // styles allow inline for the vendored Tailwind utility layer, images allow
-    // https/data for markdown content, everything else locks to 'self'.
+    // styles allow inline for the vendored Tailwind utility layer, everything else
+    // locks to 'self'. Images are 'self' + data: only: no remote image is legitimate
+    // (fonts/icons are vendored, evidence screenshots are same-origin), and allowing
+    // https: let a prompt-injected markdown image in a cover letter phone résumé data
+    // home (#342).
     private const string Csp =
         "default-src 'self'; "
         + "script-src 'self'; "
         + "style-src 'self' 'unsafe-inline'; "
-        + "img-src 'self' data: https:; "
+        + "img-src 'self' data:; "
         + "font-src 'self'; "
         + "connect-src 'self'; "
         + "object-src 'none'; "

