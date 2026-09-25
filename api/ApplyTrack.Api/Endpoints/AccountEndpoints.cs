@@ -36,6 +36,9 @@ public static class AccountEndpoints
     // account is small; this is generous headroom, not a real-world limit.
     private const int MaxImportItems = 10_000;
 
+    /// <summary>The import body cap, enforced before binding (Program.cs, #344).</summary>
+    public const long MaxImportBytes = 10L * 1024 * 1024;
+
     // The export is a single private migration snapshot. snake_case + indented so it
     // round-trips byte-compatibly with the /api/* shapes and a human can read it.
     private static readonly JsonSerializerOptions ExportJson = new()
@@ -168,7 +171,7 @@ public static class AccountEndpoints
                 imported_blacklist = importedBlacklist,
                 criteria_applied = hasCriteria,
             });
-        });
+        }).RequireRateLimiting("upload");
 
         // Delete the account. The FK cascades (0005/0006/0009) drop every per-tenant row
         // in one statement; clearing the cookie tidies the now-dangling session client-side.

@@ -144,6 +144,48 @@ public class RateLimitTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, other.StatusCode);
     }
 
+    private static MultipartFormDataContent NotAPdf()
+    {
+        var form = new MultipartFormDataContent();
+        form.Add(new ByteArrayContent(Encoding.UTF8.GetBytes("not a pdf")), "resume", "resume.pdf");
+        return form;
+    }
+
+    [Fact]
+    public async Task Resume_upload_is_throttled_per_tenant_across_client_ips()
+    {
+        await using var trustedFactory = CreateFactory(trustProxy: true);
+        var client = await AuthenticatedClient(trustedFactory);
+
+        for (var i = 0; i < 10; i++)
+        {
+            client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+            client.DefaultRequestHeaders.Add("X-Forwarded-For", $"203.0.113.{i + 1}");
+            var res = await client.PostAsync("/api/resume/upload", NotAPdf());
+            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        }
+
+        client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.99");
+        var rejected = await client.PostAsync("/api/resume/upload", NotAPdf());
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_routes_are_throttled_per_ip_across_tenants()
+    {
+        for (var i = 0; i < 10; i++)
+        {
+            var tenant = await AuthenticatedClient();
+            var res = await tenant.PostAsync("/api/resume/upload", NotAPdf());
+            Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        }
+
+        var fresh = await AuthenticatedClient();
+        var rejected = await fresh.PostAsync("/api/account/import", Json("{}"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+    }
+
     private sealed class RemoteIpStartupFilter(IPAddress remoteIp) : IStartupFilter
     {
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>

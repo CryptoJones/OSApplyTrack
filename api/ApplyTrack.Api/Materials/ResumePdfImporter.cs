@@ -22,7 +22,31 @@ public static partial class ResumePdfImporter
 
     private const int MaxResumeTextChars = 100_000;
 
-    public static Resume FromPdf(byte[] bytes)
+    /// <summary>Pages read from an upload; a résumé is one or two, so this is headroom (#344).</summary>
+    public const int MaxPages = 20;
+
+    /// <summary>Wall-clock budget for one parse before the upload is refused (#344).</summary>
+    public static readonly TimeSpan ParseBudget = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Parses off the request thread under <paramref name="budget"/> (default
+    /// <see cref="ParseBudget"/>). PdfPig cannot be interrupted mid-page, so the worker also
+    /// checks the deadline between pages and stops there; the request never waits past it.
+    /// </summary>
+    public static async Task<Resume> FromPdfAsync(byte[] bytes, TimeSpan? budget = null)
+    {
+        using var cts = new CancellationTokenSource(budget ?? ParseBudget);
+        try
+        {
+            return await Task.Run(() => FromPdf(bytes, cts.Token), cts.Token).WaitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new AppValidationException("that PDF resume took too long to read; try a simpler export");
+        }
+    }
+
+    public static Resume FromPdf(byte[] bytes, CancellationToken ct = default)
     {
         if (!LooksLikePdf(bytes))
             throw new AppValidationException("resume upload must be a PDF file");
@@ -32,9 +56,13 @@ public static partial class ResumePdfImporter
         {
             using var document = PdfDocument.Open(bytes);
             var sb = new StringBuilder();
-            foreach (var page in document.GetPages())
+            // Only the first MaxPages, and stop once the brief's text cap is reached: a
+            // thousand pages sharing one heavy content stream cost nothing past the cap.
+            var pages = Math.Min(document.NumberOfPages, MaxPages);
+            for (var i = 1; i <= pages && sb.Length <= MaxResumeTextChars; i++)
             {
-                var pageText = NormalizeText(ContentOrderTextExtractor.GetText(page));
+                ct.ThrowIfCancellationRequested();
+                var pageText = NormalizeText(ContentOrderTextExtractor.GetText(document.GetPage(i)));
                 if (pageText.Length > 0)
                     sb.AppendLine(pageText).AppendLine();
             }
@@ -44,8 +72,13 @@ public static partial class ResumePdfImporter
         {
             throw new AppValidationException("encrypted PDF resumes are not supported yet");
         }
-        catch (PdfDocumentFormatException)
+        catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (Exception ex) when (ex is not AppValidationException)
+        {
+            // Anything a malformed file makes PdfPig throw is the file's fault, not a 500.
             throw new AppValidationException("could not read that PDF resume");
         }
 
