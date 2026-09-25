@@ -364,8 +364,12 @@ public sealed class AgentWorker : BackgroundService
     private async Task<bool> PassIfEmployerNotRemoteAsync(
         AppRecord rec, AgentPacket packet, Criteria criteria, ApplicationRepo apps, AgentEventRepo events)
     {
-        // The packet keeps 12,000 characters of the posting; silence past the cut proves nothing.
-        var complete = packet.PostingExcerpt.Length < PacketBuilder.ExcerptLimit;
+        // Only what the employer says, never what it leaves unsaid (#334): the excerpt is often the
+        // description alone, and an ATS keeps "Remote" in a location field outside it — Thumbtack's
+        // and Bankjoy's Ashby postings are marked Remote and never use the word in their text, and
+        // Bankjoy was passed as "never says remote". Silence is judged by nobody until the
+        // employer's structured location is read alongside it.
+        const bool complete = false;
         if (!Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var at)
             || AtsProvider.IsAggregatorHost(at.Host.ToLowerInvariant())
             || Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, complete) is not { } why)

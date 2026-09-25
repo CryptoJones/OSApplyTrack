@@ -154,4 +154,15 @@ public class DisqualifierTests
         var reasons = Disqualifiers.Find(app, "", new Criteria(), new AgentSettings { Country = country });
         Assert.Equal(disqualified, reasons.Any(r => r.Contains("EU job board")));
     }
+
+    [Fact]
+    public void A_description_that_never_says_remote_is_not_judged_when_it_is_not_the_whole_posting()
+    {
+        // Bankjoy's Ashby posting is marked Remote in its location field; the description never
+        // says so, and it was passed for that (#334). The worker now asks without silence.
+        var page = string.Concat(Enumerable.Repeat("Build and ship full-stack .NET features for credit unions. ", 40));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }, complete: false));
+        // An explicit statement still counts.
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page + " This role is hybrid (Mon through Thu on-site / Fri remote).", new Criteria { RemoteOnly = true }, complete: false));
+    }
 }
