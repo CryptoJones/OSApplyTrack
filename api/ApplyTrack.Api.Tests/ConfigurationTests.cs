@@ -2,6 +2,8 @@
 // Copyright 2026 Aaron K. Clark
 
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Endpoints;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
@@ -150,5 +152,75 @@ public class EmailOptionsTests
         var error = Assert.Throws<InvalidOperationException>(
             () => new EmailOptions { Host = "smtp.example.com", From = "not an address" }.Validate());
         Assert.Contains("not a valid email address", error.Message);
+    }
+
+    [Fact]
+    public void RequirePublicBaseUrl_noop_for_the_console_sender()
+    {
+        new EmailOptions().RequirePublicBaseUrl(null);
+    }
+
+    [Fact]
+    public void RequirePublicBaseUrl_passes_with_an_absolute_https_origin()
+    {
+        new EmailOptions { Host = "smtp.example.com", From = "apply@example.com" }
+            .RequirePublicBaseUrl("https://apply.example.com");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("apply.example.com")]
+    [InlineData("ftp://apply.example.com")]
+    public void RequirePublicBaseUrl_rejects_smtp_without_a_pinned_origin(string? baseUrl)
+    {
+        // #337: real mail + no pinned origin = links built from the attacker's Host header.
+        var error = Assert.Throws<InvalidOperationException>(
+            () => new EmailOptions { Host = "smtp.example.com", From = "apply@example.com" }
+                .RequirePublicBaseUrl(baseUrl));
+        Assert.Contains("App__PublicBaseUrl", error.Message);
+    }
+}
+
+/// <summary>
+/// <see cref="AuthEndpoints.LinkOrigin"/> — where emailed sign-in links point (#337):
+/// the configured origin always; the request Host only when it is loopback.
+/// </summary>
+public class LinkOriginTests
+{
+    private static HttpRequest Request(string host)
+    {
+        var ctx = new DefaultHttpContext();
+        ctx.Request.Scheme = "http";
+        ctx.Request.Host = new HostString(host);
+        return ctx.Request;
+    }
+
+    [Fact]
+    public void Configured_base_url_wins_and_is_trimmed()
+    {
+        Assert.Equal("https://apply.example",
+            AuthEndpoints.LinkOrigin(" https://apply.example/ ", Request("evil.example")));
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("localhost:8080")]
+    [InlineData("app.localhost:8080")]
+    [InlineData("127.0.0.1:8080")]
+    [InlineData("[::1]:8080")]
+    public void Unset_falls_back_to_a_loopback_host(string host)
+    {
+        Assert.Equal($"http://{host}", AuthEndpoints.LinkOrigin(null, Request(host)));
+    }
+
+    [Theory]
+    [InlineData("evil.example")]
+    [InlineData("localhost.evil.example")]
+    [InlineData("192.168.1.10:8080")]
+    [InlineData("10.0.0.1")]
+    public void Unset_with_a_non_loopback_host_yields_no_origin(string host)
+    {
+        Assert.Null(AuthEndpoints.LinkOrigin("", Request(host)));
     }
 }

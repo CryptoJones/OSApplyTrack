@@ -27,6 +27,11 @@ DATABASE_URL=postgresql://applytrack:<same>@applytrack-db:5432/applytrack
 # applytrack-secrets volume (back that volume up with the database); set it to manage
 # the key yourself. APPLYTRACK_SECRETS_KEY_PREVIOUS=<old> rotates it — see README.
 #APPLYTRACK_SECRETS_KEY=
+# Public origin — the URL you browse to (scheme, no trailing slash). Sign-in links
+# are built from this, never the request Host header (#337); required once
+# Email__Host is set. AllowedHosts pins the Host headers the api answers at all.
+App__PublicBaseUrl=<http://this-host:8080, or https://apply.example.com behind a proxy>
+AllowedHosts=<this-host;localhost>
 # Optional email (magic-link login). Leave Email__Host unset to log links to the
 # console instead of sending. To relay through any SMTP provider (e.g. Resend):
 #Email__Host=smtp.resend.com

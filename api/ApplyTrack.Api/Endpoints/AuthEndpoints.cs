@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.ComponentModel.DataAnnotations;
+using System.Net;
 using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Data;
 using Microsoft.AspNetCore.Mvc;
@@ -29,7 +30,7 @@ public static class AuthEndpoints
         // can't be abused for email spam or enumeration probing.
         app.MapPost("/api/auth/request", async (
             LinkRequest body, HttpContext ctx, IConfiguration config,
-            UserRepo users, MagicTokenRepo tokens, IEmailSender email) =>
+            UserRepo users, MagicTokenRepo tokens, IEmailSender email, ILoggerFactory log) =>
         {
             // Validate shape + cap length (RFC 5321 max 254) before any row is born:
             // a junk or unbounded address must never reach EnsureAsync. Still always
@@ -37,17 +38,29 @@ public static class AuthEndpoints
             var address = (body.Email ?? "").Trim();
             if (address.Length is > 0 and <= 254 && new EmailAddressAttribute().IsValid(address))
             {
-                var userId = await users.EnsureAsync(address);
-                var token = Tokens.NewOpaque();
-                await tokens.CreateAsync(userId, Tokens.Sha256(token), DateTimeOffset.UtcNow + TokenTtl);
                 // Build the link from the operator's configured origin, NOT the request's
                 // Host header. The Host is attacker-suppliable (and AllowedHosts may be "*"),
                 // so deriving the link from it lets an attacker request a victim's link
                 // pointed at attacker.example — host-header poisoning -> token capture ->
-                // account takeover. App:PublicBaseUrl pins it; we fall back to the request
-                // origin only when unset, for zero-config local dev.
-                var link = $"{Origin(config, ctx.Request)}/api/auth/verify?token={token}";
-                await email.SendMagicLinkAsync(address, link);
+                // account takeover (#337). App:PublicBaseUrl pins it; unset, we fall back to
+                // the request origin only when its Host is loopback (zero-config local dev —
+                // a link to the victim's own localhost is worthless to an attacker), and
+                // otherwise send nothing. Still 200: no signal either way.
+                var origin = LinkOrigin(config["App:PublicBaseUrl"], ctx.Request);
+                if (origin is null)
+                {
+                    log.CreateLogger("ApplyTrack.Auth").LogWarning(
+                        "Magic link not sent: App:PublicBaseUrl is unset and the request Host '{Host}' "
+                        + "is not loopback. Set App__PublicBaseUrl to this instance's public origin.",
+                        ctx.Request.Host.Value);
+                }
+                else
+                {
+                    var userId = await users.EnsureAsync(address);
+                    var token = Tokens.NewOpaque();
+                    await tokens.CreateAsync(userId, Tokens.Sha256(token), DateTimeOffset.UtcNow + TokenTtl);
+                    await email.SendMagicLinkAsync(address, $"{origin}/api/auth/verify?token={token}");
+                }
             }
 
             return Results.Ok(new { ok = true });
@@ -92,14 +105,25 @@ public static class AuthEndpoints
         });
     }
 
-    // The canonical public origin for links we email out. Prefer the operator-configured
-    // App:PublicBaseUrl (e.g. https://apply.example.com); fall back to the request's own
-    // scheme+host only when unset, so local/dev works with no config. Never trust the
-    // request Host when a configured value exists — see the host-header note above.
-    private static string Origin(IConfiguration config, HttpRequest request)
+    /// <summary>
+    /// The origin for links we email out: the operator-configured App:PublicBaseUrl
+    /// (e.g. https://apply.example.com) when set; else the request's own scheme+host,
+    /// but only when that Host is loopback; else null — send nothing (#337).
+    /// </summary>
+    public static string? LinkOrigin(string? configuredBaseUrl, HttpRequest request)
     {
-        var configured = (config["App:PublicBaseUrl"] ?? "").Trim().TrimEnd('/');
-        return configured.Length > 0 ? configured : $"{request.Scheme}://{request.Host}";
+        var configured = (configuredBaseUrl ?? "").Trim().TrimEnd('/');
+        if (configured.Length > 0)
+            return configured;
+        return IsLoopbackHost(request.Host.Host) ? $"{request.Scheme}://{request.Host}" : null;
+    }
+
+    private static bool IsLoopbackHost(string host)
+    {
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return IPAddress.TryParse(host.Trim('[', ']'), out var ip) && IPAddress.IsLoopback(ip);
     }
 
     private static IResult Unauthorized() =>

@@ -261,4 +261,40 @@ public class AuthEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Equal("connected", (await ReadJson(res)).GetProperty("database").GetString());
     }
+
+    [Fact]
+    public async Task Spoofed_host_without_public_base_url_sends_no_link()
+    {
+        // #337: no App:PublicBaseUrl and an attacker-chosen Host -> the link would point at
+        // evil.example. Nothing is mailed, and the response is the same 200 as ever.
+        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://evil.example"),
+        });
+        var email = TestAuth.UniqueEmail();
+
+        var res = await client.PostAsync("/api/auth/request", Json($$"""{"email":"{{email}}"}"""));
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.True((await ReadJson(res)).GetProperty("ok").GetBoolean());
+        Assert.Null(_emails.LinkFor(email));
+    }
+
+    [Fact]
+    public async Task Configured_public_base_url_wins_over_a_spoofed_host()
+    {
+        using var pinned = _factory.WithWebHostBuilder(b =>
+            b.UseSetting("App:PublicBaseUrl", "https://apply.example/"));
+        var client = pinned.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://evil.example"),
+        });
+        var email = TestAuth.UniqueEmail();
+
+        await client.PostAsync("/api/auth/request", Json($$"""{"email":"{{email}}"}"""));
+
+        var link = _emails.LinkFor(email);
+        Assert.NotNull(link);
+        Assert.StartsWith("https://apply.example/api/auth/verify?token=", link);
+    }
 }

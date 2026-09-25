@@ -71,4 +71,25 @@ public sealed class EmailOptions
                 $"Email:From/Email:Username '{from}' is not a valid email address. Set a real "
                 + "From address, or clear Email:Host to log sign-in links to the console instead.");
     }
+
+    /// <summary>
+    /// Boot-time guard for #337: with a real SMTP sender, magic links reach real inboxes,
+    /// so they must be built from a pinned public origin — never the request Host. Throws
+    /// when <see cref="Host"/> is set and <paramref name="publicBaseUrl"/> is not an
+    /// absolute http(s) URL. No-op for the console sender (loopback fallback covers dev).
+    /// </summary>
+    public void RequirePublicBaseUrl(string? publicBaseUrl)
+    {
+        if (!IsConfigured)
+            return;
+        var value = (publicBaseUrl ?? "").Trim();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            throw new InvalidOperationException(
+                "Email:Host is set but App:PublicBaseUrl is "
+                + (value.Length == 0 ? "unset" : $"'{value}', not an absolute http(s) URL")
+                + ". Sign-in links are built from it, never the request Host header (which an "
+                + "attacker controls). Set App__PublicBaseUrl to this instance's public origin, "
+                + "e.g. https://apply.example.com.");
+    }
 }

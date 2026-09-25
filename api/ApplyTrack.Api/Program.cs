@@ -74,6 +74,8 @@ var emailOptions = builder.Configuration.GetSection("Email").Get<EmailOptions>()
 // Fail loudly at boot on a misconfigured SMTP sender (Email:Host set but no usable From
 // address) rather than throwing an opaque 500 on every magic-link request — see #228.
 emailOptions.Validate();
+// And refuse to mail sign-in links without a pinned public origin (#337).
+emailOptions.RequirePublicBaseUrl(builder.Configuration["App:PublicBaseUrl"]);
 builder.Services.AddSingleton(emailOptions);
 if (emailOptions.IsConfigured)
     builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
