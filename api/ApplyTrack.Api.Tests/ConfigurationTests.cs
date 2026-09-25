@@ -172,6 +172,9 @@ public class EmailOptionsTests
     [InlineData("")]
     [InlineData("apply.example.com")]
     [InlineData("ftp://apply.example.com")]
+    [InlineData("https://apply.example.com/?x=1")]
+    [InlineData("https://apply.example.com/#top")]
+    [InlineData("https://user:pw@apply.example.com")]
     public void RequirePublicBaseUrl_rejects_smtp_without_a_pinned_origin(string? baseUrl)
     {
         // #337: real mail + no pinned origin = links built from the attacker's Host header.

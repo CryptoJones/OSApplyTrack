@@ -76,7 +76,8 @@ public sealed class EmailOptions
     /// Boot-time guard for #337: with a real SMTP sender, magic links reach real inboxes,
     /// so they must be built from a pinned public origin — never the request Host. Throws
     /// when <see cref="Host"/> is set and <paramref name="publicBaseUrl"/> is not an
-    /// absolute http(s) URL. No-op for the console sender (loopback fallback covers dev).
+    /// absolute http(s) URL (no query, fragment or userinfo — the link is appended to it).
+    /// No-op for the console sender (loopback fallback covers dev).
     /// </summary>
     public void RequirePublicBaseUrl(string? publicBaseUrl)
     {
@@ -84,10 +85,11 @@ public sealed class EmailOptions
             return;
         var value = (publicBaseUrl ?? "").Trim();
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
+            || uri.Query.Length > 0 || uri.Fragment.Length > 0 || uri.UserInfo.Length > 0)
             throw new InvalidOperationException(
                 "Email:Host is set but App:PublicBaseUrl is "
-                + (value.Length == 0 ? "unset" : $"'{value}', not an absolute http(s) URL")
+                + (value.Length == 0 ? "unset" : "not an absolute http(s) URL without query, fragment or credentials")
                 + ". Sign-in links are built from it, never the request Host header (which an "
                 + "attacker controls). Set App__PublicBaseUrl to this instance's public origin, "
                 + "e.g. https://apply.example.com.");
