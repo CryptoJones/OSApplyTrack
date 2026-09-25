@@ -188,10 +188,14 @@ TLS-terminating reverse proxy—do not expose Kestrel or the database directly.
 **Sign-in (magic link).** `POST /api/auth/request` always returns `200 {ok:true}`
 — whether or not the address exists — so the surface can't be used to enumerate
 accounts. Behind that uniform response, a known/valid address gets a single-use,
-15-minute token (only its SHA-256 is stored). `GET /api/auth/verify` consumes the
-token, mints a 30-day **server-side** session (not a JWT — so logout is instant
-revocation), sets an `HttpOnly` cookie, and redirects to `/` so the token leaves
-the URL and browser history.
+15-minute token (only its SHA-256 is stored), bound to the requesting browser by a
+pre-auth `HttpOnly` cookie. Opening the link (`GET /api/auth/verify`) changes
+nothing — it shows a one-button confirm page, so mail link-scanners can't burn the
+token. The button POSTs the token back; that spends it only in the browser that
+asked for it (no login CSRF), replaces any session that browser already had, mints
+a 30-day **server-side** session (not a JWT — so logout is instant revocation),
+sets an `HttpOnly` cookie, and redirects to `/` so the token leaves the URL and
+browser history. Open the link in the browser you requested it from.
 
 **The tenancy choke-point.** A middleware resolves the session cookie to a
 `TenantContext` and is the only thing that lets `/api/*` through. Repositories are
@@ -271,8 +275,9 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/auth/request` | Body `{email}`. Always `200 {ok:true}` (no account enumeration). Per-IP rate-limited. |
-| `GET`  | `/api/auth/verify?token=…` | Consumes a single-use token, sets the session cookie, 302 → `/`. |
+| `POST` | `/api/auth/request` | Body `{email}`. Always `200 {ok:true}` (no account enumeration); sets the pre-auth cookie the link is bound to. Per-IP rate-limited. |
+| `GET`  | `/api/auth/verify?token=…` | The emailed link. Renders a confirm page; spends nothing. |
+| `POST` | `/api/auth/verify` | Form `token=…`. Spends the single-use token if this browser requested it, rotates the session cookie, 302 → `/` (else `/?error=invalid_link` or `/?error=wrong_browser`). |
 | `POST` | `/api/auth/logout` | Drops the session row (instant revocation) and clears the cookie. |
 | `GET`  | `/api/auth/me` | `{email}` for the current session, else 401. |
 

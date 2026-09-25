@@ -145,7 +145,12 @@ function showLogin() {
     const target = new URLSearchParams(location.hash.slice(1)).get("app");
     if (target) sessionStorage.setItem("returnTo", target);
   } catch (_) {}
-  const badLink = new URLSearchParams(location.search).get("error") === "invalid_link";
+  const linkError = new URLSearchParams(location.search).get("error");
+  // wrong_browser: the link was opened somewhere other than where it was requested (#341).
+  const linkMessage = {
+    invalid_link: "That link was invalid or expired — request a fresh one.",
+    wrong_browser: "Open the link in the same browser you requested it from — or request a fresh one here.",
+  }[linkError];
   const overlay = document.createElement("div");
   overlay.id = "login-overlay";
   overlay.className = "login-overlay";
@@ -159,7 +164,7 @@ function showLogin() {
       </div>
       <h1 id="login-title" class="login-mark"><span>Apply</span><strong>Track</strong></h1>
       <p class="login-sub">Sign in with a one-time magic link.</p>
-      ${badLink ? `<p class="login-error">That link was invalid or expired — request a fresh one.</p>` : ""}
+      ${linkMessage ? `<p class="login-error">${linkMessage}</p>` : ""}
       <p class="login-signup-head">New here?</p>
       <p class="login-signup">Just enter your email — your account is created automatically.</p>
       <label class="field" for="login-email"><span class="field-label">Email address</span>
@@ -209,7 +214,7 @@ function showLogin() {
       <h1 class="login-mark"><span>Apply</span><strong>Track</strong></h1>
       <h2 tabindex="-1" class="login-sub">Check your inbox</h2>
       <p class="login-note">If <strong>${escapeHtml(email)}</strong> can sign in, a link is on its way —
-        check your spam folder too. Self-hosting? Look for it in the server logs.</p>
+        check your spam folder too. Open it in this browser. Self-hosting? Look for it in the server logs.</p>
       <p class="login-note login-footer"><a href="https://github.com/CryptoJones/OSApplyTrack" target="_blank" rel="noopener">Open source on GitHub ↗</a></p>`;
     form.querySelector("h2").focus();
   });

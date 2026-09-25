@@ -22,6 +22,9 @@ public static class AuthEndpoints
     private static readonly TimeSpan TokenTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan SessionTtl = TimeSpan.FromDays(30);
 
+    // Our tokens and nonces are 43 chars; anything far longer is junk, not a link we sent.
+    private const int MaxTokenLength = 128;
+
     public static void MapAuthEndpoints(this IEndpointRouteBuilder app)
     {
         // Always 200, whether or not the address is known/valid — no account
@@ -32,6 +35,15 @@ public static class AuthEndpoints
             LinkRequest body, HttpContext ctx, IConfiguration config,
             UserRepo users, MagicTokenRepo tokens, IEmailSender email, ILoggerFactory log) =>
         {
+            // Bind the link to this browser (#341): a pre-auth nonce cookie, its hash stored
+            // beside the token. Reuse a live one so an earlier link from this browser still
+            // works; set it on every request, valid address or not, so the response carries
+            // no signal about the address.
+            var nonce = ctx.Request.Cookies.TryGetValue(AuthCookie.LoginName, out var existing)
+                && existing is { Length: >= 32 and <= MaxTokenLength } ? existing : Tokens.NewOpaque();
+            ctx.Response.Cookies.Append(AuthCookie.LoginName, nonce,
+                AuthCookie.LoginOptions(DateTimeOffset.UtcNow + TokenTtl, ctx.Request.IsHttps));
+
             // Validate shape + cap length (RFC 5321 max 254) before any row is born:
             // a junk or unbounded address must never reach EnsureAsync. Still always
             // 200 below — a rejected address is silently dropped, no enumeration signal.
@@ -58,7 +70,7 @@ public static class AuthEndpoints
                 {
                     var userId = await users.EnsureAsync(address);
                     var token = Tokens.NewOpaque();
-                    await tokens.CreateAsync(userId, Tokens.Sha256(token), DateTimeOffset.UtcNow + TokenTtl);
+                    await tokens.CreateAsync(userId, Tokens.Sha256(token), Tokens.Sha256(nonce), DateTimeOffset.UtcNow + TokenTtl);
                     await email.SendMagicLinkAsync(address, $"{origin}/api/auth/verify?token={token}");
                 }
             }
@@ -66,18 +78,40 @@ public static class AuthEndpoints
             return Results.Ok(new { ok = true });
         }).RequireRateLimiting("auth");
 
-        // Consume the token (single-use, unexpired), mint a session, set the cookie,
-        // and redirect to / so the token leaves the URL/history.
-        app.MapGet("/api/auth/verify", async (
-            [FromQuery] string? token, HttpContext ctx,
-            MagicTokenRepo tokens, SessionRepo sessions) =>
+        // The emailed link lands here, and a GET changes nothing: it renders a one-button
+        // page that POSTs the token back. Mail link-scanners (SafeLinks, Proofpoint, …) that
+        // pre-fetch links no longer burn the single-use token before the person clicks (#341).
+        app.MapGet("/api/auth/verify", ([FromQuery] string? token, HttpContext ctx) =>
         {
-            if (string.IsNullOrEmpty(token))
+            if (string.IsNullOrEmpty(token) || token.Length > MaxTokenLength)
+                return Results.Redirect("/?error=invalid_link");
+            ctx.Response.Headers.CacheControl = "no-store";
+            return Results.Content(ConfirmPage(token), "text/html; charset=utf-8");
+        });
+
+        // Spend the token — only in the browser that requested it (its pre-auth cookie must
+        // match the hash stored with the token), so an attacker's own link can't sign a
+        // victim into the attacker's account (login CSRF, #341). Then rotate: drop any
+        // session this browser already had, mint a fresh one, and redirect to / so the token
+        // leaves the URL/history.
+        app.MapPost("/api/auth/verify", async (
+            HttpContext ctx, MagicTokenRepo tokens, SessionRepo sessions) =>
+        {
+            string? token = null;
+            if (ctx.Request.HasFormContentType)
+                token = (await ctx.Request.ReadFormAsync())["token"].ToString();
+            if (string.IsNullOrEmpty(token) || token.Length > MaxTokenLength)
                 return Results.Redirect("/?error=invalid_link");
 
-            var userId = await tokens.ConsumeAsync(Tokens.Sha256(token));
+            if (!ctx.Request.Cookies.TryGetValue(AuthCookie.LoginName, out var nonce) || string.IsNullOrEmpty(nonce))
+                return Results.Redirect("/?error=wrong_browser");
+
+            var userId = await tokens.ConsumeAsync(Tokens.Sha256(token), Tokens.Sha256(nonce));
             if (userId is null)
                 return Results.Redirect("/?error=invalid_link");
+
+            if (ctx.Request.Cookies.TryGetValue(AuthCookie.Name, out var oldSid) && !string.IsNullOrEmpty(oldSid))
+                await sessions.DeleteAsync(oldSid);
 
             var sid = Tokens.NewOpaque();
             var expires = DateTimeOffset.UtcNow + SessionTtl;
@@ -125,6 +159,46 @@ public static class AuthEndpoints
             return true;
         return IPAddress.TryParse(host.Trim('[', ']'), out var ip) && IPAddress.IsLoopback(ip);
     }
+
+    /// <summary>
+    /// The no-JS confirm page behind the emailed link: one form that POSTs the token to
+    /// <c>/api/auth/verify</c>. The token is HTML-encoded — it came straight off the URL.
+    /// </summary>
+    public static string ConfirmPage(string token) => $$"""
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="robots" content="noindex">
+        <title>Sign in to ApplyTrack</title>
+        <style>
+          body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 16px; background: #f7f7f8; color: #1d1d1f; }
+          main { max-width: 26rem; margin: 15vh auto 0; padding: 1.5rem; background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgb(0 0 0 / .12); }
+          h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+          button { font: inherit; font-weight: 600; padding: .6rem 1.2rem; border: 0; border-radius: 8px; background: #1d4ed8; color: #fff; cursor: pointer; }
+          button:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
+          p.note { color: #4b5563; font-size: .9rem; }
+          @media (prefers-color-scheme: dark) {
+            body { background: #111214; color: #ececef; }
+            main { background: #1c1d21; }
+            p.note { color: #a1a1aa; }
+            button { background: #3b82f6; color: #0b0b0c; }
+          }
+        </style>
+        </head>
+        <body>
+        <main>
+          <h1>Sign in to ApplyTrack</h1>
+          <form method="post" action="/api/auth/verify">
+            <input type="hidden" name="token" value="{{WebUtility.HtmlEncode(token)}}">
+            <p><button type="submit" autofocus>Sign in</button></p>
+          </form>
+          <p class="note">This works only in the browser you requested the link from.</p>
+        </main>
+        </body>
+        </html>
+        """;
 
     private static IResult Unauthorized() =>
         Results.Json(new { detail = "authentication required" }, statusCode: StatusCodes.Status401Unauthorized);
