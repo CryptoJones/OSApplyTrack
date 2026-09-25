@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from collections.abc import Iterable
+import ssl
+import time
+import zlib
+from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpcore
@@ -98,13 +105,32 @@ def _normalize_host(host: str) -> str:
     return (host or "").strip().strip("[]").rstrip(".").casefold()
 
 
+# getaddrinfo has no timeout of its own; lookups made under a fetch deadline run
+# here so the fetch can give up on a stalled resolver (#338). A lookup abandoned
+# that way finishes on its own thread within the system resolver's timeout.
+_DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="linkcheck-dns")
+
+
+def _getaddrinfo(host: str, timeout: float | None) -> list[str]:
+    def lookup() -> list[str]:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        return list(dict.fromkeys(str(info[4][0]) for info in infos))
+
+    if timeout is None:
+        return lookup()
+    try:
+        return _DNS_POOL.submit(lookup).result(timeout=max(timeout, 0.0))
+    except FutureTimeout as exc:
+        raise OSError("DNS lookup exceeded the fetch deadline") from exc
+
+
 class _PinnedResolver:
     """Resolve each hostname once, reject mixed/private answers, and retain one IP."""
 
     def __init__(self) -> None:
         self._addresses: dict[str, str] = {}
 
-    def pin(self, host: str) -> bool:
+    def pin(self, host: str, timeout: float | None = None) -> bool:
         key = _normalize_host(host)
         if not key:
             return False
@@ -116,10 +142,9 @@ class _PinnedResolver:
             addresses = [key]
         except ValueError:
             try:
-                infos = socket.getaddrinfo(key, None, type=socket.SOCK_STREAM)
+                addresses = _getaddrinfo(key, timeout)
             except OSError:
                 return False
-            addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
 
         if not addresses or not all(_ip_is_public(address) for address in addresses):
             return False
@@ -131,12 +156,65 @@ class _PinnedResolver:
         return self._addresses.get(_normalize_host(host))
 
 
+class _Deadline:
+    """One wall-clock deadline shared by a client's sockets, armed per fetch (#338).
+
+    httpx's ``timeout`` is per socket operation, so a server that trickles a byte
+    every few seconds -- in the headers or the body -- never trips it. Every pinned
+    socket read, write, connect and TLS handshake is clamped to what is left of
+    this deadline instead, so one fetch can't outlive it however the server paces.
+    """
+
+    def __init__(self) -> None:
+        self.at: float | None = None
+
+    def clamp(self, timeout: float | None, exc: type[Exception]) -> float | None:
+        if self.at is None:
+            return timeout
+        remaining = self.at - time.monotonic()
+        if remaining <= 0:
+            raise exc("fetch deadline exceeded")
+        return remaining if timeout is None else min(timeout, remaining)
+
+
+class _DeadlineStream(httpcore.NetworkStream):
+    """A network stream whose every blocking call is bounded by a :class:`_Deadline`."""
+
+    def __init__(self, inner: httpcore.NetworkStream, deadline: _Deadline) -> None:
+        self._inner = inner
+        self._deadline = deadline
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return self._inner.read(max_bytes, self._deadline.clamp(timeout, httpcore.ReadTimeout))
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self._inner.write(buffer, self._deadline.clamp(timeout, httpcore.WriteTimeout))
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.NetworkStream:
+        inner = self._inner.start_tls(
+            ssl_context, server_hostname, self._deadline.clamp(timeout, httpcore.ConnectTimeout)
+        )
+        return _DeadlineStream(inner, self._deadline)
+
+    def get_extra_info(self, info: str) -> Any:
+        return self._inner.get_extra_info(info)
+
+
 class _PinnedNetworkBackend(httpcore.SyncBackend):
     """Connect httpcore's TCP socket to the pinned IP while preserving TLS SNI."""
 
-    def __init__(self, resolver: _PinnedResolver) -> None:
+    def __init__(self, resolver: _PinnedResolver, deadline: _Deadline | None = None) -> None:
         super().__init__()
         self._resolver = resolver
+        self._deadline = deadline or _Deadline()
 
     def connect_tcp(
         self,
@@ -149,18 +227,20 @@ class _PinnedNetworkBackend(httpcore.SyncBackend):
         address = self._resolver.address_for(host)
         if address is None:
             raise httpcore.ConnectError(f"refused unpinned host: {host}")
-        return super().connect_tcp(address, port, timeout, local_address, socket_options)
+        timeout = self._deadline.clamp(timeout, httpcore.ConnectTimeout)
+        stream = super().connect_tcp(address, port, timeout, local_address, socket_options)
+        return _DeadlineStream(stream, self._deadline)
 
 
 class _PinnedTransport(httpx.HTTPTransport):
     """HTTPX transport whose connection pool cannot perform a second DNS lookup."""
 
-    def __init__(self, resolver: _PinnedResolver) -> None:
+    def __init__(self, resolver: _PinnedResolver, deadline: _Deadline) -> None:
         super().__init__(trust_env=False)
         self._pool.close()
         self._pool = httpcore.ConnectionPool(
             ssl_context=httpx.create_ssl_context(trust_env=False),
-            network_backend=_PinnedNetworkBackend(resolver),
+            network_backend=_PinnedNetworkBackend(resolver, deadline),
         )
 
 
@@ -169,16 +249,17 @@ class _PinnedClient(httpx.Client):
 
     def __init__(self, *, timeout: float) -> None:
         self._resolver = _PinnedResolver()
+        self._deadline = _Deadline()
         super().__init__(
             timeout=timeout,
             follow_redirects=False,
             headers=BROWSER_HEADERS,
-            transport=_PinnedTransport(self._resolver),
+            transport=_PinnedTransport(self._resolver, self._deadline),
             trust_env=False,
         )
 
-    def pin(self, host: str) -> bool:
-        return self._resolver.pin(host)
+    def pin(self, host: str, timeout: float | None = None) -> bool:
+        return self._resolver.pin(host, timeout)
 
 
 def ssrf_safe_client(*, timeout: float = 12.0) -> httpx.Client:
@@ -199,10 +280,11 @@ def _host_is_public(host: str) -> bool:
     return _PinnedResolver().pin(host)
 
 
-def _pin_for_request(client: httpx.Client, host: str) -> bool:
+def _pin_for_request(client: httpx.Client, host: str, deadline_at: float | None = None) -> bool:
     """Fail closed when a caller supplies an ordinary client for a DNS hostname."""
     if isinstance(client, _PinnedClient):
-        return client.pin(host)
+        timeout = None if deadline_at is None else deadline_at - time.monotonic()
+        return client.pin(host, timeout)
     normalized = _normalize_host(host)
     try:
         ipaddress.ip_address(normalized)
@@ -239,36 +321,78 @@ def _looks_like_index(url: str) -> bool:
     return not any(key in query for key in _JOB_QUERY_KEYS)
 
 
+# Wall-clock ceiling on one fetch or probe -- every redirect hop, the headers and
+# the body together (#338), mirroring the API's scrape budget (#266). 15s is
+# generous for one real page (a full-cap body needs ~140 KB/s) and still fails
+# fast on a server that stalls or streams forever, so one hostile lead can't hold
+# the poller -- and every tenant's advisory lock -- hostage.
+FETCH_DEADLINE = 15.0
+
+
+@contextmanager
+def _deadline(client: httpx.Client, seconds: float) -> Iterator[float]:
+    """Arm a wall-clock deadline for one fetch; yields its ``time.monotonic()`` value.
+
+    A pinned client also clamps every socket operation to it; an injected ordinary
+    client is still bounded between redirect hops and body chunks.
+    """
+    at = time.monotonic() + seconds
+    if not isinstance(client, _PinnedClient):
+        yield at
+        return
+    previous, client._deadline.at = client._deadline.at, at
+    try:
+        yield at
+    finally:
+        client._deadline.at = previous
+
+
 def _walk(
-    url: str, client: httpx.Client
+    url: str,
+    client: httpx.Client,
+    deadline_at: float,
+    headers: dict[str, str] | None = None,
 ) -> tuple[httpx.Response | None, str, str]:
     """Follow up to :data:`_MAX_REDIRECTS` hops, SSRF-checking every one.
 
     Returns ``(response, final_url, error)``; ``response`` is ``None`` exactly when
     ``error`` is non-empty. Redirects are walked by hand rather than by httpx so
     each hop's host is validated *before* we connect to it — the shared core of
-    :func:`probe` and :func:`fetch_public`.
+    :func:`probe` and :func:`fetch_public`. The response is *streamed*: its body
+    has not been read, and the caller must close it (#338).
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https"):
         return None, url, "not an http(s) URL"
-    if not _pin_for_request(client, parts.hostname or ""):
+    if not _pin_for_request(client, parts.hostname or "", deadline_at):
+        if time.monotonic() >= deadline_at:
+            return None, url, "deadline exceeded"
         return None, url, "refused non-public or unpinned address"
 
     current = url
     try:
         for _ in range(_MAX_REDIRECTS + 1):
+            if time.monotonic() >= deadline_at:
+                return None, current, "deadline exceeded"
             # follow_redirects=False on the call overrides whatever default the
             # caller's shared client carries, so the per-hop guard can't be
             # bypassed by an auto-following client.
-            resp = client.get(current, follow_redirects=False)
+            resp = client.send(
+                client.build_request("GET", current, headers=headers),
+                stream=True,
+                follow_redirects=False,
+            )
             if not (resp.is_redirect and "location" in resp.headers):
                 return resp, current, ""
-            current = urljoin(current, resp.headers["location"])
+            location = resp.headers["location"]
+            resp.close()
+            current = urljoin(current, location)
             hop = urlsplit(current)
             if hop.scheme not in ("http", "https"):
                 return None, current, "redirect to non-http(s) URL"
-            if not _pin_for_request(client, hop.hostname or ""):
+            if not _pin_for_request(client, hop.hostname or "", deadline_at):
+                if time.monotonic() >= deadline_at:
+                    return None, current, "deadline exceeded"
                 return None, current, "redirect to non-public or unpinned address"
         return None, current, "too many redirects"
     except httpx.HTTPError as exc:
@@ -284,43 +408,109 @@ class PublicFetchError(RuntimeError):
 MAX_FETCH_BYTES = 2 * 1024 * 1024
 
 
+# The only encodings fetch_public accepts, and it asks for no others: each is
+# inflated here in bounded steps, because httpx's own decoder inflates a whole
+# network chunk at once -- a few KB of gzip can expand past the cap in one call.
+_FETCH_HEADERS = {"Accept-Encoding": "gzip, deflate"}
+_ZLIB_WBITS = {
+    "gzip": zlib.MAX_WBITS | 16,
+    "x-gzip": zlib.MAX_WBITS | 16,
+    "deflate": zlib.MAX_WBITS,
+}
+
+
+def _read_capped(resp: httpx.Response, max_bytes: int, deadline_at: float) -> bytes:
+    """Read a streamed body, never holding more than ``max_bytes`` decoded bytes."""
+    encoding = resp.headers.get("content-encoding", "").strip().lower()
+    if encoding in ("", "identity"):
+        inflate = None
+    elif encoding in _ZLIB_WBITS:
+        inflate = zlib.decompressobj(_ZLIB_WBITS[encoding])
+    else:
+        raise PublicFetchError(f"unsupported content-encoding: {encoding}")
+
+    too_big = PublicFetchError(f"response exceeds {max_bytes} bytes")
+    if resp.is_stream_consumed:
+        # Only an in-memory transport (tests' MockTransport) hands one back pre-read.
+        if len(resp.content) > max_bytes:
+            raise too_big
+        return resp.content
+
+    body = bytearray()
+    for chunk in resp.iter_raw():
+        if inflate is None:
+            body += chunk
+        else:
+            room = max_bytes - len(body) + 1
+            try:
+                out = inflate.decompress(chunk, room)
+            except zlib.error:
+                if encoding != "deflate" or body or inflate.unused_data:
+                    raise PublicFetchError("undecodable response body") from None
+                # Some servers send raw deflate without the zlib header.
+                inflate = zlib.decompressobj(-zlib.MAX_WBITS)
+                try:
+                    out = inflate.decompress(chunk, room)
+                except zlib.error:
+                    raise PublicFetchError("undecodable response body") from None
+            body += out
+            if inflate.unconsumed_tail:
+                raise too_big
+        if len(body) > max_bytes:
+            raise too_big
+        if time.monotonic() >= deadline_at:
+            raise PublicFetchError("deadline exceeded")
+    return bytes(body)
+
+
 def fetch_public(
     url: str,
     *,
     client: httpx.Client | None = None,
     timeout: float = 12.0,
     max_bytes: int = MAX_FETCH_BYTES,
+    deadline: float = FETCH_DEADLINE,
 ) -> bytes:
     """Fetch a user-supplied URL through the SSRF guard and return its body.
 
     The same per-hop host validation :func:`probe` uses, but the body comes back
     instead of a verdict — this is how the poller reads a tenant's custom RSS feed,
     whose URL is attacker-influenced. Raises :class:`PublicFetchError` when the URL
-    is refused, unreachable, answers 4xx/5xx, or exceeds ``max_bytes``.
+    is refused, unreachable, answers 4xx/5xx, exceeds ``max_bytes``, or doesn't
+    finish within ``deadline`` seconds. The body is streamed and abandoned the
+    moment it passes the cap, so an endless chunked response costs at most
+    ``max_bytes`` of memory (#338).
     """
     url = (url or "").strip()
     owns_client = client is None
     client = client or ssrf_safe_client(timeout=timeout)
     try:
-        resp, _, error = _walk(url, client)
-        if resp is None:
-            raise PublicFetchError(error or "fetch failed")
-        if resp.status_code >= 400:
-            raise PublicFetchError(f"HTTP {resp.status_code}")
-        declared = resp.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > max_bytes:
-            raise PublicFetchError(f"response exceeds {max_bytes} bytes")
-        body = resp.content
-        if len(body) > max_bytes:
-            raise PublicFetchError(f"response exceeds {max_bytes} bytes")
-        return body
+        with _deadline(client, deadline) as deadline_at:
+            resp, _, error = _walk(url, client, deadline_at, _FETCH_HEADERS)
+            if resp is None:
+                raise PublicFetchError(error or "fetch failed")
+            try:
+                if resp.status_code >= 400:
+                    raise PublicFetchError(f"HTTP {resp.status_code}")
+                declared = resp.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > max_bytes:
+                    raise PublicFetchError(f"response exceeds {max_bytes} bytes")
+                return _read_capped(resp, max_bytes, deadline_at)
+            except httpx.HTTPError as exc:
+                raise PublicFetchError(type(exc).__name__) from exc
+            finally:
+                resp.close()
     finally:
         if owns_client:
             client.close()
 
 
 def probe(
-    url: str, *, client: httpx.Client | None = None, timeout: float = 12.0
+    url: str,
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = 12.0,
+    deadline: float = FETCH_DEADLINE,
 ) -> LinkStatus:
     """Fetch ``url`` as a browser and judge whether it still resolves to a page.
 
@@ -328,7 +518,8 @@ def probe(
     server answers 4xx/5xx, or a deep URL redirects to the site's homepage -- the
     classic "this listing was pulled" signal. Redirects are followed by hand so
     each hop is SSRF-checked before we connect; the verdict is about the final
-    response.
+    response. Only the status line and headers matter, so no body is ever read,
+    and the whole walk is bounded by ``deadline`` seconds (#338).
     """
     url = (url or "").strip()
     parts = urlsplit(url)
@@ -338,9 +529,11 @@ def probe(
     owns_client = client is None
     client = client or ssrf_safe_client(timeout=timeout)
     try:
-        resp, final_url, error = _walk(url, client)
+        with _deadline(client, deadline) as deadline_at:
+            resp, final_url, error = _walk(url, client, deadline_at)
         if resp is None:
             return LinkStatus(url=url, ok=False, error=error)
+        resp.close()
         started_deep = parts.path.strip("/") != ""
         to_home = started_deep and _is_home(final_url)
         generic = not to_home and _looks_like_index(final_url)

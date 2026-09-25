@@ -9,12 +9,16 @@ httpx.MockTransport (so no real network), keeping the suite hermetic.
 from __future__ import annotations
 
 import socket
-from collections.abc import Callable
+import threading
+import time
+import zlib
+from collections.abc import Callable, Iterator
 
 import httpcore
 import httpx
 import pytest
 
+from applytrack import linkcheck
 from applytrack.linkcheck import (
     PublicFetchError,
     _host_is_public,
@@ -22,6 +26,7 @@ from applytrack.linkcheck import (
     _PinnedResolver,
     fetch_public,
     probe,
+    ssrf_safe_client,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -222,3 +227,211 @@ def test_fetch_public_enforces_the_size_cap() -> None:
     # oversize body is refused after.
     with _client(handler) as client, pytest.raises(PublicFetchError, match="exceeds"):
         fetch_public("http://1.1.1.1/huge.rss", client=client, max_bytes=10)
+
+
+# -- bounded fetches: an endless or trickling server can't hold the poller (#338) --
+
+
+def _endless() -> Iterator[bytes]:
+    while True:
+        yield b"x" * 1024
+
+
+def test_fetch_public_abandons_an_endless_chunked_body_at_the_cap() -> None:
+    # No Content-Length, a body that never ends: the old code buffered it forever.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_endless(), request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="exceeds"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client, max_bytes=64 * 1024)
+
+
+def test_probe_never_reads_the_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_endless(), request=request)
+
+    with _client(handler) as client:
+        status = probe("http://1.1.1.1/jobs/senior-engineer-12345", client=client)
+    assert status.ok is True
+
+
+def test_fetch_public_enforces_the_deadline_between_chunks_on_any_client() -> None:
+    def slow() -> Iterator[bytes]:
+        while True:
+            time.sleep(0.05)
+            yield b"x"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=slow(), request=request)
+
+    started = time.monotonic()
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="deadline"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client, deadline=0.5)
+    assert time.monotonic() - started < 3
+
+
+class _TrickleServer:
+    """A real local socket server that dribbles one byte at a time, forever."""
+
+    def __init__(self, payload: bytes, then: bytes) -> None:
+        self._payload = payload
+        self._then = then
+        self._stop = threading.Event()
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen()
+        self._sock.settimeout(0.1)
+        self.port = self._sock.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                continue
+            with conn:
+                try:
+                    conn.recv(65536)
+                    conn.sendall(self._payload)
+                    while not self._stop.is_set():
+                        conn.sendall(self._then)
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self._sock.close()
+
+
+@pytest.fixture
+def allow_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The SSRF gate rightly refuses 127.0.0.1; lift it so the real pinned client can
+    # talk to the local trickle server and exercise its socket-level deadline.
+    monkeypatch.setattr(linkcheck, "_ip_is_public", lambda ip: True)
+
+
+@pytest.mark.usefixtures("allow_loopback")
+def test_pinned_client_deadline_stops_a_body_that_trickles_forever() -> None:
+    # Every byte lands well inside the 5s per-read timeout, so only the wall clock
+    # can end this -- and a 1-byte-per-chunk stream never reaches the size cap.
+    server = _TrickleServer(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", b"1\r\nx\r\n"
+    )
+    try:
+        started = time.monotonic()
+        with ssrf_safe_client(timeout=5.0) as client, pytest.raises(PublicFetchError):
+            fetch_public(f"http://127.0.0.1:{server.port}/feed", client=client, deadline=1.0)
+        assert time.monotonic() - started < 3
+    finally:
+        server.close()
+
+
+@pytest.mark.usefixtures("allow_loopback")
+def test_pinned_client_deadline_stops_headers_that_trickle_forever() -> None:
+    # A header block that never finishes: no chunk boundary is ever reached, so only
+    # the socket-level clamp can cut it off.
+    server = _TrickleServer(b"HTTP/1.1 200 OK\r\n", b"X")
+    try:
+        started = time.monotonic()
+        with ssrf_safe_client(timeout=5.0) as client:
+            status = probe(
+                f"http://127.0.0.1:{server.port}/jobs/lure-12345", client=client, deadline=1.0
+            )
+        assert status.ok is False
+        assert "Timeout" in status.error
+        assert time.monotonic() - started < 3
+    finally:
+        server.close()
+
+
+@pytest.mark.usefixtures("allow_loopback")
+def test_pinned_client_is_reusable_after_a_deadline() -> None:
+    # The deadline is armed per fetch, so the poller's shared client isn't poisoned.
+    server = _TrickleServer(b"HTTP/1.1 200 OK\r\n", b"X")
+    try:
+        with ssrf_safe_client(timeout=5.0) as client:
+            probe(f"http://127.0.0.1:{server.port}/a/1", client=client, deadline=0.3)
+            assert client._deadline.at is None  # type: ignore[attr-defined]
+    finally:
+        server.close()
+
+
+def _gzip(data: bytes) -> bytes:
+    packer = zlib.compressobj(wbits=zlib.MAX_WBITS | 16)
+    return packer.compress(data) + packer.flush()
+
+
+def test_fetch_public_inflates_a_gzipped_feed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "gzip, deflate"
+        return httpx.Response(
+            200,
+            content=iter([_gzip(b"<rss/>")]),
+            headers={"content-encoding": "gzip"},
+            request=request,
+        )
+
+    with _client(handler) as client:
+        assert fetch_public("http://1.1.1.1/feed.rss", client=client) == b"<rss/>"
+
+
+def test_fetch_public_inflates_raw_deflate() -> None:
+    packer = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    raw = packer.compress(b"<rss/>") + packer.flush()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=iter([raw]), headers={"content-encoding": "deflate"}, request=request
+        )
+
+    with _client(handler) as client:
+        assert fetch_public("http://1.1.1.1/feed.rss", client=client) == b"<rss/>"
+
+
+def test_fetch_public_stops_inflating_a_gzip_bomb_at_the_cap() -> None:
+    # ~100 KB on the wire that inflates to 100 MB: the cap has to hold on the
+    # *decoded* size without ever materialising it.
+    bomb = _gzip(b"\0" * (100 * 1024 * 1024))
+    assert len(bomb) < 200 * 1024
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=iter([bomb]), headers={"content-encoding": "gzip"}, request=request
+        )
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="exceeds"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client, max_bytes=64 * 1024)
+
+
+def test_fetch_public_refuses_an_encoding_it_did_not_ask_for() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"content-encoding": "br"}
+        return httpx.Response(200, content=b"??", headers=headers, request=request)
+
+    with _client(handler) as client, pytest.raises(PublicFetchError, match="content-encoding"):
+        fetch_public("http://1.1.1.1/feed.rss", client=client)
+
+
+def test_a_stalled_dns_lookup_is_bounded_by_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+
+    def stalled_getaddrinfo(*args: object, **kwargs: object) -> list[object]:
+        release.wait(5)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", stalled_getaddrinfo)
+    started = time.monotonic()
+    try:
+        with ssrf_safe_client(timeout=5.0) as client, pytest.raises(
+            PublicFetchError, match="deadline"
+        ):
+            fetch_public("http://slow-dns.example/feed", client=client, deadline=0.5)
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
