@@ -10,6 +10,11 @@ ContainerName=applytrack-poller
 Image=ghcr.io/cryptojones/osapplytrack-poller:latest
 Network=applytrack.network
 EnvironmentFile=%h/.config/applytrack/applytrack.env
+# The board sessions the api sealed are opened with its key: APPLYTRACK_SECRETS_KEY from
+# the env file, or else the key file the api generated here — read-only, and as the api
+# image's uid since that file is owner-only (#340).
+Volume=applytrack-secrets.volume:/var/lib/applytrack:ro
+User=1654:1654
 
 [Service]
 Restart=always

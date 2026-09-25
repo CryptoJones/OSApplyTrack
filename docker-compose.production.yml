@@ -148,6 +148,8 @@ services:
       POLL_INTERVAL: ${POLL_INTERVAL:-3600}
       # Optional (#300): lets tenants who opt in score listings with Jev. Blank = keywords.
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      # Opens the board sessions the api sealed (LinkedIn, Handshake, MyGreenhouse) (#340).
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:?Set APPLYTRACK_SECRETS_KEY to a long random value (openssl rand -base64 48) and back it up}
     networks:
       - database
       - egress

@@ -36,9 +36,9 @@ services:
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
       # Encryption at rest is always on. Leave this unset and the api generates a key on
-      # first run into the `secrets` volume below (shared with the agent, which must
-      # decrypt the same rows); set it to manage the key yourself. Back the key up with
-      # the database — losing it loses the résumé, letters, packets and screenshots.
+      # first run into the `secrets` volume below (shared with the agent and the poller,
+      # which must decrypt the same rows); set it to manage the key yourself. Back the key
+      # up with the database — losing it loses the résumé, letters, packets and screenshots.
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
       # Email / magic-link delivery (all optional; see .env.example). With Email__Host
       # unset, login links are logged to the console instead of sent — no email config
@@ -132,6 +132,14 @@ services:
       DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:-JanewayDidNothingWrong}@db:5432/${POSTGRES_DB:-applytrack}"
       # Optional (#300): lets tenants who opt in score listings with Jev. Blank = keywords.
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      # The board sessions (LinkedIn, Handshake, MyGreenhouse) are sealed by the api; the
+      # poller opens them with the same key — this, or the generated key file (#340).
+      APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:-}
+    # Read-only: the api generates the key, the poller only reads it. The key file is
+    # owner-only, so the poller runs as the api image's uid to read it.
+    user: "1654:1654"
+    volumes:
+      - secrets:/var/lib/applytrack:ro
     depends_on:
       db:
         condition: service_healthy

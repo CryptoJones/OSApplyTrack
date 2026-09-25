@@ -7,19 +7,31 @@ API seals (a mailbox password, a board account's session) has to be readable her
 with the same master key. Format: ``enc:v1:<fingerprint>:<base64(nonce||cipher||tag)>``
 — AES-256-GCM under ``SHA-256(master)``, fingerprint = first four bytes of
 ``SHA-256(key)`` as lower-case hex, 12-byte nonce, 16-byte tag.
+
+The master key is resolved the way the API's ``SecretKeySource`` does, minus the
+generation: ``APPLYTRACK_SECRETS_KEY`` if set, else the key file the API generated
+(``APPLYTRACK_SECRETS_KEY_FILE``, default ``/var/lib/applytrack/secrets.key`` in a
+container) — the poller only reads it, never writes one (#340).
 """
 
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
+import logging
 import os
+import sys
+from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 PREFIX = "enc:v1:"
 _NONCE = 12
+CONTAINER_KEY_FILE = "/var/lib/applytrack/secrets.key"
+
+logger = logging.getLogger(__name__)
 
 
 class SealError(ValueError):
@@ -27,13 +39,44 @@ class SealError(ValueError):
 
 
 def _key(master: str) -> tuple[bytes, str]:
+    # The API refuses an empty master; sealing under SHA-256("") would be no seal at all.
+    if not master:
+        raise SealError("no master key (APPLYTRACK_SECRETS_KEY or the API's key file)")
     key = hashlib.sha256(master.encode("utf-8")).digest()
     return key, hashlib.sha256(key).digest()[:4].hex()
 
 
+def key_file() -> Path:
+    """Where the API keeps a generated key: ``APPLYTRACK_SECRETS_KEY_FILE``, else the
+    container path when that exists, else the API's per-user default."""
+    configured = os.environ.get("APPLYTRACK_SECRETS_KEY_FILE", "").strip()
+    if configured:
+        return Path(configured)
+    if Path(CONTAINER_KEY_FILE).exists():
+        return Path(CONTAINER_KEY_FILE)
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "applytrack" / "secrets.key"
+
+
 def master_key() -> str:
-    """The operator's master key, as the API reads it (``APPLYTRACK_SECRETS_KEY``)."""
-    return os.environ.get("APPLYTRACK_SECRETS_KEY", "")
+    """The operator's master key, as the API resolves it — or "" when there is none here."""
+    configured = os.environ.get("APPLYTRACK_SECRETS_KEY", "").strip()
+    if configured:
+        return configured
+    path = key_file()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        logger.warning(
+            "secrets key file %s is unreadable (%s); sealed sessions cannot be opened",
+            path, exc.strerror,
+        )
+        return ""
 
 
 def seal(plain: str, master: str) -> str:
@@ -53,7 +96,10 @@ def unseal(token: str, master: str) -> str:
     key, mine = _key(master)
     if fp != mine:
         raise SealError("sealed under a key this poller does not have")
-    raw = base64.b64decode(b64)
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise SealError("malformed token") from exc
     if len(raw) < _NONCE + 16:
         raise SealError("token too short")
     try:
