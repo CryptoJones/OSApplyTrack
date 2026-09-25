@@ -98,6 +98,9 @@ def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
     return []
 
 
+_IETF_PROTOCOL_ASSIGNMENTS = ipaddress.ip_network("192.0.0.0/24")
+
+
 def _addr_is_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if isinstance(addr, ipaddress.IPv6Address):
         embedded = _embedded_ipv4(addr)
@@ -106,9 +109,11 @@ def _addr_is_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     # is_global is the gate: it alone rejects CGNAT 100.64/10 (Tailscale's
     # 100.100.100.100 included), benchmarking, TEST-NETs and the rest of the IANA
     # special-purpose registry (#339). The explicit checks are belt and braces for
-    # older interpreters whose registry is thinner.
+    # older interpreters whose registry is thinner -- before 3.10.15 some of
+    # 192.0.0.0/24 counted as global, so that block is refused outright, as the API does.
     return addr.is_global and not (
-        addr.is_private
+        addr in _IETF_PROTOCOL_ASSIGNMENTS
+        or addr.is_private
         or addr.is_loopback
         or addr.is_link_local
         or addr.is_reserved
