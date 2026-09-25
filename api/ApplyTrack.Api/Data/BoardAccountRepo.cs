@@ -4,6 +4,7 @@
 using System.Data;
 using System.Security.Cryptography;
 using ApplyTrack.Api.Crypto;
+using ApplyTrack.Api.Domains;
 using Dapper;
 using Microsoft.Extensions.Logging;
 
@@ -27,18 +28,19 @@ public sealed record PortalAccount(string Host, string Username, bool HasSession
 public sealed record BoardAccount(string Host, string Username, string Password, string Session = "")
 {
     /// <summary>Does this account cover <paramref name="host"/> — the same host, a subdomain
-    /// of it, or the same registrable domain (two-label approximation)? An account saved
-    /// as <c>successfactors.com</c> signs in at <c>career4.successfactors.com</c>.</summary>
+    /// of it, or the same registrable domain by the Public Suffix List? An account saved as
+    /// <c>successfactors.com</c> signs in at <c>career4.successfactors.com</c>; one saved for
+    /// <c>careers.acme.co.uk</c> never at <c>evil.co.uk</c>, nor one GitHub Pages site's at
+    /// another's (#343).</summary>
     public bool Covers(string host)
     {
         var h = Normalize(host);
         var mine = Normalize(Host);
         if (h.Length == 0 || mine.Length == 0) return false;
-        if (h == mine || h.EndsWith("." + mine, StringComparison.Ordinal)) return true;
-        static string Reg(string x) { var p = x.Split('.'); return p.Length <= 2 ? x : string.Join('.', p[^2..]); }
+        if (PublicSuffix.WithinDomain(h, mine)) return true;
         // On an ATS where every employer keeps its own candidate accounts, sharing the ATS's
         // domain says nothing: Broadridge's Workday account is no key to CVS Health's (#277).
-        return Reg(h) == Reg(mine) && !PerEmployerAts.Contains(Reg(h));
+        return PublicSuffix.SameSite(h, mine) && !PerEmployerAts.Contains(PublicSuffix.RegistrableDomain(h)!);
     }
 
     /// <summary>ATS domains whose employers each keep their own candidate accounts, so an account
@@ -55,7 +57,7 @@ public sealed record BoardAccount(string Host, string Username, string Password,
         var list = accounts as IReadOnlyCollection<BoardAccount> ?? accounts.ToList();
         var h = Normalize(host);
         return list.FirstOrDefault(a => Normalize(a.Host) == h)
-            ?? list.FirstOrDefault(a => h.EndsWith("." + Normalize(a.Host), StringComparison.Ordinal))
+            ?? list.FirstOrDefault(a => PublicSuffix.WithinDomain(h, Normalize(a.Host)))
             ?? list.FirstOrDefault(a => a.Covers(host));
     }
 

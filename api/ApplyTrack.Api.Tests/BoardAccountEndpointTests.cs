@@ -122,6 +122,16 @@ public class BoardAccountEndpointTests : IAsyncLifetime
     [InlineData("uhg.taleo.net", "kiewit.taleo.net", false)]
     [InlineData("careers-mheducation.icims.com", "careers-other.icims.com", false)]
     [InlineData("ultipro.com", "recruiting.ultipro.com", true)]   // UKG's one sign-in serves every board
+    // Registrable domains come from the Public Suffix List, private section included (#343).
+    [InlineData("careers.acme.co.uk", "jobs.acme.co.uk", true)]
+    [InlineData("careers.acme.co.uk", "evil.co.uk", false)]
+    [InlineData("acme.com.au", "evil.com.au", false)]
+    [InlineData("careers.acme.com.au", "evil.com.au", false)]
+    [InlineData("acme.azurewebsites.net", "evil.azurewebsites.net", false)]
+    [InlineData("acme.github.io", "evil.github.io", false)]
+    [InlineData("acme.herokuapp.com", "evil.herokuapp.com", false)]
+    [InlineData("github.io", "evil.github.io", false)]    // a public suffix is nobody's account
+    [InlineData("co.uk", "evil.co.uk", false)]
     public void An_account_covers_its_host_its_subdomains_and_its_registrable_domain_and_nothing_else(string saved, string host, bool expected) =>
         Assert.Equal(expected, new BoardAccount(saved, "ada", "pw").Covers(host));
 
@@ -132,5 +142,21 @@ public class BoardAccountEndpointTests : IAsyncLifetime
         Assert.Equal("exact", BoardAccount.For(accounts, "career4.successfactors.com")!.Username);
         Assert.Equal("shared", BoardAccount.For(accounts, "career5.successfactors.com")!.Username);
         Assert.Null(BoardAccount.For([new BoardAccount("broadridge.wd5.myworkdayjobs.com", "a", "pw")], "voya.wd1.myworkdayjobs.com"));
+    }
+
+    [Theory]
+    [InlineData("evil.co.uk")]
+    [InlineData("evil.github.io")]
+    [InlineData("evil.azurewebsites.net")]
+    [InlineData("evil.com.au")]
+    public void No_account_is_offered_to_another_customer_of_a_public_suffix(string host)
+    {
+        var accounts = new[]
+        {
+            new BoardAccount("careers.acme.co.uk", "a", "pw"), new BoardAccount("acme.github.io", "b", "pw"),
+            new BoardAccount("acme.azurewebsites.net", "c", "pw"), new BoardAccount("acme.com.au", "d", "pw"),
+            new BoardAccount("github.io", "e", "pw"), new BoardAccount("co.uk", "f", "pw"),
+        };
+        Assert.Null(BoardAccount.For(accounts, host));
     }
 }

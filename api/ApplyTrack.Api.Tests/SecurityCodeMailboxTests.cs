@@ -85,6 +85,9 @@ public class SecurityCodeMailboxTests
     [InlineData("join.com", "www.join.com", true)]
     [InlineData("notjoin.com", "join.com", false)]
     [InlineData("evil.example", "join.com", false)]
+    [InlineData("evil.co.uk", "careers.acme.co.uk", false)]   // Public Suffix List, not two labels (#343)
+    [InlineData("mail.acme.co.uk", "careers.acme.co.uk", true)]
+    [InlineData("evil.github.io", "acme.github.io", false)]
     public void The_boards_host_covers_its_subdomains_and_nothing_else(string host, string board, bool expected) =>
         Assert.Equal(expected, ImapSecurityCodeSource.OnBoard(host, board));
 
