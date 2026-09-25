@@ -20,7 +20,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 import httpcore
 import httpx
@@ -76,21 +76,38 @@ class LinkStatus:
 _MAX_REDIRECTS = 5
 
 
-def _ip_is_public(ip: str) -> bool:
-    """True only for a globally-routable unicast address.
+def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    """The IPv4 targets carried inside a transitional IPv6 address, if any.
 
-    Rejects loopback, RFC-1918/ULA private, link-local (incl. the
-    169.254.169.254 cloud-metadata endpoint), reserved, multicast, and the
-    unspecified address. IPv4-mapped IPv6 is unwrapped so ``::ffff:127.0.0.1``
-    can't sneak a loopback past the check.
+    IPv4-mapped (``::ffff:0:0/96``), NAT64 (``64:ff9b::/96``), 6to4 (``2002::/16``),
+    Teredo (``2001::/32`` -- both its server and its client) and IPv4-compatible
+    (``::a.b.c.d``) all route to an IPv4 host, so that host is what gets judged --
+    the same unwrapping as the API's ``JobPageFetcher.IsBlockedAddress`` (#339).
     """
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        addr = addr.ipv4_mapped
-    return not (
+    if addr.ipv4_mapped is not None:
+        return [addr.ipv4_mapped]
+    if addr.teredo is not None:
+        return list(addr.teredo)
+    if addr.sixtofour is not None:
+        return [addr.sixtofour]
+    packed = addr.packed
+    if packed[:12] == bytes(12) and int(addr) > 1:
+        return [ipaddress.IPv4Address(packed[12:])]  # IPv4-compatible, not :: or ::1
+    if packed[:12] == b"\x00\x64\xff\x9b" + bytes(8):
+        return [ipaddress.IPv4Address(packed[12:])]  # NAT64 well-known prefix
+    return []
+
+
+def _addr_is_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(addr, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4(addr)
+        if embedded:
+            return all(_addr_is_public(v4) for v4 in embedded)
+    # is_global is the gate: it alone rejects CGNAT 100.64/10 (Tailscale's
+    # 100.100.100.100 included), benchmarking, TEST-NETs and the rest of the IANA
+    # special-purpose registry (#339). The explicit checks are belt and braces for
+    # older interpreters whose registry is thinner.
+    return addr.is_global and not (
         addr.is_private
         or addr.is_loopback
         or addr.is_link_local
@@ -98,6 +115,21 @@ def _ip_is_public(ip: str) -> bool:
         or addr.is_multicast
         or addr.is_unspecified
     )
+
+
+def _ip_is_public(ip: str) -> bool:
+    """True only for a globally-routable unicast address.
+
+    Rejects anything not ``is_global`` -- loopback, RFC-1918/ULA private, CGNAT,
+    link-local (incl. the 169.254.169.254 cloud-metadata endpoint), reserved,
+    multicast, unspecified -- after unwrapping every IPv6 form that embeds an IPv4
+    target, so ``::ffff:127.0.0.1`` or ``64:ff9b::a9fe:a9fe`` can't sneak past.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return _addr_is_public(addr)
 
 
 def _normalize_host(host: str) -> str:
@@ -347,6 +379,19 @@ def _deadline(client: httpx.Client, seconds: float) -> Iterator[float]:
         client._deadline.at = previous
 
 
+def _standard_port(parts: SplitResult) -> bool:
+    """True when a URL names no port, or 80/443 -- where a redirect may send us.
+
+    A tenant's feed URL is already held to a default port (``criteria._clean_feeds``);
+    a redirect hop is held to the web ports too, so a public host can't bounce the
+    poller onto some other service's port (#339).
+    """
+    try:
+        return parts.port in (None, 80, 443)
+    except ValueError:
+        return False
+
+
 def _walk(
     url: str,
     client: httpx.Client,
@@ -390,6 +435,8 @@ def _walk(
             hop = urlsplit(current)
             if hop.scheme not in ("http", "https"):
                 return None, current, "redirect to non-http(s) URL"
+            if not _standard_port(hop):
+                return None, current, "redirect to non-standard port"
             if not _pin_for_request(client, hop.hostname or "", deadline_at):
                 if time.monotonic() >= deadline_at:
                     return None, current, "deadline exceeded"
