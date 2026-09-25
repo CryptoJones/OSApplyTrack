@@ -262,6 +262,21 @@ public class MaterialsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Resume_upload_chunked_body_without_a_session_is_401_before_buffering()
+    {
+        var file = new ByteArrayContent(new byte[6 * 1024 * 1024]);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        using var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+        using var chunked = await Chunked(form);
+        using var anonymous = _factory.CreateClient();
+
+        var res = await anonymous.PostAsync("/api/resume/upload", chunked);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+    }
+
+    [Fact]
     public async Task Resume_upload_chunked_body_under_the_cap_still_parses()
     {
         using var form = PdfForm("Ada Byte", "Backend Engineer");

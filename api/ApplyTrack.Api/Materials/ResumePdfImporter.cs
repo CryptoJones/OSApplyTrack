@@ -28,17 +28,36 @@ public static partial class ResumePdfImporter
     /// <summary>Wall-clock budget for one parse before the upload is refused (#344).</summary>
     public static readonly TimeSpan ParseBudget = TimeSpan.FromSeconds(10);
 
+    /// <summary>Parses that may run at once, instance-wide (#344).</summary>
+    public const int MaxConcurrentParses = 2;
+
+    // A slot is held until the worker actually finishes, not until the request gives up
+    // waiting: PdfPig cannot be interrupted inside a page, so a parse past its budget
+    // keeps its thread until that page ends. Capping the slots caps how many such
+    // runaway pages can pin CPU at once, however many uploads arrive.
+    private static readonly SemaphoreSlim ParseSlots = new(MaxConcurrentParses, MaxConcurrentParses);
+
     /// <summary>
     /// Parses off the request thread under <paramref name="budget"/> (default
-    /// <see cref="ParseBudget"/>). PdfPig cannot be interrupted mid-page, so the worker also
-    /// checks the deadline between pages and stops there; the request never waits past it.
+    /// <see cref="ParseBudget"/>). The worker also checks the deadline between pages and
+    /// stops there; the request never waits past it. When every parse slot is taken the
+    /// upload is refused rather than queued.
     /// </summary>
     public static async Task<Resume> FromPdfAsync(byte[] bytes, TimeSpan? budget = null)
     {
+        if (!await ParseSlots.WaitAsync(TimeSpan.Zero))
+            throw new AppValidationException("the server is busy reading other resumes; try again in a minute");
+
         using var cts = new CancellationTokenSource(budget ?? ParseBudget);
+        var token = cts.Token;
+        var worker = Task.Run(() =>
+        {
+            try { return FromPdf(bytes, token); }
+            finally { ParseSlots.Release(); }
+        });
         try
         {
-            return await Task.Run(() => FromPdf(bytes, cts.Token), cts.Token).WaitAsync(cts.Token);
+            return await worker.WaitAsync(token);
         }
         catch (OperationCanceledException)
         {
