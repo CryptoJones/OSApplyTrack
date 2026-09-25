@@ -492,6 +492,22 @@ test("magic-link login is labeled and announced", async ({ page }) => {
   await expectNoSeriousViolations(page);
 });
 
+test("a link opened in the wrong browser says which browser to use", async ({ page }) => {
+  // #341: the server redirects here when the link was requested from another browser.
+  await page.unroute("**/api/**");
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/auth/me") {
+      await route.fulfill({ status: 401, contentType: "application/json", body: '{"detail":"Sign in required"}' });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+    }
+  });
+  await page.goto("/?error=wrong_browser");
+  await expect(page.locator(".login-error")).toContainText("same browser you requested it from");
+  await expectNoSeriousViolations(page);
+});
+
 test("the header shows the running build version", async ({ page }) => {
   // A version on screen must be one the server confirmed, so the badge stays hidden
   // until /health answers — never a guess and never an empty chip.

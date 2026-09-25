@@ -16,8 +16,9 @@ namespace ApplyTrack.Api.Tests;
 
 /// <summary>
 /// Drives the magic-link auth spine over HTTP: the choke-point's 401 on protected
-/// routes, the request -> verify -> session happy path, the no-account-enumeration
-/// guarantee, single-use/expired-token rejection, logout revocation, and — the load-
+/// routes, the request -> confirm -> session happy path, the no-account-enumeration
+/// guarantee, single-use/expired-token rejection, the browser binding that stops login
+/// CSRF (#341), logout revocation, and — the load-
 /// bearing one — cross-tenant isolation through the live middleware. Swaps a
 /// capturing email sender in so the test can read the link the server would mail.
 /// </summary>
@@ -59,19 +60,43 @@ public class AuthEndpointTests : IAsyncLifetime
 
     private static string VerifyPath(string link) => new Uri(link).PathAndQuery;
 
-    /// <summary>Runs the real request -> verify flow and returns a client carrying the session cookie.</summary>
+    private static string TokenOf(string link) =>
+        System.Web.HttpUtility.ParseQueryString(new Uri(link).Query)["token"]!;
+
+    /// <summary>What the confirm page's button does: POST the token back as a form.</summary>
+    private static Task<HttpResponseMessage> ConfirmAsync(HttpClient client, string token) =>
+        client.PostAsync("/api/auth/verify",
+            new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = token }));
+
+    /// <summary>Asks for a link on <paramref name="client"/> (which takes the pre-auth cookie) and returns it.</summary>
+    private async Task<string> RequestLinkAsync(HttpClient client, string email)
+    {
+        var requested = await client.PostAsync("/api/auth/request", Json($$"""{"email":"{{email}}"}"""));
+        Assert.Equal(HttpStatusCode.OK, requested.StatusCode);
+        var link = _emails.LinkFor(email);
+        Assert.NotNull(link);
+        return link!;
+    }
+
+    /// <summary>Runs the real request -> open link -> confirm flow on <paramref name="client"/>.</summary>
+    private async Task SignInAsync(HttpClient client, string email)
+    {
+        var link = await RequestLinkAsync(client, email);
+
+        var page = await client.GetAsync(VerifyPath(link));
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("action=\"/api/auth/verify\"", await page.Content.ReadAsStringAsync());
+
+        var verify = await ConfirmAsync(client, TokenOf(link));
+        Assert.Equal(HttpStatusCode.Found, verify.StatusCode);
+        Assert.Equal("/", verify.Headers.Location?.OriginalString);
+    }
+
+    /// <summary>Signs a fresh client in and returns it carrying the session cookie.</summary>
     private async Task<HttpClient> LoginAsync(string email)
     {
         var client = NewClient();
-        var requested = await client.PostAsync("/api/auth/request", Json($$"""{"email":"{{email}}"}"""));
-        Assert.Equal(HttpStatusCode.OK, requested.StatusCode);
-
-        var link = _emails.LinkFor(email);
-        Assert.NotNull(link);
-
-        var verify = await client.GetAsync(VerifyPath(link!));
-        Assert.Equal(HttpStatusCode.Found, verify.StatusCode);
-        Assert.Equal("/", verify.Headers.Location?.OriginalString);
+        await SignInAsync(client, email);
         return client;
     }
 
@@ -122,44 +147,122 @@ public class AuthEndpointTests : IAsyncLifetime
     [Fact]
     public async Task Verify_with_garbage_token_redirects_to_invalid_link()
     {
-        var res = await NewClient().GetAsync("/api/auth/verify?token=totally-bogus");
+        var client = NewClient();
+        await RequestLinkAsync(client, TestAuth.UniqueEmail());
+
+        var res = await ConfirmAsync(client, "totally-bogus");
         Assert.Equal(HttpStatusCode.Found, res.StatusCode);
         Assert.Equal("/?error=invalid_link", res.Headers.Location?.OriginalString);
+
+        var missing = await NewClient().GetAsync("/api/auth/verify");
+        Assert.Equal("/?error=invalid_link", missing.Headers.Location?.OriginalString);
     }
 
     [Fact]
     public async Task Token_is_single_use()
     {
-        var email = TestAuth.UniqueEmail();
-        await NewClient().PostAsync("/api/auth/request", Json($$"""{"email":"{{email}}"}"""));
-        var link = _emails.LinkFor(email);
-        Assert.NotNull(link);
+        var client = NewClient();
+        var token = TokenOf(await RequestLinkAsync(client, TestAuth.UniqueEmail()));
 
-        var first = await NewClient().GetAsync(VerifyPath(link!));
+        var first = await ConfirmAsync(client, token);
         Assert.Equal("/", first.Headers.Location?.OriginalString);
 
-        var second = await NewClient().GetAsync(VerifyPath(link!));
+        var second = await ConfirmAsync(client, token);
         Assert.Equal("/?error=invalid_link", second.Headers.Location?.OriginalString);
     }
 
     [Fact]
     public async Task Expired_token_is_rejected()
     {
-        // Seed a token by hash with a past expiry — the same shape the request route
-        // stores, just already stale — then present the raw token to verify.
-        var token = Tokens.NewOpaque();
+        var client = NewClient();
+        var email = TestAuth.UniqueEmail();
+        var token = TokenOf(await RequestLinkAsync(client, email));
         await using (var conn = new NpgsqlConnection(_pg.ConnectionString))
         {
             await conn.OpenAsync();
-            var userId = await TestAuth.EnsureUserAsync(conn, TestAuth.UniqueEmail());
             await conn.ExecuteAsync(
-                "INSERT INTO magic_tokens (user_id, token_sha256, expires_at) "
-                + "VALUES (@uid, @hash, now() - interval '1 minute')",
-                new { uid = userId, hash = Tokens.Sha256(token) });
+                "UPDATE magic_tokens SET expires_at = now() - interval '1 minute' WHERE token_sha256 = @hash",
+                new { hash = Tokens.Sha256(token) });
         }
 
-        var res = await NewClient().GetAsync($"/api/auth/verify?token={token}");
+        var res = await ConfirmAsync(client, token);
         Assert.Equal("/?error=invalid_link", res.Headers.Location?.OriginalString);
+    }
+
+    [Fact]
+    public async Task Opening_the_link_does_not_spend_the_token()
+    {
+        // #341: a mail scanner pre-fetching the link (a GET, no cookies) gets the confirm
+        // page and nothing else — the person's own click still signs them in.
+        var client = NewClient();
+        var email = TestAuth.UniqueEmail();
+        var link = await RequestLinkAsync(client, email);
+
+        for (var i = 0; i < 2; i++)
+        {
+            var scanned = await NewClient().GetAsync(VerifyPath(link));
+            Assert.Equal(HttpStatusCode.OK, scanned.StatusCode);
+            Assert.Equal("no-store", scanned.Headers.CacheControl?.ToString());
+            Assert.False(scanned.Headers.Contains("Set-Cookie"));
+        }
+
+        var verify = await ConfirmAsync(client, TokenOf(link));
+        Assert.Equal("/", verify.Headers.Location?.OriginalString);
+        var me = await client.GetAsync("/api/auth/me");
+        Assert.Equal(email, (await ReadJson(me)).GetProperty("email").GetString());
+    }
+
+    [Fact]
+    public async Task Attackers_link_cannot_sign_in_another_browser()
+    {
+        // #341 login CSRF: the attacker requests a link for their own address and gets a
+        // victim to open it. Without the attacker's pre-auth cookie it signs nobody in.
+        var attacker = NewClient();
+        var attackerEmail = TestAuth.UniqueEmail();
+        var token = TokenOf(await RequestLinkAsync(attacker, attackerEmail));
+
+        // A browser that never asked for a link is told to use the one that did.
+        var victim = NewClient();
+        var res = await ConfirmAsync(victim, token);
+        Assert.Equal("/?error=wrong_browser", res.Headers.Location?.OriginalString);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await victim.GetAsync("/api/auth/me")).StatusCode);
+
+        // A browser holding its own pre-auth cookie is refused too.
+        await RequestLinkAsync(victim, TestAuth.UniqueEmail());
+        res = await ConfirmAsync(victim, token);
+        Assert.Equal("/?error=invalid_link", res.Headers.Location?.OriginalString);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await victim.GetAsync("/api/auth/me")).StatusCode);
+
+        // Neither attempt spent the token: its own browser can still use it.
+        res = await ConfirmAsync(attacker, token);
+        Assert.Equal("/", res.Headers.Location?.OriginalString);
+        Assert.Equal(attackerEmail, (await ReadJson(await attacker.GetAsync("/api/auth/me"))).GetProperty("email").GetString());
+    }
+
+    [Fact]
+    public async Task Signing_in_again_rotates_the_browsers_session()
+    {
+        var email = TestAuth.UniqueEmail();
+        var client = await LoginAsync(email);
+        await SignInAsync(client, email);
+
+        await using var conn = new NpgsqlConnection(_pg.ConnectionString);
+        await conn.OpenAsync();
+        var live = await conn.ExecuteScalarAsync<long>(
+            "SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = @email",
+            new { email });
+        Assert.Equal(1, live);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/auth/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Confirm_page_encodes_the_token()
+    {
+        var res = await NewClient().GetAsync("/api/auth/verify?token=" + Uri.EscapeDataString("\"><script>x</script>"));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var html = await res.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("<script>", html);
+        Assert.Contains("&lt;script&gt;", html);
     }
 
     [Fact]
