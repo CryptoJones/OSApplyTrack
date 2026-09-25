@@ -271,7 +271,13 @@ if (string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringCompar
     Migrator.WaitUntilCurrent(connectionString, TimeSpan.FromMinutes(5));
 else
 {
-    Migrator.Upgrade(connectionString, migrationTimeout);
+    // AGENT_DB_PASSWORD / POLLER_DB_PASSWORD: the agent's and the poller's own
+    // least-privilege roles, created (or re-passworded) here on every boot (#345).
+    Migrator.Upgrade(connectionString, migrationTimeout, new Dictionary<string, string?>
+    {
+        [Migrator.AgentRole] = builder.Configuration["AGENT_DB_PASSWORD"],
+        [Migrator.PollerRole] = builder.Configuration["POLLER_DB_PASSWORD"],
+    });
     // Seal what an older release stored in the clear, and finish any key rotation. Only
     // the migrating container: the agent's least-privilege role has no business rewriting
     // résumés, and the sweep is idempotent so one runner is enough.

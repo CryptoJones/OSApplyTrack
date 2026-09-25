@@ -9,12 +9,20 @@ After=applytrack-db.service
 ContainerName=applytrack-poller
 Image=ghcr.io/cryptojones/osapplytrack-poller:latest
 Network=applytrack.network
-EnvironmentFile=%h/.config/applytrack/applytrack.env
+# Its OWN env file (#345): poller.env connects as applytrack_poller (the api creates
+# it from POLLER_DB_PASSWORD) — read profiles, stage leads, keep board sessions; no
+# sessions, sign-in tokens, résumés, board passwords or DDL.
+EnvironmentFile=%h/.config/applytrack/poller.env
 # The board sessions the api sealed are opened with its key: APPLYTRACK_SECRETS_KEY from
 # the env file, or else the key file the api generated here — read-only, and as the api
 # image's uid since that file is owner-only (#340).
 Volume=applytrack-secrets.volume:/var/lib/applytrack:ro
 User=1654:1654
+ReadOnly=true
+Tmpfs=/tmp:rw,noexec,nosuid,size=64m
+DropCapability=ALL
+NoNewPrivileges=true
+RunInit=true
 
 [Service]
 Restart=always

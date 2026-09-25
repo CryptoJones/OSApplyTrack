@@ -9,19 +9,34 @@ After=applytrack-db.service
 ContainerName=applytrack-agent
 Image=ghcr.io/cryptojones/osapplytrack-api:latest
 Network=applytrack.network
-EnvironmentFile=%h/.config/applytrack/applytrack.env
+# Its OWN env file, not applytrack.env (#345): that one holds the owner's password,
+# and the agent sits next to the browser. agent.env connects as applytrack_agent
+# (the api creates it from AGENT_DB_PASSWORD) — no DDL, no DELETE on applications,
+# no sessions or sign-in tokens.
+EnvironmentFile=%h/.config/applytrack/agent.env
 Volume=applytrack-secrets.volume:/var/lib/applytrack
 Environment=ASPNETCORE_URLS=http://+:8080
 # The switch that turns this container into the worker. Everything else (the DB
-# connection string, the LLM endpoint, the secrets key) comes from the shared env
-# file. Per tenant, the agent is still off until enabled in Settings · Agent.
+# connection string, the LLM endpoint, the secrets key) comes from agent.env.
+# Per tenant, the agent is still off until enabled in Settings · Agent.
 Environment=Agent__Enabled=true
+# Its role cannot migrate: wait for the api container to.
+Environment=Migrations__Mode=wait
 Environment=Agent__IntervalSeconds=300
 # The browser container (applytrack-browser.container); drop both lines to prepare
 # packets without one. The agent joins the internal browser network to reach it.
 Network=applytrack-browser.network
 Environment=Browser__Endpoint=ws://applytrack-browser:3000/
 Environment=Browser__Proxy=http://applytrack-proxy:3128
+# The hardening docker-compose.production.yml has had since #53 (#345): the image's
+# non-root uid, a read-only root with a noexec /tmp, no capabilities, no setuid gain.
+# The secrets volume stays writable — it is a mount, not the root filesystem.
+User=1654:1654
+ReadOnly=true
+Tmpfs=/tmp:rw,noexec,nosuid,size=64m
+DropCapability=ALL
+NoNewPrivileges=true
+RunInit=true
 
 [Service]
 Restart=always

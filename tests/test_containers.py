@@ -81,3 +81,47 @@ def test_squid_refuses_private_destinations_and_non_web_ports() -> None:
     assert "http_access deny private_dst" in conf
     assert "http_access deny CONNECT !SSL_ports" in conf
     assert "http_access deny !Safe_ports" in conf
+
+
+def test_production_poller_and_agent_never_hold_the_owner_password() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.production.yml").read_text())
+
+    poller = compose["services"]["poller"]["environment"]
+    assert poller["DATABASE_URL"].startswith("postgresql://applytrack_poller:${POLLER_DB_PASSWORD")
+    for name in ("poller", "agent"):
+        env = compose["services"][name]["environment"]
+        assert not any("POSTGRES_PASSWORD" in str(v) for v in env.values()), name
+    # The api (the only migrator) creates both roles from their passwords.
+    api = compose["services"]["api"]["environment"]
+    assert "AGENT_DB_PASSWORD" in api and "POLLER_DB_PASSWORD" in api
+
+
+def _unit(name: str) -> list[tuple[str, str]]:
+    """``key=value`` pairs of a quadlet unit, repeats kept (Network= appears twice)."""
+    lines = (ROOT / "deploy/quadlet" / name).read_text().splitlines()
+    return [
+        (k, v) for k, _, v in (line.partition("=") for line in lines)
+        if v and not k.startswith("#")
+    ]
+
+
+def test_quadlet_runtimes_carry_the_production_hardening() -> None:
+    for name in ("applytrack-api.container", "applytrack-agent.container",
+                 "applytrack-poller.container"):
+        unit = _unit(name)
+        assert ("User", "1654:1654") in unit, name
+        assert ("ReadOnly", "true") in unit, name
+        assert ("DropCapability", "ALL") in unit, name
+        assert ("NoNewPrivileges", "true") in unit, name
+        assert ("Tmpfs", "/tmp:rw,noexec,nosuid,size=64m") in unit, name
+
+
+def test_quadlet_api_is_loopback_only_and_restricted_runtimes_use_their_own_env() -> None:
+    api = _unit("applytrack-api.container")
+    assert [v for k, v in api if k == "PublishPort"] == ["127.0.0.1:8080:8080"]
+
+    agent = _unit("applytrack-agent.container")
+    assert [v for k, v in agent if k == "EnvironmentFile"] == ["%h/.config/applytrack/agent.env"]
+    assert ("Environment", "Migrations__Mode=wait") in agent
+    poller = _unit("applytrack-poller.container")
+    assert [v for k, v in poller if k == "EnvironmentFile"] == ["%h/.config/applytrack/poller.env"]
