@@ -21,6 +21,16 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#118 — Public beta terms, acceptance at sign-in, and a typed-confirmation data delete](https://github.com/CryptoJones/OSApplyTrack/issues/118)
 - [x] [#120 — Saved answers reused across fields that ask for different units, periods or currencies](https://github.com/CryptoJones/OSApplyTrack/issues/120)
 - [x] [#121 — Optional questions get filled with placeholder answers instead of left blank](https://github.com/CryptoJones/OSApplyTrack/issues/121)
+- [ ] [#337 — [SEC] Magic-link host-header poisoning on the quickstart compose and quadlet deploys](https://github.com/CryptoJones/OSApplyTrack/issues/337)
+- [ ] [#338 — [SEC] Poller: fetch_public / probe read whole bodies before the size cap and have no overall deadline](https://github.com/CryptoJones/OSApplyTrack/issues/338)
+- [ ] [#339 — [SEC] Poller SSRF guard admits CGNAT (100.64/10) and other non-global ranges](https://github.com/CryptoJones/OSApplyTrack/issues/339)
+- [ ] [#340 — Poller never receives APPLYTRACK_SECRETS_KEY, so sealed board sessions silently fail to decrypt](https://github.com/CryptoJones/OSApplyTrack/issues/340)
+- [ ] [#341 — [SEC] Login CSRF: GET /api/auth/verify signs any browser into the token's account; link scanners burn tokens](https://github.com/CryptoJones/OSApplyTrack/issues/341)
+- [ ] [#342 — [SEC] Prompt-injected postings can exfiltrate résumé data via markdown images in the cover-letter preview](https://github.com/CryptoJones/OSApplyTrack/issues/342)
+- [ ] [#343 — [SEC] Board-account domain matching uses a two-label approximation](https://github.com/CryptoJones/OSApplyTrack/issues/343)
+- [ ] [#344 — [SEC] Résumé PDF upload and account import: unbounded parse, chunked bodies skip the size gate, no rate limit](https://github.com/CryptoJones/OSApplyTrack/issues/344)
+- [ ] [#345 — [SEC] Least-privilege gaps: poller as schema owner; quadlet agent as owner without hardening; table-wide agent UPDATE](https://github.com/CryptoJones/OSApplyTrack/issues/345)
+- [ ] [#346 — [SEC] Hardening grab-bag: hashed session IDs, users.status, sign-out-everywhere, per-tenant LLM limit, slug validation, URL userinfo in logs](https://github.com/CryptoJones/OSApplyTrack/issues/346)
 
 ## Operations and scalability
 
@@ -29,6 +39,14 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#88 — Poller: `_fetch_feed_set` parses up to the whole-run limit on every category feed](https://github.com/CryptoJones/OSApplyTrack/issues/88)
 - [x] [#100 — CI is failing on main](https://github.com/CryptoJones/OSApplyTrack/issues/100) (auto-filed; a boot-order race in the SPA after #98)
 - [x] [#89 — `uv.lock`: exceptiongroup's typing-extensions marker was dropped in the 1.16.1 release commit](https://github.com/CryptoJones/OSApplyTrack/issues/89)
+- [ ] [#347 — [PERF] Poller: link checks and employer resolution repeat per tenant, sequentially; sources fetched one at a time](https://github.com/CryptoJones/OSApplyTrack/issues/347)
+- [ ] [#348 — [PERF] Poller: full dedupe history reloaded every run, one round-trip per seen key, Jev scored before cheap filters](https://github.com/CryptoJones/OSApplyTrack/issues/348)
+- [ ] [#349 — [PERF] SPA's 5-second idle poll always runs the heavy /api/errors query](https://github.com/CryptoJones/OSApplyTrack/issues/349)
+- [ ] [#350 — [PERF] No data retention for evidence screenshots, sessions, magic tokens, agent_events and seen keys](https://github.com/CryptoJones/OSApplyTrack/issues/350)
+- [ ] [#351 — [PERF] N+1 and row-by-row writes: /api/pipeline, ReadyPromoter, bulk Ready actions, per-row revision trigger on import](https://github.com/CryptoJones/OSApplyTrack/issues/351)
+- [ ] [#352 — [PERF] Small wins: compression, pooled LLM handler, cacheable screenshots, evidence partial index, notes snippet, pool size](https://github.com/CryptoJones/OSApplyTrack/issues/352)
+- [ ] [#358 — Feature: operator admin CLI (users, allowlist, usage, disable) and a Backup & restore runbook](https://github.com/CryptoJones/OSApplyTrack/issues/358)
+- [ ] [#359 — Feature: observability — opt-in OpenTelemetry, /metrics, and a poll_runs table](https://github.com/CryptoJones/OSApplyTrack/issues/359)
 
 ## Discovery and workflow
 
@@ -44,6 +62,12 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#332 — Agent: Greenhouse's Education block is never filled from the résumé](https://github.com/CryptoJones/OSApplyTrack/issues/332) (school, degree and discipline from the highest completed degree, each the option that best names the résumé's words; end year only when stated)
 - [ ] [#334 — Agent: 'never says remote' passed a remote job (Bankjoy)](https://github.com/CryptoJones/OSApplyTrack/issues/334) (hotfix 1.55.4: silence is no longer judged, only explicit hybrid/on-site statements; Bankjoy restored. Open for the follow-up: judge silence only with the employer's structured location — Ashby workplaceType, Greenhouse location)
 - [ ] [#336 — Feature: daily applied-jobs email digest (toggle in Settings)](https://github.com/CryptoJones/OSApplyTrack/issues/336) (one email a day, off by default: the number of applications sent at the top, then each one — number, company, role, location, posting link, open-in-app link, agent or you)
+- [ ] [#353 — Feature: status history, per-application timeline and funnel analytics](https://github.com/CryptoJones/OSApplyTrack/issues/353)
+- [ ] [#354 — Feature: follow-up and interview reminders, plus a per-tenant ICS calendar feed](https://github.com/CryptoJones/OSApplyTrack/issues/354)
+- [ ] [#355 — Feature: email as a general notification channel (EmailNotifier alongside Telegram)](https://github.com/CryptoJones/OSApplyTrack/issues/355)
+- [ ] [#356 — Feature: personal API tokens for scripting, clippers and calendar feeds](https://github.com/CryptoJones/OSApplyTrack/issues/356)
+- [ ] [#357 — Feature: complete account backup (export v2) and a CSV export](https://github.com/CryptoJones/OSApplyTrack/issues/357)
+- [ ] [#360 — Feature: contacts and a dated notes log per application](https://github.com/CryptoJones/OSApplyTrack/issues/360)
 - [x] [#313 — CI is failing on main](https://github.com/CryptoJones/OSApplyTrack/issues/313) (auto-filed for the Python job on #311's merge commit; main was green on every merge after it — #312, #315, #316, #317 — closed 2026-09-24)
 - [x] [#302 — Agent: a clean dry run is promoted to a real submission that runs as a dry run again — an unbounded loop against LinkedIn](https://github.com/CryptoJones/OSApplyTrack/issues/302) (two Easy Apply packets looped every ~32 s in production on 1.51.0, 142 iterations, opening LinkedIn's dialog and Discarding each time — a run asked for as real was downgraded to a dry run mid-flight, and the clean dry run promoted itself back to a real run. Fix in [#303](https://github.com/CryptoJones/OSApplyTrack/pull/303): promotion also requires the run to have been *requested* as a dry run, so nothing downgraded can re-promote; the LinkedIn daily cap stands the run down before the browser instead of silently downgrading it; and a run that mapped nothing is no longer "clean" — in the worker and in `IsCleanDryRun`, which is the same bar `ReadyPromoter` uses every pass; **shipped in 1.51.1**)
 - [x] [#300 — Poller: evaluate Jev (TypeSafe System One) for the semantic half of `classify`, keeping the rules in code](https://github.com/CryptoJones/OSApplyTrack/issues/300) (`_keyword_re` has been patched three times — [#81](https://github.com/CryptoJones/OSApplyTrack/issues/81), [#85](https://github.com/CryptoJones/OSApplyTrack/issues/85), [#86](https://github.com/CryptoJones/OSApplyTrack/issues/86) — because the regex approximates a question it cannot express: is this posting about the work I do? **Evaluated** in `tools/jev_eval/` on 257 live listings, hand-labelled, with the owner's keyword profile: keyword `classify()` 184/257 (71.6%), Jev `noul` 226/257 (87.9%), Jev `score` 222/257; discordant pairs Jev 60 / keywords 18, McNemar exact p = 2e-6; ~1,360 input tokens ≈ $0.000057 per posting; no decision flipped on a 40-listing re-ask. Most of the gain is recall on roles the keyword list never names. **Implemented opt-in** in [#304](https://github.com/CryptoJones/OSApplyTrack/pull/304): `agent_settings.jev_classify` (migration 0038, Settings · Agent), effective only with the operator's `TYPESAFE_API_KEY` on the poller; keyword `classify()` stays the default and the fallback on any error, so a self-hoster with no key loses nothing. The browser/form-finding path stays out of scope)
