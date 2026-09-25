@@ -74,4 +74,18 @@ public class GreenhouseEducationTests
     [InlineData("none", null)]
     public void A_linkedin_number_box_gets_the_whole_number_an_answer_states(string answer, string? number) =>
         Assert.Equal(number, ApplyTrack.Api.Agent.AnswerDrafter.WholeNumber(answer));
+
+    [Fact]
+    public void A_degree_in_progress_goes_before_a_completed_certificate()
+    {
+        var e = BrowserSubmitter.HighestCompleted([
+            new("Kennesaw State University", "Graduate Certificate", "Computer Science", "2019"),
+            new("Eastern University", "MS", "Applied Artificial Intelligence (In Progress)", "2026 – Present"),
+        ]);
+        Assert.Equal("Eastern University", e!.School);
+    }
+
+    [Fact]
+    public void A_number_too_long_for_an_int_is_still_its_digits() =>
+        Assert.Equal("123456789012345678901234567890", ApplyTrack.Api.Agent.AnswerDrafter.WholeNumber("123456789012345678901234567890+"));
 }

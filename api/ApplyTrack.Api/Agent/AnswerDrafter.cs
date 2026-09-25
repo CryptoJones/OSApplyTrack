@@ -537,7 +537,9 @@ public sealed partial class AnswerDrafter
     public static string? WholeNumber(string answer)
     {
         var m = System.Text.RegularExpressions.Regex.Match(answer, @"\d+");
-        return m.Success ? int.Parse(m.Value, System.Globalization.CultureInfo.InvariantCulture).ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        if (!m.Success) return null;
+        var digits = m.Value.TrimStart('0');
+        return digits.Length == 0 ? "0" : digits;
     }
 
     public static string PastAnswers(IReadOnlyDictionary<string, string>? pinned)

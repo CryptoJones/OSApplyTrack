@@ -2586,7 +2586,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var field = System.Text.RegularExpressions.Regex.Replace(e.Field, @"\s*\([^)]*\)", "").Trim();
         if (field.Length > 0 && await PickGreenhouseOptionAsync(form, "discipline--0", field, SearchWords(field)))
             filled.Add("discipline--0");
-        if (EndYear(e.Dates) is { } year)
+        if (!InProgress(e) && EndYear(e.Dates) is { } year)
         {
             try
             {
@@ -2600,17 +2600,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
     /// <summary>The education to put first: a completed degree ranked Doctorate, Master's,
     /// Bachelor's, Associate's, then anything completed, then whatever is in progress.</summary>
+    private static bool InProgress(ResumeEducation e) =>
+        System.Text.RegularExpressions.Regex.IsMatch(e.Dates + " " + e.Field, @"present|in progress|current|expected", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
     public static ResumeEducation? HighestCompleted(IReadOnlyList<ResumeEducation> education)
     {
-        static bool InProgress(ResumeEducation e) =>
-            System.Text.RegularExpressions.Regex.IsMatch(e.Dates + " " + e.Field, @"present|in progress|current|expected", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         static int Rank(ResumeEducation e) => DegreeOption(e.Degree) switch
         {
             "Doctor of Philosophy (Ph.D.)" => 5, "Master's Degree" or "Master of Business Administration (M.B.A.)" => 4,
             "Bachelor's Degree" => 3, "Associate's Degree" => 2, _ => 1,
         };
+        // A degree before any certificate, completed before in progress, highest first.
         return education.Where(e => e.School.Length > 0)
-            .OrderBy(e => InProgress(e)).ThenByDescending(Rank).FirstOrDefault();
+            .OrderBy(e => Rank(e) == 1).ThenBy(InProgress).ThenByDescending(Rank).FirstOrDefault();
     }
 
     /// <summary>Greenhouse's Degree option for what a résumé calls the degree, or null.</summary>
