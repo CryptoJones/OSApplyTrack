@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Domains;
 using ApplyTrack.Api.Scrape;
 using MailKit;
 using MailKit.Net.Imap;
@@ -98,7 +99,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
     private static partial Regex DigitCode();
 
     /// <summary>Does this host belong to the board — the same host, or a subdomain of it, or
-    /// the same registrable domain (two-label approximation)?</summary>
+    /// the same registrable domain by the Public Suffix List (#343)?</summary>
     public static bool OnBoard(string host, string boardHost)
     {
         host = host.Trim().TrimStart('.').ToLowerInvariant();
@@ -106,9 +107,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         if (boardHost.StartsWith("www.", StringComparison.Ordinal)) boardHost = boardHost[4..];
         if (host.StartsWith("www.", StringComparison.Ordinal)) host = host[4..];
         if (host.Length == 0 || boardHost.Length == 0) return false;
-        if (host == boardHost || host.EndsWith("." + boardHost, StringComparison.Ordinal)) return true;
-        static string Reg(string h) { var p = h.Split('.'); return p.Length <= 2 ? h : string.Join('.', p[^2..]); }
-        return Reg(host) == Reg(boardHost);
+        return PublicSuffix.WithinDomain(host, boardHost) || PublicSuffix.SameSite(host, boardHost);
     }
 
     // Platforms that sign candidates in for many employers from one sender: every tenant's mail

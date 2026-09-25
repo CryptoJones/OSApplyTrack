@@ -5,6 +5,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Domains;
 using ApplyTrack.Api.Scrape;
 using Microsoft.Playwright;
 
@@ -410,13 +411,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
         original = original.ToLowerInvariant();
         if (host == original) return true;
         if (AtsSuffixes.Any(s => host == s || host.EndsWith("." + s))) return true;
-        // Same registrable domain (careers.acme.com -> acme.com), two-label approximation.
-        static string Reg(string h)
-        {
-            var parts = h.Split('.');
-            return parts.Length <= 2 ? h : string.Join('.', parts[^2..]);
-        }
-        return Reg(host) == Reg(original);
+        // Same registrable domain (careers.acme.com -> acme.com) by the Public Suffix List:
+        // acme.co.uk is not evil.co.uk, and one *.github.io site is not another (#343).
+        return PublicSuffix.SameSite(host, original);
     }
 
     private static readonly string AnyFieldScript = """

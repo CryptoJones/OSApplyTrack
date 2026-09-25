@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ApplyTrack.Api</RootNamespace>
-    <Version>1.55.8</Version>
+    <Version>1.55.9</Version>
     <Authors>Aaron K. Clark</Authors>
     <Copyright>Copyright 2026 Aaron K. Clark</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -26,6 +26,8 @@
     <EmbeddedResource Include="Migrations\*.sql" />
     <!-- Run-always scripts (the agent role's grants), applied after the versioned ones. -->
     <EmbeddedResource Include="Migrations\Always\*.sql" />
+    <!-- The Public Suffix List (MPL-2.0), for registrable domains (#343). -->
+    <EmbeddedResource Include="Domains\public_suffix_list.dat" LogicalName="ApplyTrack.Api.Domains.public_suffix_list.dat" />
   </ItemGroup>
 
 </Project>
