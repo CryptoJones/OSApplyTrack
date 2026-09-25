@@ -49,6 +49,14 @@ services:
       Email__Password: ${Email__Password:-}
       Email__From: ${Email__From:-}
       Email__FromName: ${Email__FromName:-OSApplyTrack}
+      # Public origin (#337). Sign-in links are built from this, never the request Host
+      # header. Unset, links fall back to the request origin only for localhost/127.0.0.1
+      # — reaching the api by LAN IP or a hostname then sends no link. Set it (scheme,
+      # no trailing slash) for any non-localhost use; it is REQUIRED once Email__Host is
+      # set (the api refuses to boot without it). ALLOWED_HOSTS pins the Host headers
+      # Kestrel answers at all, e.g. "apply.example.com;localhost".
+      App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:-}
+      AllowedHosts: ${ALLOWED_HOSTS:-*}
       # Same-host proxies are trusted by default. Set either value only when the
       # proxy reaches this container from a different address or bridge network.
       ForwardedHeaders__KnownProxies__0: ${FORWARDED_HEADERS_KNOWN_PROXY:-}
