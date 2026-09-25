@@ -23,7 +23,7 @@ wheels = [
 
 [[package]]
 name = "applytrack-poller"
-version = "1.55.4"
+version = "1.55.5"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

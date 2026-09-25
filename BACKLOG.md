@@ -24,7 +24,7 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [ ] [#337 — [SEC] Magic-link host-header poisoning on the quickstart compose and quadlet deploys](https://github.com/CryptoJones/OSApplyTrack/issues/337)
 - [ ] [#338 — [SEC] Poller: fetch_public / probe read whole bodies before the size cap and have no overall deadline](https://github.com/CryptoJones/OSApplyTrack/issues/338)
 - [ ] [#339 — [SEC] Poller SSRF guard admits CGNAT (100.64/10) and other non-global ranges](https://github.com/CryptoJones/OSApplyTrack/issues/339)
-- [ ] [#340 — Poller never receives APPLYTRACK_SECRETS_KEY, so sealed board sessions silently fail to decrypt](https://github.com/CryptoJones/OSApplyTrack/issues/340)
+- [x] [#340 — Poller never receives APPLYTRACK_SECRETS_KEY, so sealed board sessions silently fail to decrypt](https://github.com/CryptoJones/OSApplyTrack/issues/340) (shipped in 1.55.5: both compose files and the quadlet hand the poller the key — env or the api's key file, mounted read-only; seal/unseal refuse an empty key, bad base64 is a SealError, and a session that won't unseal logs a WARNING)
 - [ ] [#341 — [SEC] Login CSRF: GET /api/auth/verify signs any browser into the token's account; link scanners burn tokens](https://github.com/CryptoJones/OSApplyTrack/issues/341)
 - [ ] [#342 — [SEC] Prompt-injected postings can exfiltrate résumé data via markdown images in the cover-letter preview](https://github.com/CryptoJones/OSApplyTrack/issues/342)
 - [ ] [#343 — [SEC] Board-account domain matching uses a two-label approximation](https://github.com/CryptoJones/OSApplyTrack/issues/343)

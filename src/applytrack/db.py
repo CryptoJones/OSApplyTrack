@@ -21,6 +21,7 @@ unique-violation that the caller skips without poisoning the rest of the run.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 
 import psycopg
@@ -30,6 +31,8 @@ from applytrack.criteria import Criteria
 from applytrack.importer import _FIELD_COLUMNS, row_params
 from applytrack.mygreenhouse import ACCOUNT_HOSTS, PortalAccount
 from applytrack.store import AppFields, filename_for
+
+logger = logging.getLogger(__name__)
 
 # A plain INSERT: if a slug or URL already exists for this tenant, the unique
 # constraint halts the insert and the caller skips staging a duplicate lead.
@@ -93,12 +96,22 @@ class PollRepo:
         if row[2]:
             try:
                 session = secrets.unseal(row[2], secrets.master_key())
-            except secrets.SealError:
+            except secrets.SealError as exc:
+                # Say so: without this the board just reads "no live session" (#340).
+                logger.warning(
+                    "tenant %s: the kept %s session cannot be unsealed (%s) — is "
+                    "APPLYTRACK_SECRETS_KEY (or the API's key file) the one the API uses?",
+                    self._t, row[0], exc,
+                )
                 session = ""
         return row[1], session, row[3]
 
     def _save_session(self, hosts: tuple[str, ...], session: str, expires_at: object) -> None:
-        sealed = secrets.seal(session, secrets.master_key()) if session else ""
+        try:
+            sealed = secrets.seal(session, secrets.master_key()) if session else ""
+        except secrets.SealError as exc:
+            logger.warning("tenant %s: not keeping the %s session (%s)", self._t, hosts[0], exc)
+            return
         with self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE board_accounts SET session_ciphertext = %s, session_expires_at = %s, "

@@ -119,6 +119,18 @@ public class SecretProtectorTests
     }
 
     [Fact]
+    public void The_token_the_poller_opens_is_one_this_protector_reads_and_writes()
+    {
+        // The same vector tests/test_secrets.py opens: the two runtimes share sealed
+        // board sessions, so the format is a cross-runtime contract (#340).
+        const string key = "cross-runtime-vector-key";
+        const string token = "enc:v1:0c528fdc:qL1AhGMt5TvB7Q5a3NXDWXG8+87coW/3pBVxYKRlpZxHkq7mMt78xWBxRQOI8n4iqiHWytfye1kOXQ==";
+        var p = new SecretProtector(key);
+        Assert.Equal("li_at=AQEDAT-sealed-by-the-api", p.Unprotect(token));
+        Assert.True(p.IsCurrent(token));
+    }
+
+    [Fact]
     public void Without_a_master_key_it_is_unavailable_and_refuses_to_protect()
     {
         var p = new SecretProtector(null);
