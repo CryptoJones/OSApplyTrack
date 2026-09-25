@@ -19,7 +19,15 @@ public static class Migrator
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(1);
 
-    public static DatabaseUpgradeResult Upgrade(string connectionString, TimeSpan? timeout = null)
+    /// <summary>The least-privilege login roles the migrating container keeps in step.</summary>
+    public const string AgentRole = "applytrack_agent", PollerRole = "applytrack_poller";
+
+    /// <param name="rolePasswords">Role name to password (<see cref="AgentRole"/>,
+    /// <see cref="PollerRole"/>): each role with a non-blank password is created, or has
+    /// its password reset, before the grants run — so turning a role on in an existing
+    /// deploy is setting its password and restarting, no hand-run SQL (#345).</param>
+    public static DatabaseUpgradeResult Upgrade(string connectionString, TimeSpan? timeout = null,
+        IReadOnlyDictionary<string, string?>? rolePasswords = null)
     {
         var migrationTimeout = timeout ?? DefaultTimeout;
 
@@ -55,6 +63,7 @@ public static class Migrator
 
         try
         {
+            EnsureRoles(gate, rolePasswords);
             var assembly = typeof(Migrator).Assembly;
             var upgrader = DeployChanges.To
                 .PostgresqlDatabase(unpooled)
@@ -82,6 +91,42 @@ public static class Migrator
             unlock.CommandText = "SELECT pg_advisory_unlock(hashtext('applytrack:migrate'))";
             unlock.CommandTimeout = lockTimeout;
             unlock.ExecuteNonQuery();
+        }
+    }
+
+    // CREATE/ALTER ROLE take no bind parameters, so the statement is built server-side
+    // with format(%I, %L): the password is quoted by Postgres, never spliced in here. A
+    // configured password that cannot be applied (an owner without CREATEROLE) fails the
+    // boot: the api running while the agent or poller cannot sign in is the worse
+    // outcome. Provisioning the role by hand? Leave its password unset on the api.
+    private static void EnsureRoles(NpgsqlConnection conn, IReadOnlyDictionary<string, string?>? rolePasswords)
+    {
+        foreach (var (role, password) in rolePasswords ?? new Dictionary<string, string?>())
+        {
+            if (string.IsNullOrWhiteSpace(password))
+                continue;
+            try
+            {
+                using var build = conn.CreateCommand();
+                build.CommandText = """
+                    SELECT format(CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = @r)
+                                       THEN 'ALTER ROLE %I WITH LOGIN PASSWORD %L'
+                                       ELSE 'CREATE ROLE %I WITH LOGIN PASSWORD %L' END, @r, @p)
+                    """;
+                build.Parameters.AddWithValue("r", role);
+                build.Parameters.AddWithValue("p", password);
+                var sql = (string)build.ExecuteScalar()!;
+                using var run = conn.CreateCommand();
+                run.CommandText = sql;
+                run.ExecuteNonQuery();
+                Console.WriteLine($"database role {role}: ready");
+            }
+            catch (PostgresException ex)
+            {
+                throw new InvalidOperationException(
+                    $"cannot create or re-password database role {role} ({ex.MessageText}); grant the owner "
+                    + "CREATEROLE, or create the role by hand and leave its password unset on the api", ex);
+            }
         }
     }
 

@@ -250,7 +250,8 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `APPLYTRACK_SECRETS_KEY_PREVIOUS` | _(empty)_ | The old key(s), `;`-separated, during a [key rotation](#encryption-at-rest): decrypt-only; the startup sweep re-keys every row to the current key. Remove once the sweep has run. |
 | `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
 | `Browser__Endpoint` / `Browser__Proxy` | _(empty)_ | The Playwright server the agent drives (`ws://browser:3000/`) and the forward proxy it must use (`http://proxy:3128`). Unset = no browser: packets are still prepared and you apply via copy-and-open. Set on the `agent` service only: the worker stamps a heartbeat row (`agent_workers`) saying it has a browser, and the api lets Submit and packet/prepare queue a run while that heartbeat is fresh (3 min). See [The agent](#the-agent), step 4. |
-| `AGENT_DB_PASSWORD` | _(required in production)_ | Creates the least-privilege `applytrack_agent` Postgres role on first init; the `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
+| `AGENT_DB_PASSWORD` | _(required in production)_ | Set on the **api** (the migrating container): it creates the least-privilege `applytrack_agent` Postgres role on boot, or resets its password to this, and re-applies its grants. The `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
+| `POLLER_DB_PASSWORD` | _(required in production)_ | The same for the poller's `applytrack_poller` role, which the `poller` container's `DATABASE_URL` connects as: it reads profiles, blacklists and the dedup ledger, stages leads, and keeps board sessions, with no access to sessions, sign-in tokens, résumés, board passwords or DDL. Unset, the role is not created and the poller keeps whatever `DATABASE_URL` says (the quickstart uses the owner). |
 | `App__PublicBaseUrl` / `AllowedHosts` | _(empty)_ / `*` | The public origin sign-in links are built from (scheme, no trailing slash) — never the request `Host` header, which an attacker controls. Unset, links fall back to the request origin only for `localhost`/`127.0.0.1`; any other Host gets no link. **Required once `Email__Host` is set** (the api refuses to boot without it). `AllowedHosts` pins the Host headers the api answers at all. Compose reads them as `APP_PUBLIC_BASE_URL` / `ALLOWED_HOSTS`. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
@@ -681,7 +682,8 @@ contained rather than trusted:
 4. Route interception aborts non-http(s) requests and off-site top-level navigations.
 5. **A least-privilege Postgres role for the agent** (`AGENT_DB_PASSWORD` creates
    `applytrack_agent`; the API grants it on every boot): no `DELETE` anywhere, no
-   access to `sessions` or `magic_tokens`. Since Chromium runs without its own
+   access to `sessions` or `magic_tokens`, and `UPDATE` on an application's fields
+   only — never its `tenant_id` or `name`. Since Chromium runs without its own
    sandbox in a container, this is what decides how bad a renderer escape is —
    "write rows the agent already writes", not "read every session token".
 
@@ -994,6 +996,12 @@ docker compose run --rm \
   --entrypoint applytrack \
   poller import-md --dir /data --tenant <your-tenant-id>
 ```
+
+That is the quickstart stack. In `docker-compose.production.yml` (and the quadlets)
+the poller connects as `applytrack_poller`, which may add leads but not overwrite
+them, so a re-import of an existing file fails there. Pass the owner role for this
+one-shot instead: `--database-url postgresql://applytrack:<POSTGRES_PASSWORD>@db:5432/applytrack`
+after `import-md`.
 
 ## Local development
 

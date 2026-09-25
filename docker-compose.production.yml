@@ -11,11 +11,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-applytrack}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
       POSTGRES_DB: ${POSTGRES_DB:-applytrack}
-      # The agent worker's own least-privilege role (no DELETE, no sessions/tokens).
-      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env.production}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
     networks:
       - database
     healthcheck:
@@ -30,6 +27,11 @@ services:
     environment:
       ConnectionStrings__Postgres: "Host=db;Port=5432;Database=${POSTGRES_DB:-applytrack};Username=${POSTGRES_USER:-applytrack};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}"
       ASPNETCORE_URLS: "http://+:8080"
+      # The agent's and the poller's own least-privilege roles: the api (the owner, and
+      # the only migrator) creates them from these on boot and keeps their passwords and
+      # grants in step (#345). The agent and poller services connect as them.
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?Set AGENT_DB_PASSWORD in .env.production}
+      POLLER_DB_PASSWORD: ${POLLER_DB_PASSWORD:?Set POLLER_DB_PASSWORD in .env.production}
       App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:?Set APP_PUBLIC_BASE_URL to the public HTTPS origin}
       AllowedHosts: ${ALLOWED_HOSTS:?Set ALLOWED_HOSTS to the public hostname}
       Llm__BaseUrl: ${Llm__BaseUrl:-}
@@ -143,7 +145,10 @@ services:
   poller:
     image: ghcr.io/cryptojones/osapplytrack-poller:${OSAPPLYTRACK_VERSION:?Set OSAPPLYTRACK_VERSION to a released version}
     environment:
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-applytrack}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-applytrack}"
+      # The restricted role (#345): read profiles, stage leads, keep board sessions —
+      # no sessions, tokens, résumés or DDL. Until the api has created it on its first
+      # boot the poll loops just retry.
+      DATABASE_URL: "postgresql://applytrack_poller:${POLLER_DB_PASSWORD:?Set POLLER_DB_PASSWORD in .env.production}@db:5432/${POSTGRES_DB:-applytrack}"
       DRAIN_INTERVAL: ${DRAIN_INTERVAL:-60}
       POLL_INTERVAL: ${POLL_INTERVAL:-3600}
       # Optional (#300): lets tenants who opt in score listings with Jev. Blank = keywords.
