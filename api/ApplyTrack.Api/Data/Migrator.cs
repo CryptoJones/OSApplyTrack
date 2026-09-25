@@ -96,8 +96,9 @@ public static class Migrator
 
     // CREATE/ALTER ROLE take no bind parameters, so the statement is built server-side
     // with format(%I, %L): the password is quoted by Postgres, never spliced in here. A
-    // role we may not create (an external Postgres whose owner lacks CREATEROLE) is a
-    // warning, not a boot failure: the api itself does not need it.
+    // configured password that cannot be applied (an owner without CREATEROLE) fails the
+    // boot: the api running while the agent or poller cannot sign in is the worse
+    // outcome. Provisioning the role by hand? Leave its password unset on the api.
     private static void EnsureRoles(NpgsqlConnection conn, IReadOnlyDictionary<string, string?>? rolePasswords)
     {
         foreach (var (role, password) in rolePasswords ?? new Dictionary<string, string?>())
@@ -122,7 +123,9 @@ public static class Migrator
             }
             catch (PostgresException ex)
             {
-                Console.WriteLine($"database role {role}: not created ({ex.MessageText}); create it by hand, or run as a role with CREATEROLE");
+                throw new InvalidOperationException(
+                    $"cannot create or re-password database role {role} ({ex.MessageText}); grant the owner "
+                    + "CREATEROLE, or create the role by hand and leave its password unset on the api", ex);
             }
         }
     }

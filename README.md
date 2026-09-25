@@ -997,6 +997,12 @@ docker compose run --rm \
   poller import-md --dir /data --tenant <your-tenant-id>
 ```
 
+That is the quickstart stack. In `docker-compose.production.yml` (and the quadlets)
+the poller connects as `applytrack_poller`, which may add leads but not overwrite
+them, so a re-import of an existing file fails there. Pass the owner role for this
+one-shot instead: `--database-url postgresql://applytrack:<POSTGRES_PASSWORD>@db:5432/applytrack`
+after `import-md`.
+
 ## Local development
 
 Run Postgres in a container and the two runtimes on the host:
