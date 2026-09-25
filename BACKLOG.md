@@ -78,6 +78,35 @@ or `SPRINTS.md` are not committed backlog until they have a corresponding issue.
 - [x] [#283 — Browser: a cookie dialog named for nothing but its text is never dismissed (Radancy / UnitedHealth Group) — accept cookie banners across the board](https://github.com/CryptoJones/OSApplyTrack/issues/283) (fixed in 1.48.7: optum failed four runs with "the Apply button did not respond within 5 s" behind `div#system-imessage` "Important System Message", whose only mention of cookies is its text. Radancy's button by id plus Didomi, Usercentrics, Quantcast, CookieYes, Complianz, Iubenda, Termly, Klaro, Civic and Cookie Script; links as well as buttons; and any dialog or box pinned over the page whose text is about cookies — unless it holds fillable fields, so "I agree" sitting with a real form is still an answer)
 - [x] [#284 — An "N errors" view between Ready and Applied: a failed run drops back into Ready and looks like a packet nobody has tried](https://github.com/CryptoJones/OSApplyTrack/issues/284) (fixed in 1.48.7: `GET /api/errors` lists Ready applications with nothing queued whose newest evidence is `failed` — what went wrong, when, how many runs, and what happens next: a retry the agent will make by itself and when, or that it needs you and why. `/api/stats` gains `errors`; the strip shows an **N errors** chip after lead and ready, and the ready chip and list no longer count the errored ones. Each row has Retry. A derived view, not a new status — the status list is part of the schema both runtimes share)
 
+## Audit — 2026-09-25
+
+Security, performance and feature findings filed from the 2026-09-25 review.
+
+- [ ] [#337 — [SEC] Magic-link host-header poisoning on the quickstart compose and quadlet deploys (App:PublicBaseUrl unset → link built from request Host)](https://github.com/CryptoJones/OSApplyTrack/issues/337)
+- [ ] [#338 — [SEC] Poller: fetch_public / probe read whole bodies before the size cap and have no overall deadline (memory/hang DoS for every tenant)](https://github.com/CryptoJones/OSApplyTrack/issues/338)
+- [ ] [#339 — [SEC] Poller SSRF guard admits CGNAT (100.64/10) and other non-global ranges; poller egresses directly, not via squid](https://github.com/CryptoJones/OSApplyTrack/issues/339)
+- [ ] [#340 — Poller never receives APPLYTRACK_SECRETS_KEY, so sealed board sessions (LinkedIn / Handshake / MyGreenhouse) silently fail to decrypt](https://github.com/CryptoJones/OSApplyTrack/issues/340)
+- [ ] [#341 — [SEC] Login CSRF: GET /api/auth/verify signs any browser into the token's account; mail link-scanners burn tokens](https://github.com/CryptoJones/OSApplyTrack/issues/341)
+- [ ] [#342 — [SEC] Prompt-injected job postings can exfiltrate résumé data via markdown images in the cover-letter preview (CSP img-src allows https:)](https://github.com/CryptoJones/OSApplyTrack/issues/342)
+- [ ] [#343 — [SEC] Board-account domain matching uses a two-label approximation — saved passwords can be typed into unrelated sites (co.uk, azurewebsites.net, github.io…)](https://github.com/CryptoJones/OSApplyTrack/issues/343)
+- [ ] [#344 — [SEC] Résumé PDF upload and account import: unbounded parse, chunked bodies skip the size gate, no rate limit](https://github.com/CryptoJones/OSApplyTrack/issues/344)
+- [ ] [#345 — [SEC] Least-privilege gaps: poller connects as schema owner; quadlet agent uses owner role and lacks #53 hardening; agent role can UPDATE any applications column](https://github.com/CryptoJones/OSApplyTrack/issues/345)
+- [ ] [#346 — [SEC] Hardening grab-bag: hash session IDs, honour users.status, sign-out-everywhere, per-tenant LLM rate limit, board-slug validation, userinfo in logged LLM URL](https://github.com/CryptoJones/OSApplyTrack/issues/346)
+- [ ] [#347 — [PERF] Poller: link checks and employer resolution repeat per tenant, sequentially; sources fetched one at a time](https://github.com/CryptoJones/OSApplyTrack/issues/347)
+- [ ] [#348 — [PERF] Poller: full dedupe history reloaded every run, one round-trip per seen key, Jev scored before the cheap filters](https://github.com/CryptoJones/OSApplyTrack/issues/348)
+- [ ] [#349 — [PERF] SPA's 5-second idle poll always runs the heavy /api/errors query, defeating the /api/apps ETag](https://github.com/CryptoJones/OSApplyTrack/issues/349)
+- [ ] [#350 — [PERF] No data retention: full-page PNG evidence, expired sessions, spent magic tokens, agent_events and seen keys grow forever](https://github.com/CryptoJones/OSApplyTrack/issues/350)
+- [ ] [#351 — [PERF] N+1 and row-by-row writes: /api/pipeline, ReadyPromoter, bulk Ready actions, and the per-row revision trigger on import](https://github.com/CryptoJones/OSApplyTrack/issues/351)
+- [ ] [#352 — [PERF] Small wins: response compression, pooled LLM handler, cacheable screenshots, evidence partial index, notes snippet in SQL, worker pool size](https://github.com/CryptoJones/OSApplyTrack/issues/352)
+- [ ] [#353 — Feature: status history, per-application timeline and funnel analytics (response rate, time-to-response)](https://github.com/CryptoJones/OSApplyTrack/issues/353)
+- [ ] [#354 — Feature: follow-up and interview reminders, plus a per-tenant ICS calendar feed](https://github.com/CryptoJones/OSApplyTrack/issues/354)
+- [ ] [#355 — Feature: email as a general notification channel (EmailNotifier alongside Telegram)](https://github.com/CryptoJones/OSApplyTrack/issues/355)
+- [ ] [#356 — Feature: personal API tokens for scripting, clippers and calendar feeds](https://github.com/CryptoJones/OSApplyTrack/issues/356)
+- [ ] [#357 — Feature: complete account backup (export v2: résumé, cover letters, answer bank, settings) and a CSV export](https://github.com/CryptoJones/OSApplyTrack/issues/357)
+- [ ] [#358 — Feature: operator admin CLI (users, allowlist, usage, disable) and a Backup & restore runbook](https://github.com/CryptoJones/OSApplyTrack/issues/358)
+- [ ] [#359 — Feature: observability — opt-in OpenTelemetry, /metrics, and a poll_runs table ("last polled 12 min ago · 2 sources failing")](https://github.com/CryptoJones/OSApplyTrack/issues/359)
+- [ ] [#360 — Feature: contacts and a dated notes log per application (recruiter, hiring manager, panel)](https://github.com/CryptoJones/OSApplyTrack/issues/360)
+
 ## Agentic auto-apply
 
 An attached model evaluates qualifying leads, drafts the materials, answers the
