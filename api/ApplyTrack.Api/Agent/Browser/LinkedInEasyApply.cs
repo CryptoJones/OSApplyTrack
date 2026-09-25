@@ -432,6 +432,11 @@ internal static partial class LinkedInEasyApply
                 default:
                 {
                     var box = page.Locator($"{Modal} [id=\"{Css(f.ControlId)}\"]").First;
+                    // A number box takes a whole number: Insight Global's "How many years … with SQL,
+                    // T-SQL, or PL/SQL?" refused the banked "5+" (#332). "5+" is 5, "10+ years" 10.
+                    if (f.ControlId.Contains("numeric", StringComparison.OrdinalIgnoreCase)
+                        || await box.GetAttributeAsync("type") == "number")
+                        answer = AnswerDrafter.WholeNumber(answer) ?? answer;
                     await box.FillAsync(answer, new() { Timeout = 5_000 });
                     // A typeahead (city, school) only takes a value picked from its list: the
                     // suggestion is clicked once the list shows one, and a place the list does not

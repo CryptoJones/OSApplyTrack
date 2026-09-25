@@ -532,6 +532,16 @@ public sealed partial class AnswerDrafter
     /// <summary>The person's own banked answers, one per line, for the model to match a reworded
     /// question against (the bank's key is the question, lower-cased). Name fields are left out:
     /// they are answered from the résumé, not asked. Public for tests.</summary>
+    /// <summary>The whole number an answer states — "5+" → 5, "10+ years" → 10, "3-5" → 3 (the
+    /// least it claims) — or null when it states none. For a form's number box (#332).</summary>
+    public static string? WholeNumber(string answer)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(answer, @"\d+");
+        if (!m.Success) return null;
+        var digits = m.Value.TrimStart('0');
+        return digits.Length == 0 ? "0" : digits;
+    }
+
     public static string PastAnswers(IReadOnlyDictionary<string, string>? pinned)
     {
         if (pinned is null || pinned.Count == 0) return "(none yet)";

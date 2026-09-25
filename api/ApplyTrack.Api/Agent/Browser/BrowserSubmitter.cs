@@ -367,6 +367,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // Ashby, Lever and a good part of the long tail take one Name box, not first and
             // last: when both halves went unmapped and such a box exists, it gets "First Last".
             await FillFullNameAsync(form, packet, mapped, unmapped);
+            // Greenhouse's Education block, which its API never mentions (#332): from the résumé.
+            foreach (var id in await FillGreenhouseEducationAsync(form, packet.Resume))
+                if (!mapped.Contains(id)) mapped.Add(id);
             // A résumé taken only through an "Upload Resume/CV" button — no file input until it is
             // pressed, so discovery never saw a question (Flexhire: "Resume is required", #330).
             if (resumePdf is { } buttonPdf && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
@@ -2558,6 +2561,133 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// never guessed — and the required-field sweep then names it for the person.
     /// Returns the ids of the rows' fields it filled.
     /// </summary>
+    /// <summary>
+    /// Greenhouse's rendered form carries an Education block — School, Degree, Discipline
+    /// (react-select pickers over Greenhouse's own lists) and End Year — that its Job Board API
+    /// never mentions, so no packet ever held the questions, and Virtu's run was refused on
+    /// "school--0, degree--0, discipline--0, end-year--0" with the candidate's education sitting
+    /// in the résumé (#332). Filled from the highest completed degree (an in-progress one only if
+    /// nothing else is there): each picker takes the option closest to the résumé's words, never
+    /// one that merely came first, and End Year only a year the résumé states. The ids filled.
+    /// </summary>
+    public static async Task<List<string>> FillGreenhouseEducationAsync(IFrame form, Resume? resume)
+    {
+        var filled = new List<string>();
+        if (resume is null || resume.Education.Count == 0) return filled;
+        try { if (await form.Locator("#school--0").CountAsync() == 0) return filled; }
+        catch (PlaywrightException) { return filled; }
+        var e = HighestCompleted(resume.Education);
+        if (e is null) return filled;
+
+        if (e.School.Length > 0 && await PickGreenhouseOptionAsync(form, "school--0", e.School, SearchWords(e.School)))
+            filled.Add("school--0");
+        if (DegreeOption(e.Degree) is { } degree && await PickGreenhouseOptionAsync(form, "degree--0", degree, [""]))
+            filled.Add("degree--0");
+        var field = System.Text.RegularExpressions.Regex.Replace(e.Field, @"\s*\([^)]*\)", "").Trim();
+        if (field.Length > 0 && await PickGreenhouseOptionAsync(form, "discipline--0", field, SearchWords(field)))
+            filled.Add("discipline--0");
+        if (!InProgress(e) && EndYear(e.Dates) is { } year)
+        {
+            try
+            {
+                var box = form.Locator("#end-year--0");
+                if (await box.CountAsync() > 0) { await box.FillAsync(year); filled.Add("end-year--0"); }
+            }
+            catch (PlaywrightException) { /* left for the sweep */ }
+        }
+        return filled;
+    }
+
+    /// <summary>The education to put first: a completed degree ranked Doctorate, Master's,
+    /// Bachelor's, Associate's, then anything completed, then whatever is in progress.</summary>
+    private static bool InProgress(ResumeEducation e) =>
+        System.Text.RegularExpressions.Regex.IsMatch(e.Dates + " " + e.Field, @"present|in progress|current|expected", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    public static ResumeEducation? HighestCompleted(IReadOnlyList<ResumeEducation> education)
+    {
+        static int Rank(ResumeEducation e) => DegreeOption(e.Degree) switch
+        {
+            "Doctor of Philosophy (Ph.D.)" => 5, "Master's Degree" or "Master of Business Administration (M.B.A.)" => 4,
+            "Bachelor's Degree" => 3, "Associate's Degree" => 2, _ => 1,
+        };
+        // A degree before any certificate, completed before in progress, highest first.
+        return education.Where(e => e.School.Length > 0)
+            .OrderBy(e => Rank(e) == 1).ThenBy(InProgress).ThenByDescending(Rank).FirstOrDefault();
+    }
+
+    /// <summary>Greenhouse's Degree option for what a résumé calls the degree, or null.</summary>
+    public static string? DegreeOption(string degree)
+    {
+        var d = degree.Trim().ToLowerInvariant().Replace(".", "");
+        if (d.Length == 0) return null;
+        if (d.Contains("mba") || d.Contains("business administration") && d.Contains("master")) return "Master of Business Administration (M.B.A.)";
+        if (d.Contains("phd") || d.Contains("doctor of philosophy")) return "Doctor of Philosophy (Ph.D.)";
+        if (d.StartsWith("master") || d is "ms" or "ma" or "msc" or "meng" || d.StartsWith("ms ") || d.StartsWith("ma ")) return "Master's Degree";
+        if (d.StartsWith("bachelor") || d is "bs" or "ba" or "bsc" or "beng" || d.StartsWith("bs ") || d.StartsWith("ba ")) return "Bachelor's Degree";
+        if (d.StartsWith("associate") || d is "aa" or "as" or "aas") return "Associate's Degree";
+        return null;
+    }
+
+    /// <summary>The year a degree was finished, when the dates state one and it is not ongoing.</summary>
+    public static string? EndYear(string dates)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(dates, @"present|current|expected", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return null;
+        var years = System.Text.RegularExpressions.Regex.Matches(dates, @"\b(19|20)\d{2}\b");
+        return years.Count > 0 ? years[^1].Value : null;
+    }
+
+    // What to type into a searchable picker: the whole name, then its leading words.
+    private static string[] SearchWords(string text)
+    {
+        var words = text.Split([' ', '-', ',', '/'], StringSplitOptions.RemoveEmptyEntries);
+        var tries = new List<string> { text };
+        if (words.Length > 3) tries.Add(string.Join(' ', words[..3]));
+        if (words.Length > 1) tries.Add(words[0]);
+        return [.. tries.Distinct()];
+    }
+
+    /// <summary>How well an option names the same thing as the résumé's words: all of the
+    /// option's words in the target counts, and more shared words count more. 0 is no match.</summary>
+    public static double OptionScore(string option, string target)
+    {
+        static HashSet<string> Words(string s) => [.. System.Text.RegularExpressions.Regex
+            .Split(s.ToLowerInvariant(), @"[^a-z0-9]+").Where(w => w.Length > 1 && w is not ("of" or "and" or "the" or "in" or "at"))];
+        var o = Words(option); var t = Words(target);
+        if (o.Count == 0 || t.Count == 0) return 0;
+        if (o.SetEquals(t)) return 3;
+        var shared = o.Count(t.Contains);
+        return o.IsSubsetOf(t) ? 1 + (double)shared / t.Count : 0;
+    }
+
+    /// <summary>Type into a Greenhouse picker and click the option that best names the target;
+    /// true when one was clicked. Options are read from this picker's own listbox — the page's
+    /// phone-country list is always there too.</summary>
+    private static async Task<bool> PickGreenhouseOptionAsync(IFrame form, string id, string target, string[] queries)
+    {
+        var input = form.Locator($"#{id}");
+        foreach (var query in queries)
+        {
+            try
+            {
+                await input.ClickAsync(new() { Timeout = 5_000 });
+                await input.FillAsync(query);
+                var options = form.Locator($"#react-select-{id}-listbox [role=option]");
+                for (var i = 0; i < 12 && await options.CountAsync() == 0; i++) await form.WaitForTimeoutAsync(250);
+                var texts = await options.AllInnerTextsAsync();
+                var best = texts.Select((t, i) => (i, score: OptionScore(t, target))).Where(x => x.score > 0)
+                    .OrderByDescending(x => x.score).FirstOrDefault();
+                if (best.score > 0)
+                {
+                    await options.Nth(best.i).ClickAsync(new() { Timeout = 5_000 });
+                    return true;
+                }
+                await input.PressAsync("Escape");
+            }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* next query */ }
+        }
+        return false;
+    }
+
     public static async Task<List<string>> FillUkgSectionsAsync(IPage page, Resume? resume, ILogger? log = null)
     {
         var filled = new List<string>();
