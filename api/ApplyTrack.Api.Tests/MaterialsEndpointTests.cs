@@ -6,7 +6,9 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Auth;
+using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
+using ApplyTrack.Api.Materials;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -207,6 +209,132 @@ public class MaterialsEndpointTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         Assert.Contains("PDF", (await ReadJson(res)).GetProperty("detail").GetString());
+    }
+
+    // ---- Upload bounds (#344) ---------------------------------------------
+
+    /// <summary>A body with no Content-Length, as a chunked client sends it.</summary>
+    private sealed class ChunkedContent(byte[] bytes) : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(bytes).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    private static async Task<ChunkedContent> Chunked(HttpContent inner)
+    {
+        var c = new ChunkedContent(await inner.ReadAsByteArrayAsync());
+        c.Headers.ContentType = inner.Headers.ContentType;
+        return c;
+    }
+
+    private static MultipartFormDataContent PdfPagesForm(int pages)
+    {
+        var builder = new PdfDocumentBuilder();
+        var font = builder.AddStandard14Font(Standard14Font.Helvetica);
+        for (var i = 1; i <= pages; i++)
+            builder.AddPage(PageSize.A4).AddText($"Page marker {i:D3}", 12, new PdfPoint(40, 790), font);
+        var file = new ByteArrayContent(builder.Build());
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+        return form;
+    }
+
+    [Fact]
+    public async Task Resume_upload_chunked_body_over_the_cap_is_413()
+    {
+        var file = new ByteArrayContent(new byte[6 * 1024 * 1024]);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        using var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+        using var chunked = await Chunked(form);
+        Assert.Null(chunked.Headers.ContentLength);
+
+        var res = await _client.PostAsync("/api/resume/upload", chunked);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resume_upload_chunked_body_without_a_session_is_401_before_buffering()
+    {
+        var file = new ByteArrayContent(new byte[6 * 1024 * 1024]);
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        using var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+        using var chunked = await Chunked(form);
+        using var anonymous = _factory.CreateClient();
+
+        var res = await anonymous.PostAsync("/api/resume/upload", chunked);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resume_upload_chunked_body_under_the_cap_still_parses()
+    {
+        using var form = PdfForm("Ada Byte", "Backend Engineer");
+        using var chunked = await Chunked(form);
+
+        var res = await _client.PostAsync("/api/resume/upload", chunked);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("Ada Byte", (await ReadJson(res)).GetProperty("summary").GetString());
+    }
+
+    [Fact]
+    public async Task Account_import_chunked_body_over_the_cap_is_413()
+    {
+        var huge = "{\"applications\":[],\"pad\":\"" + new string('x', 11 * 1024 * 1024) + "\"}";
+        using var chunked = await Chunked(Json(huge));
+
+        var res = await _client.PostAsync("/api/account/import", chunked);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resume_upload_reads_only_the_first_pages()
+    {
+        using var form = PdfPagesForm(ResumePdfImporter.MaxPages + 5);
+
+        var res = await _client.PostAsync("/api/resume/upload", form);
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var text = (await ReadJson(res)).GetProperty("summary").GetString()!;
+        Assert.Contains($"Page marker {ResumePdfImporter.MaxPages:D3}", text);
+        Assert.DoesNotContain($"Page marker {ResumePdfImporter.MaxPages + 1:D3}", text);
+    }
+
+    [Fact]
+    public async Task Resume_upload_of_a_broken_pdf_is_400_not_500()
+    {
+        var file = new ByteArrayContent(Encoding.ASCII.GetBytes("%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 9 0 R >>\n%%EOF"));
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        using var form = new MultipartFormDataContent();
+        form.Add(file, "resume", "resume.pdf");
+
+        var res = await _client.PostAsync("/api/resume/upload", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Resume_parse_past_its_budget_is_a_validation_error()
+    {
+        var builder = new PdfDocumentBuilder();
+        builder.AddPage(PageSize.A4).AddText("Ada Byte", 12, new PdfPoint(40, 790),
+            builder.AddStandard14Font(Standard14Font.Helvetica));
+
+        var ex = await Assert.ThrowsAsync<AppValidationException>(
+            () => ResumePdfImporter.FromPdfAsync(builder.Build(), TimeSpan.Zero));
+        Assert.Contains("too long", ex.Message);
     }
 
     // ---- LLM settings ------------------------------------------------------

@@ -216,6 +216,11 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 static string ClientPartition(HttpContext ctx) =>
     ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
+const int UploadPermits = 10;
+static bool IsUploadRoute(HttpRequest req) =>
+    req.Method == HttpMethods.Post
+    && (req.Path == "/api/resume/upload" || req.Path == "/api/account/import");
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -237,6 +242,18 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("scrape", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 15, Window = TimeSpan.FromMinutes(1) }));
+    // Résumé PDF upload and account import parse a multi-megabyte body each (#344):
+    // metered per IP here, and per tenant by the global limiter below, so neither a
+    // botnet on one account nor many accounts behind one address can hammer them.
+    options.AddPolicy("upload", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = UploadPermits, Window = TimeSpan.FromMinutes(5) }));
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+        IsUploadRoute(ctx.Request)
+        && ctx.RequestServices.GetRequiredService<TenantContext>().UserId is { } tenantId
+            ? RateLimitPartition.GetFixedWindowLimiter($"upload:{tenantId}",
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = UploadPermits, Window = TimeSpan.FromMinutes(5) })
+            : RateLimitPartition.GetNoLimiter(""));
 });
 
 var app = builder.Build();
@@ -273,39 +290,6 @@ app.UseForwardedHeaders(ForwardedHeadersConfiguration.Create(builder.Configurati
 // (#229). Names the peer to trust; never trusts the header itself.
 app.UseMiddleware<ForwardedProtoDiagnosticMiddleware>();
 
-// Enforce request-body size limits on the two endpoints that accept large uploads,
-// checked on Content-Length before the body is read, so it works under TestServer too.
-app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/scrape",
-    branch => branch.Use(async (ctx, next) =>
-    {
-        if (ctx.Request.ContentLength > 64L * 1024)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
-            return;
-        }
-        await next();
-    }));
-app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/account/import",
-    branch => branch.Use(async (ctx, next) =>
-    {
-        if (ctx.Request.ContentLength > 10L * 1024 * 1024)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
-            return;
-        }
-        await next();
-    }));
-app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/resume/upload",
-    branch => branch.Use(async (ctx, next) =>
-    {
-        if (ctx.Request.ContentLength > ResumePdfImporter.MaxPdfBytes + 16L * 1024)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status413RequestEntityTooLarge;
-            return;
-        }
-        await next();
-    }));
-
 // Stamp CSP + the other hardening headers on every response. After UseForwardedHeaders
 // so Request.IsHttps is accurate (HSTS only when actually behind HTTPS).
 app.UseMiddleware<SecurityHeadersMiddleware>();
@@ -334,6 +318,18 @@ app.UseMiddleware<TenantMiddleware>();
 
 // Enforce the per-route rate-limit policies declared above (RequireRateLimiting).
 app.UseRateLimiter();
+
+// Enforce request-body size limits on the endpoints that accept large uploads: a
+// declared Content-Length over the cap is refused before the body is read, and a
+// chunked body is capped as it streams (#344), so it works under TestServer too.
+// After auth and the rate limiter, so an anonymous or throttled caller never gets a
+// chunked body buffered on its behalf.
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/scrape",
+    branch => branch.Use(RequestBodyCap.Enforce(64L * 1024)));
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/account/import",
+    branch => branch.Use(RequestBodyCap.Enforce(AccountEndpoints.MaxImportBytes)));
+app.UseWhen(ctx => ctx.Request.Method == HttpMethods.Post && ctx.Request.Path == "/api/resume/upload",
+    branch => branch.Use(RequestBodyCap.Enforce(ResumePdfImporter.MaxPdfBytes + 16L * 1024)));
 
 // The running build, read from the assembly rather than a hard-coded constant so it can
 // only ever report what is actually deployed. InformationalVersion carries a "+<commit>"

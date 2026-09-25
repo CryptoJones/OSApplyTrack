@@ -50,12 +50,12 @@ public static class MaterialsEndpoints
             await stream.CopyToAsync(buffer);
 
             var bytes = buffer.ToArray();
-            var resume = ResumePdfImporter.FromPdf(bytes);
+            var resume = await ResumePdfImporter.FromPdfAsync(bytes);
             await repo.UpsertAsync(resume);
             // Keep the file too: the browser attaches it to the résumé field at submit.
             await repo.StorePdfAsync(bytes, Path.GetFileName(file.FileName ?? "") is { Length: > 0 } fn ? fn : "resume.pdf");
             return Results.Ok(resume);
-        });
+        }).RequireRateLimiting("upload");
 
         // ---- LLM endpoint settings --------------------------------------------
         app.MapGet("/api/llm-settings", async (
