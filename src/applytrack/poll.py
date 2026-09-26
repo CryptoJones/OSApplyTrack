@@ -39,6 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from functools import lru_cache, partial
 from html import unescape
+from itertools import zip_longest
 from typing import Protocol, TypeVar
 from urllib.parse import urljoin, urlsplit
 
@@ -1386,6 +1387,7 @@ NETWORK_WORKERS = 8
 PER_HOST_WORKERS = 2
 
 _T = TypeVar("_T")
+_K = TypeVar("_K")
 
 
 def run_bounded(
@@ -1411,9 +1413,15 @@ def run_bounded(
 
     if len(tasks) <= 1 or workers <= 1:
         return [run(host, thunk) for host, thunk in tasks]
+    # Submit round-robin across hosts, so a run of one host's tasks doesn't fill the
+    # pool with threads parked on its gate while other hosts' work waits in the queue.
+    by_host: dict[str, list[int]] = {}
+    for i, (host, _) in enumerate(tasks):
+        by_host.setdefault(host, []).append(i)
+    order = [i for row in zip_longest(*by_host.values()) for i in row if i is not None]
     with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
-        futures = [pool.submit(run, host, thunk) for host, thunk in tasks]
-        return [f.result() for f in futures]
+        futures = {i: pool.submit(run, *tasks[i]) for i in order}
+        return [futures[i].result() for i in range(len(tasks))]
 
 
 class ThreadClients:
@@ -1457,6 +1465,26 @@ class LinkCache:
 
     resolved: dict[tuple[str, str], tuple[str | None, bool]] = field(default_factory=dict)
     reachable: dict[str, bool] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _gates: dict[object, threading.Lock] = field(default_factory=dict, repr=False, compare=False)
+
+    def once(self, table: dict[_K, _T], key: _K, compute: Callable[[], _T]) -> _T:
+        """``table[key]``, computing it at most once even when pool threads race for it.
+
+        A computation that raises caches nothing; the next caller tries again.
+        """
+        with self._lock:
+            if key in table:
+                return table[key]
+            gate = self._gates.setdefault((id(table), key), threading.Lock())
+        with gate:
+            with self._lock:
+                if key in table:
+                    return table[key]
+            value = compute()
+            with self._lock:
+                table[key] = value
+            return value
 
 
 def _host(url: str) -> str:
@@ -1550,18 +1578,20 @@ def _verify_candidate(
     # An aggregator's listing page has no form on it: store the employer's
     # posting instead when the apply link leads there (#191).
     if is_aggregator_link(item.link):
-        key = (item.link, item.apply_link)
-        if key not in cache.resolved:
-            cache.resolved[key] = _resolve_employer(item, clients.get())
-        resolved, seen_live = cache.resolved[key]
+        resolved, seen_live = cache.once(
+            cache.resolved,
+            (item.link, item.apply_link),
+            lambda: _resolve_employer(item, clients.get()),
+        )
     # The listing was live a moment ago and the employer's server will not talk to a
     # bot: the reachability check would only drop the lead.
     if resolved and not seen_live:
         return resolved, seen_live, True
     link = resolved or item.link
-    if link not in cache.reachable:
-        cache.reachable[link] = is_reachable(link, client=clients.get())
-    return resolved, seen_live, cache.reachable[link]
+    reachable = cache.once(
+        cache.reachable, link, lambda: is_reachable(link, client=clients.get())
+    )
+    return resolved, seen_live, reachable
 
 
 def _verify_candidates(candidates: list[_Candidate], cache: LinkCache) -> list[_Candidate]:

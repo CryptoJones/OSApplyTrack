@@ -1291,3 +1291,49 @@ def test_fetch_rss_reuses_an_ssrf_safe_client_it_is_handed(
         fetch_rss(pinned, 10, "https://board.example/other.rss")
 
     assert seen == [pinned, pinned]
+
+
+def test_link_cache_computes_a_raced_url_once() -> None:
+    import time
+
+    from applytrack.poll import LinkCache, run_bounded
+
+    cache = LinkCache()
+    calls: list[str] = []
+
+    def probe_once() -> bool:
+        calls.append("x")
+        time.sleep(0.02)
+        return True
+
+    def task() -> bool:
+        return cache.once(cache.reachable, "https://acme.example/1", probe_once)
+
+    assert run_bounded([(f"h{n}", task) for n in range(6)], workers=6) == [True] * 6
+    assert calls == ["x"]
+
+
+def test_run_bounded_interleaves_hosts_so_one_host_cannot_hog_the_pool() -> None:
+    import threading
+    import time
+
+    from applytrack.poll import run_bounded
+
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def task(host: str):  # type: ignore[no-untyped-def]
+        def run() -> str:
+            with lock:
+                started.append(host)
+            time.sleep(0.05)
+            return host
+
+        return run
+
+    tasks = [("slow", task("slow")) for _ in range(6)] + [("fast", task("fast"))]
+    out = run_bounded(tasks, workers=3, per_host=1)
+
+    assert out == ["slow"] * 6 + ["fast"]
+    # The one "fast" task starts among the first wave, not behind six "slow" ones.
+    assert "fast" in started[:3]
