@@ -2785,31 +2785,65 @@ async function loadAgentTab(body, gen = settingsGen) {
 }
 
 // ---- Notifications panel ---------------------------------------------------
-// The moo: a Telegram message when the agent has a packet ready for you to submit.
-// Per account — your own bot, your own chat; the token is write-only and encrypted.
+// The moo: a message when the agent has a packet ready for you to submit, needs a
+// security code, or could not send an application. Email (the instance's own SMTP, to
+// your sign-in address) and Telegram (your own bot — the token is write-only and
+// encrypted); the per-event toggles apply to both (#355).
 
 function notificationsMarkup(s) {
   const secretsOff = !s.secrets_available;
+  const emailOff = !s.email_available;
   const tokenNote = secretsOff
     ? "Set APPLYTRACK_SECRETS_KEY on the server to store a bot token."
     : s.has_bot_token
     ? "A token is saved (hidden). Enter a new one to replace it, or tick the box to remove it."
     : "No token saved.";
+  const eventBox = (id, on, label) => `
+        <label class="source-row">
+          <input id="${id}" type="checkbox"${on !== false ? " checked" : ""} />
+          <span>${label}</span>
+        </label>`;
   return `
     <article class="sheet">
-      <div class="sheet-eyebrow">Notifications · Telegram</div>
-      <h2 class="sheet-title">🐮 Moo me when a packet is ready</h2>
+      <div class="sheet-eyebrow">Notifications</div>
+      <h2 class="sheet-title">🐮 Moo me when the agent needs me</h2>
       <p class="field-help">
-        When the agent has prepared an application and parked it in Ready, it sends one
-        Telegram message with a link straight to it. Create a bot with
-        <span class="mono">@BotFather</span>, send your bot a message, then get your chat id
-        from <span class="mono">https://api.telegram.org/bot&lt;token&gt;/getUpdates</span>.
+        The agent sends one message, with a link straight to the application, on each
+        channel you switch on below.
       </p>
 
-      <div class="mt-5">
+      <h3 class="mt-5" id="n-events-heading">What to hear about</h3>
+      <div class="mt-3" role="group" aria-labelledby="n-events-heading">
+        ${eventBox("n-ev-ready", s.notify_packet_ready, "A packet is ready for you to submit (or the agent submitted it)")}
+        ${eventBox("n-ev-code", s.notify_security_code, "A board sent a security code or sign-in check that the agent is waiting on")}
+        ${eventBox("n-ev-failed", s.notify_submit_failed, "A submission did not go through")}
+      </div>
+
+      <h3 class="mt-8">Email</h3>
+      <p class="field-help" id="n-email-help">
+        ${emailOff
+          ? "This instance has no mail server configured (the operator sets Email__Host), so email notifications are unavailable."
+          : `Sent through this instance's mail server to the address you sign in with${s.email_address ? `, <span class="mono">${escapeHtml(s.email_address)}</span>` : ""}.`}
+      </p>
+      <div class="mt-3">
+        <label class="source-row">
+          <input id="e-enabled" type="checkbox" aria-describedby="n-email-help"${s.email_enabled ? " checked" : ""}${emailOff ? " disabled" : ""} />
+          <span>Send me an email</span>
+        </label>
+      </div>
+
+      <h3 class="mt-8">Telegram</h3>
+      <p class="field-help">
+        Create a bot with
+        <span class="mono">@BotFather</span>, send your bot a message, then get your chat id
+        from <span class="mono">https://api.telegram.org/bot&lt;token&gt;/getUpdates</span>.
+        You can reply to a security-code message with the code.
+      </p>
+
+      <div class="mt-3">
         <label class="source-row">
           <input id="n-enabled" type="checkbox"${s.telegram_enabled ? " checked" : ""} />
-          <span>Send a Telegram message when a packet is ready</span>
+          <span>Send a Telegram message</span>
         </label>
       </div>
 
@@ -2870,6 +2904,7 @@ function notificationsMarkup(s) {
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
         <button class="btn btn-ghost" data-act="mailbox-test" ${s.has_mailbox_password ? "" : "disabled"}>Test mailbox</button>
+        <button class="btn btn-ghost" data-act="email-test" ${emailOff ? "disabled" : ""}>Send test email</button>
         <button class="btn btn-ghost" data-act="test" ${s.has_bot_token ? "" : "disabled"}>Send test message</button>
         <button class="btn btn-primary" data-act="save">Save notifications</button>
       </div>
@@ -2883,7 +2918,13 @@ function wireNotifications() {
     const body = {
       telegram_enabled: $("#n-enabled").checked,
       telegram_chat_id: $("#n-chat").value.trim(),
+      notify_packet_ready: $("#n-ev-ready").checked,
+      notify_security_code: $("#n-ev-code").checked,
+      notify_submit_failed: $("#n-ev-failed").checked,
     };
+    // A disabled switch (no mail server here) is left as it is on the server.
+    const emailEl = $("#e-enabled");
+    if (!emailEl.disabled) body.email_enabled = emailEl.checked;
     // The token is omitted unless the user typed a new one or asked to clear it.
     const tokenEl = $("#n-token");
     const clearEl = $("#n-clear");
@@ -2915,6 +2956,18 @@ function wireNotifications() {
       toast(e.message);
     } finally {
       mailboxTestEl.disabled = false;
+    }
+  };
+  const emailTestEl = contentEl.querySelector('[data-act="email-test"]');
+  emailTestEl.onclick = async () => {
+    emailTestEl.disabled = true;
+    try {
+      const r = await api("POST", "/api/notifications/email/test");
+      toast(`🐮 moo sent — check ${r.to || "your inbox"}.`);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      emailTestEl.disabled = false;
     }
   };
   const testEl = contentEl.querySelector('[data-act="test"]');

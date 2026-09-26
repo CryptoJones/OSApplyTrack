@@ -732,6 +732,11 @@ public sealed class AgentWorker : BackgroundService
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
             await ReleaseLinkedInAsync();
+            // A real run that died is news the person needs: the application was meant to be
+            // sent and was not (#355). A dry run's failure is the reconciler's to retry.
+            if (!dryRun)
+                await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
+                    PacketReadyNotifier.Moment.SubmitFailed, reason);
             return false;
         }
         await ReleaseLinkedInAsync();
@@ -761,6 +766,9 @@ public sealed class AgentWorker : BackgroundService
                 captcha = true, rec.Fields.Company, rec.Fields.Role,
             });
             _log.LogInformation("{Name}: captcha on the form, left for the human", rec.Name);
+            if (!dryRun)
+                await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
+                    PacketReadyNotifier.Moment.SubmitFailed, "a captcha on the form — it is yours to submit by hand");
             return false;
         }
 
@@ -857,6 +865,16 @@ public sealed class AgentWorker : BackgroundService
         {
             await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
                 PacketReadyNotifier.Moment.Filled, string.Join("; ", needsYou));
+        }
+        // A real run that came back without a confirmation, and that nothing above is about to
+        // go round again (an account to make, questions newly met, an employer's own form):
+        // the person should hear it was not sent (#355).
+        else if (kind == AgentEvidenceRepo.Kinds.Failed && !dryRun && outcome.NeedsAccountAt.Length == 0
+            && outcome.OffsiteLink.Length == 0 && outcome.Discovered is not { Count: > 0 })
+        {
+            await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
+                PacketReadyNotifier.Moment.SubmitFailed,
+                outcome.Error.Length > 0 ? outcome.Error : "no confirmation came back from the form");
         }
         _log.LogInformation("{Name}: browser {Kind} ({Mapped} mapped, {Unmapped} unmapped){Latency}{Error}",
             rec.Name, kind, outcome.Mapped.Count, outcome.Unmapped.Count,
@@ -1029,7 +1047,8 @@ public sealed class AgentWorker : BackgroundService
             try
             {
                 var fresh = await _linkedin.RenewAsync(target.Username, target.Password, readCode,
-                    (text, token) => _notifier.SendAsync(notifications, text, token), ct);
+                    (text, token) => _notifier.SendAsync(notifications, text, token,
+                        PacketReadyNotifier.Kind.SecurityCode, "LinkedIn wants you to confirm the sign-in"), ct);
                 await accounts.SavePortalSessionAsync(account.Host, fresh.Cookie, fresh.ExpiresAt);
                 await events.RecordAsync(AgentEventRepo.Kinds.PortalSession, "",
                     new { host = account.Host, username = account.Username, expires_at = fresh.ExpiresAt });

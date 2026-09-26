@@ -94,6 +94,13 @@ services:
       Llm__BaseUrl: ${Llm__BaseUrl:-}
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
+      # Email notifications (#355) go out from here: the same SMTP relay as the api's.
+      Email__Host: ${Email__Host:-}
+      Email__Port: ${Email__Port:-587}
+      Email__Username: ${Email__Username:-}
+      Email__Password: ${Email__Password:-}
+      Email__From: ${Email__From:-}
+      Email__FromName: ${Email__FromName:-OSApplyTrack}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:?Set APPLYTRACK_SECRETS_KEY to a long random value (openssl rand -base64 48) and back it up}
       App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:?Set APP_PUBLIC_BASE_URL to the public HTTPS origin}
       Browser__Endpoint: ws://browser:3000/

@@ -8,7 +8,7 @@ using MimeKit;
 namespace ApplyTrack.Api.Auth;
 
 /// <summary>
-/// Real <see cref="IEmailSender"/>: delivers the magic-link email over SMTP via
+/// Real <see cref="IEmailSender"/>: delivers the magic-link email (and notifications) over SMTP via
 /// MailKit (the library Microsoft recommends over the obsolete
 /// <c>System.Net.Mail.SmtpClient</c>). Wired up only when an SMTP host is configured;
 /// otherwise <see cref="ConsoleEmailSender"/> stands in. See <see cref="EmailOptions"/>
@@ -78,15 +78,33 @@ public sealed class SmtpEmailSender(EmailOptions options, ILogger<SmtpEmailSende
                 """,
         }.ToMessageBody();
 
-        using var client = new SmtpClient { Timeout = options.TimeoutSeconds * 1000 };
-        var tls = options.Port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTlsWhenAvailable;
-        await client.ConnectAsync(options.Host, options.Port, tls);
-        if (!string.IsNullOrWhiteSpace(options.Username))
-            await client.AuthenticateAsync(options.Username, options.Password);
-        await client.SendAsync(msg);
-        await client.DisconnectAsync(quit: true);
+        await DeliverAsync(msg, CancellationToken.None);
 
         // Breadcrumb only — never log the link itself (it embeds a live login token).
         log.LogInformation("magic-link emailed to {Email} via {Host}:{Port}", email, options.Host, options.Port);
+    }
+
+    public async Task SendAsync(OutgoingEmail message, CancellationToken ct = default)
+    {
+        var msg = new MimeMessage();
+        msg.From.Add(new MailboxAddress(options.FromName, options.EffectiveFrom));
+        msg.To.Add(MailboxAddress.Parse(message.To));
+        msg.Subject = message.Subject;
+        msg.Body = new BodyBuilder { TextBody = message.TextBody, HtmlBody = message.HtmlBody }.ToMessageBody();
+        await DeliverAsync(msg, ct);
+        log.LogInformation("email sent to {Email} via {Host}:{Port}", message.To, options.Host, options.Port);
+    }
+
+    /// <summary>One connection per message: notifications are rare enough that a pooled
+    /// connection would only be one more thing to go stale.</summary>
+    private async Task DeliverAsync(MimeMessage msg, CancellationToken ct)
+    {
+        using var client = new SmtpClient { Timeout = options.TimeoutSeconds * 1000 };
+        var tls = options.Port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTlsWhenAvailable;
+        await client.ConnectAsync(options.Host, options.Port, tls, ct);
+        if (!string.IsNullOrWhiteSpace(options.Username))
+            await client.AuthenticateAsync(options.Username, options.Password, ct);
+        await client.SendAsync(msg, ct);
+        await client.DisconnectAsync(quit: true, ct);
     }
 }

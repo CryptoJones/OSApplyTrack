@@ -169,6 +169,8 @@ builder.Services.AddScoped(sp => new MailboxSettingsRepo(
 builder.Services.AddScoped(sp => new BoardAccountRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>(), sp.GetRequiredService<ILogger<BoardAccountRepo>>()));
+// Email as the second channel (#355): the same SMTP sender, to the account's own address.
+builder.Services.AddSingleton<EmailNotifier>();
 builder.Services.AddSingleton<PacketReadyNotifier>();
 builder.Services.AddScoped(sp => new NotificationSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,

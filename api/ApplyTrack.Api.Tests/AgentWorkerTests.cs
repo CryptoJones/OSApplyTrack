@@ -1309,6 +1309,27 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task A_real_submission_that_does_not_go_through_moos_why_and_a_dry_run_that_fails_does_not()
+    {
+        // #355: an application meant to be sent and not sent is news; a dry run's failure is
+        // the reconciler's to retry and says nothing.
+        var (conn, t, notifier) = await ParkedTenantAsync();
+        await using var _ = conn;
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("mid-engineer.md", dryRun: true);
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(true, false, link, "", null, [], ["std:first_name"], "the board said the form was incomplete")));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, notifier,
+            browser: FakeBrowser, submitter: fake);
+
+        await worker.DrainSubmitsAsync(CancellationToken.None);
+
+        var failed = Assert.Single(notifier.Sent, m => m.Text.StartsWith("⚠️"));
+        Assert.Contains("High · Engineer", failed.Text);
+        Assert.Contains("the board said the form was incomplete", failed.Text);
+        Assert.DoesNotContain(notifier.Sent, m => m.Text.StartsWith("⚠️") && m.Text.Contains("Mid"));
+    }
+
+    [Fact]
     public async Task The_code_pasted_into_the_app_finishes_the_parked_run_and_the_moo_asked_for_it()
     {
         var (conn, t, notifier) = await ParkedTenantAsync();

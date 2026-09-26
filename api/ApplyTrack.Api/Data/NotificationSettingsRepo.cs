@@ -9,8 +9,17 @@ using Microsoft.Extensions.Logging;
 
 namespace ApplyTrack.Api.Data;
 
-/// <summary>The client-safe view: whether it's on, whether a token is stored (never the token), the chat id.</summary>
-public sealed record TelegramSettingsView(bool Enabled, bool HasBotToken, string ChatId);
+/// <summary>The client-safe view: whether Telegram is on, whether a token is stored (never
+/// the token), the chat id; whether email is on; and which events notify at all.</summary>
+public sealed record TelegramSettingsView(bool Enabled, bool HasBotToken, string ChatId,
+    bool EmailEnabled = false, NotificationEvents? Events = null);
+
+/// <summary>The per-event toggles (#355). They gate every channel; all default on.</summary>
+public sealed record NotificationEvents(bool PacketReady = true, bool SecurityCode = true, bool SubmitFailed = true);
+
+/// <summary>Where a notification goes right now: the Telegram target when that channel is on
+/// and usable, the account's address when email is on, and which events are wanted.</summary>
+public sealed record NotificationChannels(TelegramTarget? Telegram, string? Email, NotificationEvents Events);
 
 /// <summary>A deliverable target: the decrypted token plus the chat id.</summary>
 public sealed record TelegramTarget(string BotToken, string ChatId);
@@ -36,14 +45,40 @@ public sealed class NotificationSettingsRepo
         _log = log;
     }
 
-    private sealed record Row(bool TelegramEnabled, string TelegramBotTokenCiphertext, string TelegramChatId);
+    private sealed record Row(bool TelegramEnabled, string TelegramBotTokenCiphertext, string TelegramChatId,
+        bool EmailEnabled, bool NotifyPacketReady, bool NotifySecurityCode, bool NotifySubmitFailed)
+    {
+        public NotificationEvents Events => new(NotifyPacketReady, NotifySecurityCode, NotifySubmitFailed);
+    }
 
     public async Task<TelegramSettingsView> GetViewAsync()
     {
         var row = await ReadRowAsync();
         return row is null
-            ? new TelegramSettingsView(false, false, "")
-            : new TelegramSettingsView(row.TelegramEnabled, row.TelegramBotTokenCiphertext.Length > 0, row.TelegramChatId);
+            ? new TelegramSettingsView(false, false, "", false, new NotificationEvents())
+            : new TelegramSettingsView(row.TelegramEnabled, row.TelegramBotTokenCiphertext.Length > 0, row.TelegramChatId,
+                row.EmailEnabled, row.Events);
+    }
+
+    /// <summary>
+    /// Every channel a notification should fan out to, in one read: the Telegram target
+    /// (as <see cref="GetTargetAsync"/>) and, when email is on, the account's own address —
+    /// the one it signs in with, read here so it can never be pointed at anyone else.
+    /// </summary>
+    public async Task<NotificationChannels> GetChannelsAsync()
+    {
+        var row = await ReadRowAsync();
+        if (row is null)
+            return new NotificationChannels(null, null, new NotificationEvents());
+        var telegram = row.TelegramEnabled ? Decrypt(row) : null;
+        string? email = null;
+        if (row.EmailEnabled)
+        {
+            email = await _conn.QuerySingleOrDefaultAsync<string?>(
+                "SELECT email::text FROM users WHERE id = @t", new { t = _t });
+            if (string.IsNullOrWhiteSpace(email)) email = null;
+        }
+        return new NotificationChannels(telegram, email, row.Events);
     }
 
     /// <summary>The target to send to, or null when off, unconfigured, or the token can't be decrypted.</summary>
@@ -57,6 +92,11 @@ public sealed class NotificationSettingsRepo
         var row = await ReadRowAsync();
         if (row is null || (requireEnabled && !row.TelegramEnabled))
             return null;
+        return Decrypt(row);
+    }
+
+    private TelegramTarget? Decrypt(Row row)
+    {
         if (row.TelegramBotTokenCiphertext.Length == 0 || row.TelegramChatId.Length == 0 || !_protector.Available)
             return null;
         try
@@ -103,11 +143,33 @@ public sealed class NotificationSettingsRepo
             new { t = _t, enabled, ciphertext, chatId = chatId?.Trim() });
     }
 
+    /// <summary>
+    /// Save the email switch and the per-event toggles. Null leaves a value alone. Email
+    /// needs no address or secret stored: it goes to the account's own address.
+    /// </summary>
+    public async Task UpsertPreferencesAsync(
+        bool? emailEnabled, bool? packetReady = null, bool? securityCode = null, bool? submitFailed = null) =>
+        await _conn.ExecuteAsync(
+            """
+            INSERT INTO notification_settings (
+                tenant_id, email_enabled, notify_packet_ready, notify_security_code, notify_submit_failed, updated_at)
+            VALUES (@t, coalesce(@emailEnabled, false), coalesce(@ready, true), coalesce(@code, true), coalesce(@failed, true), now())
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                email_enabled        = coalesce(@emailEnabled, notification_settings.email_enabled),
+                notify_packet_ready  = coalesce(@ready, notification_settings.notify_packet_ready),
+                notify_security_code = coalesce(@code, notification_settings.notify_security_code),
+                notify_submit_failed = coalesce(@failed, notification_settings.notify_submit_failed),
+                updated_at           = now()
+            """,
+            new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed });
+
     private Task<Row?> ReadRowAsync() =>
         _conn.QuerySingleOrDefaultAsync<Row?>(
             "SELECT telegram_enabled AS telegramenabled, "
             + "telegram_bot_token_ciphertext AS telegrambottokenciphertext, "
-            + "telegram_chat_id AS telegramchatid "
+            + "telegram_chat_id AS telegramchatid, "
+            + "email_enabled AS emailenabled, notify_packet_ready AS notifypacketready, "
+            + "notify_security_code AS notifysecuritycode, notify_submit_failed AS notifysubmitfailed "
             + "FROM notification_settings WHERE tenant_id = @t",
             new { t = _t });
 }
