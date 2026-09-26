@@ -304,6 +304,14 @@ def ssrf_safe_client(*, timeout: float = 12.0) -> httpx.Client:
     return _PinnedClient(timeout=timeout)
 
 
+def is_ssrf_safe(client: object) -> bool:
+    """True when ``client`` came from :func:`ssrf_safe_client` (pins every host it hits).
+
+    A pinned client arms one fetch deadline at a time, so it serves one thread at a time.
+    """
+    return isinstance(client, _PinnedClient)
+
+
 def _host_is_public(host: str) -> bool:
     """True only when every address ``host`` resolves to is a public IP.
 

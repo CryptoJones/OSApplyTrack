@@ -354,7 +354,7 @@ def test_fetch_rss_goes_through_the_ssrf_guard_not_the_shared_client(
     # user-supplied feed URL must be fetched via linkcheck.fetch_public instead.
     requested: list[str] = []
 
-    def fake_fetch_public(url: str) -> bytes:
+    def fake_fetch_public(url: str, **_: object) -> bytes:
         requested.append(url)
         return (
             b'<?xml version="1.0"?><rss><channel><title>Hooli Jobs</title>'
@@ -479,7 +479,7 @@ def test_gather_by_source_fetches_a_shared_feed_once(
 ) -> None:
     calls: list[str] = []
 
-    def fake_fetch_public(url: str) -> bytes:
+    def fake_fetch_public(url: str, **_: object) -> bytes:
         calls.append(url)
         return (
             b'<?xml version="1.0"?><rss><channel><title>Board</title>'
@@ -502,7 +502,7 @@ def test_gather_by_source_fetches_a_shared_feed_once(
 def test_gather_by_source_isolates_a_failing_feed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def boom(url: str) -> bytes:
+    def boom(url: str, **_: object) -> bytes:
         raise PublicFetchError("refused non-public or unpinned address")
 
     monkeypatch.setattr("applytrack.poll.fetch_public", boom)
@@ -1131,3 +1131,209 @@ def test_adzuna_is_recognized_as_aggregator() -> None:
 
     assert is_aggregator_link("https://www.adzuna.com/details/5884140305?v=1FE6A7BEC0A4D518DC63EECDC1")
     assert not is_aggregator_link("https://careers.adzuna-not.com/jobs/1")
+
+
+# -- one probe per URL per run, on a bounded pool (#347) ---------------------------
+
+
+def test_run_bounded_keeps_order_reports_failures_in_place_and_caps_each_host() -> None:
+    import threading
+    import time
+
+    from applytrack.poll import run_bounded
+
+    lock = threading.Lock()
+    live: dict[str, int] = {}
+    peak: dict[str, int] = {}
+
+    def task(host: str, n: int):  # type: ignore[no-untyped-def]
+        def run() -> int:
+            with lock:
+                live[host] = live.get(host, 0) + 1
+                peak[host] = max(peak.get(host, 0), live[host])
+            time.sleep(0.02)
+            with lock:
+                live[host] -= 1
+            if n == 3:
+                raise RuntimeError("boom")
+            return n
+
+        return run
+
+    tasks = [
+        ("a.example" if n % 2 else "b.example", task("a" if n % 2 else "b", n)) for n in range(10)
+    ]
+    out = run_bounded(tasks, workers=8, per_host=2)
+
+    assert [o if not isinstance(o, Exception) else "err" for o in out] == [
+        0, 1, 2, "err", 4, 5, 6, 7, 8, 9,
+    ]
+    assert peak == {"a": 2, "b": 2}  # parallel, but never more than two per host
+
+
+def test_run_all_tenants_resolves_and_probes_a_shared_listing_once_per_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolves: list[str] = []
+    probes: list[str] = []
+
+    def fake_resolve(item: Listing, client: object) -> tuple[str | None, bool]:
+        resolves.append(item.link)
+        return "https://jobs.lever.co/acme/1", True
+
+    def fake_reachable(url: str, *, client: object = None) -> bool:
+        probes.append(url)
+        return True
+
+    monkeypatch.setattr("applytrack.poll._resolve_employer", fake_resolve)
+    monkeypatch.setattr("applytrack.poll.is_reachable", fake_reachable)
+    listing = _lead(
+        "Acme", "Backend Engineer", link="https://remoteok.com/remote-jobs/acme-backend-1"
+    )
+    direct = _lead("Hooli", "Backend Engineer", link="https://hooli.example/jobs/2")
+    profile = Criteria(keywords=["engineer"], sources={"remoteok": True, "remotive": False})
+    repos = {tid: FakeRepo(profile=profile) for tid in (1, 2, 3)}
+
+    results = run_all_tenants(
+        tenant_ids=[1, 2, 3],
+        repo_for=lambda tid: repos[tid],
+        gathered={"remoteok": [listing, direct]},
+        verify_links=True,
+    )
+
+    assert all(len(names) == 2 for names in results.values())
+    assert all(
+        sorted(f.link for f in repo.added)
+        == ["https://hooli.example/jobs/2", "https://jobs.lever.co/acme/1"]
+        for repo in repos.values()
+    )
+    # Three tenants, one resolution and one probe per URL.
+    assert resolves == ["https://remoteok.com/remote-jobs/acme-backend-1"]
+    assert sorted(probes) == ["https://hooli.example/jobs/2", "https://jobs.lever.co/acme/1"]
+
+
+def test_a_link_check_that_raises_skips_the_listing_but_leaves_it_unseen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def flaky(url: str, *, client: object = None) -> bool:
+        if "broken" in url:
+            raise RuntimeError("socket blew up")
+        return True
+
+    monkeypatch.setattr("applytrack.poll.is_reachable", flaky)
+    repo = FakeRepo()
+    listings = [
+        _lead("Acme", "Backend Engineer", link="https://acme.example/broken/1"),
+        _lead("Hooli", "Backend Engineer", link="https://hooli.example/jobs/2"),
+    ]
+
+    added = score_and_stage(repo, Criteria(keywords=["engineer"]), listings, verify_links=True)
+
+    assert [f.company for f in repo.added] == ["Hooli"]
+    assert len(added) == 1
+    # Not recorded as seen: a later run tries the listing again.
+    assert not any("broken" in key for key in repo._seen_urls)
+
+
+def test_a_duplicate_listing_in_one_batch_is_judged_and_staged_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: list[str] = []
+
+    def fake_reachable(url: str, *, client: object = None) -> bool:
+        probes.append(url)
+        return True
+
+    monkeypatch.setattr("applytrack.poll.is_reachable", fake_reachable)
+    repo = FakeRepo()
+    one = _lead("Acme", "Backend Engineer", link="https://acme.example/jobs/1")
+
+    added = score_and_stage(repo, Criteria(keywords=["engineer"]), [one, one], verify_links=True)
+
+    assert len(added) == 1
+    assert probes == ["https://acme.example/jobs/1"]
+
+
+def test_gather_by_source_fetches_feeds_through_an_ssrf_safe_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import is_ssrf_safe
+
+    clients: list[object] = []
+
+    def fake_fetch_public(url: str, *, client: object = None) -> bytes:
+        clients.append(client)
+        return b'<?xml version="1.0"?><rss><channel><title>B</title></channel></rss>'
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", fake_fetch_public)
+    off = {"remotive": False, "remoteok": False}
+    feeds = [f"https://board{n}.example/feed.rss" for n in range(5)]
+    gathered = _gather_by_source([Criteria(sources=off, rss_feeds=feeds)], 40)
+
+    assert set(gathered) == {f"rss:{f}" for f in feeds}
+    assert len(clients) == 5 and all(is_ssrf_safe(c) for c in clients)
+
+
+def test_fetch_rss_reuses_an_ssrf_safe_client_it_is_handed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from applytrack.linkcheck import ssrf_safe_client
+
+    seen: list[object] = []
+
+    def fake_fetch_public(url: str, *, client: object = None) -> bytes:
+        seen.append(client)
+        return b'<?xml version="1.0"?><rss><channel><title>B</title></channel></rss>'
+
+    monkeypatch.setattr("applytrack.poll.fetch_public", fake_fetch_public)
+    with ssrf_safe_client() as pinned:
+        fetch_rss(pinned, 10, "https://board.example/feed.rss")
+        fetch_rss(pinned, 10, "https://board.example/other.rss")
+
+    assert seen == [pinned, pinned]
+
+
+def test_link_cache_computes_a_raced_url_once() -> None:
+    import time
+
+    from applytrack.poll import LinkCache, run_bounded
+
+    cache = LinkCache()
+    calls: list[str] = []
+
+    def probe_once() -> bool:
+        calls.append("x")
+        time.sleep(0.02)
+        return True
+
+    def task() -> bool:
+        return cache.once(cache.reachable, "https://acme.example/1", probe_once)
+
+    assert run_bounded([(f"h{n}", task) for n in range(6)], workers=6) == [True] * 6
+    assert calls == ["x"]
+
+
+def test_run_bounded_interleaves_hosts_so_one_host_cannot_hog_the_pool() -> None:
+    import threading
+    import time
+
+    from applytrack.poll import run_bounded
+
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def task(host: str):  # type: ignore[no-untyped-def]
+        def run() -> str:
+            with lock:
+                started.append(host)
+            time.sleep(0.05)
+            return host
+
+        return run
+
+    tasks = [("slow", task("slow")) for _ in range(6)] + [("fast", task("fast"))]
+    out = run_bounded(tasks, workers=3, per_host=1)
+
+    assert out == ["slow"] * 6 + ["fast"]
+    # The one "fast" task starts among the first wave, not behind six "slow" ones.
+    assert "fast" in started[:3]
