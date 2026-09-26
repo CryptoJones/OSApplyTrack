@@ -293,6 +293,15 @@ public class SubmitEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, shot.StatusCode);
         Assert.Equal("image/png", shot.Content.Headers.ContentType!.MediaType);
         Assert.Equal(png, await shot.Content.ReadAsByteArrayAsync());
+        // Immutable by id (#352): cached for a day, and a revalidation is a 304.
+        var cache = shot.Headers.CacheControl!;
+        Assert.True(cache.Private);
+        Assert.Equal(TimeSpan.FromDays(1), cache.MaxAge);
+        Assert.Contains(cache.Extensions, e => e.Name == "immutable");
+        Assert.Equal($"\"ev-{id}\"", shot.Headers.ETag!.Tag);
+        using var again = new HttpRequestMessage(HttpMethod.Get, $"/api/apps/{name}/evidence/{id}/screenshot.png");
+        again.Headers.IfNoneMatch.Add(shot.Headers.ETag);
+        Assert.Equal(HttpStatusCode.NotModified, (await client.SendAsync(again)).StatusCode);
 
         // Another tenant sees nothing.
         var (other, _) = await ClientAsync();

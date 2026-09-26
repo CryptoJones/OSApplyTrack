@@ -39,4 +39,20 @@ public class MigrationScaffoldTests(PostgresFixture pg)
 
         Assert.True(count >= 1, "DbUp should have journaled the 0000_extensions.sql migration.");
     }
+
+    // LinkedIn pacing's count of recent submissions is a range on this index (#352).
+    [Fact]
+    public async Task Submitted_evidence_has_its_partial_index()
+    {
+        await using var conn = new NpgsqlConnection(pg.ConnectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = new NpgsqlCommand(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'agent_evidence_tenant_submitted_idx'", conn);
+        var def = (string?)await cmd.ExecuteScalarAsync();
+
+        Assert.NotNull(def);
+        Assert.Contains("(tenant_id, created_at)", def);
+        Assert.Contains("'submitted'", def);
+    }
 }

@@ -104,6 +104,46 @@ public class OpenAiCompatibleLlmClientTests
         Assert.Equal("the LLM endpoint returned HTTP 502", ex.Message);
     }
 
+    // The deadline is the call's own cancellation now that the client is shared (#352).
+    [Fact]
+    public async Task A_call_past_its_timeout_is_unavailable_not_a_caller_cancel()
+    {
+        var client = new OpenAiCompatibleLlmClient(new HangingFactory(), NullLogger<OpenAiCompatibleLlmClient>.Instance);
+        var cfg = new EffectiveLlmConfig("https://llm.example/v1", "m", null, 1);
+
+        var ex = await Assert.ThrowsAsync<LlmUnavailableException>(() => client.CompleteAsync("s", "u", cfg));
+        Assert.Contains("could not reach", ex.Message);
+    }
+
+    // One pooled handler serves every tenant endpoint (#352); its ConnectCallback still
+    // vets each new connection, call after call.
+    [Theory]
+    [InlineData("http://127.0.0.1:9/v1")]
+    [InlineData("http://10.0.0.5:8080/v1")]
+    public async Task The_shared_tenant_client_still_refuses_private_addresses(string baseUrl)
+    {
+        var client = NewClient(new HttpResponseMessage(HttpStatusCode.OK));
+        var cfg = new EffectiveLlmConfig(baseUrl, "m", null, 5, TenantBaseUrl: true);
+
+        for (var i = 0; i < 2; i++)
+            await Assert.ThrowsAsync<AppValidationException>(() => client.CompleteAsync("s", "u", cfg));
+    }
+
+    private sealed class HangingFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new HangingHandler()) { Timeout = Timeout.InfiniteTimeSpan };
+    }
+
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
     private static OpenAiCompatibleLlmClient NewClient(HttpResponseMessage response) =>
         new(new SingleClientFactory(response), NullLogger<OpenAiCompatibleLlmClient>.Instance);
 

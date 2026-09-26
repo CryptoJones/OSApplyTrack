@@ -95,7 +95,11 @@ builder.Services.AddSingleton(llmOptions);
 var secretKey = SecretKeySource.Resolve(builder.Configuration);
 builder.Services.AddSingleton(new SecretProtector(secretKey.Key, secretKey.Previous));
 builder.Services.AddHttpClient();
+// The operator's endpoint: its deadline is the call's own cancellation (#352), not the
+// 100-second HttpClient default, which would cut a slow local model short.
+builder.Services.AddHttpClient("llm", c => c.Timeout = Timeout.InfiniteTimeSpan);
 builder.Services.AddSingleton<ILlmClient, OpenAiCompatibleLlmClient>();
+builder.Services.AddScopedResponseCompression();
 builder.Services.AddSingleton<CoverLetterDrafter>();
 builder.Services.AddScoped(sp => new ResumeRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
@@ -334,6 +338,10 @@ app.UseMiddleware<JsonBodyLimitMiddleware>();
 // Serve the vanilla-JS SPA verbatim from wwwroot (index.html as the default doc).
 // Static files short-circuit before the tenancy middleware, so the shell loads
 // without a session and the SPA's own login gate handles the 401s on /api.
+// Brotli/gzip (#352) for the SPA's static files and the three big polled lists only.
+// Not every response: compressing one that reflects attacker input beside a secret is
+// what BREACH exploits, and these carry the tenant's own data, never a token.
+app.UseWhen(ResponseCompressionScope.Applies, a => a.UseResponseCompression());
 app.UseDefaultFiles();
 // The SPA's script URLs never change between releases, so browsers must revalidate
 // (a cheap 304 on the ETag) instead of running a heuristically cached old app.js.

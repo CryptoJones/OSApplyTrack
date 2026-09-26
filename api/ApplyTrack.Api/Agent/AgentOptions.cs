@@ -31,6 +31,8 @@ public sealed class AgentOptions
     public int SecurityCodeWaitSeconds { get; set; } = 480;
 
     /// <summary>The worker's own, small connection pool — it holds a connection across
-    /// model calls and must not be able to starve the request pool.</summary>
-    public int MaxPoolSize { get; set; } = 4;
+    /// model calls and must not be able to starve the request pool. Eight, not four (#352):
+    /// at peak a pass, a submit run parked up to eight minutes on a security code, the code
+    /// poll and the heartbeat held all four at once.</summary>
+    public int MaxPoolSize { get; set; } = 8;
 }

@@ -67,7 +67,9 @@ public sealed partial class ApplicationRepo
         var rows = await _conn.QueryAsync<AppRow>(
             """
             SELECT id, name, company, role, lane, status, contact, contact_email,
-                   applied, followup, created, score, link, notes
+                   applied, followup, created, score, link,
+                   -- a 160-char snippet needs the head of the notes, not all 64 KB (#352)
+                   left(notes, 1024) AS notes
             FROM applications
             WHERE tenant_id = @t
             ORDER BY array_position(@order, status), lower(company)
