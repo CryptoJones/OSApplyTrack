@@ -135,6 +135,13 @@ async function mockApi(page) {
       experience: [], skills: [], certifications: [], links: [],
     };
     else if (path === "/api/blacklist") body = [];
+    else if (path === "/api/account/sessions" && method === "GET") body = [
+      { id: "a".repeat(64), created_at: "2026-09-20T12:00:00Z", last_seen_at: "2026-09-25T12:00:00Z",
+        expires_at: "2026-10-25T12:00:00Z", user_agent: "Firefox on Linux", current: true },
+      { id: "b".repeat(64), created_at: "2026-09-01T12:00:00Z", last_seen_at: "2026-09-02T12:00:00Z",
+        expires_at: "2026-10-02T12:00:00Z", user_agent: "Safari on iPhone", current: false },
+    ];
+    else if (path === "/api/account/sessions" && method === "DELETE") body = { revoked: 1 };
   else if (path === "/api/answers") body = [
     { key: "salary requirements", label: "Salary Requirements", help: "", type: "text", options: [], answer: "125000", source: "agent",
       first_application: "acme-engineer.md", times_seen: 3, first_seen_at: "2026-09-10T12:00:00Z", last_seen_at: "2026-09-13T12:00:00Z", updated_at: "2026-09-13T12:00:00Z" },
@@ -613,6 +620,25 @@ test("sign-in requires accepting the terms, which are readable from the form", a
   await expect(send).toBeEnabled();
   await accept.uncheck();
   await expect(send).toBeDisabled();
+});
+
+test("the Account tab lists signed-in browsers and signs out everywhere else", async ({ page }) => {
+  let revoked = false;
+  page.on("request", (r) => {
+    if (r.method() === "DELETE" && new URL(r.url()).pathname === "/api/account/sessions") revoked = true;
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Account" }).click();
+
+  const list = page.getByRole("list", { name: "Where you're signed in" });
+  await expect(list).toContainText("Firefox on Linux");
+  await expect(list).toContainText("(this browser)");
+  await expect(list).toContainText("Safari on iPhone");
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "Sign out everywhere else" }).click();
+  await expect(page.locator("#toast")).toHaveText("Signed out 1 other session.");
+  expect(revoked).toBe(true);
 });
 
 test("DELETE MY DATA needs the phrase typed before it will fire", async ({ page }) => {

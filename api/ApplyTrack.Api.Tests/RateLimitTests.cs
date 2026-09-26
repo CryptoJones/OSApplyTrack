@@ -144,6 +144,33 @@ public class RateLimitTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, other.StatusCode);
     }
 
+    // The model-backed routes are metered per tenant as well as per IP (#346), so one
+    // account spread across many addresses still runs out.
+    [Fact]
+    public async Task Draft_routes_are_throttled_per_tenant_across_client_ips()
+    {
+        await using var trustedFactory = CreateFactory(trustProxy: true);
+        var client = await AuthenticatedClient(trustedFactory);
+
+        for (var i = 0; i < 10; i++)
+        {
+            client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+            client.DefaultRequestHeaders.Add("X-Forwarded-For", $"203.0.113.{i + 1}");
+            var res = await client.PostAsync("/api/apps/no-such-app/draft", null);
+            Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+        }
+
+        client.DefaultRequestHeaders.Remove("X-Forwarded-For");
+        client.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.99");
+        var rejected = await client.PostAsync("/api/apps/no-such-app/verdict", null);
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+
+        // A different tenant on that same fresh address is unaffected.
+        var other = await AuthenticatedClient(trustedFactory);
+        other.DefaultRequestHeaders.Add("X-Forwarded-For", "198.51.100.100");
+        Assert.Equal(HttpStatusCode.NotFound, (await other.PostAsync("/api/apps/no-such-app/draft", null)).StatusCode);
+    }
+
     private static MultipartFormDataContent NotAPdf()
     {
         var form = new MultipartFormDataContent();

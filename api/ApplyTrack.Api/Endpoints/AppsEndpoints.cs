@@ -120,7 +120,7 @@ public static class AppsEndpoints
             string name,
             ApplicationRepo apps, ResumeRepo resumes, LlmSettingsRepo llm,
             LlmOptions instance, CoverLetterDrafter drafter, CoverLetterRepo letters,
-            JobPageFetcher fetcher, ILoggerFactory loggers,
+            JobPageFetcher fetcher, ILoggerFactory loggers, LlmUsageRepo usage,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -135,6 +135,7 @@ public static class AppsEndpoints
 
             var resume = await resumes.GetAsync();
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
+            await usage.ChargeAsync(cfg);
             var posting = await ReadPostingAsync(
                 rec.Fields.Link, fetcher, loggers.CreateLogger("ApplyTrack.Api.Draft"), ct);
             var body = await drafter.DraftAsync(

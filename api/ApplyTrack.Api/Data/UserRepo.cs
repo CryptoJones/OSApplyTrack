@@ -16,6 +16,11 @@ public sealed record User(long Id, string Email, string Status);
 /// </summary>
 public sealed class UserRepo
 {
+    /// <summary>The only <c>users.status</c> that may sign in. An operator disables an
+    /// account by setting anything else (e.g. <c>'disabled'</c>); its sessions stop
+    /// resolving on the next request (#346).</summary>
+    public const string Active = "active";
+
     private readonly IDbConnection _conn;
 
     public UserRepo(IDbConnection conn) => _conn = conn;

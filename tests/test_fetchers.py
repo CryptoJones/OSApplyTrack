@@ -145,6 +145,19 @@ def test_fetch_weworkremotely_parses_rss_title() -> None:
     assert out[0].description == "Scale it"
 
 
+@pytest.mark.parametrize("fetch", [fetch_greenhouse, fetch_lever])
+def test_ats_fetchers_refuse_a_slug_that_could_rewrite_the_url(
+    fetch: Callable[[httpx.Client, int, str], object],
+) -> None:
+    """Last line of defence (#346): never build a URL from an unsafe board slug."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"no request should be made, got {request.url}")
+
+    with pytest.raises(ValueError, match="invalid ATS board slug"):
+        fetch(_client(handler), 40, "x/../../other?y=")
+
+
 def test_fetch_greenhouse_parses() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

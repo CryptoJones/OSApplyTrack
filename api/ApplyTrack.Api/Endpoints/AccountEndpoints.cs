@@ -182,6 +182,27 @@ public static class AccountEndpoints
             ctx.Response.Cookies.Delete(AuthCookie.Name, AuthCookie.DeleteOptions(ctx.Request.IsHttps));
             return Results.NoContent();
         });
+
+        // Where am I signed in (#346): this account's live sessions — created, last used,
+        // expiry, browser — with the one this request came from flagged "current".
+        app.MapGet("/api/account/sessions", async (TenantContext tenant, SessionRepo sessions) =>
+            Results.Ok(await sessions.ListAsync(tenant.TenantId, tenant.SessionId)));
+
+        // Sign out everywhere else: revoke every session but this browser's. Logging this
+        // one out too is POST /api/auth/logout.
+        app.MapDelete("/api/account/sessions", async (TenantContext tenant, SessionRepo sessions) =>
+            Results.Ok(new { revoked = await sessions.DeleteOthersAsync(tenant.TenantId, tenant.SessionId) }));
+
+        // Revoke one listed session. Revoking this browser's own also clears its cookie.
+        app.MapDelete("/api/account/sessions/{id}", async (
+            string id, HttpContext ctx, TenantContext tenant, SessionRepo sessions) =>
+        {
+            if (!await sessions.DeleteByIdAsync(tenant.TenantId, id))
+                throw new AppNotFoundException("session not found");
+            if (id == tenant.SessionId)
+                ctx.Response.Cookies.Delete(AuthCookie.Name, AuthCookie.DeleteOptions(ctx.Request.IsHttps));
+            return Results.NoContent();
+        });
     }
 
     /// <summary>The export envelope — a versioned, self-describing migration snapshot.</summary>

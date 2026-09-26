@@ -37,6 +37,8 @@ services:
       Llm__BaseUrl: ${Llm__BaseUrl:-}
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}
+      # Daily per-tenant cap on model requests made with the key above (0 = unlimited).
+      Llm__DailyCapPerTenant: ${Llm__DailyCapPerTenant:-200}
       # Encryption at rest for résumés, letters, packets, screenshots and tenant secrets.
       # Required here: the hardened containers are read-only, so the app cannot generate
       # and keep a key file itself — the operator manages the key (and backs it up).

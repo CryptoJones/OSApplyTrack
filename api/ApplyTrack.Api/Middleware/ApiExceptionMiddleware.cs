@@ -44,6 +44,10 @@ public sealed class ApiExceptionMiddleware
         {
             await WriteDetail(context, StatusCodes.Status400BadRequest, ex.Message);
         }
+        catch (AppRateLimitedException ex)
+        {
+            await WriteDetail(context, StatusCodes.Status429TooManyRequests, ex.Message);
+        }
         catch (LlmUnavailableException ex)
         {
             // Upstream LLM problem, not a client error: surface the (safe) message so

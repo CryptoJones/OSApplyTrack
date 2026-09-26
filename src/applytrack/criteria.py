@@ -44,6 +44,16 @@ ATS_PROVIDERS = ("greenhouse", "lever", "paylocity")
 # .NET side, which normalizes the same way on the write path.
 _PAYLOCITY_GUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
+# A Greenhouse / Lever board token. The fetchers paste it into a URL path on the
+# provider's host, so anything else (``/``, ``..``, ``?``, ``#``) could rewrite that
+# path or query (#346). Mirrors AtsBoard.IsBoardSlug on the .NET side.
+_BOARD_SLUG_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+def is_board_slug(slug: str) -> bool:
+    """True when ``slug`` is safe to use as a Greenhouse / Lever board token."""
+    return _BOARD_SLUG_RE.fullmatch(slug) is not None
+
 # The original per-lane keyword lists, flattened (order-preserving, de-duped) into
 # one flat match list — the default the UI's keyword box starts from.
 DEFAULT_KEYWORDS: tuple[str, ...] = (
@@ -86,6 +96,8 @@ class AtsBoard:
             # Users paste the board URL; keep only the GUID it contains.
             found = _PAYLOCITY_GUID_RE.search(slug)
             slug = found.group(0).lower() if found else ""
+        elif not is_board_slug(slug):
+            return None
         if provider not in ATS_PROVIDERS or not slug:
             return None
         return cls(provider=provider, slug=slug)

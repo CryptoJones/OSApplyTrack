@@ -13,6 +13,10 @@ public sealed class TenantContext
 {
     public long? UserId { get; set; }
 
+    /// <summary>The stored (hashed) id of the session this request rode in on, so account
+    /// endpoints can tell "this browser" apart from the user's other sessions.</summary>
+    public string? SessionId { get; set; }
+
     public bool IsAuthenticated => UserId is not null;
 
     /// <summary>

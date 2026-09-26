@@ -8,6 +8,7 @@ from applytrack.criteria import (
     DEFAULT_KEYWORDS,
     MAX_RSS_FEEDS,
     Criteria,
+    is_board_slug,
 )
 
 
@@ -41,6 +42,33 @@ def test_from_dict_dedupes_and_validates_boards() -> None:
         }
     )
     assert [(b.provider, b.slug) for b in c.ats_boards] == [("greenhouse", "stripe")]
+
+
+def test_from_dict_drops_board_slugs_that_could_rewrite_the_url() -> None:
+    """Greenhouse/Lever slugs are path segments on the provider's host (#346)."""
+    c = Criteria.from_dict(
+        {
+            "ats_boards": [
+                {"provider": "greenhouse", "slug": "x/../../other?y="},
+                {"provider": "lever", "slug": "netflix#frag"},
+                {"provider": "lever", "slug": "a b"},
+                {"provider": "greenhouse", "slug": "x" * 101},
+                {"provider": "greenhouse", "slug": "ok_Slug-1"},
+                {"provider": "lever", "slug": "x" * 100},
+            ]
+        }
+    )
+    assert [(b.provider, b.slug) for b in c.ats_boards] == [
+        ("greenhouse", "ok_Slug-1"),
+        ("lever", "x" * 100),
+    ]
+
+
+def test_is_board_slug() -> None:
+    assert is_board_slug("stripe")
+    assert is_board_slug("a-b_C9")
+    for bad in ("", "a/b", "..", "a?b", "a#b", "a%2Fb", "a\n", "é", "x" * 101):
+        assert not is_board_slug(bad), bad
 
 
 def test_from_dict_normalizes_a_paylocity_board_url_to_its_guid() -> None:
