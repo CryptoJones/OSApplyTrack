@@ -81,24 +81,29 @@ public static class Retention
 
     public static async Task<RetentionResult> SweepTenantAsync(IDbConnection conn, long t, RetentionOptions o)
     {
-        var screenshots = o.ScreenshotDays <= 0 ? 0 : await conn.ExecuteAsync(
+        // In batches: the first sweep of a long-running instance can have a lot to clear,
+        // and one statement over all of it would hold its row locks for the whole run.
+        var screenshots = o.ScreenshotDays <= 0 ? 0 : await BatchedAsync(conn,
             """
-            UPDATE agent_evidence e SET screenshot = NULL
-            WHERE e.tenant_id = @t AND e.screenshot IS NOT NULL
-              AND e.kind <> 'submitted'
-              AND e.created_at < now() - make_interval(days => @days)
-              AND NOT EXISTS (SELECT 1 FROM applications a
-                              WHERE a.tenant_id = e.tenant_id AND a.name = e.application_name
-                                AND a.status = 'ready')
-              AND e.id NOT IN (
-                  SELECT id FROM (
-                      SELECT id, row_number() OVER (PARTITION BY application_name
-                                                    ORDER BY created_at DESC, id DESC) AS n
-                      FROM agent_evidence
-                      WHERE tenant_id = @t AND screenshot IS NOT NULL) newest
-                  WHERE n <= @keep)
+            UPDATE agent_evidence SET screenshot = NULL
+            WHERE id IN (
+                SELECT e.id FROM agent_evidence e
+                WHERE e.tenant_id = @t AND e.screenshot IS NOT NULL
+                  AND e.kind <> 'submitted'
+                  AND e.created_at < now() - make_interval(days => @days)
+                  AND NOT EXISTS (SELECT 1 FROM applications a
+                                  WHERE a.tenant_id = e.tenant_id AND a.name = e.application_name
+                                    AND a.status = 'ready')
+                  AND e.id NOT IN (
+                      SELECT id FROM (
+                          SELECT id, row_number() OVER (PARTITION BY application_name
+                                                        ORDER BY created_at DESC, id DESC) AS n
+                          FROM agent_evidence
+                          WHERE tenant_id = @t AND screenshot IS NOT NULL) newest
+                      WHERE n <= @keep)
+                LIMIT @batch)
             """,
-            new { t, days = o.ScreenshotDays, keep = Math.Max(0, o.ScreenshotsKeptPerApplication) });
+            new { t, days = o.ScreenshotDays, keep = Math.Max(0, o.ScreenshotsKeptPerApplication), batch = Batch });
 
         var grace = Math.Max(0, o.ExpiredGraceDays);
         var sessions = await conn.ExecuteAsync(
@@ -108,22 +113,36 @@ public static class Retention
             "DELETE FROM magic_tokens WHERE user_id = @t AND expires_at < now() - make_interval(days => @grace)",
             new { t, grace });
 
-        var events = o.AgentEventDays <= 0 ? 0 : await conn.ExecuteAsync(
+        var events = o.AgentEventDays <= 0 ? 0 : await BatchedAsync(conn,
             """
-            DELETE FROM agent_events v
-            WHERE v.tenant_id = @t AND v.created_at < now() - make_interval(days => @days)
-              AND v.kind <> ALL(@kept)
-              AND NOT EXISTS (SELECT 1 FROM applications a
-                              WHERE a.tenant_id = v.tenant_id AND a.name = v.application_name
-                                AND a.status IN ('lead', 'ready'))
+            DELETE FROM agent_events WHERE id IN (
+                SELECT v.id FROM agent_events v
+                WHERE v.tenant_id = @t AND v.created_at < now() - make_interval(days => @days)
+                  AND v.kind <> ALL(@kept)
+                  AND NOT EXISTS (SELECT 1 FROM applications a
+                                  WHERE a.tenant_id = v.tenant_id AND a.name = v.application_name
+                                    AND a.status IN ('lead', 'ready'))
+                LIMIT @batch)
             """,
-            new { t, days = o.AgentEventDays, kept = KeptEventKinds });
+            new { t, days = o.AgentEventDays, kept = KeptEventKinds, batch = Batch });
 
         var seen = o.SeenDays <= 0 ? 0 : await conn.ExecuteAsync(
             "DELETE FROM seen WHERE tenant_id = @t AND created_at < now() - make_interval(days => @days)",
             new { t, days = o.SeenDays });
 
         return new RetentionResult(screenshots, sessions, tokens, events, seen);
+    }
+
+    /// <summary>Rows per statement for the two steps that can have a backlog.</summary>
+    internal const int Batch = 1000;
+
+    private static async Task<int> BatchedAsync(IDbConnection conn, string sql, object args)
+    {
+        var total = 0;
+        int n;
+        do total += n = await conn.ExecuteAsync(sql, args);
+        while (n > 0);
+        return total;
     }
 }
 

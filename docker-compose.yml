@@ -41,6 +41,11 @@ services:
       Retention__ScreenshotDays: ${Retention__ScreenshotDays:-90}
       Retention__AgentEventDays: ${Retention__AgentEventDays:-180}
       Retention__SeenDays: ${Retention__SeenDays:-0}
+      Retention__Enabled: ${Retention__Enabled:-true}
+      Retention__IntervalHours: ${Retention__IntervalHours:-24}
+      Retention__InitialDelaySeconds: ${Retention__InitialDelaySeconds:-300}
+      Retention__ScreenshotsKeptPerApplication: ${Retention__ScreenshotsKeptPerApplication:-3}
+      Retention__ExpiredGraceDays: ${Retention__ExpiredGraceDays:-1}
       # Encryption at rest is always on. Leave this unset and the api generates a key on
       # first run into the `secrets` volume below (shared with the agent and the poller,
       # which must decrypt the same rows); set it to manage the key yourself. Back the key
