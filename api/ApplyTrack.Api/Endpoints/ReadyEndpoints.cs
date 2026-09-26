@@ -52,15 +52,18 @@ public static class ReadyEndpoints
             var skipped = new List<object>();
             void Skip(string name, string reason) => skipped.Add(new { name, reason });
 
+            // One read of the few columns the actions decide on, then set-based writes:
+            // a 200-name batch is a handful of statements, not 600 round trips (#351).
+            var briefs = await apps.BriefsAsync(names);
+
             if (action == "pass")
             {
+                var moved = (await apps.SetStatusAsync(names, "passed")).ToHashSet(StringComparer.Ordinal);
                 foreach (var name in names)
                 {
-                    var rec = await apps.GetAsync(name);
-                    if (rec is null) { Skip(name, "not found"); continue; }
-                    if (rec.Fields.Status is "passed") { Skip(name, "already passed"); continue; }
-                    await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "passed" }, null);
-                    done.Add(rec.Name);
+                    if (moved.Contains(name)) done.Add(name);
+                    else if (!briefs.ContainsKey(name)) Skip(name, "not found");
+                    else Skip(name, "already passed");
                 }
                 return Results.Ok(new { action, done, skipped });
             }
@@ -75,9 +78,8 @@ public static class ReadyEndpoints
             {
                 foreach (var name in names)
                 {
-                    var rec = await apps.GetAsync(name);
-                    if (rec is null) { Skip(name, "not found"); continue; }
-                    if (rec.Fields.Link.Length == 0) { Skip(name, "no posting link"); continue; }
+                    if (!briefs.TryGetValue(name, out var rec)) { Skip(name, "not found"); continue; }
+                    if (rec.Link.Length == 0) { Skip(name, "no posting link"); continue; }
                     if (await queue.EnqueueAsync(rec.Name, dryRun: true, prepare: true)) done.Add(rec.Name);
                     else Skip(rec.Name, "already queued");
                 }
@@ -94,19 +96,18 @@ public static class ReadyEndpoints
                 done.AddRange(await ReadyPromoter.PromoteCleanAsync(conn, tenant.TenantId, protector, settings.LongTail, dryRun: false, settings.LinkedInEasy));
                 return Results.Json(new { action, dry_run = false, done, skipped }, statusCode: StatusCodes.Status202Accepted);
             }
+            var gates = await packets.GatesAsync(briefs.Keys);
             foreach (var name in names)
             {
-                var rec = await apps.GetAsync(name);
-                if (rec is null) { Skip(name, "not found"); continue; }
-                if (rec.Fields.Link.Length == 0) { Skip(name, "no posting link"); continue; }
-                var packet = await packets.GetAsync(rec.Name);
-                if (packet is null) { Skip(rec.Name, "no packet — prepare it first"); continue; }
+                if (!briefs.TryGetValue(name, out var rec)) { Skip(name, "not found"); continue; }
+                if (rec.Link.Length == 0) { Skip(name, "no posting link"); continue; }
+                if (!gates.TryGetValue(rec.Name, out var packet)) { Skip(rec.Name, "no packet — prepare it first"); continue; }
                 if (!AtsProvider.BrowserCanSubmit(packet.Provider, settings.LongTail, settings.LinkedInEasy))
                 {
                     Skip(rec.Name, SubmitEndpoints.CannotDrive(packet.Provider));
                     continue;
                 }
-                var blocking = packet.BlockingReview().Count();
+                var blocking = packet.Blocking;
                 if (!dryRun && blocking > 0)
                 {
                     Skip(rec.Name, $"{blocking} required answer(s) still need you");

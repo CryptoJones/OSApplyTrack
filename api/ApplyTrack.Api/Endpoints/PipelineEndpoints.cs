@@ -63,6 +63,7 @@ public static class PipelineEndpoints
             var allowed = await agentSettings.IsAllowedAsync();
             var pending = await queue.PendingAsync();
             var latest = await evidence.LatestPerApplicationAsync(pending.Select(p => p.ApplicationName));
+            var gates = await packets.GatesAsync(pending.Select(p => p.ApplicationName));
             var now = DateTimeOffset.UtcNow;
 
             var rows = new List<QueueRow>(pending.Count);
@@ -71,8 +72,8 @@ public static class PipelineEndpoints
             {
                 position++;
                 latest.TryGetValue(p.ApplicationName, out var last);
-                var packet = await packets.GetAsync(p.ApplicationName);
-                var blocking = packet?.BlockingReview().Count() ?? 0;
+                var packet = gates.GetValueOrDefault(p.ApplicationName);
+                var blocking = packet?.Blocking ?? 0;
                 // With the source: it alone tells a LinkedIn Easy Apply posting from a LinkedIn listing (#278).
                 var provider = AtsProvider.Detect(p.Link, p.Source);
                 var canDrive = p.Link.Length > 0 && AtsProvider.BrowserCanSubmit(provider, settings.LongTail, settings.LinkedInEasy);

@@ -219,6 +219,104 @@ public class RepoTests(PostgresFixture pg)
         Assert.Single(await repo.ListAsync());
     }
 
+    private static async Task<long> RevisionAsync(NpgsqlConnection conn, long t) =>
+        await conn.QuerySingleAsync<long>("SELECT applications_revision FROM users WHERE id = @t", new { t });
+
+    [Fact]
+    public async Task Batch_import_writes_in_chunks_and_moves_the_list_revision_once_per_statement()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ApplicationRepo(conn, t);
+        await repo.CreateAsync(Fields("Keep", "Me", notes: "local"));
+
+        // 1500 rows is two INSERTs; the slug the file repeats keeps its last occurrence.
+        var items = Enumerable.Range(0, 1500)
+            .Select(i => ($"co-{i}.md", Fields($"Co {i}", "Engineer")))
+            .Append(("co-7.md", Fields("Co 7", "Engineer", status: "applied", notes: "later")))
+            .ToList();
+        var before = await RevisionAsync(conn, t);
+        await repo.UpsertManyAsync(items);
+        // Per statement, not per row (#351): a 10k import no longer rewrites the users row 10k times.
+        Assert.Equal(before + 2, await RevisionAsync(conn, t));
+        Assert.Equal(1501, (await repo.ListAsync()).Count);
+        var seven = await repo.GetAsync("co-7.md");
+        Assert.Equal(("applied", "later", 1L), (seven!.Fields.Status, seven.Fields.Notes, seven.Version));
+
+        // Re-importing overwrites by slug and bumps each version.
+        await repo.UpsertManyAsync([("co-7.md", Fields("Co 7", "Engineer", status: "offer"))]);
+        Assert.Equal(("offer", 2L), ((await repo.GetAsync("co-7.md"))!.Fields.Status, (await repo.GetAsync("co-7.md"))!.Version));
+
+        // A statement that changes nothing leaves the revision alone.
+        var settled = await RevisionAsync(conn, t);
+        await conn.ExecuteAsync("UPDATE applications SET notes = 'x' WHERE tenant_id = @t AND name = 'nobody.md'", new { t });
+        Assert.Equal(settled, await RevisionAsync(conn, t));
+        await repo.DeleteAsync("co-0.md");
+        Assert.Equal(settled + 1, await RevisionAsync(conn, t));
+    }
+
+    [Fact]
+    public async Task Batch_insert_if_absent_leaves_existing_rows_alone_and_counts_only_new_ones()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ApplicationRepo(conn, t);
+        var mine = await repo.CreateAsync(Fields("Acme Corp", "Engineer", status: "applied", notes: "mine"));
+
+        var added = await repo.InsertManyIfAbsentAsync([
+            (mine, Fields("Acme Corp", "Engineer")),
+            ("globex-sre.md", Fields("Globex", "SRE", notes: "first")),
+            ("globex-sre.md", Fields("Globex", "SRE", notes: "second")),
+        ]);
+        Assert.Equal(1, added);
+        Assert.Equal(("applied", "mine"), ((await repo.GetAsync(mine))!.Fields.Status, (await repo.GetAsync(mine))!.Fields.Notes));
+        Assert.Equal("first", (await repo.GetAsync("globex-sre.md"))!.Fields.Notes);
+    }
+
+    [Fact]
+    public async Task Set_status_moves_many_in_one_statement_and_names_only_those_that_moved()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ApplicationRepo(conn, t);
+        var a = await repo.CreateAsync(Fields("Acme", "Engineer", status: "ready"));
+        var b = await repo.CreateAsync(Fields("Globex", "Engineer", status: "passed"));
+
+        Assert.Equal([a], await repo.SetStatusAsync([a, b, "nobody.md"], "passed"));
+        Assert.Equal(("passed", 2L), ((await repo.GetAsync(a))!.Fields.Status, (await repo.GetAsync(a))!.Version));
+        Assert.Equal(1, (await repo.GetAsync(b))!.Version);
+
+        var briefs = await repo.BriefsAsync([a, "globex-engineer", "nobody.md"]);
+        Assert.Equal([a, b], briefs.Keys.Order());
+        Assert.Equal("passed", briefs[b].Status);
+    }
+
+    [Fact]
+    public async Task Packet_gates_read_many_packets_in_one_query_and_count_only_required_review_items()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var apps = new ApplicationRepo(conn, t);
+        var packets = new AgentPacketRepo(conn, t, TestAuth.Protector);
+        var a = await apps.CreateAsync(Fields("Acme", "Engineer"));
+        var b = await apps.CreateAsync(Fields("Globex", "Engineer"));
+        await packets.UpsertAsync(new AgentPacket
+        {
+            ApplicationName = a, Provider = "lever", PostingExcerpt = "sealed", Answers = new() { ["x"] = "sealed" },
+            Questions = [new("req", "Why us?", true, PacketQuestion.Text, [], PacketQuestion.Custom),
+                         new("opt", "Anything else?", false, PacketQuestion.Textarea, [], PacketQuestion.Custom)],
+            NeedsReview = [new("req", "required"), new("opt", "declined"), new("gone", "question removed")],
+        });
+
+        var gates = await packets.GatesAsync([a, b]);
+        var gate = Assert.Single(gates).Value;
+        Assert.Equal("lever", gate.Provider);
+        // The optional item never blocks; a review item whose question is gone does — as BlockingReview says.
+        Assert.Equal((await packets.GetAsync(a))!.BlockingReview().Count(), gate.Blocking);
+        Assert.Equal(2, gate.Blocking);
+        Assert.Empty(await packets.GatesAsync([]));
+    }
+
     [Fact]
     public async Task Criteria_defaults_when_absent_then_round_trips_after_upsert()
     {

@@ -216,71 +216,127 @@ public sealed partial class ApplicationRepo
     }
 
     /// <summary>
-    /// Insert-or-overwrite an application keyed on its slug <c>name</c> — the importer's
-    /// path. Used by the account import: an incoming app replaces a matching local one
-    /// (bumping <c>version</c>) and a brand-new slug is inserted. Slug-preserving so apply
-    /// links survive the move. The C# twin of the Python <c>importer.py</c> upsert; runs
-    /// inside the caller's transaction when one is supplied so the whole import is atomic.
+    /// Insert-or-overwrite an application keyed on its slug <c>name</c>. The one-row form of
+    /// <see cref="UpsertManyAsync"/>.
     /// </summary>
-    public async Task UpsertByNameAsync(string name, AppFields raw, IDbTransaction? tx = null)
+    public Task UpsertByNameAsync(string name, AppFields raw, IDbTransaction? tx = null) =>
+        WriteManyAsync([(name, raw)], overwrite: true, tx);
+
+    /// <summary>
+    /// Insert-or-overwrite applications keyed on their slug <c>name</c> — the account
+    /// import's path: an incoming app replaces a matching local one (bumping
+    /// <c>version</c>) and a brand-new slug is inserted. Slug-preserving so apply links
+    /// survive the move. The C# twin of the Python <c>importer.py</c> upsert; runs inside
+    /// the caller's transaction when one is supplied so the whole import is atomic. A slug
+    /// the batch repeats keeps its last occurrence, as a row-by-row load would.
+    /// </summary>
+    public Task<int> UpsertManyAsync(IEnumerable<(string Name, AppFields Fields)> items, IDbTransaction? tx = null) =>
+        WriteManyAsync(items, overwrite: true, tx);
+
+    /// <summary>
+    /// Insert applications keyed on their slug <c>name</c> only where the slug is new —
+    /// the shared-list importer's path. Unlike <see cref="UpsertManyAsync"/> an existing
+    /// application is left untouched: a peer's list must never clobber the importer's own
+    /// pipeline state. Returns how many rows were actually inserted.
+    /// </summary>
+    public Task<int> InsertManyIfAbsentAsync(IEnumerable<(string Name, AppFields Fields)> items, IDbTransaction? tx = null) =>
+        WriteManyAsync(items, overwrite: false, tx);
+
+    // Rows per INSERT: a 10k-item import is ten statements, not ten thousand round trips,
+    // and the list-revision trigger fires once per statement (#351).
+    private const int WriteChunk = 1000;
+
+    private async Task<int> WriteManyAsync(IEnumerable<(string Name, AppFields Fields)> items, bool overwrite, IDbTransaction? tx)
     {
-        var n = Slug.Normalize(name);
-        var f = raw.Normalized();
-        var created = f.Created.Length > 0 ? f.Created : MarkdownCodec.Today();
-        await _conn.ExecuteAsync(
-            """
-            INSERT INTO applications
-                (tenant_id, name, company, role, lane, status, link, location, salary,
-                 source, contact, contact_email, applied, followup, created, score, notes)
-            VALUES
-                (@t, @n, @Company, @Role, @Lane, @Status, @Link, @Location, @Salary,
-                 @Source, @Contact, @ContactEmail, @Applied, @Followup, @created, @Score, @Notes)
-            ON CONFLICT (tenant_id, name) DO UPDATE SET
-                company = EXCLUDED.company, role = EXCLUDED.role, lane = EXCLUDED.lane,
-                status = EXCLUDED.status, link = EXCLUDED.link, location = EXCLUDED.location,
-                salary = EXCLUDED.salary, source = EXCLUDED.source, contact = EXCLUDED.contact,
-                contact_email = EXCLUDED.contact_email, applied = EXCLUDED.applied,
-                followup = EXCLUDED.followup, created = EXCLUDED.created, score = EXCLUDED.score,
-                notes = EXCLUDED.notes, version = applications.version + 1, updated_at = now()
-            """,
-            new
-            {
-                t = _t, n, created,
-                f.Company, f.Role, f.Lane, f.Status, f.Link, f.Location, f.Salary,
-                f.Source, f.Contact, f.ContactEmail, f.Applied, f.Followup, f.Score, f.Notes,
-            },
-            tx);
+        var today = MarkdownCodec.Today();
+        var rows = items.Select(i =>
+        {
+            var f = i.Fields.Normalized();
+            return (Name: Slug.Normalize(i.Name), F: f with { Created = f.Created.Length > 0 ? f.Created : today });
+        }).ToList();
+        // ON CONFLICT DO UPDATE may not touch one row twice in a statement; DO NOTHING
+        // keeps the first of a repeated slug on its own, which is what it always did.
+        if (overwrite)
+            rows = rows.GroupBy(r => r.Name, StringComparer.Ordinal).Select(g => g.Last()).ToList();
+
+        var onConflict = overwrite
+            ? """
+              DO UPDATE SET
+                  company = EXCLUDED.company, role = EXCLUDED.role, lane = EXCLUDED.lane,
+                  status = EXCLUDED.status, link = EXCLUDED.link, location = EXCLUDED.location,
+                  salary = EXCLUDED.salary, source = EXCLUDED.source, contact = EXCLUDED.contact,
+                  contact_email = EXCLUDED.contact_email, applied = EXCLUDED.applied,
+                  followup = EXCLUDED.followup, created = EXCLUDED.created, score = EXCLUDED.score,
+                  notes = EXCLUDED.notes, version = applications.version + 1, updated_at = now()
+              """
+            : "DO NOTHING";
+        var written = 0;
+        foreach (var chunk in rows.Chunk(WriteChunk))
+        {
+            string[] Col(Func<AppFields, string> pick) => chunk.Select(r => pick(r.F)).ToArray();
+            written += await _conn.ExecuteAsync(
+                $"""
+                 INSERT INTO applications
+                     (tenant_id, name, company, role, lane, status, link, location, salary,
+                      source, contact, contact_email, applied, followup, created, score, notes)
+                 SELECT @t, * FROM unnest(
+                     @names::text[], @company::text[], @role::text[], @lane::text[], @status::text[],
+                     @link::text[], @location::text[], @salary::text[], @source::text[], @contact::text[],
+                     @contactEmail::text[], @applied::text[], @followup::text[], @created::text[],
+                     @score::text[], @notes::text[])
+                 ON CONFLICT (tenant_id, name) {onConflict}
+                 """,
+                new
+                {
+                    t = _t, names = chunk.Select(r => r.Name).ToArray(),
+                    company = Col(f => f.Company), role = Col(f => f.Role), lane = Col(f => f.Lane),
+                    status = Col(f => f.Status), link = Col(f => f.Link), location = Col(f => f.Location),
+                    salary = Col(f => f.Salary), source = Col(f => f.Source), contact = Col(f => f.Contact),
+                    contactEmail = Col(f => f.ContactEmail), applied = Col(f => f.Applied),
+                    followup = Col(f => f.Followup), created = Col(f => f.Created), score = Col(f => f.Score),
+                    notes = Col(f => f.Notes),
+                },
+                tx);
+        }
+        return written;
+    }
+
+    /// <summary>The columns the Ready lane's bulk actions and the promotion pass decide on.</summary>
+    public sealed record Brief(string Name, string Status, string Link);
+
+    /// <summary>
+    /// <see cref="Brief"/>s for many applications in one query, keyed by slug; a name with
+    /// no application is absent. Not <c>SELECT *</c>: notes run to 64 KB and none of these
+    /// callers read them (#351).
+    /// </summary>
+    public async Task<Dictionary<string, Brief>> BriefsAsync(IEnumerable<string> names)
+    {
+        var ns = names.Select(Slug.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        if (ns.Length == 0)
+            return [];
+        var rows = await _conn.QueryAsync<Brief>(
+            "SELECT name, status, link FROM applications WHERE tenant_id = @t AND name = ANY(@ns)",
+            new { t = _t, ns });
+        return rows.ToDictionary(r => r.Name, StringComparer.Ordinal);
     }
 
     /// <summary>
-    /// Insert an application keyed on its slug <c>name</c> only when the slug is new —
-    /// the shared-list importer's path. Unlike <see cref="UpsertByNameAsync"/> an
-    /// existing application is left untouched: a peer's list must never clobber the
-    /// importer's own pipeline state. Returns whether a row was actually inserted.
+    /// Move many applications to <paramref name="status"/> in one statement, bumping each
+    /// one's version like any other edit. Returns the slugs that actually moved — one
+    /// already there, or absent, is not in the list.
     /// </summary>
-    public async Task<bool> InsertIfAbsentAsync(string name, AppFields raw, IDbTransaction? tx = null)
+    public async Task<IReadOnlyList<string>> SetStatusAsync(IEnumerable<string> names, string status)
     {
-        var n = Slug.Normalize(name);
-        var f = raw.Normalized();
-        var created = f.Created.Length > 0 ? f.Created : MarkdownCodec.Today();
-        var affected = await _conn.ExecuteAsync(
+        var ns = names.Select(Slug.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        if (ns.Length == 0)
+            return [];
+        return (await _conn.QueryAsync<string>(
             """
-            INSERT INTO applications
-                (tenant_id, name, company, role, lane, status, link, location, salary,
-                 source, contact, contact_email, applied, followup, created, score, notes)
-            VALUES
-                (@t, @n, @Company, @Role, @Lane, @Status, @Link, @Location, @Salary,
-                 @Source, @Contact, @ContactEmail, @Applied, @Followup, @created, @Score, @Notes)
-            ON CONFLICT (tenant_id, name) DO NOTHING
+            UPDATE applications SET status = @status, version = version + 1, updated_at = now()
+            WHERE tenant_id = @t AND name = ANY(@ns) AND status <> @status
+            RETURNING name
             """,
-            new
-            {
-                t = _t, n, created,
-                f.Company, f.Role, f.Lane, f.Status, f.Link, f.Location, f.Salary,
-                f.Source, f.Contact, f.ContactEmail, f.Applied, f.Followup, f.Score, f.Notes,
-            },
-            tx);
-        return affected == 1;
+            new { t = _t, ns, status })).ToList();
     }
 
     public Task<string> UpdateStructuredAsync(string name, AppFields fields, string? expectedVersion) =>

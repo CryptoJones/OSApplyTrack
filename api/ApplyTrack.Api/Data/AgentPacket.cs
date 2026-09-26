@@ -153,6 +153,37 @@ public sealed class AgentPacketRepo
         return row is null ? null : ToPacket(row);
     }
 
+    /// <summary>What the submit gates read from a packet: the ATS it was built for and how
+    /// many review items block it.</summary>
+    public sealed record Gate(string Provider, int Blocking);
+
+    private sealed record GateRow(string ApplicationName, string Provider, string Questions, string NeedsReview);
+
+    /// <summary>
+    /// The gates for many packets in one query, keyed by application name; a name with no
+    /// packet is absent. Reads only the three columns the gates need — never the sealed
+    /// excerpt and answers — so the Pipeline pane's 15-second poll and the promotion pass
+    /// cost one round trip and no decryption, however long the queue (#351).
+    /// </summary>
+    public async Task<Dictionary<string, Gate>> GatesAsync(IEnumerable<string> appNames)
+    {
+        var names = appNames.Select(Slug.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        if (names.Length == 0)
+            return [];
+        var rows = await _conn.QueryAsync<GateRow>(
+            """
+            SELECT application_name AS applicationname, provider,
+                   questions::text AS questions, needs_review::text AS needsreview
+            FROM agent_packets WHERE tenant_id = @t AND application_name = ANY(@names)
+            """,
+            new { t = _t, names });
+        return rows.ToDictionary(r => r.ApplicationName, r => new Gate(r.Provider, new AgentPacket
+        {
+            Questions = JsonSerializer.Deserialize<List<PacketQuestion>>(r.Questions, Json) ?? [],
+            NeedsReview = JsonSerializer.Deserialize<List<ReviewItem>>(r.NeedsReview, Json) ?? [],
+        }.BlockingReview().Count()), StringComparer.Ordinal);
+    }
+
     /// <summary>Every packet whose application is still parked in <c>ready</c> — the Ready
     /// lane as the bulk actions and "Apply to Ready packets" see it (#186, #189).</summary>
     public async Task<IReadOnlyList<AgentPacket>> ListReadyAsync()
