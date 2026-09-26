@@ -371,8 +371,10 @@ public sealed class AgentWorker : BackgroundService
         // workplace (#334): the excerpt is often the description alone, and an ATS keeps "Remote"
         // in a field outside it — Bankjoy's and Thumbtack's Ashby postings are marked Remote and
         // never use the word, and Bankjoy was passed as "never says remote". Asked only when the
-        // text does not already say remote.
-        var workplace = Disqualifiers.SaysRoleIsRemote(packet.PostingExcerpt) ? null
+        // text does not already say remote, and never over an excerpt cut at the packet's limit,
+        // where the posting may say remote past the cut.
+        var workplace = Disqualifiers.SaysRoleIsRemote(packet.PostingExcerpt)
+            || packet.PostingExcerpt.Length >= PacketBuilder.ExcerptLimit ? null
             : await _evaluator.ReadWorkplaceAsync(rec.Fields.Link, rec.Fields.Source, ct);
         if (Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, workplace) is not { } why)
             return false;

@@ -19,6 +19,11 @@ public sealed partial record EmployerWorkplace(bool Remote, string Says)
     [GeneratedRegex(@"\b(?:remote|anywhere|distributed|work from home|wfh|telecommut)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex RemoteWord();
 
+    // A city and its state or province, "Dallas, TX" or "Toronto, ON, Canada" — never a list of
+    // countries ("United States, Canada") or a country code standing in for one ("Americas, US").
+    [GeneratedRegex(@"\b[A-Z][A-Za-z.' -]*,\s*(?!(?:US|UK|EU)\b)[A-Z]{2}\b", RegexOptions.CultureInvariant)]
+    private static partial Regex CityAndRegion();
+
     [GeneratedRegex(@"^/([^/?#]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex OrgAndPosting();
 
@@ -55,7 +60,8 @@ public sealed partial record EmployerWorkplace(bool Remote, string Says)
     /// Read the workplace out of the API's answer; null when the field is missing or says
     /// nothing either way (Lever's "unspecified", Greenhouse's bare "United States"). Only
     /// a plain statement counts: a Greenhouse location is held to be a place of work only
-    /// when it names a city ("Dallas, TX"), and any remote word anywhere in it wins.
+    /// when it names a city and its state or province ("Dallas, TX"), and any remote word
+    /// anywhere in it wins.
     /// </summary>
     public static EmployerWorkplace? Parse(string provider, string json, string jobId)
     {
@@ -76,14 +82,16 @@ public sealed partial record EmployerWorkplace(bool Remote, string Says)
                         if (job.TryGetProperty("isRemote", out var r) && r.ValueKind == JsonValueKind.True
                             || string.Equals(type, "Remote", StringComparison.OrdinalIgnoreCase))
                             return new(true, $"Ashby workplaceType \"{type ?? "Remote"}\"");
-                        return type is "OnSite" or "Hybrid" ? new(false, $"Ashby workplaceType \"{type}\"") : null;
+                        return string.Equals(type, "OnSite", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(type, "Hybrid", StringComparison.OrdinalIgnoreCase)
+                            ? new(false, $"Ashby workplaceType \"{type}\"") : null;
                     }
                     return null;
                 case AtsProvider.Lever:
                     return Str(root, "workplaceType")?.ToLowerInvariant() switch
                     {
                         "remote" => new(true, "Lever workplaceType \"remote\""),
-                        var t when t is "hybrid" or "onsite" =>new(false, $"Lever workplaceType \"{t}\""),
+                        var t when t is "hybrid" or "onsite" => new(false, $"Lever workplaceType \"{t}\""),
                         _ => null,
                     };
                 case AtsProvider.Greenhouse:
@@ -93,7 +101,7 @@ public sealed partial record EmployerWorkplace(bool Remote, string Says)
                         return null;
                     if (RemoteWord().IsMatch(name))
                         return new(true, $"Greenhouse location \"{name}\"");
-                    return name.Contains(',') ? new(false, $"Greenhouse location \"{name}\"") : null;
+                    return CityAndRegion().IsMatch(name) ? new(false, $"Greenhouse location \"{name}\"") : null;
                 default:
                     return null;
             }

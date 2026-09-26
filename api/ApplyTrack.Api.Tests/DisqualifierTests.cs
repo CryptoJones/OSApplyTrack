@@ -210,6 +210,10 @@ public class DisqualifierTests
     [InlineData("greenhouse", "{\"location\":{\"name\":\"Remote, United States\"}}", "", true)]
     [InlineData("greenhouse", "{\"location\":{\"name\":\"Dallas, TX or Remote\"}}", "", true)]
     [InlineData("greenhouse", "{\"location\":{\"name\":\"United States\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"United States, Canada\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Americas, US\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Toronto, ON, Canada\"}}", "", false)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"onsite\"}]}", "a", false)]
     [InlineData("greenhouse", "not json", "", null)]
     public void Only_a_plain_structured_statement_decides_the_workplace(string provider, string json, string jobId, bool? remote) =>
         Assert.Equal(remote, EmployerWorkplace.Parse(provider, json, jobId)?.Remote);
