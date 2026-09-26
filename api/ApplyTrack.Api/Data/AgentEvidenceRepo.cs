@@ -163,25 +163,27 @@ public sealed class AgentEvidenceRepo
     /// <summary>
     /// A cheap fingerprint of everything <see cref="ErroredAsync"/> reads (#349), so the SPA's
     /// 5-second poll can get a 304 instead of re-running it: the applications revision
-    /// (status, company, link), the evidence written, the queue's pending set (a finished
-    /// row is reused, so its times, not its id, say it moved), the newest packet, and a
-    /// 10-minute clock — a failure ageing out of the retry window changes a row with
-    /// nothing written at all. The tenant is in it so two accounts never share a tag.
+    /// (status, company, link — and every evidence delete, which only ever cascades from an
+    /// application's), the newest evidence (append-only otherwise), the queue's pending set
+    /// (a finished row is reused, so its times, not its id, say it moved), the newest packet,
+    /// and how many failures are still inside <paramref name="failureWindow"/> — one ageing
+    /// out changes a row's retry count with nothing written at all. The tenant is in it so
+    /// two accounts never share a tag.
     /// </summary>
-    public async Task<string> ErroredFingerprintAsync() =>
+    public async Task<string> ErroredFingerprintAsync(TimeSpan failureWindow) =>
         await _conn.ExecuteScalarAsync<string>(
             """
             SELECT md5(concat_ws('|', @t,
                 (SELECT applications_revision FROM users WHERE id = @t),
-                (SELECT count(*) FROM agent_evidence WHERE tenant_id = @t),
                 (SELECT max(id) FROM agent_evidence WHERE tenant_id = @t),
+                (SELECT count(*) FROM agent_evidence
+                 WHERE tenant_id = @t AND kind = 'failed' AND created_at > now() - @window),
                 (SELECT count(*) FROM submit_requests WHERE tenant_id = @t AND done_at IS NULL),
                 (SELECT max(requested_at) FROM submit_requests WHERE tenant_id = @t),
                 (SELECT max(done_at) FROM submit_requests WHERE tenant_id = @t),
-                (SELECT max(created_at) FROM agent_events WHERE tenant_id = @t AND kind = 'packet'),
-                floor(extract(epoch FROM now()) / 600)))
+                (SELECT max(created_at) FROM agent_events WHERE tenant_id = @t AND kind = 'packet')))
             """,
-            new { t = _t }) ?? "";
+            new { t = _t, window = failureWindow }) ?? "";
 
     public Task<int> ErroredCountAsync() =>
         _conn.ExecuteScalarAsync<int>("SELECT count(*)::int " + ErroredFrom, new { t = _t });

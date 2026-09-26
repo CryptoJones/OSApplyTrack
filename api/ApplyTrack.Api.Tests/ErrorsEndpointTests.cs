@@ -191,6 +191,14 @@ public class ErrorsEndpointTests(PostgresFixture pg) : IAsyncLifetime
             "INSERT INTO agent_events (tenant_id, application_name, kind, detail, created_at) VALUES (@t, @failed, 'packet', '{}'::jsonb, now() + interval '2 seconds')",
             new { t, failed });
         tag = await Moved(0);
+        // Nothing written, but a failure ages out of the retry window: the counts it feeds move.
+        Assert.Equal(System.Net.HttpStatusCode.NotModified, (await ErrorsSinceAsync(client, tag)).StatusCode);
+        await conn.ExecuteAsync(
+            "UPDATE agent_evidence SET created_at = now() - interval '8 days' WHERE tenant_id = @t AND kind = 'failed' AND detail = '{}'::jsonb",
+            new { t });
+        var aged = await ErrorsSinceAsync(client, tag);
+        Assert.Equal(System.Net.HttpStatusCode.OK, aged.StatusCode);
+        tag = aged.Headers.ETag!;
 
         Assert.Equal(System.Net.HttpStatusCode.NotModified, (await ErrorsSinceAsync(client, tag)).StatusCode);
     }
