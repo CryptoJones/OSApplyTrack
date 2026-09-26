@@ -68,8 +68,9 @@ public sealed partial class ApplicationRepo
             """
             SELECT id, name, company, role, lane, status, contact, contact_email,
                    applied, followup, created, score, link,
-                   -- a 160-char snippet needs the head of the notes, not all 64 KB (#352)
-                   left(notes, 1024) AS notes
+                   -- a 160-char snippet needs the head of the notes, not all 64 KB (#352);
+                   -- whitespace is collapsed first so a padded prefix can't empty it
+                   left(regexp_replace(btrim(notes), '\s+', ' ', 'g'), 1024) AS notes
             FROM applications
             WHERE tenant_id = @t
             ORDER BY array_position(@order, status), lower(company)

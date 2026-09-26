@@ -32,6 +32,9 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
     {
         ConnectCallback = ConnectToPublicAddressOnlyAsync,
         PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        // Shared across tenants, so no shared cookie jar: one tenant's endpoint session
+        // must never ride along on another's request.
+        UseCookies = false,
     })
     { Timeout = Timeout.InfiniteTimeSpan };
 
@@ -97,12 +100,22 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         {
             if (!res.IsSuccessStatusCode)
             {
-                var detail = await SafeReadAsync(res, ct);
+                var detail = await SafeReadAsync(res, timeout.Token);
                 _log.LogWarning("LLM endpoint {Endpoint} returned {Status}: {Detail}", LogSafeEndpoint(url), (int)res.StatusCode, detail);
                 throw new LlmUnavailableException($"the LLM endpoint returned HTTP {(int)res.StatusCode}");
             }
 
-            var json = await ReadCappedStringAsync(res.Content, MaxResponseBytes, ct);
+            // The deadline covers the body too: headers then a stall is still a timeout.
+            string json;
+            try
+            {
+                json = await ReadCappedStringAsync(res.Content, MaxResponseBytes, timeout.Token);
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                _log.LogWarning(ex, "LLM response from {Endpoint} timed out", LogSafeEndpoint(url));
+                throw new LlmUnavailableException("the LLM endpoint timed out while sending its response");
+            }
             try
             {
                 using var doc = JsonDocument.Parse(json);

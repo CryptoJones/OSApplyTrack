@@ -114,6 +114,22 @@ public class RepoTests(PostgresFixture pg)
         Assert.Equal(new[] { "Beta", "Zeta", "Alpha" }, names);
     }
 
+    // The list reads only the head of the notes (#352), whitespace collapsed first, so
+    // a padded prefix still yields the snippet and a long body is cut to 160 chars.
+    [Fact]
+    public async Task List_snippet_survives_padding_and_long_notes()
+    {
+        await using var conn = await OpenAsync();
+        var t = await NewTenantAsync(conn);
+        var repo = new ApplicationRepo(conn, t);
+        await repo.CreateAsync(Fields("Padded", "X", notes: new string(' ', 3000) + "\n\n real   words"));
+        await repo.CreateAsync(Fields("Long", "X", notes: new string('a', 20_000)));
+
+        var list = await repo.ListAsync();
+        Assert.Equal("real words", list.Single(s => s.Company == "Padded").Snippet);
+        Assert.Equal(160, list.Single(s => s.Company == "Long").Snippet.Length);
+    }
+
     [Fact]
     public async Task Stats_counts_by_status_and_lane()
     {

@@ -115,11 +115,42 @@ public class OpenAiCompatibleLlmClientTests
         Assert.Contains("could not reach", ex.Message);
     }
 
+    [Fact]
+    public async Task A_body_that_stalls_past_the_timeout_is_unavailable()
+    {
+        var content = new StreamContent(new StallingStream());
+        content.Headers.ContentType = new("application/json");
+        var client = NewClient(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        var cfg = new EffectiveLlmConfig("https://llm.example/v1", "m", null, 1);
+
+        var ex = await Assert.ThrowsAsync<LlmUnavailableException>(() => client.CompleteAsync("s", "u", cfg));
+        Assert.Contains("timed out", ex.Message);
+    }
+
+    private sealed class StallingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     // One pooled handler serves every tenant endpoint (#352); its ConnectCallback still
     // vets each new connection, call after call.
     [Theory]
-    [InlineData("http://127.0.0.1:9/v1")]
-    [InlineData("http://10.0.0.5:8080/v1")]
+    [InlineData("https://127.0.0.1:9/v1")]
+    [InlineData("https://10.0.0.5:8080/v1")]
     public async Task The_shared_tenant_client_still_refuses_private_addresses(string baseUrl)
     {
         var client = NewClient(new HttpResponseMessage(HttpStatusCode.OK));
