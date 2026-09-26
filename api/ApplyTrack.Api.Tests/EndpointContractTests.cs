@@ -272,6 +272,38 @@ public class EndpointContractTests : IAsyncLifetime
         Assert.Equal(guid, reloaded.GetProperty("ats_boards")[0].GetProperty("slug").GetString());
     }
 
+    // Greenhouse/Lever slugs are pasted into a URL path by the poller (#346): anything that
+    // could rewrite the path or query is dropped at the API edge.
+    [Fact]
+    public async Task Criteria_drops_board_slugs_that_could_rewrite_the_url()
+    {
+        var put = await ReadJson(await _client.PutAsync("/api/criteria", Json(
+            $$"""
+            {"ats_boards":[
+              {"provider":"greenhouse","slug":"x/../../other?y="},
+              {"provider":"lever","slug":"netflix#frag"},
+              {"provider":"lever","slug":"a\nb"},
+              {"provider":"greenhouse","slug":"{{new string('x', 101)}}"},
+              {"provider":"greenhouse","slug":"ok_Slug-1"}
+            ]}
+            """)));
+        var boards = put.GetProperty("ats_boards");
+        Assert.Equal(1, boards.GetArrayLength());
+        Assert.Equal("ok_Slug-1", boards[0].GetProperty("slug").GetString());
+    }
+
+    [Theory]
+    [InlineData("stripe", true)]
+    [InlineData("a-b_C9", true)]
+    [InlineData("", false)]
+    [InlineData("a/b", false)]
+    [InlineData("..", false)]
+    [InlineData("a?b", false)]
+    [InlineData("a%2Fb", false)]
+    [InlineData("stripe\n", false)]
+    public void IsBoardSlug_matches_the_poller_rule(string slug, bool ok) =>
+        Assert.Equal(ok, Data.AtsBoard.IsBoardSlug(slug));
+
     [Fact]
     public async Task Health_reports_the_running_build_version()
     {

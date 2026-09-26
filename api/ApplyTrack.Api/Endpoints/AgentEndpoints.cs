@@ -52,7 +52,7 @@ public static class AgentEndpoints
         app.MapPost("/api/apps/{name}/verdict", async (
             string name, ApplicationRepo apps, AgentSettingsRepo agentSettings,
             AgentEventRepo events, ResumeRepo resumes, CriteriaRepo criteria,
-            LlmSettingsRepo llm, LlmOptions instance, LeadEvaluator evaluator,
+            LlmSettingsRepo llm, LlmOptions instance, LeadEvaluator evaluator, LlmUsageRepo usage,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -61,6 +61,7 @@ public static class AgentEndpoints
             if (!cfg.IsConfigured)
                 throw new AppValidationException(
                     "no LLM endpoint is configured — set one in Settings · AI (or the instance default)");
+            await usage.ChargeAsync(cfg);
 
             var verdict = await evaluator.EvaluateAsync(
                 rec, await resumes.GetAsync(), await criteria.GetAsync(),

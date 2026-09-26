@@ -48,7 +48,7 @@ import defusedxml.ElementTree as ET  # hardened XML parser (forbids entities/ext
 import httpx
 import psycopg
 
-from applytrack.criteria import AtsBoard, Criteria
+from applytrack.criteria import AtsBoard, Criteria, is_board_slug
 from applytrack.linkcheck import (
     BROWSER_HEADERS,
     PublicFetchError,
@@ -957,7 +957,16 @@ def fetch_hn_whoishiring(client: httpx.Client, limit: int) -> list[Listing]:
 # -- fetchers: company ATS boards (Greenhouse / Lever) ----------------------
 
 
+def _require_board_slug(slug: str) -> None:
+    # The slug becomes a path segment on the provider's host; a ``/``, ``..`` or ``?``
+    # in it would rewrite the request (#346). Criteria parsing already drops such
+    # boards — this is the last check before the URL is built.
+    if not is_board_slug(slug):
+        raise ValueError(f"invalid ATS board slug: {slug!r}")
+
+
 def fetch_greenhouse(client: httpx.Client, limit: int, slug: str) -> list[Listing]:
+    _require_board_slug(slug)
     r = client.get(
         f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", params={"content": "true"}
     )
@@ -980,6 +989,7 @@ def fetch_greenhouse(client: httpx.Client, limit: int, slug: str) -> list[Listin
 
 
 def fetch_lever(client: httpx.Client, limit: int, slug: str) -> list[Listing]:
+    _require_board_slug(slug)
     r = client.get(f"https://api.lever.co/v0/postings/{slug}", params={"mode": "json"})
     r.raise_for_status()
     rows = r.json()

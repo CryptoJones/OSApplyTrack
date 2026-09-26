@@ -16,6 +16,27 @@ public class LlmConfigTests
         TimeoutSeconds = 42,
     };
 
+    // The daily per-tenant cap (#346) meters only requests on the operator's key.
+    [Theory]
+    [InlineData("", "", null, true)]                                    // all instance defaults
+    [InlineData("", "tenant-model", null, true)]                        // instance url + key
+    [InlineData("", "", "tenant-key", false)]                           // own key
+    [InlineData("https://tenant.example/v1", "", null, false)]          // own url, no key
+    [InlineData("https://tenant.example/v1", "", "tenant-key", false)]  // own url + key
+    public void InstanceKey_is_set_only_when_the_operator_key_is_spent(
+        string baseUrl, string model, string? key, bool expected)
+    {
+        var cfg = EffectiveLlmConfig.Resolve(Instance, new LlmOverride(baseUrl, model, key));
+        Assert.Equal(expected, cfg.InstanceKey);
+    }
+
+    [Fact]
+    public void A_keyless_instance_is_never_metered()
+    {
+        var cfg = EffectiveLlmConfig.Resolve(new LlmOptions { BaseUrl = "http://localhost:11434/v1", Model = "m" }, null);
+        Assert.False(cfg.InstanceKey);
+    }
+
     [Fact]
     public void Tenant_url_only_does_not_inherit_the_instance_key()
     {

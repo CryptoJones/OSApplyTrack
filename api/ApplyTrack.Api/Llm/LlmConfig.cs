@@ -23,6 +23,13 @@ public sealed class LlmOptions
 
     /// <summary>How long to wait on the model before giving up.</summary>
     public int TimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// Model requests one tenant may make per UTC day on the operator's <see cref="ApiKey"/>
+    /// (#346): with open signup, anyone could otherwise spend it. A tenant on its own key
+    /// or endpoint is not counted. 0 = unlimited.
+    /// </summary>
+    public int DailyCapPerTenant { get; set; } = 200;
 }
 
 /// <summary>A tenant's stored override (key already decrypted). Blank fields inherit the instance default.</summary>
@@ -33,9 +40,12 @@ public sealed record LlmOverride(string BaseUrl, string Model, string? ApiKey);
 /// over the instance defaults, field by field. <c>TenantBaseUrl</c> tracks whether
 /// the URL came from tenant-controlled settings; those URLs get stricter network
 /// handling and must never inherit an operator-owned instance API key.
+/// <c>InstanceKey</c> is true when the request spends the operator's key — the case the
+/// per-tenant daily cap meters.
 /// </summary>
 public sealed record EffectiveLlmConfig(
-    string BaseUrl, string Model, string? ApiKey, int TimeoutSeconds, bool TenantBaseUrl = false)
+    string BaseUrl, string Model, string? ApiKey, int TimeoutSeconds, bool TenantBaseUrl = false,
+    bool InstanceKey = false)
 {
     /// <summary>True once there is somewhere to send the request and a model to ask for.</summary>
     public bool IsConfigured => BaseUrl.Length > 0 && Model.Length > 0;
@@ -55,6 +65,7 @@ public sealed record EffectiveLlmConfig(
             model,
             apiKey,
             instance.TimeoutSeconds,
-            tenantBaseUrl);
+            tenantBaseUrl,
+            InstanceKey: apiKey is not null && string.IsNullOrEmpty(ovr?.ApiKey));
     }
 }

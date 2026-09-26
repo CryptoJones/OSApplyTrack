@@ -58,7 +58,7 @@ public static class PacketEndpoints
             CoverLetterRepo letters, AgentPacketRepo packets, NotificationSettingsRepo notifications, BoardAccountRepo boardAccounts,
             UserRepo users, Auth.TenantContext tenant, AnswerBankRepo bank,
             LeadEvaluator evaluator, PacketBuilder builder, PacketReadyNotifier notifier,
-            BrowserAvailability browser, SubmitRequestRepo queue,
+            BrowserAvailability browser, SubmitRequestRepo queue, LlmUsageRepo usage,
             CancellationToken ct) =>
         {
             var rec = await apps.GetAsync(name)
@@ -69,6 +69,8 @@ public static class PacketEndpoints
             if (!cfg.IsConfigured)
                 throw new AppValidationException(
                     "no LLM endpoint is configured — set one in Settings · AI (or the instance default)");
+            // Inline or on the worker, preparing spends the model: meter it here (#346).
+            await usage.ChargeAsync(cfg);
 
             // The browser is on a worker, not here: hand the whole build to it. Built in
             // this process, a non-Greenhouse packet never sees the real form (no

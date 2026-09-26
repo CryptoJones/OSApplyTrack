@@ -193,9 +193,15 @@ pre-auth `HttpOnly` cookie. Opening the link (`GET /api/auth/verify`) changes
 nothing — it shows a one-button confirm page, so mail link-scanners can't burn the
 token. The button POSTs the token back; that spends it only in the browser that
 asked for it (no login CSRF), replaces any session that browser already had, mints
-a 30-day **server-side** session (not a JWT — so logout is instant revocation),
-sets an `HttpOnly` cookie, and redirects to `/` so the token leaves the URL and
-browser history. Open the link in the browser you requested it from.
+a **server-side** session (not a JWT — so logout is instant revocation), sets an
+`HttpOnly` cookie, and redirects to `/` so the token leaves the URL and browser
+history. Open the link in the browser you requested it from. Only the session id's
+SHA-256 is stored, so a database read yields no live cookies. A session ends after
+30 days unused (each use slides it forward) and 90 days after sign-in at the latest;
+**Settings · Account** lists where you're signed in and can sign out everywhere else.
+An operator disables an account by setting its `users.status` to anything but
+`active` (e.g. `UPDATE users SET status = 'disabled' WHERE email = '…'`): its
+sessions stop working on the next request and it gets no new sign-in links.
 
 **The tenancy choke-point.** A middleware resolves the session cookie to a
 `TenantContext` and is the only thing that lets `/api/*` through. Repositories are
@@ -244,6 +250,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `FORWARDED_HEADERS_KNOWN_PROXY` / `FORWARDED_HEADERS_KNOWN_NETWORK` | _(empty)_ | Source IP or CIDR of a trusted reverse proxy when it is not on loopback. |
 | `APPLYTRACK_DIR` | `./applications` | Default folder the `import-md` command reads when `--dir` is omitted. |
 | `Llm__BaseUrl` / `Llm__Model` / `Llm__ApiKey` | _(empty)_ | Instance-default cover-letter LLM — any OpenAI-compatible endpoint (a local Ollama/vLLM/LM Studio model or a hosted provider). `ApiKey` is blank for a keyless local model. Each tenant can override these in **Settings · AI**, including a reusable multi-line signature. See [Cover letters](#cover-letters). |
+| `Llm__DailyCapPerTenant` | `200` | Model requests (draft, verdict, prepare) one tenant may make per UTC day on the operator's `Llm__ApiKey`; past it they get a 429 until tomorrow. A tenant on its own key or endpoint, or an instance with no key, is not metered. `0` = unlimited. The model routes are also throttled to 10 per 5 minutes per IP and per tenant. |
 | `TYPESAFE_API_KEY` / `TYPESAFE_BASE_URL` / `JEV_MODEL` | _(empty)_ / `https://api.typesafe.ai` / `jev-latest` | Optional, poller only. With a key set, a tenant who ticks **Score new listings with Jev** in **Settings · Agent** has each new listing judged by TypeSafe's Jev — is the posting's own work the kind the keywords describe? — and that 0–100 fit replaces the keyword score against the minimum fit score. Each new listing's title and description go to TypeSafe. Unset (the default), on any error, or for any tenant who has not opted in, keyword matching decides exactly as before. Evaluation: [`tools/jev_eval/RESULTS.md`](tools/jev_eval/RESULTS.md). |
 | `APPLYTRACK_SECRETS_KEY` | _(generated)_ | Master key (AES-256-GCM) for [encryption at rest](#encryption-at-rest): the résumé PDF, cover letters, packet answers and posting text, evidence screenshots, each tenant's own LLM API key and Telegram bot token, and the board sessions the poller signs in with. The poller must see the same key. Unset, the api generates one on first run into `APPLYTRACK_SECRETS_KEY_FILE` and reuses it; the hardened production stack requires it set. **Back it up with the database** — losing it loses what it encrypts. |
 | `APPLYTRACK_SECRETS_KEY_FILE` | `/var/lib/applytrack/secrets.key` in a container, else `~/.local/share/applytrack/secrets.key` | Where the generated key is kept when `APPLYTRACK_SECRETS_KEY` is unset. The compose files and quadlets mount a `secrets` volume there, shared by the api and agent containers and mounted read-only into the poller, which reads the key but never generates one. |
@@ -278,7 +285,7 @@ killing the process:
 | --- | --- | --- |
 | `POST` | `/api/auth/request` | Body `{email}`. Always `200 {ok:true}` (no account enumeration); sets the pre-auth cookie the link is bound to. Per-IP rate-limited. |
 | `GET`  | `/api/auth/verify?token=…` | The emailed link. Renders a confirm page; spends nothing. |
-| `POST` | `/api/auth/verify` | Form `token=…`. Spends the single-use token if this browser requested it, rotates the session cookie, 302 → `/` (else `/?error=invalid_link` or `/?error=wrong_browser`). |
+| `POST` | `/api/auth/verify` | Form `token=…`. Spends the single-use token if this browser requested it, rotates the session cookie, 302 → `/` (else `/?error=invalid_link`, `/?error=wrong_browser` or `/?error=account_disabled`). |
 | `POST` | `/api/auth/logout` | Drops the session row (instant revocation) and clears the cookie. |
 | `GET`  | `/api/auth/me` | `{email}` for the current session, else 401. |
 
@@ -317,6 +324,9 @@ killing the process:
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
 | `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
+| `GET`    | `/api/account/sessions` | Where you're signed in: `id`, `created_at`, `last_seen_at`, `expires_at`, `user_agent`, and `current` for this browser. |
+| `DELETE` | `/api/account/sessions` | Sign out everywhere else: `{revoked}` — every session but this browser's. |
+| `DELETE` | `/api/account/sessions/{id}` | Revoke one listed session (**204**; **404** if it isn't yours). |
 
 ### Materials (cover letters)
 
@@ -379,7 +389,8 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `search_profiles` | Per-tenant discovery criteria the poller reads — keywords, filters, enabled sources, ATS boards, and custom RSS feeds. |
 | `blacklist` | Per-tenant blocked companies. |
 | `magic_tokens` | SHA-256 of issued login tokens, with expiry. Single-use. |
-| `sessions` | Opaque server-side sessions (instant revocation on logout). |
+| `sessions` | Server-side sessions, keyed by the SHA-256 of the cookie's id (instant revocation on logout), with last-seen time and browser. |
+| `llm_usage` | Per-tenant daily count of model requests on the operator's LLM key (`Llm__DailyCapPerTenant`). |
 | `seen` | The dedupe ledger — listings already surfaced, so leads don't repeat. |
 | `poll_requests` | The on-demand "Poll now" queue the worker drains. |
 | `resume_profiles` | Per-tenant résumé brief — the facts the cover-letter drafter feeds the LLM. |

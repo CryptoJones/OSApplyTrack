@@ -150,6 +150,7 @@ function showLogin() {
   const linkMessage = {
     invalid_link: "That link was invalid or expired — request a fresh one.",
     wrong_browser: "Open the link in the same browser you requested it from — or request a fresh one here.",
+    account_disabled: "This account has been disabled. Contact whoever runs this instance.",
   }[linkError];
   const overlay = document.createElement("div");
   overlay.id = "login-overlay";
@@ -3412,9 +3413,16 @@ async function loadAccountTab(body) {
       </div>
 
       <div class="mt-5 border-t border-rule pt-4">
-        <div class="field-label">Session</div>
-        <div class="mt-3">
+        <div class="field-label" id="sessions-heading">Where you're signed in</div>
+        <p class="field-help">
+          Sessions end after 30 days unused, and 90 days after sign-in at the latest. Signing out everywhere else ends every session but this one.
+        </p>
+        <ul id="account-sessions" class="agent-log" aria-labelledby="sessions-heading" aria-live="polite">
+          <li class="mt-2 text-sm text-ink-faint">Loading…</li>
+        </ul>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
           <button class="btn btn-ghost" data-act="logout" type="button">Sign out</button>
+          <button class="btn btn-ghost" data-act="logout-others" type="button">Sign out everywhere else</button>
         </div>
       </div>
 
@@ -3442,6 +3450,31 @@ async function loadAccountTab(body) {
       await api("POST", "/api/auth/logout");
     } catch (_) {}
     location.reload();
+  };
+  const sessionList = body.querySelector("#account-sessions");
+  const loadSessions = async () => {
+    try {
+      const sessions = await api("GET", "/api/account/sessions");
+      sessionList.innerHTML = sessions.map((x) => `
+        <li class="mt-2 text-sm">
+          <span>${escapeHtml(x.user_agent || "Unknown browser")}</span>
+          ${x.current ? `<strong>(this browser)</strong>` : ""}
+          <div class="field-help">Last used ${escapeHtml(new Date(x.last_seen_at).toLocaleString())}
+            · signed in ${escapeHtml(new Date(x.created_at).toLocaleString())}</div>
+        </li>`).join("") || `<li class="mt-2 text-sm">No active sessions.</li>`;
+    } catch (e) {
+      sessionList.innerHTML = `<li class="mt-2 text-sm">${escapeHtml(e.message)}</li>`;
+    }
+  };
+  loadSessions();
+  act("logout-others").onclick = async () => {
+    try {
+      const r = await api("DELETE", "/api/account/sessions");
+      toast(r.revoked === 1 ? "Signed out 1 other session." : `Signed out ${r.revoked} other sessions.`);
+      await loadSessions();
+    } catch (e) {
+      toast(e.message);
+    }
   };
   act("delete-account").onclick = async () => {
     // A yes/no confirm is too easy to click through for something unrecoverable, so this

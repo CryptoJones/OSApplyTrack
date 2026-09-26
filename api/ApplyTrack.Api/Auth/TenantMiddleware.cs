@@ -18,7 +18,15 @@ public sealed class TenantMiddleware(RequestDelegate next)
     {
         if (context.Request.Cookies.TryGetValue(AuthCookie.Name, out var sid) && !string.IsNullOrEmpty(sid))
         {
-            tenant.UserId = await sessions.ResolveUserIdAsync(sid);
+            if (await sessions.ResolveAsync(sid) is { } session)
+            {
+                tenant.UserId = session.UserId;
+                tenant.SessionId = session.Id;
+                // The expiry slid forward (#346): re-issue the cookie so the browser keeps it
+                // as long as the server does.
+                if (session.RenewedUntil is { } until)
+                    context.Response.Cookies.Append(AuthCookie.Name, sid, AuthCookie.Options(until, context.Request.IsHttps));
+            }
         }
 
         if (RequiresAuth(context.Request.Path) && !tenant.IsAuthenticated)

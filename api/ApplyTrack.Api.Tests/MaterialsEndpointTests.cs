@@ -533,6 +533,39 @@ public class MaterialsEndpointTests : IAsyncLifetime
         Assert.Equal(StubLlmClient.DefaultBody, detail.GetProperty("material").GetString());
     }
 
+    // With open signup, the operator's Llm__ApiKey is metered per tenant per day (#346).
+    [Fact]
+    public async Task Drafting_on_the_instance_key_stops_at_the_daily_per_tenant_cap()
+    {
+        var stub = new StubLlmClient();
+        var factory = NewFactory(b =>
+        {
+            WithStub(stub)(b);
+            b.UseSetting("Llm:ApiKey", "operator-key");
+            b.UseSetting("Llm:DailyCapPerTenant", "2");
+        });
+        using var client = await AuthedClientAsync(factory);
+        await client.PutAsync("/api/resume", Json(NonEmptyResume));
+        var name = await CreateAppAsync(client, "Acme Corp", "Engineer");
+
+        for (var i = 0; i < 2; i++)
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/apps/{name}/draft", null)).StatusCode);
+        var capped = await client.PostAsync($"/api/apps/{name}/draft", null);
+        Assert.Equal(HttpStatusCode.TooManyRequests, capped.StatusCode);
+        Assert.Contains("today", (await ReadJson(capped)).GetProperty("detail").GetString());
+        Assert.Equal(2, stub.Calls); // refused before the model
+
+        // Another tenant has its own budget.
+        using var other = await AuthedClientAsync(factory);
+        await other.PutAsync("/api/resume", Json(NonEmptyResume));
+        var otherApp = await CreateAppAsync(other, "Beta LLC", "Dev");
+        Assert.Equal(HttpStatusCode.OK, (await other.PostAsync($"/api/apps/{otherApp}/draft", null)).StatusCode);
+
+        // A tenant on its own key is not metered at all.
+        await client.PutAsync("/api/llm-settings", Json("""{"api_key":"tenant-key"}"""));
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/apps/{name}/draft", null)).StatusCode);
+    }
+
     [Fact]
     public async Task A_lead_whose_link_cannot_be_fetched_still_drafts()
     {

@@ -19,6 +19,7 @@ using ApplyTrack.Api.Notifications;
 using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -103,6 +104,9 @@ builder.Services.AddScoped(sp => new LlmSettingsRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>(),
     sp.GetRequiredService<ILogger<LlmSettingsRepo>>()));
+builder.Services.AddScoped(sp => new LlmUsageRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    llmOptions.DailyCapPerTenant));
 builder.Services.AddScoped(sp => new CoverLetterRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>()));
@@ -217,6 +221,9 @@ static string ClientPartition(HttpContext ctx) =>
     ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
 const int UploadPermits = 10;
+const int DraftPermits = 10;
+static bool IsDraftRoute(HttpContext ctx) =>
+    ctx.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == "draft";
 static bool IsUploadRoute(HttpRequest req) =>
     req.Method == HttpMethods.Post
     && (req.Path == "/api/resume/upload" || req.Path == "/api/account/import");
@@ -233,7 +240,7 @@ builder.Services.AddRateLimiter(options =>
     // Cover-letter drafting fans out to the LLM (cost + latency) — throttle harder.
     options.AddPolicy("draft", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
-        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(5) }));
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = DraftPermits, Window = TimeSpan.FromMinutes(5) }));
     // A test notification is an outbound message to the tenant's own chat — small budget.
     options.AddPolicy("notify", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
@@ -248,12 +255,19 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("upload", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = UploadPermits, Window = TimeSpan.FromMinutes(5) }));
+    // The model-backed routes ("draft") get the same per-tenant partition (#346): the per-IP
+    // budget alone lets one account spread across addresses spend the operator's LLM key.
+    // The daily per-tenant cap on that key is LlmUsageRepo.
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-        IsUploadRoute(ctx.Request)
-        && ctx.RequestServices.GetRequiredService<TenantContext>().UserId is { } tenantId
-            ? RateLimitPartition.GetFixedWindowLimiter($"upload:{tenantId}",
-                _ => new FixedWindowRateLimiterOptions { PermitLimit = UploadPermits, Window = TimeSpan.FromMinutes(5) })
-            : RateLimitPartition.GetNoLimiter(""));
+        ctx.RequestServices.GetRequiredService<TenantContext>().UserId is not { } tenantId
+            ? RateLimitPartition.GetNoLimiter("")
+            : IsUploadRoute(ctx.Request)
+                ? RateLimitPartition.GetFixedWindowLimiter($"upload:{tenantId}",
+                    _ => new FixedWindowRateLimiterOptions { PermitLimit = UploadPermits, Window = TimeSpan.FromMinutes(5) })
+                : IsDraftRoute(ctx)
+                    ? RateLimitPartition.GetFixedWindowLimiter($"draft:{tenantId}",
+                        _ => new FixedWindowRateLimiterOptions { PermitLimit = DraftPermits, Window = TimeSpan.FromMinutes(5) })
+                    : RateLimitPartition.GetNoLimiter(""));
 });
 
 var app = builder.Build();

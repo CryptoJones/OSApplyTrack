@@ -80,7 +80,7 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _log.LogWarning(ex, "LLM request to {Url} failed", url);
+            _log.LogWarning(ex, "LLM request to {Endpoint} failed", LogSafeEndpoint(url));
             throw new LlmUnavailableException($"could not reach the LLM endpoint ({ex.Message})");
         }
 
@@ -89,7 +89,7 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             if (!res.IsSuccessStatusCode)
             {
                 var detail = await SafeReadAsync(res, ct);
-                _log.LogWarning("LLM endpoint {Url} returned {Status}: {Detail}", url, (int)res.StatusCode, detail);
+                _log.LogWarning("LLM endpoint {Endpoint} returned {Status}: {Detail}", LogSafeEndpoint(url), (int)res.StatusCode, detail);
                 throw new LlmUnavailableException($"the LLM endpoint returned HTTP {(int)res.StatusCode}");
             }
 
@@ -106,11 +106,21 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             }
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException)
             {
-                _log.LogWarning(ex, "Unexpected LLM response shape from {Url}", url);
+                _log.LogWarning(ex, "Unexpected LLM response shape from {Endpoint}", LogSafeEndpoint(url));
                 throw new LlmUnavailableException("the LLM endpoint returned an unexpected response shape");
             }
         }
     }
+
+    /// <summary>
+    /// The endpoint as it may appear in a log line: <c>scheme://host:port</c> only. A tenant
+    /// base URL is free text, so it can carry <c>user:pass@</c> userinfo or a key in the path
+    /// or query — none of that is written to the logs (#346).
+    /// </summary>
+    public static string LogSafeEndpoint(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u)
+            ? u.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped)
+            : "(unparseable URL)";
 
     private static async Task<string> SafeReadAsync(HttpResponseMessage res, CancellationToken ct)
     {

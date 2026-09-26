@@ -15,6 +15,10 @@ public sealed class AppConflictException(string message) : Exception(message);
 /// <summary>The account may not use this feature until the operator allows it (403).</summary>
 public sealed class AppForbiddenException(string message) : Exception(message);
 
+/// <summary>The account is over a usage budget (e.g. the daily draft cap on the
+/// operator's LLM key) — maps to HTTP 429. The message is safe to surface.</summary>
+public sealed class AppRateLimitedException(string message) : Exception(message);
+
 /// <summary>The configured LLM endpoint is unreachable or returned an unusable
 /// response — maps to HTTP 502. The message is safe to surface to the user.</summary>
 public sealed class LlmUnavailableException(string message) : Exception(message);

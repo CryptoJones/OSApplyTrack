@@ -23,6 +23,17 @@ public sealed partial record AtsBoard(string Provider, string Slug)
 
     [GeneratedRegex("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")]
     private static partial Regex GuidRe();
+
+    /// <summary>
+    /// A Greenhouse / Lever board token: letters, digits, <c>_</c> and <c>-</c>, 1–100 long.
+    /// The poller pastes it into a URL path on the provider's host, so anything else —
+    /// <c>/</c>, <c>..</c>, <c>?</c>, <c>#</c> — could rewrite that path or query (#346).
+    /// The poller's <c>is_board_slug</c> applies the same rule.
+    /// </summary>
+    public static bool IsBoardSlug(string slug) => BoardSlugRe().IsMatch(slug ?? "");
+
+    [GeneratedRegex(@"\A[A-Za-z0-9_-]{1,100}\z")]
+    private static partial Regex BoardSlugRe();
 }
 
 /// <summary>
@@ -122,6 +133,7 @@ public sealed class Criteria
                 var provider = GetString(entry, "provider", "").Trim().ToLowerInvariant();
                 var slug = GetString(entry, "slug", "").Trim();
                 if (provider == "paylocity") slug = AtsBoard.PaylocityGuid(slug);
+                else if (!AtsBoard.IsBoardSlug(slug)) continue;
                 if (!AtsProviders.Contains(provider) || slug.Length == 0) continue;
                 if (seen.Add((provider, slug.ToLowerInvariant())))
                     boards.Add(new AtsBoard(provider, slug));

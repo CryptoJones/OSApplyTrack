@@ -20,7 +20,6 @@ public static class AuthEndpoints
     public sealed record LinkRequest(string Email);
 
     private static readonly TimeSpan TokenTtl = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan SessionTtl = TimeSpan.FromDays(30);
 
     // Our tokens and nonces are 43 chars; anything far longer is junk, not a link we sent.
     private const int MaxTokenLength = 128;
@@ -69,6 +68,9 @@ public static class AuthEndpoints
                 else
                 {
                     var userId = await users.EnsureAsync(address);
+                    // A disabled account (users.status, #346) gets no link — silently.
+                    if (await users.GetAsync(userId) is not { Status: UserRepo.Active })
+                        return Results.Ok(new { ok = true });
                     var token = Tokens.NewOpaque();
                     await tokens.CreateAsync(userId, Tokens.Sha256(token), Tokens.Sha256(nonce), DateTimeOffset.UtcNow + TokenTtl);
                     await email.SendMagicLinkAsync(address, $"{origin}/api/auth/verify?token={token}");
@@ -95,7 +97,7 @@ public static class AuthEndpoints
         // session this browser already had, mint a fresh one, and redirect to / so the token
         // leaves the URL/history.
         app.MapPost("/api/auth/verify", async (
-            HttpContext ctx, MagicTokenRepo tokens, SessionRepo sessions) =>
+            HttpContext ctx, MagicTokenRepo tokens, SessionRepo sessions, UserRepo users) =>
         {
             string? token = null;
             if (ctx.Request.HasFormContentType)
@@ -109,18 +111,20 @@ public static class AuthEndpoints
             var userId = await tokens.ConsumeAsync(Tokens.Sha256(token), Tokens.Sha256(nonce));
             if (userId is null)
                 return Results.Redirect("/?error=invalid_link");
+            if (await users.GetAsync(userId.Value) is not { Status: UserRepo.Active })
+                return Results.Redirect("/?error=account_disabled");
 
             if (ctx.Request.Cookies.TryGetValue(AuthCookie.Name, out var oldSid) && !string.IsNullOrEmpty(oldSid))
                 await sessions.DeleteAsync(oldSid);
 
             var sid = Tokens.NewOpaque();
-            var expires = DateTimeOffset.UtcNow + SessionTtl;
-            await sessions.CreateAsync(sid, userId.Value, expires);
+            var expires = await sessions.CreateAsync(sid, userId.Value, ctx.Request.Headers.UserAgent.ToString());
             ctx.Response.Cookies.Append(AuthCookie.Name, sid, AuthCookie.Options(expires, ctx.Request.IsHttps));
             return Results.Redirect("/");
         });
 
-        // Drop the session row (instant revocation) and clear the cookie.
+        // Drop the session row (instant revocation) and clear the cookie. Other browsers
+        // stay signed in; DELETE /api/account/sessions signs those out.
         app.MapPost("/api/auth/logout", async (HttpContext ctx, SessionRepo sessions) =>
         {
             if (ctx.Request.Cookies.TryGetValue(AuthCookie.Name, out var sid) && !string.IsNullOrEmpty(sid))

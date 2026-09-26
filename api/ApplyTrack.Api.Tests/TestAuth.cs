@@ -29,7 +29,8 @@ internal static class TestAuth
             Environment.SetEnvironmentVariable("APPLYTRACK_SECRETS_KEY", MasterKey);
     }
 
-    /// <summary>Inserts a fresh user and a live session for it; returns the tenant id and session id.</summary>
+    /// <summary>Inserts a fresh user and a live session for it (stored by hash, as the API does);
+    /// returns the tenant id and the cookie's session id.</summary>
     public static async Task<(long TenantId, string Sid)> SeedSessionAsync(
         string connectionString, string? email = null)
     {
@@ -40,7 +41,7 @@ internal static class TestAuth
         var sid = Tokens.NewOpaque();
         await conn.ExecuteAsync(
             "INSERT INTO sessions (id, user_id, expires_at) VALUES (@sid, @uid, now() + interval '1 day')",
-            new { sid, uid = tenantId });
+            new { sid = Api.Data.SessionRepo.Hash(sid), uid = tenantId });
         return (tenantId, sid);
     }
 

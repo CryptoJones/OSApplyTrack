@@ -201,6 +201,9 @@ public class AccountEndpointTests : IAsyncLifetime
                 "INSERT INTO magic_tokens (user_id, token_sha256, expires_at) "
                 + "VALUES (@t, 'deadbeef', now() + interval '1 hour')",
                 new { t = _tenantId });
+            await seed.ExecuteAsync(
+                "INSERT INTO llm_usage (tenant_id, day, calls) VALUES (@t, current_date, 1)",
+                new { t = _tenantId });
         }
 
         var del = await _client.DeleteAsync("/api/account");
@@ -213,7 +216,7 @@ public class AccountEndpointTests : IAsyncLifetime
                      ("applications", "tenant_id"), ("search_profiles", "tenant_id"),
                      ("blacklist", "tenant_id"), ("seen", "tenant_id"),
                      ("poll_requests", "tenant_id"), ("sessions", "user_id"),
-                     ("magic_tokens", "user_id"), ("users", "id"),
+                     ("magic_tokens", "user_id"), ("llm_usage", "tenant_id"), ("users", "id"),
                  })
         {
             var count = await conn.ExecuteScalarAsync<int>(
