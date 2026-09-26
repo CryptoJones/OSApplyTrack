@@ -129,4 +129,77 @@ public class ErrorsEndpointTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1, body.GetProperty("retrying").GetInt32());
         Assert.Equal(4, body.GetProperty("needs_you").GetInt32());
     }
+
+    /// <summary>The view with the client holding <paramref name="tag"/>.</summary>
+    private static Task<HttpResponseMessage> ErrorsSinceAsync(HttpClient client, System.Net.Http.Headers.EntityTagHeaderValue tag)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, "/api/errors");
+        req.Headers.IfNoneMatch.Add(tag);
+        return client.SendAsync(req);
+    }
+
+    [Fact]
+    public async Task The_errors_view_answers_304_until_something_it_reads_moves()
+    {
+        // The SPA polls every 5 seconds (#349); an unchanged view must be a 304, and every
+        // write that can change a row must change the tag.
+        var (client, t, conn) = await ClientAsync();
+        await using var _ = conn;
+        var failed = await ReadyAsync(client, conn, t, "Etag", "https://jobs.lever.co/etag/1", "failed",
+            """{"dry_run":true,"error":"boom"}""");
+
+        var first = await client.GetAsync("/api/errors");
+        Assert.Equal(System.Net.HttpStatusCode.OK, first.StatusCode);
+        var tag = first.Headers.ETag!;
+        Assert.Contains("private", first.Headers.CacheControl?.ToString());
+
+        var same = await ErrorsSinceAsync(client, tag);
+        Assert.Equal(System.Net.HttpStatusCode.NotModified, same.StatusCode);
+        Assert.Equal(tag.Tag, same.Headers.ETag?.Tag);
+
+        // Another account's tag is never this one's.
+        var (other, _, otherConn) = await ClientAsync();
+        await using var __ = otherConn;
+        Assert.NotEqual(tag.Tag, (await other.GetAsync("/api/errors")).Headers.ETag?.Tag);
+
+        async Task<System.Net.Http.Headers.EntityTagHeaderValue> Moved(int expected)
+        {
+            var res = await ErrorsSinceAsync(client, tag);
+            Assert.Equal(System.Net.HttpStatusCode.OK, res.StatusCode);
+            Assert.NotEqual(tag.Tag, res.Headers.ETag?.Tag);
+            Assert.Equal(expected, (await ReadJson(res)).GetProperty("count").GetInt32());
+            return res.Headers.ETag!;
+        }
+
+        // Queued: no longer stuck.
+        await conn.ExecuteAsync("INSERT INTO submit_requests (tenant_id, application_name) VALUES (@t, @failed)", new { t, failed });
+        tag = await Moved(0);
+        // The run finished without writing evidence: stuck again.
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE tenant_id = @t", new { t });
+        tag = await Moved(1);
+        // A clean run: the newest evidence is no longer a failure.
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_evidence (tenant_id, application_name, kind, url, confirmation, detail) VALUES (@t, @failed, 'dry_run', '', '', '{}'::jsonb)",
+            new { t, failed });
+        tag = await Moved(0);
+        // Failed again, then a fresh packet: prepared afresh, not stuck.
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_evidence (tenant_id, application_name, kind, url, confirmation, detail, created_at) VALUES (@t, @failed, 'failed', '', '', '{}'::jsonb, now() + interval '1 second')",
+            new { t, failed });
+        tag = await Moved(1);
+        await conn.ExecuteAsync(
+            "INSERT INTO agent_events (tenant_id, application_name, kind, detail, created_at) VALUES (@t, @failed, 'packet', '{}'::jsonb, now() + interval '2 seconds')",
+            new { t, failed });
+        tag = await Moved(0);
+        // Nothing written, but a failure ages out of the retry window: the counts it feeds move.
+        Assert.Equal(System.Net.HttpStatusCode.NotModified, (await ErrorsSinceAsync(client, tag)).StatusCode);
+        await conn.ExecuteAsync(
+            "UPDATE agent_evidence SET created_at = now() - interval '8 days' WHERE tenant_id = @t AND kind = 'failed' AND detail = '{}'::jsonb",
+            new { t });
+        var aged = await ErrorsSinceAsync(client, tag);
+        Assert.Equal(System.Net.HttpStatusCode.OK, aged.StatusCode);
+        tag = aged.Headers.ETag!;
+
+        Assert.Equal(System.Net.HttpStatusCode.NotModified, (await ErrorsSinceAsync(client, tag)).StatusCode);
+    }
 }

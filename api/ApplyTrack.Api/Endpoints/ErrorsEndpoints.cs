@@ -34,9 +34,16 @@ public static class ErrorsEndpoints
 
     public static void MapErrorsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/errors", async (AgentEvidenceRepo evidence, AgentSettingsRepo agentSettings) =>
+        app.MapGet("/api/errors", async (HttpContext context, AgentEvidenceRepo evidence, AgentSettingsRepo agentSettings) =>
         {
             var settings = await agentSettings.GetAsync();
+            // The SPA asks every 5 seconds (#349): answer an unchanged view with a 304 off a
+            // cheap fingerprint, not the per-row query below. The two settings that decide a
+            // row's "next" are part of it.
+            var etag = $"\"errors-v1-{await evidence.ErroredFingerprintAsync(ReadyReconciler.Window)}"
+                + $"-{(settings.LongTail ? 1 : 0)}{(settings.LinkedInEasy ? 1 : 0)}\"";
+            if (AppsEndpoints.NotModified(context, etag))
+                return Results.StatusCode(StatusCodes.Status304NotModified);
             var rows = (await evidence.ErroredAsync(ReadyReconciler.Window))
                 .Select(e => Describe(e, settings.LongTail, settings.LinkedInEasy)).ToList();
             return Results.Ok(new

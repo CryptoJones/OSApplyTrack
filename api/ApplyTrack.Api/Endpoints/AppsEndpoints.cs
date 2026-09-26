@@ -22,19 +22,23 @@ public static class AppsEndpoints
     /// <summary>Body of <c>PUT /api/apps/{name}/raw</c> — the full Markdown document.</summary>
     public sealed record RawUpdate(string Content);
 
+    /// <summary>Stamp <paramref name="etag"/> on a per-session GET and say whether the
+    /// client's <c>If-None-Match</c> already holds it — a 304 then, and no body.</summary>
+    internal static bool NotModified(HttpContext context, string etag)
+    {
+        context.Response.Headers.ETag = etag;
+        context.Response.Headers.CacheControl = "private, no-cache";
+        context.Response.Headers.Vary = "Cookie";
+        var validators = context.Request.Headers.IfNoneMatch.ToString()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return validators.Any(value => value == "*" || value == etag || value == $"W/{etag}");
+    }
+
     public static void MapAppsEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/api/apps", async (HttpContext context, ApplicationRepo repo) =>
         {
-            var etag = await repo.ListEtagAsync();
-            context.Response.Headers.ETag = etag;
-            context.Response.Headers.CacheControl = "private, no-cache";
-            context.Response.Headers.Vary = "Cookie";
-
-            var validators = context.Request.Headers.IfNoneMatch.ToString()
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (validators.Any(value =>
-                    value == "*" || value == etag || value == $"W/{etag}"))
+            if (NotModified(context, await repo.ListEtagAsync()))
                 return Results.StatusCode(StatusCodes.Status304NotModified);
 
             // No validator (backward-compatible client) or a changed revision:

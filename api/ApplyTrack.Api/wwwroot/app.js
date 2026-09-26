@@ -574,8 +574,12 @@ const errorNames = () => new Set(state.errors.map((e) => e.name));
 
 async function loadErrors() {
   try {
-    const data = await api("GET", "/api/errors");
-    state.errors = Array.isArray(data.errors) ? data.errors : [];
+    // Conditional (#349): the 5-second poll asks every time, and an unchanged view is a
+    // 304 off a cheap fingerprint rather than the per-row query behind the list.
+    const res = await api.getConditional("/api/errors", state.errorsEtag);
+    if (!res.modified) return;
+    state.errors = Array.isArray(res.data.errors) ? res.data.errors : [];
+    state.errorsEtag = res.etag;
   } catch {
     // A request that failed says nothing about what is stuck: keep what was last known,
     // or the errored ones would slide back under Ready until the next good answer.
