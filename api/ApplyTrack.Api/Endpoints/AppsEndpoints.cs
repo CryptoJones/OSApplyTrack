@@ -134,6 +134,9 @@ public static class AppsEndpoints
                     "cover-letter drafting is turned off — enable it in Settings · AI");
 
             var resume = await resumes.GetAsync();
+            // Refuse an empty résumé before the request is metered (the drafter checks too).
+            if (resume.IsEmpty)
+                throw new AppValidationException("add your résumé in Résumé settings before drafting a cover letter");
             var cfg = EffectiveLlmConfig.Resolve(instance, await llm.GetOverrideAsync());
             await usage.ChargeAsync(cfg);
             var posting = await ReadPostingAsync(

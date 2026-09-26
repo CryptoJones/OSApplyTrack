@@ -3415,7 +3415,7 @@ async function loadAccountTab(body) {
       <div class="mt-5 border-t border-rule pt-4">
         <div class="field-label" id="sessions-heading">Where you're signed in</div>
         <p class="field-help">
-          Sessions end after 30 days unused. Signing out everywhere else ends every session but this one.
+          Sessions end after 30 days unused, and 90 days after sign-in at the latest. Signing out everywhere else ends every session but this one.
         </p>
         <ul id="account-sessions" class="agent-log" aria-labelledby="sessions-heading" aria-live="polite">
           <li class="mt-2 text-sm text-ink-faint">Loading…</li>
