@@ -104,6 +104,77 @@ public class OpenAiCompatibleLlmClientTests
         Assert.Equal("the LLM endpoint returned HTTP 502", ex.Message);
     }
 
+    // The deadline is the call's own cancellation now that the client is shared (#352).
+    [Fact]
+    public async Task A_call_past_its_timeout_is_unavailable_not_a_caller_cancel()
+    {
+        var client = new OpenAiCompatibleLlmClient(new HangingFactory(), NullLogger<OpenAiCompatibleLlmClient>.Instance);
+        var cfg = new EffectiveLlmConfig("https://llm.example/v1", "m", null, 1);
+
+        var ex = await Assert.ThrowsAsync<LlmUnavailableException>(() => client.CompleteAsync("s", "u", cfg));
+        Assert.Contains("could not reach", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_body_that_stalls_past_the_timeout_is_unavailable()
+    {
+        var content = new StreamContent(new StallingStream());
+        content.Headers.ContentType = new("application/json");
+        var client = NewClient(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        var cfg = new EffectiveLlmConfig("https://llm.example/v1", "m", null, 1);
+
+        var ex = await Assert.ThrowsAsync<LlmUnavailableException>(() => client.CompleteAsync("s", "u", cfg));
+        Assert.Contains("timed out", ex.Message);
+    }
+
+    private sealed class StallingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    // One pooled handler serves every tenant endpoint (#352); its ConnectCallback still
+    // vets each new connection, call after call.
+    [Theory]
+    [InlineData("https://127.0.0.1:9/v1")]
+    [InlineData("https://10.0.0.5:8080/v1")]
+    public async Task The_shared_tenant_client_still_refuses_private_addresses(string baseUrl)
+    {
+        var client = NewClient(new HttpResponseMessage(HttpStatusCode.OK));
+        var cfg = new EffectiveLlmConfig(baseUrl, "m", null, 5, TenantBaseUrl: true);
+
+        for (var i = 0; i < 2; i++)
+            await Assert.ThrowsAsync<AppValidationException>(() => client.CompleteAsync("s", "u", cfg));
+    }
+
+    private sealed class HangingFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new HangingHandler()) { Timeout = Timeout.InfiniteTimeSpan };
+    }
+
+    private sealed class HangingHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("unreachable");
+        }
+    }
+
     private static OpenAiCompatibleLlmClient NewClient(HttpResponseMessage response) =>
         new(new SingleClientFactory(response), NullLogger<OpenAiCompatibleLlmClient>.Instance);
 

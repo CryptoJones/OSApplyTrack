@@ -16,13 +16,27 @@ namespace ApplyTrack.Api.Llm;
 /// Calls an OpenAI-compatible <c>POST {base_url}/chat/completions</c> endpoint. The
 /// same request shape is spoken by OpenAI, OpenRouter, Together, Groq, vLLM, Ollama,
 /// LM Studio, and Anthropic's OpenAI-compat shim — so the operator picks the
-/// provider (or a free local model) purely through config. A fresh client per call
-/// lets each request honor the (possibly per-tenant) base URL and timeout.
+/// provider (or a free local model) purely through config. The URL is per request and
+/// the timeout is a per-call cancellation, so one pooled client serves every tenant.
 /// </summary>
 public sealed class OpenAiCompatibleLlmClient : ILlmClient
 {
     private const int MaxResponseBytes = 1024 * 1024;
     private const int MaxErrorDetailBytes = 4 * 1024;
+
+    // One guarded client for every tenant-configured endpoint (#352): connections are
+    // pooled instead of a fresh DNS/TCP/TLS handshake (and a TIME_WAIT socket) per
+    // completion. ConnectCallback runs for every new connection, so the SSRF guard still
+    // vets each one; the two-minute lifetime keeps DNS changes from being pinned forever.
+    private static readonly HttpClient Guarded = new(new SocketsHttpHandler
+    {
+        ConnectCallback = ConnectToPublicAddressOnlyAsync,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        // Shared across tenants, so no shared cookie jar: one tenant's endpoint session
+        // must never ride along on another's request.
+        UseCookies = false,
+    })
+    { Timeout = Timeout.InfiniteTimeSpan };
 
     private readonly IHttpClientFactory _factory;
     private readonly ILogger<OpenAiCompatibleLlmClient> _log;
@@ -53,13 +67,11 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             },
         };
 
-        using var guarded = cfg.TenantBaseUrl ? new SocketsHttpHandler
-        {
-            ConnectCallback = ConnectToPublicAddressOnlyAsync,
-        } : null;
-        using var guardedClient = guarded is null ? null : new HttpClient(guarded);
-        var http = guardedClient ?? _factory.CreateClient("llm");
-        http.Timeout = TimeSpan.FromSeconds(cfg.TimeoutSeconds);
+        var http = cfg.TenantBaseUrl ? Guarded : _factory.CreateClient("llm");
+        // The shared client's Timeout can't be set per call, so the call's own deadline is a
+        // linked cancellation; the factory client is registered with no timeout of its own.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(cfg.TimeoutSeconds));
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(payload) };
         if (!string.IsNullOrEmpty(cfg.ApiKey))
@@ -68,7 +80,7 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         HttpResponseMessage res;
         try
         {
-            res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         }
         catch (Exception ex) when (FindValidation(ex) is { } validation)
         {
@@ -88,12 +100,22 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
         {
             if (!res.IsSuccessStatusCode)
             {
-                var detail = await SafeReadAsync(res, ct);
+                var detail = await SafeReadAsync(res, timeout.Token);
                 _log.LogWarning("LLM endpoint {Endpoint} returned {Status}: {Detail}", LogSafeEndpoint(url), (int)res.StatusCode, detail);
                 throw new LlmUnavailableException($"the LLM endpoint returned HTTP {(int)res.StatusCode}");
             }
 
-            var json = await ReadCappedStringAsync(res.Content, MaxResponseBytes, ct);
+            // The deadline covers the body too: headers then a stall is still a timeout.
+            string json;
+            try
+            {
+                json = await ReadCappedStringAsync(res.Content, MaxResponseBytes, timeout.Token);
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                _log.LogWarning(ex, "LLM response from {Endpoint} timed out", LogSafeEndpoint(url));
+                throw new LlmUnavailableException("the LLM endpoint timed out while sending its response");
+            }
             try
             {
                 using var doc = JsonDocument.Parse(json);

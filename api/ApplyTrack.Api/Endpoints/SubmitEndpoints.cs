@@ -102,11 +102,15 @@ public static class SubmitEndpoints
             Results.Ok(await evidence.ListAsync(name)));
 
         app.MapGet("/api/apps/{name}/evidence/{id:long}/screenshot.png", async (
-            string name, long id, AgentEvidenceRepo evidence) =>
+            HttpContext http, string name, long id, AgentEvidenceRepo evidence) =>
         {
             var bytes = await evidence.ScreenshotAsync(name, id)
                 ?? throw new AppNotFoundException("no screenshot");
-            return Results.File(bytes, "image/png");
+            // Evidence by id never changes (#352): the browser keeps it for a day and a
+            // revalidation is answered 304 from the id alone.
+            http.Response.Headers.CacheControl = "private, max-age=86400, immutable";
+            return Results.File(bytes, "image/png",
+                entityTag: new Microsoft.Net.Http.Headers.EntityTagHeaderValue($"\"ev-{id}\""));
         });
     }
 }
