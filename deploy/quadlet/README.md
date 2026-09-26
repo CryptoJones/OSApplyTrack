@@ -61,6 +61,12 @@ App__PublicBaseUrl=<same as applytrack.env>
 #Llm__BaseUrl=
 #Llm__Model=
 #Llm__ApiKey=
+# The agent sends email notifications (#355), so it needs the Email__* lines too.
+#Email__Host=
+#Email__Port=
+#Email__Username=
+#Email__Password=
+#Email__From=
 EOF
 
 #    poller.env: the discovery poller parses the open web, so never the owner's password.
@@ -88,7 +94,7 @@ restarting on the new units:
 1. Add `AGENT_DB_PASSWORD=` and `POLLER_DB_PASSWORD=` (fresh random values) to
    `applytrack.env`, and remove `DATABASE_URL` from it (only the poller read it).
 2. Create `agent.env` and `poller.env` as above (`chmod 600`). If `applytrack.env`
-   sets `APPLYTRACK_SECRETS_KEY`, `Llm__*` or `TYPESAFE_API_KEY`, copy them across.
+   sets `APPLYTRACK_SECRETS_KEY`, `Llm__*`, `Email__*` or `TYPESAFE_API_KEY`, copy them across.
 3. Copy the new units, `systemctl --user daemon-reload`, restart `applytrack-api`
    **first** (it creates both roles and their grants), wait for `/health`, then
    restart `applytrack-agent` and `applytrack-poller`.

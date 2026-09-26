@@ -3,6 +3,7 @@
 
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using ApplyTrack.Api.Auth;
 using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Notifications;
@@ -10,10 +11,11 @@ using ApplyTrack.Api.Notifications;
 namespace ApplyTrack.Api.Endpoints;
 
 /// <summary>
-/// The per-tenant Telegram target for the ready-to-submit "moo": <c>GET/PUT
+/// The per-tenant notification channels for the ready-to-submit "moo": <c>GET/PUT
 /// /api/notifications</c> with a write-only bot token (stored encrypted, never
-/// echoed — only <c>has_bot_token</c>), and <c>POST /api/notifications/test</c> to send
-/// a test message before switching it on.
+/// echoed — only <c>has_bot_token</c>), the email switch and the per-event toggles
+/// (#355), and <c>POST /api/notifications/test</c> / <c>…/email/test</c> to send a test
+/// message on either channel before switching it on.
 /// </summary>
 public static partial class NotificationsEndpoints
 {
@@ -25,15 +27,23 @@ public static partial class NotificationsEndpoints
 
     public static void MapNotificationsEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/notifications", async (NotificationSettingsRepo repo, MailboxSettingsRepo mailbox, SecretProtector protector) =>
+        app.MapGet("/api/notifications", async (NotificationSettingsRepo repo, MailboxSettingsRepo mailbox, SecretProtector protector,
+            EmailNotifier email, UserRepo users, TenantContext tenant) =>
         {
             var v = await repo.GetViewAsync();
             var m = await mailbox.GetViewAsync();
+            var ev = v.Events ?? new NotificationEvents();
             return Results.Ok(new
             {
                 telegram_enabled = v.Enabled,
                 has_bot_token = v.HasBotToken,
                 telegram_chat_id = v.ChatId,
+                email_enabled = v.EmailEnabled,
+                email_available = email.Available,
+                email_address = (await users.GetAsync(tenant.TenantId))?.Email ?? "",
+                notify_packet_ready = ev.PacketReady,
+                notify_security_code = ev.SecurityCode,
+                notify_submit_failed = ev.SubmitFailed,
                 secrets_available = protector.Available,
                 mailbox_enabled = m.Enabled,
                 mailbox_host = m.Host,
@@ -69,11 +79,14 @@ public static partial class NotificationsEndpoints
                 if (mEnabled is not null || mHost is not null || mPort is not null || mUser is not null || changePassword)
                     await mailbox.UpsertAsync(mEnabled, mHost, mPort, mUser, changePassword, password);
             }
-            bool? enabled = payload.ValueKind == JsonValueKind.Object
-                && payload.TryGetProperty("telegram_enabled", out var en)
-                && en.ValueKind is JsonValueKind.True or JsonValueKind.False
-                ? en.GetBoolean()
-                : null;
+            // The email switch and the per-event toggles (#355): each present boolean updates
+            // its own column, an absent one is left alone.
+            bool? Flag(string name) => payload.ValueKind == JsonValueKind.Object
+                && payload.TryGetProperty(name, out var el) && el.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? el.GetBoolean() : null;
+            var (emailOn, ready, code, failed) = (Flag("email_enabled"), Flag("notify_packet_ready"),
+                Flag("notify_security_code"), Flag("notify_submit_failed"));
+            var enabled = Flag("telegram_enabled");
 
             string? chatId = payload.ValueKind == JsonValueKind.Object
                 && payload.TryGetProperty("telegram_chat_id", out var c) && c.ValueKind == JsonValueKind.String
@@ -99,13 +112,22 @@ public static partial class NotificationsEndpoints
                     throw new AppValidationException("that doesn't look like a Telegram bot token");
             }
 
-            await repo.UpsertAsync(enabled, chatId, changeToken, token);
+            // Saved only once every Telegram field has passed, so a 400 changes nothing here.
+            if (emailOn is not null || ready is not null || code is not null || failed is not null)
+                await repo.UpsertPreferencesAsync(emailOn, ready, code, failed);
+            if (enabled is not null || chatId is not null || changeToken)
+                await repo.UpsertAsync(enabled, chatId, changeToken, token);
             var v = await repo.GetViewAsync();
+            var ev = v.Events ?? new NotificationEvents();
             return Results.Ok(new
             {
                 telegram_enabled = v.Enabled,
                 has_bot_token = v.HasBotToken,
                 telegram_chat_id = v.ChatId,
+                email_enabled = v.EmailEnabled,
+                notify_packet_ready = ev.PacketReady,
+                notify_security_code = ev.SecurityCode,
+                notify_submit_failed = ev.SubmitFailed,
             });
         });
 
@@ -124,6 +146,18 @@ public static partial class NotificationsEndpoints
             {
                 throw new AppValidationException("the mailbox did not open: " + ex.Message.Split('\n')[0]);
             }
+        }).RequireRateLimiting("notify");
+
+        // A test mail to the account's own address, whether or not email is switched on yet.
+        app.MapPost("/api/notifications/email/test", async (
+            EmailNotifier email, UserRepo users, TenantContext tenant, CancellationToken ct) =>
+        {
+            if (!email.Available)
+                throw new AppValidationException("this instance has no SMTP server configured — the operator sets Email__Host");
+            var to = (await users.GetAsync(tenant.TenantId))?.Email ?? "";
+            await email.SendAsync(to, "Test message from OSApplyTrack",
+                PacketReadyNotifier.EmailBody("🐮 moo — test message from ApplyTrack"), null, ct);
+            return Results.Ok(new { ok = true, to });
         }).RequireRateLimiting("notify");
 
         app.MapPost("/api/notifications/test", async (

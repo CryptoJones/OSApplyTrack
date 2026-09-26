@@ -265,7 +265,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `Retention__AgentEventDays` | `180` | Agent audit events older than this are deleted — never a verdict, a packet build or an account created in your name, and never one about an application still a lead or in Ready. `0` = keep all. |
 | `Retention__SeenDays` | `0` (off) | Forget poller dedup keys older than this. Off by default: a forgotten key lets the poller stage that listing again if you deleted its application. |
 | `Retention__Enabled` / `Retention__IntervalHours` / `Retention__InitialDelaySeconds` | `true` / `24` / `300` | The sweep runs in the migrating (api) container only, first five minutes after boot. |
-| `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
+| `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails and, per account, email notifications (Settings · Notifications). Set the same values on the `agent` container, which sends the notifications. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
 
@@ -357,13 +357,14 @@ killing the process:
 | `POST`   | `/api/ready/actions` | The Ready lane in bulk: `{action: "prepare" \| "submit" \| "pass", names: [...]}` queues (or passes) the batch server-side in one rate-limited request → `{action, dry_run, done[], skipped[{name, reason}]}` (**202** for the queued actions, **200** for pass). `{action: "submit", all_clean: true}` queues the real click for every Ready packet whose latest dry run was clean; **400** while *Dry run only* is still on. |
 | `GET`    | `/api/pipeline` | The submit queue as the worker will drain it (oldest request first), each row labelled with what the worker will do when it claims it — `phase` (`queued` / `running` / `awaiting_code` / `stale`), `will` (`submit` / `dry_run` / `prepare` / `drop`) with its `reason`, `then_submit` for a dry run that queues the real click when clean — plus `ready[]`, the Ready packets not queued and what is `holding` each (`promotable` when a dry-run flip or *Submit all clean* would queue it), the agent's switches and a `summary`. The strip's **Pipeline** button opens it. |
 | `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
-| `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`. |
-| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. | Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from.
+| `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`; `email_enabled`, `email_available` (an SMTP host is configured), `email_address` (the account's own); the per-event toggles `notify_packet_ready`, `notify_security_code`, `notify_submit_failed`. |
+| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears), `email_enabled`, `notify_packet_ready`, `notify_security_code`, `notify_submit_failed` (each omitted field is left alone). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. | Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from.
 | `GET`    | `/api/answers` | The answer bank: every screening question the agent has met on a form (`key`, `label`, `help`, `type`, `options`), the `answer` it gave, whose it is (`source`: `agent` or `human`), how many forms asked it and when. |
 | `PUT`    | `/api/answers/{key}` | `{answer}` — make it your answer: the drafter uses it verbatim on every later form that asks this question (for a fixed list, it must name an option). Blank hands the question back to the drafter. **404** for a question never met. |
 | `POST`   | `/api/answers/{key}/apply` | Write your saved answer into every Ready packet that asks this question, no model → `{updated, packets[]}`. A packet whose fixed option list does not carry your answer is left for you to pick on. **400** unless the answer is yours (`source: human`). |
 | `DELETE` | `/api/answers/{key}` | Forget the question; it returns the next time a form asks it. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
+| `POST`   | `/api/notifications/email/test` | Mail a test message to the account's own address (ignores the on/off switch) → `{ok, to}`; **400** with no SMTP host, **502** when the relay refuses. Rate-limited. |
 | `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
 | `GET`    | `/api/apps/{name}/submit` | The queued request: `pending` (false with nulls when there is none), `dry_run`, `prepare` (rebuild first), timestamps. |
@@ -406,7 +407,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `agent_packets` | Prepared application packets: detected ATS provider, discovered questions, drafted answers, human review checklist, posting excerpt, and packet version. |
 | `submit_requests` | FIFO queue for browser execution jobs (`submit`, `dry_run`, `prepare`) claimed by worker containers with `FOR UPDATE SKIP LOCKED`. |
 | `agent_evidence` | Browser execution artifacts: screenshots, page confirmation text, validation issues, labels for questions needing human intervention (`needs_you`), and parked states (`awaiting_code`). |
-| `notification_settings` | Per-tenant notification credentials: encrypted Telegram bot token, chat ID, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
+| `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
 | `agent_allowlist` | Operator-managed database table allowlisting tenant accounts permitted to use auto-apply automation. |
 | `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
 | `answer_bank` | Reusable repository of screening questions and answers across job forms, tracking `human` vs `agent` source, occurrence counts, and timestamps. |
@@ -627,6 +628,18 @@ and the 🔐 moo asks for the code — or the link — the board emailed; either
 replied or pasted, takes the run on to the form in the same browser session. A
 link is followed only onto the board's own site. Nothing else sent to the bot is
 acted on.
+
+**Email moos.** For anyone who won't set up a bot, **Settings · Notifications ·
+Email** sends the same moos through the instance's own SMTP relay (`Email__*`, the
+one sign-in mail uses) to the address you sign in with — nothing else to configure,
+and no other address can be set. Every moo goes to each channel that is on, recorded
+per channel in the agent log. Three toggles pick which moments notify at all, on
+every channel: a packet is ready (or was submitted), a board's security code or
+sign-in check is waiting on you, and a real submission did not go through (with the
+reason — a crash, a refusal, a captcha). A mail can't be replied to with a code, so
+its 🔐 moo asks you to paste it in the app. The agent container sends these, so it
+needs the `Email__*` values too; without them the attempt is logged as a
+`notify_failed` event naming `Email__Host`.
 
 **Step 4 — the browser fills it in; you click Apply.** With a browser container
 configured, a prepared packet gets a **dry run** automatically: the browser opens

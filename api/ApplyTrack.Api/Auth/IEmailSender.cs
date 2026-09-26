@@ -3,10 +3,18 @@
 
 namespace ApplyTrack.Api.Auth;
 
-/// <summary>Sends the magic-link email. A real SMTP/HTTP sender swaps in behind this.</summary>
+/// <summary>One outgoing mail: plain text always, HTML optional (sent as the text+HTML
+/// alternative when given). A notification or a digest (#336) builds one of these.</summary>
+public sealed record OutgoingEmail(string To, string Subject, string TextBody, string? HtmlBody = null);
+
+/// <summary>Sends the magic-link email, and any other mail the app sends. A real
+/// SMTP/HTTP sender swaps in behind this.</summary>
 public interface IEmailSender
 {
     Task SendMagicLinkAsync(string email, string link);
+
+    /// <summary>Deliver one message to one address. Throws on any failure.</summary>
+    Task SendAsync(OutgoingEmail message, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -29,6 +37,15 @@ public sealed class ConsoleEmailSender(ILogger<ConsoleEmailSender> log) : IEmail
             "magic-link issued for {Email} (enable Debug logging or configure a real "
             + "IEmailSender to reveal/deliver the link)", email);
         log.LogDebug("magic-link for {Email}: {Link}", email, link);
+        return Task.CompletedTask;
+    }
+
+    public Task SendAsync(OutgoingEmail message, CancellationToken ct = default)
+    {
+        // A notification can carry a deep link but never a login token; still, the body
+        // stays at Debug like the link above, so a default deploy logs only that it ran.
+        log.LogInformation("email for {Email} not sent (no SMTP host configured): {Subject}", message.To, message.Subject);
+        log.LogDebug("email for {Email}: {Body}", message.To, message.TextBody);
         return Task.CompletedTask;
     }
 }

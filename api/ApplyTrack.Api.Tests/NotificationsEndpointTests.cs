@@ -37,11 +37,23 @@ public class NotificationsEndpointTests : IAsyncLifetime
             await f.DisposeAsync();
     }
 
-    private async Task<HttpClient> ClientAsync(bool secrets = true, INotifier? notifier = null)
+    private async Task<HttpClient> ClientAsync(bool secrets = true, INotifier? notifier = null, CapturingEmailSender? email = null)
     {
         var f = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("ConnectionStrings:Postgres", _pg.ConnectionString);
+            if (email is not null)
+            {
+                // A configured SMTP sender (the capturing one stands in for the relay).
+                b.UseSetting("Email:Host", "smtp.example.com");
+                b.UseSetting("Email:From", "apply@example.com");
+                b.UseSetting("App:PublicBaseUrl", "https://apply.example");
+                b.ConfigureTestServices(s =>
+                {
+                    s.RemoveAll<IEmailSender>();
+                    s.AddSingleton<IEmailSender>(email);
+                });
+            }
             if (secrets) b.UseSetting("Secrets:Key", TestAuth.MasterKey);
             else
             {
@@ -192,6 +204,76 @@ public class NotificationsEndpointTests : IAsyncLifetime
         for (var i = 0; i < 5; i++)
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/notifications/test", null)).StatusCode);
         Assert.Equal(HttpStatusCode.TooManyRequests, (await client.PostAsync("/api/notifications/test", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Email_and_the_event_toggles_save_on_their_own_and_leave_telegram_alone()
+    {
+        var client = await ClientAsync(email: new CapturingEmailSender());
+        var v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.False(v.GetProperty("email_enabled").GetBoolean());
+        Assert.True(v.GetProperty("email_available").GetBoolean());
+        Assert.EndsWith("@example.com", v.GetProperty("email_address").GetString());
+        Assert.True(v.GetProperty("notify_packet_ready").GetBoolean());
+        Assert.True(v.GetProperty("notify_security_code").GetBoolean());
+        Assert.True(v.GetProperty("notify_submit_failed").GetBoolean());
+
+        await client.PutAsync("/api/notifications",
+            Json($$"""{"telegram_enabled":true,"telegram_chat_id":"4242","telegram_bot_token":"{{Token}}"}"""));
+        var put = await ReadJson(await client.PutAsync("/api/notifications",
+            Json("""{"email_enabled":true,"notify_submit_failed":false}""")));
+        Assert.True(put.GetProperty("email_enabled").GetBoolean());
+        Assert.False(put.GetProperty("notify_submit_failed").GetBoolean());
+        Assert.True(put.GetProperty("notify_packet_ready").GetBoolean());
+        // Telegram untouched by a save that did not name it.
+        Assert.True(put.GetProperty("telegram_enabled").GetBoolean());
+        Assert.True(put.GetProperty("has_bot_token").GetBoolean());
+        Assert.Equal("4242", put.GetProperty("telegram_chat_id").GetString());
+
+        // A save refused for a bad Telegram field changes nothing, toggles included.
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsync("/api/notifications",
+            Json("""{"notify_packet_ready":false,"telegram_chat_id":"abc"}"""))).StatusCode);
+        Assert.True((await ReadJson(await client.GetAsync("/api/notifications"))).GetProperty("notify_packet_ready").GetBoolean());
+
+        // And a Telegram-only save leaves the email switch and the toggles alone.
+        await client.PutAsync("/api/notifications", Json("""{"telegram_chat_id":"99"}"""));
+        v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.True(v.GetProperty("email_enabled").GetBoolean());
+        Assert.False(v.GetProperty("notify_submit_failed").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Without_smtp_email_is_unavailable_and_the_test_mail_is_refused()
+    {
+        var client = await ClientAsync();
+        Assert.False((await ReadJson(await client.GetAsync("/api/notifications"))).GetProperty("email_available").GetBoolean());
+        var res = await client.PostAsync("/api/notifications/email/test", null);
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Contains("Email__Host", (await ReadJson(res)).GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task The_test_mail_goes_to_the_accounts_own_address_even_while_email_is_off()
+    {
+        var mail = new CapturingEmailSender();
+        var client = await ClientAsync(email: mail);
+        var address = (await ReadJson(await client.GetAsync("/api/notifications"))).GetProperty("email_address").GetString();
+
+        var res = await client.PostAsync("/api/notifications/email/test", null);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var sent = Assert.Single(mail.Messages);
+        Assert.Equal(address, sent.To);
+        Assert.Equal(address, (await ReadJson(res)).GetProperty("to").GetString());
+        Assert.Contains("moo", sent.TextBody);
+    }
+
+    [Fact]
+    public async Task A_refused_test_mail_is_502()
+    {
+        var client = await ClientAsync(email: new CapturingEmailSender(new InvalidOperationException("535 authentication failed")));
+        var res = await client.PostAsync("/api/notifications/email/test", null);
+        Assert.Equal(HttpStatusCode.BadGateway, res.StatusCode);
+        Assert.Contains("535", (await ReadJson(res)).GetProperty("detail").GetString());
     }
 
     [Fact]

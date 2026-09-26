@@ -164,6 +164,8 @@ async function mockApi(page) {
     else if (path === "/api/pipeline") body = pipeline;
     else if (path === "/api/notifications") body = {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
+      email_enabled: false, email_available: true, email_address: "ada@example.com",
+      notify_packet_ready: true, notify_security_code: true, notify_submit_failed: true,
     };
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
@@ -381,6 +383,27 @@ test("a ready packet lists its answers, blocks submit on review items, and passe
   const req = await saved;
   expect(new URL(req.url()).searchParams.get("expected_version")).toBe("3");
   expect(req.postDataJSON().answers.question_3).toBe("I scaled the billing service.");
+});
+
+test("notifications offer email beside Telegram, with per-event toggles that save (#355)", async ({ page }) => {
+  let saved = null;
+  page.on("request", (r) => {
+    if (r.method() === "PUT" && new URL(r.url()).pathname === "/api/notifications") saved = r.postDataJSON();
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Notifications", exact: true }).click();
+  const events = page.getByRole("group", { name: "What to hear about" });
+  await expect(events.getByRole("checkbox")).toHaveCount(3);
+  await expect(page.getByText("ada@example.com")).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("checkbox", { name: "Send me an email" }).check();
+  await events.getByRole("checkbox", { name: "A submission did not go through" }).uncheck();
+  await page.getByRole("button", { name: "Save notifications" }).click();
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.email_enabled).toBe(true);
+  expect(saved.notify_submit_failed).toBe(false);
+  expect(saved.notify_packet_ready).toBe(true);
 });
 
 test("resume settings use PDF upload instead of manual fields", async ({ page }) => {

@@ -8,10 +8,22 @@ namespace ApplyTrack.Api.Tests;
 /// <summary>
 /// Test double for <see cref="IEmailSender"/> that records the magic links instead
 /// of sending them, so a test can read the token out of the link and drive the real
-/// request -> verify flow over HTTP.
+/// request -> verify flow over HTTP; notification mail lands in <see cref="Messages"/>.
 /// </summary>
-internal sealed class CapturingEmailSender : IEmailSender
+internal sealed class CapturingEmailSender(Exception? fail = null) : IEmailSender
 {
+    private readonly List<OutgoingEmail> _messages = [];
+
+    /// <summary>Every non-magic-link mail, in order.</summary>
+    public IReadOnlyList<OutgoingEmail> Messages { get { lock (_messages) return _messages.ToList(); } }
+
+    public Task SendAsync(OutgoingEmail message, CancellationToken ct = default)
+    {
+        if (fail is not null) throw fail;
+        lock (_messages) _messages.Add(message);
+        return Task.CompletedTask;
+    }
+
     private readonly List<(string Email, string Link)> _sent = [];
 
     public IReadOnlyList<(string Email, string Link)> Sent => _sent;
