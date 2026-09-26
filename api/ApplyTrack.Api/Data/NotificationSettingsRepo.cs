@@ -21,6 +21,13 @@ public sealed record NotificationEvents(bool PacketReady = true, bool SecurityCo
 /// and usable, the account's address when email is on, and which events are wanted.</summary>
 public sealed record NotificationChannels(TelegramTarget? Telegram, string? Email, NotificationEvents Events);
 
+/// <summary>The daily applied-jobs digest (#336): on or off, whether it opens with an
+/// insult, and the UTC hour it goes out at. All off by default; noon UTC.</summary>
+public sealed record DigestSettings(bool Enabled = false, bool Insults = false, int Hour = DigestSettings.DefaultHour)
+{
+    public const int DefaultHour = 12;
+}
+
 /// <summary>A deliverable target: the decrypted token plus the chat id.</summary>
 public sealed record TelegramTarget(string BotToken, string ChatId);
 
@@ -162,6 +169,30 @@ public sealed class NotificationSettingsRepo
                 updated_at           = now()
             """,
             new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed });
+
+    public async Task<DigestSettings> GetDigestAsync() =>
+        await _conn.QuerySingleOrDefaultAsync<DigestSettings?>(
+            "SELECT digest_enabled AS enabled, digest_insults AS insults, digest_hour::int AS hour "
+            + "FROM notification_settings WHERE tenant_id = @t",
+            new { t = _t }) ?? new DigestSettings();
+
+    /// <summary>Save the digest's switches and hour (0–23, UTC). Null leaves a value alone.</summary>
+    public async Task UpsertDigestAsync(bool? enabled, bool? insults, int? hour)
+    {
+        if (hour is < 0 or > 23)
+            throw new AppValidationException("the digest hour is a number from 0 to 23 (UTC)");
+        await _conn.ExecuteAsync(
+            """
+            INSERT INTO notification_settings (tenant_id, digest_enabled, digest_insults, digest_hour, updated_at)
+            VALUES (@t, coalesce(@enabled, false), coalesce(@insults, false), coalesce(@hour, @defaultHour), now())
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                digest_enabled = coalesce(@enabled, notification_settings.digest_enabled),
+                digest_insults = coalesce(@insults, notification_settings.digest_insults),
+                digest_hour    = coalesce(@hour, notification_settings.digest_hour),
+                updated_at     = now()
+            """,
+            new { t = _t, enabled, insults, hour = (short?)hour, defaultHour = (short)DigestSettings.DefaultHour });
+    }
 
     private Task<Row?> ReadRowAsync() =>
         _conn.QuerySingleOrDefaultAsync<Row?>(

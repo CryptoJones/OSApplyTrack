@@ -277,6 +277,30 @@ public class NotificationsEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_daily_digest_is_off_by_default_and_saves_its_switches_and_hour()
+    {
+        var client = await ClientAsync(email: new CapturingEmailSender());
+        var v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.False(v.GetProperty("digest_enabled").GetBoolean());
+        Assert.False(v.GetProperty("digest_insults").GetBoolean());
+        Assert.Equal(12, v.GetProperty("digest_hour").GetInt32());
+
+        var put = await ReadJson(await client.PutAsync("/api/notifications",
+            Json("""{"digest_enabled":true,"digest_insults":true,"digest_hour":7}""")));
+        Assert.True(put.GetProperty("digest_enabled").GetBoolean());
+        Assert.True(put.GetProperty("digest_insults").GetBoolean());
+        Assert.Equal(7, put.GetProperty("digest_hour").GetInt32());
+        // The digest is its own switch: email moos stay as they were.
+        Assert.False(put.GetProperty("email_enabled").GetBoolean());
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsync("/api/notifications",
+            Json("""{"digest_enabled":false,"digest_hour":24}"""))).StatusCode);
+        v = await ReadJson(await client.GetAsync("/api/notifications"));
+        Assert.True(v.GetProperty("digest_enabled").GetBoolean());
+        Assert.Equal(7, v.GetProperty("digest_hour").GetInt32());
+    }
+
+    [Fact]
     public async Task Settings_are_per_tenant()
     {
         var client = await ClientAsync();
