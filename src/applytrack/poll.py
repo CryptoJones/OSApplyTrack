@@ -1643,11 +1643,11 @@ def score_and_stage(
 
     The dedup ledger is read from the ``seen`` table for just this batch's keys and
     seeded from the tenant's existing applications; the newly seen keys are persisted
-    together at the end so a company is never re-pinged on a later run (#348). Network is touched only when ``verify_links`` is on:
-    the listings that pass every offline filter are then resolved and probed together
-    on a bounded pool, through ``link_cache`` — which the multi-tenant worker shares
-    across every tenant of a run, so a URL is fetched once per run, not per tenant
-    (#347).
+    together at the end so a company is never re-pinged on a later run (#348). Network
+    is touched only when ``verify_links`` is on: the listings that pass every offline
+    filter are then resolved and probed together on a bounded pool, through
+    ``link_cache`` — which the multi-tenant worker shares across every tenant of a
+    run, so a URL is fetched once per run, not per tenant (#347).
     """
     batch = [it for it in listings if it.company and it.role]
     # Nothing gathered (an --ats-only pass for a tenant with no boards, every ten
