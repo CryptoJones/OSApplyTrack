@@ -492,6 +492,56 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task Silence_in_the_posting_is_judged_only_next_to_the_ATSs_structured_workplace()
+    {
+        // #334: Bankjoy's Ashby posting is marked Remote in workplaceType and its description
+        // never says the word; it was passed as "never says remote". The packet-build path now
+        // asks the ATS: Remote keeps the lead in Ready, and only a Lever posting marked onsite,
+        // silent in its text, is passed for a remote-only profile.
+        var stub = new StubLlmClient(Responders.Agent());
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        var criteria = Criteria.Defaults();
+        criteria.RemoteOnly = true;
+        await new CriteriaRepo(conn, t).UpsertAsync(criteria);
+
+        const string ashbyJob = "0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21";
+        const string leverJob = "9f8e7d6c-5b4a-4f3e-8d2c-1b0a9f8e7d6c";
+        var apps = new ApplicationRepo(conn, t);
+        var high = await apps.GetAsync("high-engineer.md");
+        await apps.UpdateStructuredAsync("high-engineer.md",
+            high!.Fields with { Link = $"https://jobs.ashbyhq.com/bankjoy/{ashbyJob}" }, null);
+        var mid = await apps.GetAsync("mid-engineer.md");
+        await apps.UpdateStructuredAsync("mid-engineer.md",
+            mid!.Fields with { Link = $"https://jobs.lever.co/acme/{leverJob}" }, null);
+
+        var silent = string.Concat(Enumerable.Repeat("Build and ship full-stack .NET features for credit unions. ", 40));
+        var page = "<html><head><script type=\"application/ld+json\">"
+            + JsonSerializer.Serialize(new Dictionary<string, object> { ["@type"] = "JobPosting", ["title"] = "Engineer", ["description"] = silent })
+            + "</script></head><body>Apply</body></html>";
+        var handler = new CapturingHandler(req => req.RequestUri!.Host switch
+        {
+            "api.ashbyhq.com" => Json("{\"jobs\":[{\"id\":\"" + ashbyJob + "\",\"workplaceType\":\"Remote\",\"isRemote\":true}]}"),
+            "api.lever.co" => Json("{\"workplaceType\":\"onsite\"}"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(page, System.Text.Encoding.UTF8, "text/html") },
+        });
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier(), fetcher: new JobPageFetcher(handler));
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        Assert.Contains(handler.Requests, r => r.Request.RequestUri!.ToString() == "https://api.ashbyhq.com/posting-api/job-board/bankjoy");
+        Assert.Equal("ready", await StatusAsync(conn, t, "high-engineer.md"));
+        Assert.Equal("passed", await StatusAsync(conn, t, "mid-engineer.md"));
+        var reason = await conn.ExecuteScalarAsync<string>(
+            "SELECT detail->>'reason' FROM agent_events WHERE tenant_id = @t"
+            + " AND application_name = 'mid-engineer.md' AND kind = 'error'", new { t });
+        Assert.Contains("Lever workplaceType \"onsite\" and never says the role is remote", reason);
+
+        static HttpResponseMessage Json(string body) =>
+            new(HttpStatusCode.OK) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+    }
+
+    [Fact]
     public async Task A_skip_records_the_veto_and_stages_nothing()
     {
         var skip = "{\"decision\":\"skip\",\"confidence\":80,\"rationale\":\"Wrong stack.\",\"concerns\":[]}";

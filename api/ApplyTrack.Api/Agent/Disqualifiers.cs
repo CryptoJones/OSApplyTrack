@@ -65,20 +65,27 @@ public static partial class Disqualifiers
     /// listed DTCC as "Tampa, FL (Remote)" and DTCC's page says "a flexible/hybrid model of
     /// 3 days onsite"; it listed Wingstop as "Dallas, TX (Remote)" over a posting that gives a
     /// street address and never once says remote. <paramref name="employerText"/> must be the
-    /// employer's page, never the board's. The reason, or null. A posting too short to judge
-    /// (a page that would not render) is never held against the role, nor is silence in
-    /// text that may have been cut short (<paramref name="complete"/> false).
+    /// employer's page, never the board's. The reason, or null.
+    /// <para>What the text leaves unsaid is judged only next to the employer's structured
+    /// <paramref name="workplace"/> (#334): the text is often the description alone, and an
+    /// ATS keeps "Remote" in a field outside it — Bankjoy's Ashby posting is marked Remote and
+    /// never uses the word. Silence counts only when that field says the job is not remote.</para>
     /// </summary>
-    public static string? EmployerContradictsRemote(string employerText, Criteria criteria, bool complete = true)
+    public static string? EmployerContradictsRemote(string employerText, Criteria criteria, EmployerWorkplace? workplace = null)
     {
-        if (!criteria.RemoteOnly || string.IsNullOrWhiteSpace(employerText)) return null;
+        if (!criteria.RemoteOnly) return null;
+        employerText ??= "";
         var m = NotRemote().Match(employerText);
         if (m.Success)
             return $"the employer's own posting says \"{Around(employerText, m)}\" — the profile is remote-only";
-        if (complete && employerText.Length >= 1500 && !SaysRemote().IsMatch(employerText))
-            return "the employer's own posting never says the role is remote — the profile is remote-only";
+        if (workplace is { Remote: false } && !SaysRemote().IsMatch(employerText))
+            return $"the employer's posting is marked {workplace.Says} and never says the role is remote — the profile is remote-only";
         return null;
     }
+
+    /// <summary>Does the text say the job is remote? The worker asks the employer's ATS for its
+    /// structured workplace only when it does not.</summary>
+    public static bool SaysRoleIsRemote(string text) => SaysRemote().IsMatch(text ?? "");
 
     // The sentence around a match, trimmed for a reason line.
     private static string Around(string text, Match m)

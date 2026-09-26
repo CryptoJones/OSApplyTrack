@@ -133,7 +133,9 @@ public sealed class JobPageFetcher
                         $"the page answered HTTP {(int)res.StatusCode}");
 
                 var mediaType = res.Content.Headers.ContentType?.MediaType ?? "";
-                if (mediaType.Length > 0 && !mediaType.Contains("html") && !mediaType.Contains("xml"))
+                // A JSON request takes JSON back (an ATS's posting API, #334); a page fetch takes only a page.
+                var asked = accept is not null && accept.Contains("json", StringComparison.OrdinalIgnoreCase) && mediaType.Contains("json");
+                if (mediaType.Length > 0 && !asked && !mediaType.Contains("html") && !mediaType.Contains("xml"))
                     throw new ScrapeUnavailableException("that URL isn't an HTML page");
 
                 // The body read can still fail after headers arrive — a connection reset

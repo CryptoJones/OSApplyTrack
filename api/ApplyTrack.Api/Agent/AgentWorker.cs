@@ -362,17 +362,19 @@ public sealed class AgentWorker : BackgroundService
     /// better. Never judged on a job board's page, only the employer's. True when passed.
     /// </summary>
     private async Task<bool> PassIfEmployerNotRemoteAsync(
-        AppRecord rec, AgentPacket packet, Criteria criteria, ApplicationRepo apps, AgentEventRepo events)
+        AppRecord rec, AgentPacket packet, Criteria criteria, ApplicationRepo apps, AgentEventRepo events, CancellationToken ct)
     {
-        // Only what the employer says, never what it leaves unsaid (#334): the excerpt is often the
-        // description alone, and an ATS keeps "Remote" in a location field outside it — Thumbtack's
-        // and Bankjoy's Ashby postings are marked Remote and never use the word in their text, and
-        // Bankjoy was passed as "never says remote". Silence is judged by nobody until the
-        // employer's structured location is read alongside it.
-        const bool complete = false;
-        if (!Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var at)
-            || AtsProvider.IsAggregatorHost(at.Host.ToLowerInvariant())
-            || Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, complete) is not { } why)
+        if (!criteria.RemoteOnly || !Uri.TryCreate(rec.Fields.Link, UriKind.Absolute, out var at)
+            || AtsProvider.IsAggregatorHost(at.Host.ToLowerInvariant()))
+            return false;
+        // What the employer says, and what it leaves unsaid only next to its ATS's structured
+        // workplace (#334): the excerpt is often the description alone, and an ATS keeps "Remote"
+        // in a field outside it — Bankjoy's and Thumbtack's Ashby postings are marked Remote and
+        // never use the word, and Bankjoy was passed as "never says remote". Asked only when the
+        // text does not already say remote.
+        var workplace = Disqualifiers.SaysRoleIsRemote(packet.PostingExcerpt) ? null
+            : await _evaluator.ReadWorkplaceAsync(rec.Fields.Link, rec.Fields.Source, ct);
+        if (Disqualifiers.EmployerContradictsRemote(packet.PostingExcerpt, criteria, workplace) is not { } why)
             return false;
         // As it stands now, not as it stood before the build: a person may have marked it
         // applied meanwhile, and that is never overwritten.
@@ -435,7 +437,7 @@ public sealed class AgentWorker : BackgroundService
         try
         {
             var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
-            if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, work.Scope.Apps, events))
+            if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, work.Scope.Apps, events, ct))
                 return null;
             var fresh = await work.Scope.Apps.GetAsync(rec.Name) ?? rec;
             return (fresh, packet);
@@ -1204,7 +1206,7 @@ public sealed class AgentWorker : BackgroundService
                     try
                     {
                         var packet = await _packets.BuildAsync(rec, verdict, work.Inputs, work.Scope, ct);
-                        if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, apps, events))
+                        if (await PassIfEmployerNotRemoteAsync(rec, packet, criteria, apps, events, ct))
                             continue;
                         // With a browser that may drive this ATS, the moo waits for the
                         // dry-run fill (the submit lane sends it after the screenshot);

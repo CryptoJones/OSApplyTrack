@@ -128,6 +128,27 @@ public sealed class LeadEvaluator
         }
     }
 
+    /// <summary>
+    /// The employer's structured workplace from its ATS's public API (#334), or null when the
+    /// link is not Ashby, Lever or Greenhouse, the API does not answer, or the field says
+    /// nothing. Null never judges anything.
+    /// </summary>
+    public async Task<EmployerWorkplace?> ReadWorkplaceAsync(string link, string source, CancellationToken ct)
+    {
+        if (EmployerWorkplace.ApiUrl(link, source, out var provider, out var jobId) is not { } api)
+            return null;
+        try
+        {
+            var (json, _) = await _fetcher.FetchAsync(api, ct, "application/json");
+            return EmployerWorkplace.Parse(provider, json, jobId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.LogInformation("no workplace read for {Link}: {Reason}", link, ex.Message);
+            return null;
+        }
+    }
+
     /// <summary>Best-effort posting fetch, the same contract as the draft endpoint's.</summary>
     public async Task<string> ReadPostingAsync(string link, CancellationToken ct)
     {
