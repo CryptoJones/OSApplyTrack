@@ -14,7 +14,7 @@ namespace ApplyTrack.Api.Endpoints;
 /// The per-tenant notification channels for the ready-to-submit "moo": <c>GET/PUT
 /// /api/notifications</c> with a write-only bot token (stored encrypted, never
 /// echoed — only <c>has_bot_token</c>), the email switch and the per-event toggles
-/// (#355), and <c>POST /api/notifications/test</c> / <c>…/email/test</c> to send a test
+/// (#355), the daily digest's switches and hour (#336), and <c>POST /api/notifications/test</c> / <c>…/email/test</c> to send a test
 /// message on either channel before switching it on.
 /// </summary>
 public static partial class NotificationsEndpoints
@@ -32,6 +32,7 @@ public static partial class NotificationsEndpoints
         {
             var v = await repo.GetViewAsync();
             var m = await mailbox.GetViewAsync();
+            var d = await repo.GetDigestAsync();
             var ev = v.Events ?? new NotificationEvents();
             return Results.Ok(new
             {
@@ -44,6 +45,9 @@ public static partial class NotificationsEndpoints
                 notify_packet_ready = ev.PacketReady,
                 notify_security_code = ev.SecurityCode,
                 notify_submit_failed = ev.SubmitFailed,
+                digest_enabled = d.Enabled,
+                digest_insults = d.Insults,
+                digest_hour = d.Hour,
                 secrets_available = protector.Available,
                 mailbox_enabled = m.Enabled,
                 mailbox_host = m.Host,
@@ -87,6 +91,12 @@ public static partial class NotificationsEndpoints
             var (emailOn, ready, code, failed) = (Flag("email_enabled"), Flag("notify_packet_ready"),
                 Flag("notify_security_code"), Flag("notify_submit_failed"));
             var enabled = Flag("telegram_enabled");
+            // The daily digest (#336): its switch, "Insult me", and the UTC hour it goes out at.
+            var (digestOn, insults) = (Flag("digest_enabled"), Flag("digest_insults"));
+            int? digestHour = null;
+            if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("digest_hour", out var dh))
+                digestHour = dh.ValueKind == JsonValueKind.Number && dh.TryGetInt32(out var h) && h is >= 0 and <= 23
+                    ? h : throw new AppValidationException("the digest hour is a number from 0 to 23 (UTC)");
 
             string? chatId = payload.ValueKind == JsonValueKind.Object
                 && payload.TryGetProperty("telegram_chat_id", out var c) && c.ValueKind == JsonValueKind.String
@@ -117,7 +127,10 @@ public static partial class NotificationsEndpoints
                 await repo.UpsertPreferencesAsync(emailOn, ready, code, failed);
             if (enabled is not null || chatId is not null || changeToken)
                 await repo.UpsertAsync(enabled, chatId, changeToken, token);
+            if (digestOn is not null || insults is not null || digestHour is not null)
+                await repo.UpsertDigestAsync(digestOn, insults, digestHour);
             var v = await repo.GetViewAsync();
+            var d = await repo.GetDigestAsync();
             var ev = v.Events ?? new NotificationEvents();
             return Results.Ok(new
             {
@@ -128,6 +141,9 @@ public static partial class NotificationsEndpoints
                 notify_packet_ready = ev.PacketReady,
                 notify_security_code = ev.SecurityCode,
                 notify_submit_failed = ev.SubmitFailed,
+                digest_enabled = d.Enabled,
+                digest_insults = d.Insults,
+                digest_hour = d.Hour,
             });
         });
 

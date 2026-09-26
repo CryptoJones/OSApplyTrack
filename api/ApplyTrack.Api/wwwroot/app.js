@@ -2790,6 +2790,17 @@ async function loadAgentTab(body, gen = settingsGen) {
 // your sign-in address) and Telegram (your own bot — the token is write-only and
 // encrypted); the per-event toggles apply to both (#355).
 
+// The digest's send hour is a UTC hour (the applied dates are UTC days); each option
+// also says what that is on this device's clock.
+function digestHourOptions(current) {
+  const chosen = Number.isInteger(current) ? current : 12;
+  return Array.from({ length: 24 }, (_, h) => {
+    const local = new Date(Date.UTC(2000, 0, 1, h)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const utc = `${String(h).padStart(2, "0")}:00 UTC`;
+    return `<option value="${h}"${h === chosen ? " selected" : ""}>${utc} (${escapeHtml(local)} here)</option>`;
+  }).join("");
+}
+
 function notificationsMarkup(s) {
   const secretsOff = !s.secrets_available;
   const emailOff = !s.email_available;
@@ -2830,6 +2841,28 @@ function notificationsMarkup(s) {
           <input id="e-enabled" type="checkbox" aria-describedby="n-email-help"${s.email_enabled ? " checked" : ""}${emailOff ? " disabled" : ""} />
           <span>Send me an email</span>
         </label>
+      </div>
+
+      <h3 class="mt-8" id="d-heading">Daily digest</h3>
+      <p class="field-help" id="d-help">
+        One email a day, every day, listing the applications marked applied the day before
+        (UTC): each one's number, company, role, the posting and a link back here. The subject
+        is always <span class="mono">NN application(s) submitted.</span> — <span class="mono">00</span> included.
+      </p>
+      <div class="mt-3" role="group" aria-labelledby="d-heading">
+        <label class="source-row">
+          <input id="d-enabled" type="checkbox" aria-describedby="d-help"${s.digest_enabled ? " checked" : ""}${emailOff ? " disabled" : ""} />
+          <span>Email me the daily digest</span>
+        </label>
+        <label class="source-row">
+          <input id="d-insults" type="checkbox" aria-describedby="d-insults-help"${s.digest_insults ? " checked" : ""}${emailOff ? " disabled" : ""} />
+          <span>Insult me</span>
+        </label>
+        <p class="field-help" id="d-insults-help">Opens the digest with a fresh remark from the machine about you, the human.</p>
+        <div class="mt-3">
+          <label class="field-label" for="d-hour">Send it at</label>
+          <select id="d-hour" class="field-input"${emailOff ? " disabled" : ""}>${digestHourOptions(s.digest_hour)}</select>
+        </div>
       </div>
 
       <h3 class="mt-8">Telegram</h3>
@@ -2925,6 +2958,11 @@ function wireNotifications() {
     // A disabled switch (no mail server here) is left as it is on the server.
     const emailEl = $("#e-enabled");
     if (!emailEl.disabled) body.email_enabled = emailEl.checked;
+    if (!$("#d-enabled").disabled) {
+      body.digest_enabled = $("#d-enabled").checked;
+      body.digest_insults = $("#d-insults").checked;
+      body.digest_hour = Number($("#d-hour").value);
+    }
     // The token is omitted unless the user typed a new one or asked to clear it.
     const tokenEl = $("#n-token");
     const clearEl = $("#n-clear");

@@ -166,6 +166,7 @@ async function mockApi(page) {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
       email_enabled: false, email_available: true, email_address: "ada@example.com",
       notify_packet_ready: true, notify_security_code: true, notify_submit_failed: true,
+      digest_enabled: false, digest_insults: false, digest_hour: 12,
     };
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
@@ -404,6 +405,29 @@ test("notifications offer email beside Telegram, with per-event toggles that sav
   expect(saved.email_enabled).toBe(true);
   expect(saved.notify_submit_failed).toBe(false);
   expect(saved.notify_packet_ready).toBe(true);
+});
+
+test("the daily digest is off by default and saves its switch, insults and hour (#336)", async ({ page }) => {
+  let saved = null;
+  page.on("request", (r) => {
+    if (r.method() === "PUT" && new URL(r.url()).pathname === "/api/notifications") saved = r.postDataJSON();
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Notifications", exact: true }).click();
+  const digest = page.getByRole("group", { name: "Daily digest" });
+  await expect(digest.getByRole("checkbox", { name: "Email me the daily digest" })).not.toBeChecked();
+  await expect(digest.getByRole("checkbox", { name: "Insult me" })).not.toBeChecked();
+  await expect(digest.getByRole("combobox", { name: "Send it at" })).toHaveValue("12");
+  await expectNoSeriousViolations(page);
+
+  await digest.getByRole("checkbox", { name: "Email me the daily digest" }).check();
+  await digest.getByRole("checkbox", { name: "Insult me" }).check();
+  await digest.getByRole("combobox", { name: "Send it at" }).selectOption("7");
+  await page.getByRole("button", { name: "Save notifications" }).click();
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.digest_enabled).toBe(true);
+  expect(saved.digest_insults).toBe(true);
+  expect(saved.digest_hour).toBe(7);
 });
 
 test("resume settings use PDF upload instead of manual fields", async ({ page }) => {

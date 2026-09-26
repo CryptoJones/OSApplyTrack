@@ -216,6 +216,9 @@ builder.Services.AddSingleton(retentionOptions);
 if (retentionOptions.Enabled
     && !string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddHostedService<RetentionWorker>();
+// The daily applied-jobs digest (#336): the same container, the one that sends sign-in mail.
+if (!string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddHostedService<DailyDigestWorker>();
 
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
