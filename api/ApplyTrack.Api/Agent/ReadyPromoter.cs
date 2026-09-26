@@ -28,17 +28,23 @@ public static class ReadyPromoter
         var apps = new ApplicationRepo(conn, tenantId);
         var queue = new SubmitRequestRepo(conn, tenantId);
         var promoted = new List<string>();
-        foreach (var (name, kind, detail, _) in await evidence.LatestPerReadyApplicationAsync())
+        var clean = (await evidence.LatestPerReadyApplicationAsync())
+            .Where(e => AgentEvidenceRepo.IsCleanDryRun(e.Kind, e.Detail))
+            .Select(e => e.Name)
+            .ToList();
+        if (clean.Count == 0)
+            return promoted;
+        // Every agent pass runs this: one read each for the packets and the links, not two
+        // per Ready application (#351).
+        var gates = await packets.GatesAsync(clean);
+        var links = await apps.BriefsAsync(clean);
+        foreach (var name in clean)
         {
-            if (!AgentEvidenceRepo.IsCleanDryRun(kind, detail))
-                continue;
-            var packet = await packets.GetAsync(name);
-            if (packet is null || packet.BlockingReview().Any())
+            if (!gates.TryGetValue(name, out var packet) || packet.Blocking > 0)
                 continue;
             if (!AtsProvider.BrowserCanSubmit(packet.Provider, longTail, linkedInEasy))
                 continue;
-            var rec = await apps.GetAsync(name);
-            if (rec is null || rec.Fields.Link.Length == 0)
+            if (!links.TryGetValue(name, out var rec) || rec.Link.Length == 0)
                 continue;
             if (await queue.EnqueueAsync(name, dryRun))
                 promoted.Add(name);

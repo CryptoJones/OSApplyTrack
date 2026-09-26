@@ -31,9 +31,9 @@ public static class AccountEndpoints
     private const string ExportFormat = "applytrack-export";
 
     // Upper bound on items accepted in one import. The whole load runs in a single
-    // transaction with one round-trip per row, so an unbounded file would mean a
-    // long-held transaction and a slow, lock-holding load — cap it. A self-host
-    // account is small; this is generous headroom, not a real-world limit.
+    // transaction (applications in batches of a thousand, #351), so an unbounded file
+    // would still mean a long-held, lock-holding load — cap it. A self-host account is
+    // small; this is generous headroom, not a real-world limit.
     private const int MaxImportItems = 10_000;
 
     /// <summary>The import body cap, enforced before binding (Program.cs, #344).</summary>
@@ -111,14 +111,9 @@ public static class AccountEndpoints
                     await sharedDb.OpenAsync();
                 await using var sharedTx = await sharedDb.BeginTransactionAsync();
 
-                int added = 0, skipped = 0;
-                foreach (var a in body.Applications!)
-                {
-                    if (await apps.InsertIfAbsentAsync(a.Name, a.ToSharedLeadFields(), sharedTx))
-                        added++;
-                    else
-                        skipped++;
-                }
+                var added = await apps.InsertManyIfAbsentAsync(
+                    body.Applications!.Select(a => (a.Name, a.ToSharedLeadFields())), sharedTx);
+                var skipped = body.Applications!.Count - added;
                 await sharedTx.CommitAsync();
 
                 return Results.Ok(new
@@ -148,12 +143,8 @@ public static class AccountEndpoints
                 await db.OpenAsync();
             await using var tx = await db.BeginTransactionAsync();
 
-            var importedApps = 0;
-            foreach (var a in body.Applications ?? [])
-            {
-                await apps.UpsertByNameAsync(a.Name, a.ToFields(), tx);
-                importedApps++;
-            }
+            var importedApps = body.Applications?.Count ?? 0;
+            await apps.UpsertManyAsync((body.Applications ?? []).Select(a => (a.Name, a.ToFields())), tx);
 
             if (hasCriteria)
                 await criteria.UpsertAsync(Criteria.FromJson(body.Criteria!.Value), tx);
