@@ -26,7 +26,9 @@ BEGIN
         GRANT UPDATE (company, role, lane, status, link, location, salary, source, contact,
             contact_email, applied, followup, created, score, notes, version, updated_at)
             ON applications TO applytrack_agent;
-        -- The list-revision trigger bumps users.
+        -- The list-revision trigger bumps users; the status-history trigger (#353)
+        -- records each flip.
         GRANT UPDATE (applications_revision) ON users TO applytrack_agent;
+        GRANT INSERT ON status_events TO applytrack_agent;
     END IF;
 END $$;
