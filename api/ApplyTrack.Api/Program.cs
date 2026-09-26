@@ -202,6 +202,15 @@ if (agentOptions.Enabled)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
 
+// The daily retention sweep (#350): old screenshots' bytes, dead sessions and magic-link
+// tokens, stale audit events, and — only when opted in — old dedup keys. The migrating
+// (owner) container runs it; a Migrations:Mode=wait worker's role cannot delete.
+var retentionOptions = builder.Configuration.GetSection("Retention").Get<RetentionOptions>() ?? new RetentionOptions();
+builder.Services.AddSingleton(retentionOptions);
+if (retentionOptions.Enabled
+    && !string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddHostedService<RetentionWorker>();
+
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
 // key policy is deliberately left unset so map keys — status names, lane names,

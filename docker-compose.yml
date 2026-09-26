@@ -37,6 +37,10 @@ services:
       Llm__ApiKey: ${Llm__ApiKey:-}
       # Daily per-tenant cap on model requests made with the key above (0 = unlimited).
       Llm__DailyCapPerTenant: ${Llm__DailyCapPerTenant:-200}
+      # Daily retention sweep (#350); see README · Configuration. 0 days = keep forever.
+      Retention__ScreenshotDays: ${Retention__ScreenshotDays:-90}
+      Retention__AgentEventDays: ${Retention__AgentEventDays:-180}
+      Retention__SeenDays: ${Retention__SeenDays:-0}
       # Encryption at rest is always on. Leave this unset and the api generates a key on
       # first run into the `secrets` volume below (shared with the agent and the poller,
       # which must decrypt the same rows); set it to manage the key yourself. Back the key

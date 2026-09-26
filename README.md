@@ -260,6 +260,11 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `AGENT_DB_PASSWORD` | _(required in production)_ | Set on the **api** (the migrating container): it creates the least-privilege `applytrack_agent` Postgres role on boot, or resets its password to this, and re-applies its grants. The `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
 | `POLLER_DB_PASSWORD` | _(required in production)_ | The same for the poller's `applytrack_poller` role, which the `poller` container's `DATABASE_URL` connects as: it reads profiles, blacklists and the dedup ledger, stages leads, and keeps board sessions, with no access to sessions, sign-in tokens, résumés, board passwords or DDL. Unset, the role is not created and the poller keeps whatever `DATABASE_URL` says (the quickstart uses the owner). |
 | `App__PublicBaseUrl` / `AllowedHosts` | _(empty)_ / `*` | The public origin sign-in links are built from (scheme, no trailing slash) — never the request `Host` header, which an attacker controls. Unset, links fall back to the request origin only for `localhost`/`127.0.0.1`; any other Host gets no link. **Required once `Email__Host` is set** (the api refuses to boot without it). `AllowedHosts` pins the Host headers the api answers at all. Compose reads them as `APP_PUBLIC_BASE_URL` / `ALLOWED_HOSTS`. |
+| `Retention__ScreenshotDays` / `Retention__ScreenshotsKeptPerApplication` | `90` / `3` | The daily [retention sweep](#your-data) clears the bytes of an evidence screenshot older than this (the evidence row and its text stay). Never a submission's, never one of an application still in Ready or Errors, never an application's newest three. `0` = keep every screenshot. |
+| `Retention__ExpiredGraceDays` | `1` | Sessions and magic-link tokens are deleted this many days after they expire. |
+| `Retention__AgentEventDays` | `180` | Agent audit events older than this are deleted — never a verdict, a packet build or an account created in your name, and never one about an application still a lead or in Ready. `0` = keep all. |
+| `Retention__SeenDays` | `0` (off) | Forget poller dedup keys older than this. Off by default: a forgotten key lets the poller stage that listing again if you deleted its application. |
+| `Retention__Enabled` / `Retention__IntervalHours` / `Retention__InitialDelaySeconds` | `true` / `24` / `300` | The sweep runs in the migrating (api) container only, first five minutes after boot. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
@@ -972,6 +977,14 @@ value.
 - **Delete** — `DELETE /api/account` removes your account and, via
   `ON DELETE CASCADE`, every row that belongs to it (applications, search profile,
   blacklist, seen ledger, queued polls, sessions, tokens) in one statement.
+- **Retention** — a daily sweep in the api container keeps the tables that only grow
+  in check: screenshots older than 90 days lose their bytes (never a submission's, an
+  application's newest three, or any while it is still in Ready or Errors), expired
+  sessions and sign-in links are deleted a day after expiry, and agent audit events go
+  after 180 days (never verdicts, packet builds, accounts created, or events about a
+  live lead or Ready application). The dedup ledger is kept unless `Retention__SeenDays`
+  is set. Cleared screenshot space is reused by Postgres; `VACUUM FULL agent_evidence`
+  returns it to the disk. All windows are in [Configuration](#configuration).
 
 ## Accessibility
 
