@@ -22,7 +22,7 @@ unique-violation that the caller skips without poisoning the rest of the run.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterable, Iterator
 
 import psycopg
 
@@ -65,6 +65,8 @@ class PollRepo:
     def __init__(self, conn: psycopg.Connection, tenant_id: int) -> None:
         self._conn = conn
         self._t = tenant_id
+        # The ledger's URL keys, read on the first seen_url() (#348).
+        self._seen_urls: set[str] | None = None
 
     def load_profile(self) -> Criteria:
         """Load this tenant's criteria; fall back to defaults when no row exists.
@@ -185,18 +187,21 @@ class PollRepo:
 
     def seen_url(self, url: str) -> bool:
         """Is this listing URL already in the tenant's ledger? A source that pays a
-        request per listing asks before reading one (#233)."""
+        request per listing asks before reading one (#233). The ledger's URL keys are
+        read once per repo, on the first ask, and answered from memory after that --
+        a Handshake pass asks up to 800 times (#348)."""
         from applytrack.poll import _norm_url
 
         key = _norm_url(url)
         if not key:
             return False
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM seen WHERE tenant_id = %s AND kind = 'url' AND key = %s LIMIT 1",
-                (self._t, key),
-            )
-            return cur.fetchone() is not None
+        if self._seen_urls is None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key FROM seen WHERE tenant_id = %s AND kind = 'url'", (self._t,)
+                )
+                self._seen_urls = {row[0] for row in cur.fetchall()}
+        return key in self._seen_urls
 
     def iter_existing(self) -> Iterator[tuple[str, str, str]]:
         """Yield ``(link, company, role)`` for every application already stored.
@@ -218,35 +223,54 @@ class PollRepo:
             cur.execute("SELECT company FROM blacklist WHERE tenant_id = %s", (self._t,))
             return [row[0] for row in cur.fetchall()]
 
-    def load_seen(self) -> tuple[set[str], set[str]]:
-        """Return the persisted ``(url_keys, slug_keys)`` dedup ledger for this tenant.
+    def load_seen(
+        self, url_keys: Collection[str], slug_keys: Collection[str]
+    ) -> tuple[set[str], set[str]]:
+        """Return which of these ``(url_keys, slug_keys)`` the tenant's ledger holds.
 
         Rows survive their originating application's deletion, so a lead the user
-        removed is never re-discovered. ``kind`` partitions the two key spaces.
+        removed is never re-discovered. ``kind`` partitions the two key spaces. Only
+        the asked-for keys are read (a primary-key lookup each), never the whole
+        ledger, which only grows (#348).
         """
         urls: set[str] = set()
         slugs: set[str] = set()
+        if not url_keys and not slug_keys:
+            return urls, slugs
         with self._conn.cursor() as cur:
-            cur.execute("SELECT kind, key FROM seen WHERE tenant_id = %s", (self._t,))
+            cur.execute(
+                "SELECT kind, key FROM seen WHERE tenant_id = %s AND ("
+                "(kind = 'url' AND key = ANY(%s::text[])) OR "
+                "(kind = 'slug' AND key = ANY(%s::text[])))",
+                (self._t, list(url_keys), list(slug_keys)),
+            )
             for kind, key in cur.fetchall():
                 (urls if kind == "url" else slugs).add(key)
         return urls, slugs
 
-    def mark_seen(self, url_key: str, slug_key: str) -> None:
-        """Persist newly seen keys; either may be empty. Idempotent per (kind, key)."""
-        rows = []
-        if url_key:
-            rows.append((self._t, "url", url_key))
-        if slug_key:
-            rows.append((self._t, "slug", slug_key))
-        if not rows:
+    def mark_seen_many(self, keys: Iterable[tuple[str, str]]) -> None:
+        """Persist newly seen ``(url_key, slug_key)`` pairs in one statement rather
+        than a round trip and a commit each (#348). Idempotent per (kind, key)."""
+        kinds: list[str] = []
+        values: list[str] = []
+        for url_key, slug_key in keys:
+            if url_key:
+                kinds.append("url")
+                values.append(url_key)
+            if slug_key:
+                kinds.append("slug")
+                values.append(slug_key)
+        if not values:
             return
         with self._conn.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO seen (tenant_id, kind, key) VALUES (%s, %s, %s) "
+            cur.execute(
+                "INSERT INTO seen (tenant_id, kind, key) "
+                "SELECT %s, k, v FROM unnest(%s::text[], %s::text[]) AS t(k, v) "
                 "ON CONFLICT DO NOTHING",
-                rows,
+                (self._t, kinds, values),
             )
+        if self._seen_urls is not None:
+            self._seen_urls.update(v for k, v in zip(kinds, values, strict=True) if k == "url")
 
     def add_lead(self, fields: AppFields) -> str:
         """Stage one new lead, returning its slug ``name``.
