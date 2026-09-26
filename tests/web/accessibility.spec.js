@@ -123,6 +123,13 @@ async function mockApi(page) {
       }
       body = applications;
     }
+    else if (path === "/api/errors" && method === "GET") {
+      if (request.headers()["if-none-match"] === '"errors-1"') {
+        await route.fulfill({ status: 304, headers: { ETag: '"errors-1"' } });
+        return;
+      }
+      body = { count: 0, retrying: 0, needs_you: 0, errors: [] };
+    }
     else if (path === "/api/stats") body = { status: { lead: 2, applied: 1 }, lane: { dotnet: 1, ai: 1, devrel: 1 } };
     else if (path === `/api/apps/${application.filename}` && method === "GET") body = detail;
     else if (path === `/api/apps/${appliedApp.filename}` && method === "GET") body = appliedDetail;
@@ -163,7 +170,9 @@ async function mockApi(page) {
     else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
     const headers = path === "/api/apps" && method === "GET"
       ? { ETag: '"apps-1"', "Cache-Control": "private, no-cache" }
-      : {};
+      : path === "/api/errors" && method === "GET"
+        ? { ETag: '"errors-1"', "Cache-Control": "private, no-cache" }
+        : {};
     await route.fulfill({
       status: 200, contentType: "application/json",
       headers, body: JSON.stringify(body),
@@ -222,10 +231,16 @@ test("unchanged live refresh reuses the ETag without rerendering the list", asyn
   const revalidation = page.waitForRequest((request) =>
     new URL(request.url()).pathname === "/api/apps"
       && request.headers()["if-none-match"] === '"apps-1"');
+  // The Errors view's list is asked for on every tick too, and conditionally (#349): an
+  // unchanged view is a 304, not the heavy per-row query.
+  const errorsRevalidation = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/errors"
+      && request.headers()["if-none-match"] === '"errors-1"');
 
   // Returning to a visible tab triggers the same live-refresh path immediately.
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await revalidation;
+  await errorsRevalidation;
   await page.waitForTimeout(50);
 
   expect(await originalCard.evaluate((element) => element.isConnected)).toBe(true);
