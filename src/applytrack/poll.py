@@ -33,11 +33,13 @@ import json
 import logging
 import os
 import re
+import threading
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
+from functools import lru_cache, partial
 from html import unescape
-from typing import Protocol
+from typing import Protocol, TypeVar
 from urllib.parse import urljoin, urlsplit
 
 # Stdlib import is the Element *type* only — never a parser entry point; all parsing
@@ -54,6 +56,7 @@ from applytrack.linkcheck import (
     PublicFetchError,
     fetch_public,
     is_reachable,
+    is_ssrf_safe,
     probe,
     ssrf_safe_client,
 )
@@ -1281,8 +1284,12 @@ def fetch_rss(client: httpx.Client, limit: int, url: str) -> list[Listing]:
     deliberately unused: this URL is user-supplied, so the request must go through
     :func:`~applytrack.linkcheck.fetch_public`, whose transport connects only to
     validated public addresses. The built-in sources are hard-coded and can safely
-    share the pooled client.
+    share the pooled client. An SSRF-safe client (the worker hands each of its
+    threads one) *is* used, so a run's feeds share its connections and DNS pins
+    instead of a fresh TLS handshake apiece (#347).
     """
+    if is_ssrf_safe(client):
+        return parse_job_feed(fetch_public(url, client=client), url, limit)
     return parse_job_feed(fetch_public(url), url, limit)
 
 
@@ -1370,6 +1377,92 @@ def _gather(fetchers: Iterable[Fetcher], limit: int) -> list[Listing]:
     return listings
 
 
+# -- bounded concurrency (#347) ---------------------------------------------
+
+# A run's probes and source fetches go out this many at a time, and at most
+# PER_HOST_WORKERS to any one host: parallel enough that 80 slow employer sites don't
+# queue behind each other at 12 s apiece, polite enough not to earn a 429.
+NETWORK_WORKERS = 8
+PER_HOST_WORKERS = 2
+
+_T = TypeVar("_T")
+
+
+def run_bounded(
+    tasks: Iterable[tuple[str, Callable[[], _T]]],
+    *,
+    workers: int = NETWORK_WORKERS,
+    per_host: int = PER_HOST_WORKERS,
+) -> list[_T | Exception]:
+    """Run ``(host, thunk)`` tasks on a bounded pool, results in task order.
+
+    No more than ``per_host`` tasks for one host key run at once. A task that raises
+    yields its exception in its slot instead, so one failure never costs the others.
+    """
+    tasks = list(tasks)
+    gates = {host: threading.BoundedSemaphore(per_host) for host, _ in tasks}
+
+    def run(host: str, thunk: Callable[[], _T]) -> _T | Exception:
+        try:
+            with gates[host]:
+                return thunk()
+        except Exception as exc:  # noqa: BLE001 - reported in the task's slot
+            return exc
+
+    if len(tasks) <= 1 or workers <= 1:
+        return [run(host, thunk) for host, thunk in tasks]
+    with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as pool:
+        futures = [pool.submit(run, host, thunk) for host, thunk in tasks]
+        return [f.result() for f in futures]
+
+
+class ThreadClients:
+    """One :func:`~applytrack.linkcheck.ssrf_safe_client` per worker thread, closed together.
+
+    A pinned client arms one fetch deadline at a time, so two threads can't share one;
+    one per thread still reuses its connections and DNS pins across every fetch that
+    thread makes, rather than a fresh client and TLS handshake per URL (#347).
+    """
+
+    def __init__(self, timeout: float = 12.0) -> None:
+        self._timeout = timeout
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._all: list[httpx.Client] = []
+
+    def get(self) -> httpx.Client:
+        client: httpx.Client | None = getattr(self._local, "client", None)
+        if client is None:
+            client = ssrf_safe_client(timeout=self._timeout)
+            self._local.client = client
+            with self._lock:
+                self._all.append(client)
+        return client
+
+    def close(self) -> None:
+        with self._lock:
+            clients, self._all = self._all, []
+        for client in clients:
+            client.close()
+
+
+@dataclass
+class LinkCache:
+    """What the network said about a URL, kept for one whole poll run (#347).
+
+    The worker stages every tenant from the same shared listings, so without this the
+    same aggregator page is resolved and the same employer posting probed once per
+    tenant. ``resolved`` is keyed by ``(link, apply_link)``; ``reachable`` by URL.
+    """
+
+    resolved: dict[tuple[str, str], tuple[str | None, bool]] = field(default_factory=dict)
+    reachable: dict[str, bool] = field(default_factory=dict)
+
+
+def _host(url: str) -> str:
+    return (urlsplit(url or "").hostname or "").lower()
+
+
 # -- orchestration ----------------------------------------------------------
 
 
@@ -1427,31 +1520,111 @@ def _select_for_profile(
     return out
 
 
+@dataclass
+class _Candidate:
+    """A listing that passed every offline filter and waits on the network to be staged."""
+
+    item: Listing
+    slug: str
+    score: int
+    hits: list[str]
+    judged: bool
+    # Filled by _verify_candidates: the employer posting behind an aggregator listing,
+    # whether it was seen live, and whether the link to be stored answered a browser.
+    resolved: str | None = None
+    seen_live: bool = False
+    reachable: bool = True
+
+
+def _verify_candidate(
+    item: Listing, cache: LinkCache, clients: ThreadClients
+) -> tuple[str | None, bool, bool]:
+    """Resolve (for an aggregator listing) and probe one candidate, through ``cache``."""
+    # An Easy Apply posting IS where it is applied to — there is no employer page
+    # behind it to resolve — and LinkedIn's own API just served it, so it is not
+    # probed either: linkedin.com answers an unattended GET with a 999 (#278).
+    if item.source.endswith(":easy") or not item.link:
+        return None, False, True
+    resolved: str | None = None
+    seen_live = False
+    # An aggregator's listing page has no form on it: store the employer's
+    # posting instead when the apply link leads there (#191).
+    if is_aggregator_link(item.link):
+        key = (item.link, item.apply_link)
+        if key not in cache.resolved:
+            cache.resolved[key] = _resolve_employer(item, clients.get())
+        resolved, seen_live = cache.resolved[key]
+    # The listing was live a moment ago and the employer's server will not talk to a
+    # bot: the reachability check would only drop the lead.
+    if resolved and not seen_live:
+        return resolved, seen_live, True
+    link = resolved or item.link
+    if link not in cache.reachable:
+        cache.reachable[link] = is_reachable(link, client=clients.get())
+    return resolved, seen_live, cache.reachable[link]
+
+
+def _verify_candidates(candidates: list[_Candidate], cache: LinkCache) -> list[_Candidate]:
+    """Resolve and probe every candidate on a bounded pool; returns the ones that finished.
+
+    Each distinct listing is checked once, and a URL an earlier tenant's staging already
+    checked is not fetched again (#347). A candidate whose check raised is left out, and
+    left unseen for a later run to retry.
+    """
+    unique: dict[tuple[str, str, bool], Listing] = {}
+    for cand in candidates:
+        it = cand.item
+        unique.setdefault((it.link, it.apply_link, it.source.endswith(":easy")), it)
+    keys = list(unique)
+    clients = ThreadClients(timeout=12.0)
+    try:
+        outcomes = run_bounded(
+            (_host(unique[k].link), partial(_verify_candidate, unique[k], cache, clients))
+            for k in keys
+        )
+    finally:
+        clients.close()
+    by_key = dict(zip(keys, outcomes, strict=True))
+    done: list[_Candidate] = []
+    for cand in candidates:
+        it = cand.item
+        outcome = by_key[(it.link, it.apply_link, it.source.endswith(":easy"))]
+        if isinstance(outcome, Exception):
+            logger.warning(
+                "link check failed for %s — %s", it.company, it.role, exc_info=outcome
+            )
+            continue
+        cand.resolved, cand.seen_live, cand.reachable = outcome
+        done.append(cand)
+    return done
+
+
 def score_and_stage(
     repo: LeadRepo,
     profile: Criteria,
     listings: Iterable[Listing],
     *,
     verify_links: bool = False,
+    link_cache: LinkCache | None = None,
 ) -> list[str]:
     """Dedupe, filter, score, and stage ``listings`` for one tenant. Returns slug names.
 
     The dedup ledger is loaded from the ``seen`` table and seeded from the tenant's
     existing applications; each newly seen key is persisted so a company is never
-    re-pinged on a later run. Network is touched only when ``verify_links`` is on.
+    re-pinged on a later run. Network is touched only when ``verify_links`` is on:
+    the listings that pass every offline filter are then resolved and probed together
+    on a bounded pool, through ``link_cache`` — which the multi-tenant worker shares
+    across every tenant of a run, so a URL is fetched once per run, not per tenant
+    (#347).
     """
     url_keys, slug_keys = repo.load_seen()
     seen = Seen(url_keys, slug_keys, sink=repo.mark_seen)
     _seed_from_existing(repo, seen)
     blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
-    verify_client = (
-        ssrf_safe_client(timeout=12.0)
-        if verify_links
-        else None
-    )
     judge = jev_judge_for(repo)
-    added: list[str] = []
+    candidates: list[_Candidate] = []
+    pending: set[tuple[str, str]] = set()
     try:
         for item in listings:
             if not item.company or not item.role:
@@ -1461,6 +1634,11 @@ def score_and_stage(
                 continue
             slug = _norm_slug(item.company, item.role)
             if seen.has(item.link, slug) or (item.apply_link and seen.has(item.apply_link, slug)):
+                continue
+            # The same posting twice in one batch is judged once; staging re-checks
+            # the ledger anyway, so the second copy could never be staged.
+            once = ("url", item.link) if item.link else ("slug", slug)
+            if once in pending:
                 continue
 
             # We act on this listing one way or another below, so it is recorded
@@ -1488,74 +1666,64 @@ def score_and_stage(
                 seen.add(item.link, slug)
                 continue
 
-            # The dedupe ledger is keyed on the listing's own link, whatever we store.
-            listing_link = item.link
-            # An Easy Apply posting IS where it is applied to — there is no employer page
-            # behind it to resolve — and LinkedIn's own API just served it, so it is not
-            # probed either: linkedin.com answers an unattended GET with a 999 (#278).
-            easy_apply = item.source.endswith(":easy")
-            refused_probe = easy_apply
-            # An aggregator's listing page has no form on it: store the employer's
-            # posting instead when the apply link leads there (#191).
-            if (
-                verify_client is not None
-                and item.link
-                and not easy_apply
-                and is_aggregator_link(item.link)
-            ):
-                resolved, seen_live = _resolve_employer(item, verify_client)
-                if resolved:
-                    logger.info(
-                        "resolved %s -> %s%s",
-                        item.link,
-                        resolved,
-                        "" if seen_live else " (the employer refused the probe; kept)",
-                    )
-                    if seen.has(resolved, slug):
-                        seen.add(listing_link, slug)
-                        seen.add(resolved, slug)
-                        continue
-                    item = replace(item, link=resolved)
-                    # The listing was live a moment ago and the employer's server will not
-                    # talk to a bot: the reachability check below would only drop the lead.
-                    refused_probe = not seen_live
+            pending.add(once)
+            candidates.append(_Candidate(item, slug, score, hits, judged=fit is not None))
+    finally:
+        if judge is not None:
+            judge.close()
 
-            # Block dead postings: don't create an entry we can't actually open.
-            if (
-                verify_client is not None
-                and not refused_probe
-                and item.link
-                and not is_reachable(item.link, client=verify_client)
-            ):
-                seen.add(listing_link, slug)
-                continue
+    if verify_links and candidates:
+        candidates = _verify_candidates(
+            candidates, link_cache if link_cache is not None else LinkCache()
+        )
 
-            fields = _to_fields(item, profile.default_lane, score, hits, judged=fit is not None)
-            try:
-                name = repo.add_lead(fields)
-            except psycopg.errors.UniqueViolation:
-                # Opportunity already tracked under this slug: mark keys seen and skip
-                logger.info(
-                    "lead already tracked for %s — %s (slug collision)",
-                    item.company,
-                    item.role,
-                )
+    added: list[str] = []
+    for cand in candidates:
+        item, slug = cand.item, cand.slug
+        # An earlier candidate of this batch may have taken the key since it was queued.
+        if seen.has(item.link, slug) or (item.apply_link and seen.has(item.apply_link, slug)):
+            continue
+        # The dedupe ledger is keyed on the listing's own link, whatever we store.
+        listing_link = item.link
+        if cand.resolved:
+            logger.info(
+                "resolved %s -> %s%s",
+                item.link,
+                cand.resolved,
+                "" if cand.seen_live else " (the employer refused the probe; kept)",
+            )
+            if seen.has(cand.resolved, slug):
                 seen.add(listing_link, slug)
-                if item.link and item.link != listing_link:
-                    seen.add(item.link, slug)
+                seen.add(cand.resolved, slug)
                 continue
-            if not name:
-                continue
-            # Staged: record keys, then collect. Cover letter is drafted on demand.
+            item = replace(item, link=cand.resolved)
+
+        # Block dead postings: don't create an entry we can't actually open.
+        if not cand.reachable:
+            seen.add(listing_link, slug)
+            continue
+
+        fields = _to_fields(item, profile.default_lane, cand.score, cand.hits, judged=cand.judged)
+        try:
+            name = repo.add_lead(fields)
+        except psycopg.errors.UniqueViolation:
+            # Opportunity already tracked under this slug: mark keys seen and skip
+            logger.info(
+                "lead already tracked for %s — %s (slug collision)",
+                item.company,
+                item.role,
+            )
             seen.add(listing_link, slug)
             if item.link and item.link != listing_link:
                 seen.add(item.link, slug)
-            added.append(name)
-    finally:
-        if verify_client is not None:
-            verify_client.close()
-        if judge is not None:
-            judge.close()
+            continue
+        if not name:
+            continue
+        # Staged: record keys, then collect. Cover letter is drafted on demand.
+        seen.add(listing_link, slug)
+        if item.link and item.link != listing_link:
+            seen.add(item.link, slug)
+        added.append(name)
 
     return added
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Protocol
 
 import httpx
@@ -33,10 +34,14 @@ from applytrack.linkcheck import BROWSER_HEADERS
 from applytrack.poll import (
     SOURCE_FETCHERS,
     LeadRepo,
+    LinkCache,
     Listing,
+    ThreadClients,
+    _host,
     _select_for_profile,
     make_ats_fetcher,
     make_rss_fetcher,
+    run_bounded,
     score_and_stage,
 )
 
@@ -123,32 +128,41 @@ def _gather_by_source(
         builtin.clear()
         feeds.clear()
 
+    # (host key, source key, thunk). Every ATS board of one provider shares that
+    # provider's API host, so they are gated as one host; each feed by its own host.
+    tasks: list[tuple[str, str, Callable[[], list[Listing]]]] = []
+    feed_clients = ThreadClients(timeout=20.0)
     gathered: dict[str, list[Listing]] = {}
     with httpx.Client(timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
         for name in sorted(builtin):
-            try:
-                gathered[name] = SOURCE_FETCHERS[name](client, limit)
-            except Exception:  # noqa: BLE001 - one bad source must not abort the gather
-                gathered[name] = []
-                logger.warning("poll source %s failed", name, exc_info=True)
+            tasks.append((name, name, partial(SOURCE_FETCHERS[name], client, limit)))
         for key, board in boards.items():
             fetcher = make_ats_fetcher(board)
             if fetcher is None:
                 continue
-            try:
-                gathered[key] = fetcher(client, limit)
-            except Exception:  # noqa: BLE001 - one bad source must not abort the gather
-                gathered[key] = []
-                logger.warning("poll source %s failed", key, exc_info=True)
+            tasks.append((board.provider, key, partial(fetcher, client, limit)))
         for key, url in feeds.items():
-            try:
-                # Ignores `client` by design — a user-supplied feed URL is fetched
-                # through the SSRF-guarded transport (see poll.fetch_rss).
-                gathered[key] = make_rss_fetcher(url)(client, limit)
-            except Exception:  # noqa: BLE001 - one bad feed must not abort the gather
-                gathered[key] = []
-                logger.warning("poll source %s failed", key, exc_info=True)
+            # Not `client`: a user-supplied feed URL is fetched only through an
+            # SSRF-guarded client (see poll.fetch_rss) — one per pool thread, reused
+            # across that thread's feeds (#347).
+            tasks.append((_host(url), key, partial(_fetch_feed, url, feed_clients, limit)))
+        try:
+            outcomes = run_bounded((host, thunk) for host, _, thunk in tasks)
+        finally:
+            feed_clients.close()
+    for (_, key, _), outcome in zip(tasks, outcomes, strict=True):
+        if isinstance(outcome, Exception):
+            # One bad source must not abort the gather.
+            gathered[key] = []
+            logger.warning("poll source %s failed", key, exc_info=outcome)
+        else:
+            gathered[key] = outcome
     return gathered
+
+
+def _fetch_feed(url: str, clients: ThreadClients, limit: int) -> list[Listing]:
+    """One custom feed, on this pool thread's own SSRF-safe client."""
+    return make_rss_fetcher(url)(clients.get(), limit)
 
 
 def run_all_tenants(
@@ -237,6 +251,9 @@ def run_all_tenants(
 
         if gathered is None:
             gathered = _gather_by_source(profiles.values(), limit_per_source, ats_only=ats_only)
+        # Every tenant stages from the same shared listings: what one tenant's link
+        # checks learned about a URL holds for the rest of the run (#347).
+        link_cache = LinkCache()
 
         for tid in pollable_tenant_ids:
             if tid not in repos:
@@ -265,7 +282,11 @@ def run_all_tenants(
                         )
                     listings = [*listings, *gathered[key]]
                 results[tid] = score_and_stage(
-                    repos[tid], profiles[tid], listings, verify_links=verify_links
+                    repos[tid],
+                    profiles[tid],
+                    listings,
+                    verify_links=verify_links,
+                    link_cache=link_cache,
                 )
             except Exception:  # noqa: BLE001 - isolate one tenant's failure
                 results[tid] = []
