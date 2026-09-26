@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Globalization;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
@@ -53,6 +54,26 @@ public static class AppsEndpoints
             // run failed. They are still counted in status.ready — that is their status.
             return Results.Ok(new { status, lane, errors = await evidence.ErroredCountAsync() });
         });
+
+        // Funnel analytics (#353) over the status history: applications first applied for
+        // on or after ?since= (a date or an ISO timestamp, UTC; all time when absent).
+        app.MapGet("/api/analytics", async (string? since, StatusEventRepo history) =>
+        {
+            DateTime? from = null;
+            if (!string.IsNullOrWhiteSpace(since))
+            {
+                if (!DateTime.TryParse(since, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+                    throw new AppValidationException("since must be a date (YYYY-MM-DD) or an ISO timestamp");
+                from = parsed;
+            }
+            return Results.Ok(await history.AnalyticsAsync(from));
+        });
+
+        // The application's status timeline, oldest first (#353).
+        app.MapGet("/api/apps/{name}/history", async (string name, StatusEventRepo history) =>
+            Results.Ok(await history.HistoryAsync(name)
+                ?? throw new AppNotFoundException($"application not found: '{name}'")));
 
         app.MapGet("/api/apps/{name}", async (
             string name, ApplicationRepo repo, CoverLetterRepo letters, AgentEventRepo events,

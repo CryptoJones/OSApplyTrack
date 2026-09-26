@@ -300,6 +300,8 @@ killing the process:
 | --- | --- | --- |
 | `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
+| `GET`    | `/api/analytics?since=…` | Funnel analytics over the status history, for applications first applied for on or after `since` (a `YYYY-MM-DD` date or ISO timestamp, UTC; all time when absent): `{since, applied, responded, rejected, response_rate, median_days_to_response, funnel:[{stage,count}], by_source:[…], by_lane:[…]}`, each breakdown row `{key, applied, responded, response_rate, median_days_to_response}`. A response is the first move to screen, onsite, offer or rejected. |
+| `GET`    | `/api/apps/{name}/history` | The application's status timeline, oldest first: `[{kind:"status", from_status, to_status, at}]` (`from_status` is `null` on the row it was created with). |
 | `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict, packet}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
 | `PUT`    | `/api/apps/{name}?expected_version=…` | Update structured fields (409 on version mismatch). |
@@ -325,7 +327,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist. |
+| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist + `status_events` (the dated status history). |
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
 | `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
@@ -982,11 +984,12 @@ value.
 
 - **Export** — `GET /api/account/export` returns a single JSON snapshot of your
   whole account: every application (all fields + its slug, so apply links survive a
-  move), your search criteria, and your company blacklist. A real backup, and the
-  door's never locked.
+  move), your search criteria, your company blacklist, and every application's
+  dated status history. A real backup, and the door's never locked.
 - **Import** — `POST /api/account/import` loads a snapshot back. Applications
   upsert by slug (an incoming app overwrites a matching local one, new slugs are
-  added, untouched apps stay), so re-importing is idempotent. The whole load runs in
+  added, untouched apps stay), so re-importing is idempotent. An imported app's
+  status history is replaced by the one in the file, when the file carries one. The whole load runs in
   one transaction — a mid-import failure leaves your account untouched. Use it to
   migrate from one instance to another: export here, import there.
 - **Share** — `GET /api/account/export/shared` exports a peer-shareable

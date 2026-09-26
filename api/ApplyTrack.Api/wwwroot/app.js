@@ -78,7 +78,9 @@ const state = {
   sort: readStoredSort(),
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors | search
+  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors | search | analytics
+  // The Analytics view's range (#353): "" for all time, else the last N days.
+  analyticsDays: "",
   // Ready applications whose last browser run failed (#284): their own chip and view,
   // and no longer counted or listed under Ready.
   errors: [],
@@ -371,8 +373,11 @@ function renderPipeline() {
   pipelineEl.innerHTML = `
     <button type="button" id="pipeline-btn" class="pipeline-label" aria-pressed="${state.mode === "pipeline"}"
       title="Open the submit queue">Pipeline</button>
+    <button type="button" id="analytics-btn" class="pipeline-label" aria-pressed="${state.mode === "analytics"}"
+      title="Response rate and time to response">Analytics</button>
     ${parts.join("") || `<span class="pipeline-empty">No applications yet</span>`}`;
   pipelineEl.querySelector("#pipeline-btn").addEventListener("click", () => openPipeline());
+  pipelineEl.querySelector("#analytics-btn").addEventListener("click", () => openAnalytics());
   const errorsBtn = pipelineEl.querySelector('.pipe-stat[data-view="errors"]');
   if (errorsBtn) errorsBtn.addEventListener("click", () => {
     if (state.mode === "errors") { renderEmpty(); renderPipeline(); }
@@ -391,10 +396,12 @@ function renderPipeline() {
   });
 }
 
-// The strip button reads as pressed only while the Pipeline view holds the pane.
+// A strip button reads as pressed only while its view (Pipeline, Analytics) holds the pane.
 function syncPipelineButton() {
   const btn = document.getElementById("pipeline-btn");
   if (btn) btn.setAttribute("aria-pressed", String(state.mode === "pipeline"));
+  const analytics = document.getElementById("analytics-btn");
+  if (analytics) analytics.setAttribute("aria-pressed", String(state.mode === "analytics"));
 }
 
 // ---- Status view ------------------------------------------------------------
@@ -764,6 +771,145 @@ function renderPipelineView(data) {
   if (agentBtn) agentBtn.addEventListener("click", () => openSettings("agent"));
 }
 
+
+// ---- Analytics view -----------------------------------------------------------
+// Response rate and time to response over the status history (#353). Every number is in
+// a table — the tables are the data; each bar beside a count is decoration (aria-hidden)
+// drawn as inline SVG, so there is no chart library and nothing to build.
+
+const ANALYTICS_RANGES = [["", "All time"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"]];
+const FUNNEL_LABEL = { applied: "Applied", screen: "Screen", onsite: "Onsite", offer: "Offer" };
+let analyticsGen = 0;
+
+const pct = (rate) => (rate === null || rate === undefined ? "—" : `${Math.round(rate * 100)}%`);
+const days = (d) => (d === null || d === undefined ? "—" : `${d} day${d === 1 ? "" : "s"}`);
+
+// A bar as wide as value/max of the cell; the count it draws is in the cell beside it.
+function bar(value, max) {
+  const w = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  return `<svg class="stat-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+    <rect class="stat-bar-track" x="0" y="0" width="100" height="8" rx="1" />
+    <rect class="stat-bar-fill" x="0" y="0" width="${w.toFixed(2)}" height="8" rx="1" /></svg>`;
+}
+
+async function openAnalytics({ focus = true } = {}) {
+  const gen = ++analyticsGen;
+  state.mode = "analytics";
+  state.current = null;
+  showDetailPane();
+  syncPipelineButton();
+  renderSidebar();
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Status history</div>
+        <h1>Analytics</h1>
+        <p id="analytics-summary" aria-live="polite">Loading…</p>
+      </header>
+      <div class="filter-row" role="group" aria-label="Analytics range">
+        <label for="analytics-range"><span>Applied in</span>
+          <select id="analytics-range">${ANALYTICS_RANGES.map(([v, l]) =>
+            `<option value="${v}"${v === state.analyticsDays ? " selected" : ""}>${l}</option>`).join("")}</select>
+        </label>
+      </div>
+      <div id="analytics-body"></div>
+    </div>`;
+  document.title = "Analytics | ApplyTrack";
+  document.getElementById("analytics-range").addEventListener("change", (e) => {
+    state.analyticsDays = e.target.value;
+    loadAnalytics(++analyticsGen);
+  });
+  if (focus) focusView("h1");
+  await loadAnalytics(gen);
+}
+
+async function loadAnalytics(gen) {
+  // The range starts at local midnight N days back, sent as the UTC instant it is — a bare
+  // date would be read as UTC midnight, hours off the day the person means.
+  let since = "";
+  if (state.analyticsDays) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - Number(state.analyticsDays));
+    since = `?since=${encodeURIComponent(d.toISOString())}`;
+  }
+  let data;
+  try {
+    data = await api("GET", `/api/analytics${since}`);
+  } catch (e) {
+    const body = document.getElementById("analytics-body");
+    if (body && gen === analyticsGen) body.innerHTML = `<div class="packet-flag">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  if (gen !== analyticsGen || state.mode !== "analytics") return;
+  renderAnalyticsView(data);
+}
+
+function breakdownTable(caption, heading, column, groups, label) {
+  if (!groups.length) return "";
+  const max = Math.max(...groups.map((g) => g.applied));
+  const rows = groups.map((g) => `
+    <tr>
+      <th scope="row">${label(g.key)}</th>
+      <td class="mono">${g.applied}${bar(g.applied, max)}</td>
+      <td class="mono">${g.responded}</td>
+      <td class="mono">${pct(g.response_rate)}</td>
+      <td class="mono">${days(g.median_days_to_response)}</td>
+    </tr>`).join("");
+  return `
+    <h2 class="mt-4">${heading}</h2>
+    <div class="table-scroll" role="region" tabindex="0" aria-label="${caption}">
+      <table class="pipeline-table analytics-table">
+        <caption class="sr-only">${caption}</caption>
+        <thead><tr><th scope="col">${column}</th><th scope="col">Applied</th><th scope="col">Heard back</th><th scope="col">Response rate</th><th scope="col">Median time to response</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderAnalyticsView(data) {
+  const summaryEl = document.getElementById("analytics-summary");
+  const body = document.getElementById("analytics-body");
+  if (!summaryEl || !body) return;
+  const applied = Number(data.applied) || 0;
+  const funnel = Array.isArray(data.funnel) ? data.funnel : [];
+  const bySource = Array.isArray(data.by_source) ? data.by_source : [];
+  const byLane = Array.isArray(data.by_lane) ? data.by_lane : [];
+  if (!applied) {
+    summaryEl.textContent = "Nothing applied for in this range yet.";
+    body.innerHTML = `<p class="empty-result">An application counts here from the day it reaches Applied (or any later status). Its response is the first move to a screen, an onsite, an offer or a rejection.</p>`;
+    return;
+  }
+  summaryEl.textContent = `${applied} applied — ${pct(data.response_rate)} heard back`
+    + (data.median_days_to_response === null || data.median_days_to_response === undefined
+      ? "." : `, after a median ${days(data.median_days_to_response)}.`);
+  const top = Math.max(...funnel.map((s) => s.count), 0);
+  const stages = funnel.map((s) => `
+    <tr>
+      <th scope="row">${escapeHtml(FUNNEL_LABEL[s.stage] || s.stage)}</th>
+      <td class="mono">${s.count}${bar(s.count, top)}</td>
+      <td class="mono">${pct(applied ? s.count / applied : null)}</td>
+    </tr>`).join("");
+  body.innerHTML = `
+    <dl class="stat-tiles">
+      <div class="stat-tile"><dt>Applied</dt><dd>${applied}</dd></div>
+      <div class="stat-tile"><dt>Response rate</dt><dd>${pct(data.response_rate)}</dd></div>
+      <div class="stat-tile"><dt>Median time to response</dt><dd>${days(data.median_days_to_response)}</dd></div>
+      <div class="stat-tile"><dt>Rejected</dt><dd>${Number(data.rejected) || 0}</dd></div>
+    </dl>
+    <h2 class="mt-4">Funnel</h2>
+    <div class="table-scroll" role="region" tabindex="0" aria-label="Funnel">
+      <table class="pipeline-table analytics-table">
+        <caption class="sr-only">How many applications reached each stage</caption>
+        <thead><tr><th scope="col">Stage</th><th scope="col">Applications</th><th scope="col">Share of applied</th></tr></thead>
+        <tbody>${stages}</tbody>
+      </table>
+    </div>
+    ${breakdownTable("Response rate by source", "By source", "Source", bySource, (k) => (k ? escapeHtml(k) : "(no source)"))}
+    ${breakdownTable("Response rate by lane", "By lane", "Lane", byLane, (k) => escapeHtml(LANE_LABEL[k] || k))}
+    <p class="field-help mt-3">Heard back means a screen, onsite, offer or rejection. Time to response is timed only where the history shows the application applied before it was answered.</p>`;
+}
+
 // ---- Sidebar --------------------------------------------------------------
 
 // A search looks everywhere (#322): "which page is DTCC on?" had no answer, because DTCC was
@@ -1045,6 +1191,13 @@ function renderView(data) {
         </div>
         <div class="prose-omi">${renderUntrustedMarkdown(f.notes || "_No notes yet._", { gfm: true, breaks: false })}</div>
       </section>
+      <section class="detail-section" aria-labelledby="history-heading">
+        <div class="section-heading">
+          <span class="section-kicker">Timeline</span>
+          <h3 id="history-heading">Status history</h3>
+        </div>
+        <ol id="history-list" class="timeline" aria-busy="true"><li class="field-help">Loading…</li></ol>
+      </section>
       ${materialSection(data)}
       <div class="status-actions section-divider">
         <div class="workflow-actions">
@@ -1082,6 +1235,29 @@ function renderView(data) {
   const verdictEl = contentEl.querySelector('[data-act="verdict"]');
   if (verdictEl) verdictEl.onclick = () => evaluateFit(data.filename, verdictEl);
   wirePacket(data);
+  loadHistory(data.filename);
+}
+
+// The application's timeline (#353), oldest first, filled in once the sheet is up.
+async function loadHistory(name) {
+  // Bound to this sheet's list: a reopened sheet has a new one, and a slower answer for
+  // the old one must not overwrite it.
+  const list = document.getElementById("history-list");
+  let entries;
+  try {
+    entries = await api("GET", `/api/apps/${encodeURIComponent(name)}/history`);
+  } catch {
+    entries = null;
+  }
+  if (!list || !list.isConnected || document.getElementById("history-list") !== list
+    || state.current !== name || state.mode !== "view") return;
+  list.removeAttribute("aria-busy");
+  if (!Array.isArray(entries)) { list.innerHTML = `<li class="field-help">History is unavailable right now.</li>`; return; }
+  if (!entries.length) { list.innerHTML = `<li class="field-help">No status changes recorded.</li>`; return; }
+  const label = (st) => escapeHtml((STATUS_LABEL[st] || st).replace(/^./, (c) => c.toUpperCase()));
+  list.innerHTML = entries.map((e) => `
+    <li><time datetime="${escapeHtml(e.at)}">${escapeHtml(new Date(e.at).toLocaleString())}</time>
+      <span>${e.from_status ? `${label(e.from_status)} <span aria-hidden="true">→</span><span class="sr-only">to</span> ${label(e.to_status)}` : `Added as ${label(e.to_status)}`}</span></li>`).join("");
 }
 
 // ---- The packet (Ready-to-submit queue) ---------------------------------------

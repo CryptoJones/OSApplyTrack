@@ -35,6 +35,8 @@ public static class AccountEndpoints
     // would still mean a long-held, lock-holding load — cap it. A self-host account is
     // small; this is generous headroom, not a real-world limit.
     private const int MaxImportItems = 10_000;
+    // Status history runs to a handful of events per application.
+    private const int MaxImportEvents = 10 * MaxImportItems;
 
     /// <summary>The import body cap, enforced before binding (Program.cs, #344).</summary>
     public const long MaxImportBytes = 10L * 1024 * 1024;
@@ -53,13 +55,14 @@ public static class AccountEndpoints
         // links survive a move) plus the search criteria and company blacklist, as one
         // downloadable JSON. Built in memory — a self-host account is small.
         app.MapGet("/api/account/export", async (
-            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist) =>
+            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history) =>
         {
             var records = await apps.ExportAllAsync();
             var doc = new ExportDoc(
                 Applications: records.Select(ApplicationExport.From).ToList(),
                 Criteria: await criteria.GetAsync(),
-                Blacklist: await blacklist.ListAsync());
+                Blacklist: await blacklist.ListAsync(),
+                StatusEvents: await history.ExportAllAsync());
 
             var bytes = JsonSerializer.SerializeToUtf8Bytes(doc, ExportJson);
             var filename = $"applytrack-export-{DateTime.UtcNow:yyyy-MM-dd}.json";
@@ -89,7 +92,7 @@ public static class AccountEndpoints
         // one transaction so a mid-import failure leaves the account untouched.
         app.MapPost("/api/account/import", async (
             ImportDoc body, IDbConnection conn,
-            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist) =>
+            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history) =>
         {
             var hasApps = body.Applications is { Count: > 0 };
 
@@ -135,7 +138,8 @@ public static class AccountEndpoints
             if (!hasApps && !hasCriteria && !hasBlacklist)
                 throw new AppValidationException("no importable data in file");
             if ((body.Applications?.Count ?? 0) > MaxImportItems
-                || (body.Blacklist?.Count ?? 0) > MaxImportItems)
+                || (body.Blacklist?.Count ?? 0) > MaxImportItems
+                || (body.StatusEvents?.Count ?? 0) > MaxImportEvents)
                 throw new AppValidationException($"import too large (max {MaxImportItems} items)");
 
             var db = (DbConnection)conn;
@@ -145,6 +149,12 @@ public static class AccountEndpoints
 
             var importedApps = body.Applications?.Count ?? 0;
             await apps.UpsertManyAsync((body.Applications ?? []).Select(a => (a.Name, a.ToFields())), tx);
+            // A snapshot's status_events is the whole history of the apps it brings (#353): it
+            // replaces theirs, "entered at import time" rows included, and an app it gives no
+            // events ends up with none. Only those apps — another app's history is never
+            // touched. A file with no status_events field (pre-1.59) keeps the import's rows.
+            if (body.StatusEvents is not null)
+                await history.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.StatusEvents, tx);
 
             if (hasCriteria)
                 await criteria.UpsertAsync(Criteria.FromJson(body.Criteria!.Value), tx);
@@ -200,7 +210,8 @@ public static class AccountEndpoints
     private sealed record ExportDoc(
         IReadOnlyList<ApplicationExport> Applications,
         Criteria Criteria,
-        IReadOnlyList<string> Blacklist)
+        IReadOnlyList<string> Blacklist,
+        IReadOnlyList<StatusEventExport> StatusEvents)
     {
         [JsonPropertyOrder(-3)] public string Format => ExportFormat;
         [JsonPropertyOrder(-2)] public int Version => 1;
@@ -283,4 +294,5 @@ public sealed record ImportDoc(
     string? Format,
     List<ApplicationExport>? Applications,
     JsonElement? Criteria,
-    List<string>? Blacklist);
+    List<string>? Blacklist,
+    List<StatusEventExport>? StatusEvents = null);

@@ -60,6 +60,8 @@ builder.Services.AddScoped<SessionRepo>();
 builder.Services.AddScoped<MagicTokenRepo>();
 builder.Services.AddScoped(sp => new ApplicationRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new StatusEventRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new CriteriaRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new BlacklistRepo(

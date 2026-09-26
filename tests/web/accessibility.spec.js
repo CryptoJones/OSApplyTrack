@@ -98,6 +98,25 @@ const pipeline = {
   summary: { queued: 2, will_submit: 1, dry_runs: 1, prepares: 0, drops: 0, awaiting_code: 1, promotable: 1 },
 };
 
+// GET /api/analytics (#353): four applied, three heard back, from two sources and lanes.
+const analytics = {
+  since: null, applied: 4, responded: 3, rejected: 1, response_rate: 0.75, median_days_to_response: 6,
+  funnel: [{ stage: "applied", count: 4 }, { stage: "screen", count: 2 }, { stage: "onsite", count: 1 }, { stage: "offer", count: 1 }],
+  by_source: [
+    { key: "LinkedIn", applied: 3, responded: 3, response_rate: 1, median_days_to_response: 4 },
+    { key: "", applied: 1, responded: 0, response_rate: 0, median_days_to_response: null },
+  ],
+  by_lane: [
+    { key: "dotnet", applied: 3, responded: 2, response_rate: 0.6667, median_days_to_response: 6 },
+    { key: "ai", applied: 1, responded: 1, response_rate: 1, median_days_to_response: 2 },
+  ],
+};
+
+const history = [
+  { kind: "status", from_status: null, to_status: "lead", at: "2026-09-01T12:00:00Z" },
+  { kind: "status", from_status: "lead", to_status: "applied", at: "2026-09-03T12:00:00Z" },
+];
+
 async function mockApi(page) {
   // The header's version badge reads /health, which is outside the /api/ prefix.
   await page.route("**/health", async (route) => {
@@ -162,6 +181,8 @@ async function mockApi(page) {
     };
     else if (path === "/api/agent-events") body = [];
     else if (path === "/api/pipeline") body = pipeline;
+    else if (path === "/api/analytics") body = analytics;
+    else if (path.endsWith("/history")) body = history;
     else if (path === "/api/notifications") body = {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
       email_enabled: false, email_available: true, email_address: "ada@example.com",
@@ -999,4 +1020,57 @@ test("a signed-in source's board account shows its session and offers Sign in no
   await expect(list).toContainText("sign-in requested, the agent is on it");
   await expect(list.getByRole("button", { name: "Sign in to linkedin.com now" })).toBeDisabled();
   expect(renewed).toBe(1);
+});
+
+test("the Analytics button opens the funnel, response rate and breakdowns as tables (#353)", async ({ page }) => {
+  const button = page.getByRole("button", { name: "Analytics" });
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+  const first = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/analytics");
+  await button.click();
+  expect(new URL((await first).url()).search).toBe("");
+  await expect(page.getByRole("heading", { name: "Analytics", level: 1 })).toBeVisible();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#analytics-summary")).toHaveText("4 applied — 75% heard back, after a median 6 days.");
+  const funnel = page.getByRole("table", { name: "How many applications reached each stage" });
+  await expect(funnel.getByRole("row")).toHaveCount(5);
+  await expect(funnel.getByRole("row", { name: /Screen/ })).toContainText("50%");
+  const sources = page.getByRole("table", { name: "Response rate by source" });
+  await expect(sources).toContainText("LinkedIn");
+  await expect(sources).toContainText("(no source)");
+  await expect(page.getByRole("table", { name: "Response rate by lane" })).toContainText(".NET");
+  await expectNoSeriousViolations(page);
+
+  // The range asks for applications applied since that many days ago.
+  const ranged = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/analytics");
+  await page.getByLabel("Applied in").selectOption("30");
+  expect(new URL((await ranged).url()).searchParams.get("since")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+  // Another view takes the pane and un-presses the button.
+  await page.getByRole("button", { name: "Pipeline" }).click();
+  await expect(page.getByRole("heading", { name: "Pipeline", level: 1 })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Analytics" })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("an empty Analytics range says so instead of drawing zeros (#353)", async ({ page }) => {
+  await page.route("**/api/analytics*", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ ...analytics, applied: 0, responded: 0, rejected: 0, response_rate: null,
+      median_days_to_response: null, by_source: [], by_lane: [], funnel: analytics.funnel.map((f) => ({ ...f, count: 0 })) }),
+  }));
+  await page.getByRole("button", { name: "Analytics" }).click();
+  await expect(page.locator("#analytics-summary")).toHaveText("Nothing applied for in this range yet.");
+  await expect(page.getByRole("table")).toHaveCount(0);
+  await expectNoSeriousViolations(page);
+});
+
+test("an application's sheet lists its status history, oldest first (#353)", async ({ page }) => {
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.getByRole("heading", { name: "Status history", level: 3 })).toBeVisible();
+  const items = page.locator("#history-list li");
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toContainText("Added as Lead");
+  await expect(items.nth(1)).toContainText("Lead");
+  await expect(items.nth(1)).toContainText("Applied");
+  await expect(items.nth(1).locator("time")).toHaveAttribute("datetime", "2026-09-03T12:00:00Z");
+  await expectNoSeriousViolations(page);
 });

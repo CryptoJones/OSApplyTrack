@@ -739,6 +739,21 @@ h3 { font-size: 1.15rem; letter-spacing: -0.02em; }
 .pipeline-table th, .pipeline-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 .pipeline-table th { font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .pipe-phase { font-weight: 650; }
+/* Analytics (#353): the tables carry the numbers; the bars beside them are decoration. */
+.analytics-table tbody th { font-size: 0.92rem; color: var(--text); text-transform: none; letter-spacing: normal; font-weight: 650; }
+.stat-bar { display: block; width: 100%; max-width: 16rem; height: 0.5rem; margin-top: 0.35rem; }
+.stat-bar-track { fill: var(--border); }
+.stat-bar-fill { fill: var(--accent); }
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 0.6rem; margin: 1rem 0 0; }
+.stat-tile { padding: 0.75rem 0.9rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.stat-tile dt { color: var(--text-muted); font-size: 0.85rem; font-weight: 650; }
+.stat-tile dd { margin: 0.2rem 0 0; font-size: 1.5rem; font-weight: 750; }
+.timeline { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; }
+.timeline time { display: inline-block; min-width: 11rem; color: var(--text-muted); font-size: 0.9rem; margin-right: 0.5rem; }
+@media (forced-colors: active) {
+  .stat-bar-track { fill: Canvas; stroke: CanvasText; stroke-width: 0.5; }
+  .stat-bar-fill { fill: CanvasText; }
+}
 .pipe-phase-running, .pipe-phase-awaiting_code { color: var(--accent); }
 .pipe-phase-stale { color: var(--warning); }
 .link-button { padding: 0; color: var(--accent); background: none; border: 0; font: inherit; font-weight: 650; text-align: left; cursor: pointer; text-decoration: underline; }

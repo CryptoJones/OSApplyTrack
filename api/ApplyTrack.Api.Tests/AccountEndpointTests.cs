@@ -216,7 +216,8 @@ public class AccountEndpointTests : IAsyncLifetime
                      ("applications", "tenant_id"), ("search_profiles", "tenant_id"),
                      ("blacklist", "tenant_id"), ("seen", "tenant_id"),
                      ("poll_requests", "tenant_id"), ("sessions", "user_id"),
-                     ("magic_tokens", "user_id"), ("llm_usage", "tenant_id"), ("users", "id"),
+                     ("magic_tokens", "user_id"), ("llm_usage", "tenant_id"),
+                     ("status_events", "tenant_id"), ("users", "id"),
                  })
         {
             var count = await conn.ExecuteScalarAsync<int>(

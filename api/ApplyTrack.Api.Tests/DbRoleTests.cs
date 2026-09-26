@@ -62,6 +62,10 @@ public class DbRoleTests(PostgresFixture pg)
         await poller.ExecuteAsync(
             "INSERT INTO applications (tenant_id, name, company, role) VALUES (@t, 'acme-eng.md', 'Acme', 'Eng')", new { t });
         await poller.QueryAsync("SELECT link, company, role FROM applications WHERE tenant_id = @t", new { t });
+        // The status-history trigger (#353) wrote the lead's first status as the poller.
+        Assert.Equal("lead", await owner.ExecuteScalarAsync<string>(
+            "SELECT e.to_status FROM status_events e JOIN applications a ON a.id = e.application_id WHERE a.tenant_id = @t AND a.name = 'acme-eng.md'",
+            new { t }));
         await poller.ExecuteAsync("INSERT INTO seen (tenant_id, kind, key) VALUES (@t, 'url', 'x') ON CONFLICT DO NOTHING", new { t });
         await poller.QueryAsync("SELECT kind, key FROM seen WHERE tenant_id = @t", new { t });
         Assert.Equal("ada", await poller.ExecuteScalarAsync<string>(
@@ -101,6 +105,7 @@ public class DbRoleTests(PostgresFixture pg)
         var rec = (await apps.GetAsync(name))!;
         await apps.UpdateStructuredAsync(name, rec.Fields with { Status = "applied" }, rec.Version.ToString());
         Assert.Equal("applied", (await apps.GetAsync(name))!.Fields.Status);
+        Assert.Equal(["lead", "applied"], (await new StatusEventRepo(owner, t).HistoryAsync(name))!.Select(e => e.ToStatus));
 
         await AssertDeniedAsync(agent, "UPDATE applications SET tenant_id = @other WHERE tenant_id = @t", new { t, other });
         await AssertDeniedAsync(agent, "UPDATE applications SET name = 'stolen.md' WHERE tenant_id = @t", new { t });

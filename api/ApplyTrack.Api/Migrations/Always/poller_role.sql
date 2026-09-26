@@ -20,6 +20,8 @@ BEGIN
         GRANT UPDATE (applications_revision) ON users TO applytrack_poller;
         GRANT SELECT ON search_profiles, blacklist, agent_settings TO applytrack_poller;
         GRANT SELECT, INSERT ON applications, seen TO applytrack_poller;
+        -- The status-history trigger (#353) records each staged lead's first status.
+        GRANT INSERT ON status_events TO applytrack_poller;
         -- The sealed session, never the sealed password.
         GRANT SELECT (tenant_id, host, username, session_ciphertext, session_expires_at)
             ON board_accounts TO applytrack_poller;
