@@ -142,8 +142,16 @@ public static class DailyDigest
             new { hour = utc.Hour, day = day.ToString("yyyy-MM-dd") }))
         {
             ct.ThrowIfCancellationRequested();
-            if (await SendTenantAsync(conn, t, day, email, publicBaseUrl, log, random ?? Random.Shared, ct))
-                sent++;
+            try
+            {
+                if (await SendTenantAsync(conn, t, day, email, publicBaseUrl, log, random ?? Random.Shared, ct))
+                    sent++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One tenant's database trouble never stops the others' digests.
+                log.LogWarning(ex, "daily digest for tenant {TenantId} ({Day}) failed", t, day);
+            }
         }
         return sent;
     }
@@ -156,6 +164,10 @@ public static class DailyDigest
         string publicBaseUrl, ILogger log, Random random, CancellationToken ct = default)
     {
         var date = day.ToString("yyyy-MM-dd");
+        // The claim and every read before the send are one transaction: a failure in
+        // between rolls the claim back, so the day is tried again rather than lost. It
+        // commits before the send, so a refused mail is never retried (at most once).
+        using var tx = conn.BeginTransaction();
         var claim = await conn.QuerySingleOrDefaultAsync<Claim?>(
             """
             UPDATE notification_settings SET digest_last_day = @date::date
@@ -163,7 +175,7 @@ public static class DailyDigest
               AND (digest_last_day IS NULL OR digest_last_day < @date::date)
             RETURNING digest_insults AS insults, digest_last_quip AS lastquip
             """,
-            new { t, date });
+            new { t, date }, tx);
         if (claim is not { } c) return false;
 
         string? quip = null;
@@ -172,7 +184,7 @@ public static class DailyDigest
             var i = PickQuip(c.LastQuip, random);
             quip = Quips[i];
             await conn.ExecuteAsync(
-                "UPDATE notification_settings SET digest_last_quip = @i WHERE tenant_id = @t", new { t, i = (short)i });
+                "UPDATE notification_settings SET digest_last_quip = @i WHERE tenant_id = @t", new { t, i = (short)i }, tx);
         }
         var items = (await conn.QueryAsync<DigestItem>(
             """
@@ -180,8 +192,10 @@ public static class DailyDigest
             WHERE tenant_id = @t AND left(applied, 10) = @date
             ORDER BY id
             """,
-            new { t, date })).ToList();
-        var to = await conn.QuerySingleOrDefaultAsync<string?>("SELECT email::text FROM users WHERE id = @t", new { t }) ?? "";
+            new { t, date }, tx)).ToList();
+        var to = await conn.QuerySingleOrDefaultAsync<string?>(
+            "SELECT email::text FROM users WHERE id = @t", new { t }, tx) ?? "";
+        tx.Commit();
         var (text, html) = Body(day, items, quip, publicBaseUrl);
         try
         {

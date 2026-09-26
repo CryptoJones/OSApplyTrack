@@ -1638,7 +1638,9 @@ async function markStatus(data, action) {
   let advance = false;
   if (action === "applied") {
     fields.status = "applied";
-    fields.applied = isoDate(0);
+    // The UTC day, as the agent writes it (#336): one clock for "applied", so the daily
+    // digest, which reports a UTC day, never misses one marked late in the evening.
+    fields.applied = new Date().toISOString().slice(0, 10);
     fields.followup = isoDate(7);
     msg = "Marked applied · follow-up in 7 days.";
   } else if (action === "pass") {
