@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection, Iterable
 
 import httpx
 import psycopg
@@ -57,6 +58,8 @@ class FakeRepo:
         self._profile = profile if profile is not None else Criteria()
         self.added: list[AppFields] = []
         self._names: set[str] = set()
+        self.seen_reads: list[tuple[set[str], set[str]]] = []
+        self.seen_writes: list[list[tuple[str, str]]] = []
 
     def load_profile(self) -> Criteria:
         return self._profile
@@ -67,14 +70,20 @@ class FakeRepo:
     def blacklist_companies(self) -> list[str]:
         return list(self._blacklist)
 
-    def load_seen(self) -> tuple[set[str], set[str]]:
-        return set(self._seen_urls), set(self._seen_slugs)
+    def load_seen(
+        self, url_keys: Collection[str], slug_keys: Collection[str]
+    ) -> tuple[set[str], set[str]]:
+        self.seen_reads.append((set(url_keys), set(slug_keys)))
+        return self._seen_urls & set(url_keys), self._seen_slugs & set(slug_keys)
 
-    def mark_seen(self, url_key: str, slug_key: str) -> None:
-        if url_key:
-            self._seen_urls.add(url_key)
-        if slug_key:
-            self._seen_slugs.add(slug_key)
+    def mark_seen_many(self, keys: Iterable[tuple[str, str]]) -> None:
+        keys = list(keys)
+        self.seen_writes.append(keys)
+        for url_key, slug_key in keys:
+            if url_key:
+                self._seen_urls.add(url_key)
+            if slug_key:
+                self._seen_slugs.add(slug_key)
 
     def add_lead(self, fields: AppFields) -> str:
         # Mirror PollRepo.add_lead: a slug collision raises UniqueViolation so the
@@ -594,7 +603,9 @@ def test_run_all_tenants_ats_only_stages_only_board_leads(
 def test_run_all_tenants_isolates_per_tenant_failure() -> None:
     # A tenant whose repo raises is recorded empty; the others are still polled.
     class BoomRepo(FakeRepo):
-        def load_seen(self) -> tuple[set[str], set[str]]:
+        def load_seen(
+            self, url_keys: Collection[str], slug_keys: Collection[str]
+        ) -> tuple[set[str], set[str]]:
             raise RuntimeError("db down for this tenant")
 
     bad = BoomRepo(profile=Criteria(keywords=["engineer"], sources={"remotive": True}))
@@ -1337,3 +1348,136 @@ def test_run_bounded_interleaves_hosts_so_one_host_cannot_hog_the_pool() -> None
     assert out == ["slow"] * 6 + ["fast"]
     # The one "fast" task starts among the first wave, not behind six "slow" ones.
     assert "fast" in started[:3]
+
+
+# -- the ledger is read and written per batch, not per key (#348) -------------
+
+
+def test_an_empty_batch_reads_nothing_from_the_database() -> None:
+    class NoReads(FakeRepo):
+        def iter_existing(self) -> list[tuple[str, str, str]]:
+            raise AssertionError("applications read for an empty batch")
+
+        def blacklist_companies(self) -> list[str]:
+            raise AssertionError("blacklist read for an empty batch")
+
+    repo = NoReads()
+    assert score_and_stage(repo, Criteria(keywords=["engineer"]), []) == []
+    # A listing with no company or role could never be staged either.
+    assert score_and_stage(repo, Criteria(keywords=["engineer"]), [_lead("", "Engineer")]) == []
+    assert repo.seen_reads == []
+    assert repo.seen_writes == []
+
+
+def test_only_the_batchs_own_keys_are_read_from_the_ledger() -> None:
+    repo = FakeRepo(seen=[("url", "elsewhere.example/9"), ("slug", "globexcoder")])
+    item = _lead("Acme", "Backend Engineer", link="https://www.acme.co/jobs/1/",
+                 apply_link="https://boards.example/acme/1")
+    score_and_stage(repo, Criteria(keywords=["engineer"]), [item])
+    [(urls, slugs)] = repo.seen_reads
+    assert urls == {"acme.co/jobs/1", "boards.example/acme/1"}
+    assert len(slugs) == 1 and "globexcoder" not in slugs
+
+
+def test_a_key_already_in_the_ledger_still_blocks_its_listing() -> None:
+    repo = FakeRepo(seen=[("url", "acme.co/jobs/1")])
+    item = _lead("Acme", "Backend Engineer", link="https://acme.co/jobs/1")
+    assert score_and_stage(repo, Criteria(keywords=["engineer"]), [item]) == []
+
+
+def test_newly_seen_keys_are_written_in_one_batch() -> None:
+    repo = FakeRepo()
+    listings = [
+        _lead("Acme", "Backend Engineer", link="https://acme.co/1"),
+        _lead("Globex", "Account Executive", link="https://globex.co/2"),
+        _lead("Initech", "Recruiter", link="https://initech.co/3"),
+    ]
+    added = score_and_stage(repo, Criteria(keywords=["engineer"]), listings)
+    assert len(added) == 1
+    # One write for the run: the staged lead's keys and the two passed-on listings'.
+    [written] = repo.seen_writes
+    assert {u for u, _ in written} == {"acme.co/1", "globex.co/2", "initech.co/3"}
+
+
+def test_the_ledger_write_still_happens_when_staging_fails() -> None:
+    class Boom(FakeRepo):
+        def add_lead(self, fields: AppFields) -> str:
+            raise RuntimeError("db down")
+
+    repo = Boom()
+    listings = [
+        _lead("Globex", "Account Executive", link="https://globex.co/2"),
+        _lead("Acme", "Backend Engineer", link="https://acme.co/1"),
+    ]
+    with pytest.raises(RuntimeError):
+        score_and_stage(repo, Criteria(keywords=["engineer"]), listings)
+    # The passed-on listing is remembered; the one that failed to stage is left to retry.
+    [written] = repo.seen_writes
+    assert [u for u, _ in written] == ["globex.co/2"]
+
+
+class _LedgerCursor:
+    def __init__(self, conn: _LedgerConn) -> None:
+        self._conn = conn
+
+    def __enter__(self) -> _LedgerCursor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self._conn.executed.append((sql, params))
+
+    def fetchall(self) -> list[tuple[str, ...]]:
+        return self._conn.rows
+
+
+class _LedgerConn:
+    def __init__(self, rows: list[tuple[str, ...]]) -> None:
+        self.rows = rows
+        self.executed: list[tuple[str, object]] = []
+
+    def cursor(self) -> _LedgerCursor:
+        return _LedgerCursor(self)
+
+
+def test_poll_repo_reads_only_the_asked_keys_and_nothing_for_none() -> None:
+    from applytrack.db import PollRepo
+
+    conn = _LedgerConn([("url", "acme.co/1"), ("slug", "acmeengineer")])
+    repo = PollRepo(conn, 7)  # type: ignore[arg-type]
+    assert repo.load_seen(set(), set()) == (set(), set())
+    assert conn.executed == []
+    assert repo.load_seen({"acme.co/1"}, {"acmeengineer"}) == ({"acme.co/1"}, {"acmeengineer"})
+    [(sql, params)] = conn.executed
+    assert "ANY(" in sql and "tenant_id = %s" in sql
+    assert params == (7, ["acme.co/1"], ["acmeengineer"])
+
+
+def test_poll_repo_writes_a_batch_of_keys_in_one_statement() -> None:
+    from applytrack.db import PollRepo
+
+    conn = _LedgerConn([])
+    repo = PollRepo(conn, 7)  # type: ignore[arg-type]
+    repo.mark_seen_many([("acme.co/1", "acmeengineer"), ("globex.co/2", ""), ("", "")])
+    [(sql, params)] = conn.executed
+    assert "unnest(" in sql and "ON CONFLICT DO NOTHING" in sql
+    assert params == (7, ["url", "slug", "url"], ["acme.co/1", "acmeengineer", "globex.co/2"])
+    conn.executed.clear()
+    repo.mark_seen_many([("", "")])
+    assert conn.executed == []
+
+
+def test_poll_repo_seen_url_reads_the_ledger_once() -> None:
+    from applytrack.db import PollRepo
+
+    conn = _LedgerConn([("acme.co/1",)])
+    repo = PollRepo(conn, 7)  # type: ignore[arg-type]
+    asks = [repo.seen_url(f"https://acme.co/{n}") for n in range(1, 50)]
+    assert asks[0] and not any(asks[1:])
+    assert len(conn.executed) == 1
+    # A URL remembered during the run answers from memory too.
+    repo.mark_seen_many([("globex.co/2", "")])
+    assert repo.seen_url("https://www.globex.co/2/")
+    assert len(conn.executed) == 2  # the one read, the one write

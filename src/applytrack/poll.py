@@ -34,7 +34,7 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from functools import lru_cache, partial
@@ -531,12 +531,14 @@ class LeadRepo(Protocol):
         """Return the tenant's blacklisted company keys."""
         ...
 
-    def load_seen(self) -> tuple[set[str], set[str]]:
-        """Return the persisted ``(url_keys, slug_keys)`` dedup ledger."""
+    def load_seen(
+        self, url_keys: Collection[str], slug_keys: Collection[str]
+    ) -> tuple[set[str], set[str]]:
+        """Return which of these ``(url_keys, slug_keys)`` the dedup ledger already holds."""
         ...
 
-    def mark_seen(self, url_key: str, slug_key: str) -> None:
-        """Persist newly seen normalized keys (either may be empty)."""
+    def mark_seen_many(self, keys: Iterable[tuple[str, str]]) -> None:
+        """Persist newly seen normalized ``(url_key, slug_key)`` pairs (either may be empty)."""
         ...
 
     def add_lead(self, fields: AppFields) -> str:
@@ -1639,73 +1641,125 @@ def score_and_stage(
 ) -> list[str]:
     """Dedupe, filter, score, and stage ``listings`` for one tenant. Returns slug names.
 
-    The dedup ledger is loaded from the ``seen`` table and seeded from the tenant's
-    existing applications; each newly seen key is persisted so a company is never
-    re-pinged on a later run. Network is touched only when ``verify_links`` is on:
-    the listings that pass every offline filter are then resolved and probed together
-    on a bounded pool, through ``link_cache`` — which the multi-tenant worker shares
-    across every tenant of a run, so a URL is fetched once per run, not per tenant
-    (#347).
+    The dedup ledger is read from the ``seen`` table for just this batch's keys and
+    seeded from the tenant's existing applications; the newly seen keys are persisted
+    together at the end so a company is never re-pinged on a later run (#348). Network
+    is touched only when ``verify_links`` is on: the listings that pass every offline
+    filter are then resolved and probed together on a bounded pool, through
+    ``link_cache`` — which the multi-tenant worker shares across every tenant of a
+    run, so a URL is fetched once per run, not per tenant (#347).
     """
-    url_keys, slug_keys = repo.load_seen()
-    seen = Seen(url_keys, slug_keys, sink=repo.mark_seen)
+    batch = [it for it in listings if it.company and it.role]
+    # Nothing gathered (an --ats-only pass for a tenant with no boards, every ten
+    # minutes): nothing to dedupe, so no ledger, application or blacklist read (#348).
+    if not batch:
+        return []
+    # Only the keys this batch could hit are read from the ledger, never the whole
+    # history, which grows by every listing ever passed on (#348).
+    url_keys, slug_keys = repo.load_seen(
+        {k for it in batch for k in (_norm_url(it.link), _norm_url(it.apply_link)) if k},
+        {_norm_slug(it.company, it.role) for it in batch} - {""},
+    )
+    # Newly seen keys are written once, together, at the end of the run (#348).
+    fresh: list[tuple[str, str]] = []
+    seen = Seen(url_keys, slug_keys, sink=lambda u, s: fresh.append((u, s)))
+    try:
+        return _score_and_stage(repo, profile, batch, seen, verify_links, link_cache)
+    finally:
+        if fresh:
+            repo.mark_seen_many(fresh)
+
+
+# Jev calls in flight at once for one tenant's batch: each can take up to its 15 s
+# timeout, and a batch of 200 listings in series is most of an hour (#348).
+JEV_WORKERS = 4
+
+
+def _score_and_stage(
+    repo: LeadRepo,
+    profile: Criteria,
+    listings: list[Listing],
+    seen: Seen,
+    verify_links: bool,
+    link_cache: LinkCache | None,
+) -> list[str]:
     _seed_from_existing(repo, seen)
     blacklist = Blacklist({_norm_company(c) for c in repo.blacklist_companies()})
 
-    judge = jev_judge_for(repo)
-    candidates: list[_Candidate] = []
+    # The free filters first: a listing they drop never costs a paid Jev call (#348).
+    scored: list[tuple[Listing, str, int, list[str]]] = []
     pending: set[tuple[str, str]] = set()
-    try:
-        for item in listings:
-            if not item.company or not item.role:
-                continue
-            # Blacklisted companies are dropped wholesale — never seen, never staged.
-            if blacklist.has(item.company):
-                continue
-            slug = _norm_slug(item.company, item.role)
-            if seen.has(item.link, slug) or (item.apply_link and seen.has(item.apply_link, slug)):
-                continue
-            # The same posting twice in one batch is judged once; staging re-checks
-            # the ledger anyway, so the second copy could never be staged.
-            once = ("url", item.link) if item.link else ("slug", slug)
-            if once in pending:
-                continue
+    for item in listings:
+        # Blacklisted companies are dropped wholesale — never seen, never staged.
+        if blacklist.has(item.company):
+            continue
+        slug = _norm_slug(item.company, item.role)
+        if seen.has(item.link, slug) or (item.apply_link and seen.has(item.apply_link, slug)):
+            continue
+        # The same posting twice in one batch is judged once; staging re-checks
+        # the ledger anyway, so the second copy could never be staged.
+        once = ("url", item.link) if item.link else ("slug", slug)
+        if once in pending:
+            continue
 
-            # We act on this listing one way or another below, so it is recorded
-            # as seen *except* on a genuine write failure (handled at stage time),
-            # which leaves it for a later run to retry.
-            if not _passes_location(item, profile):
-                seen.add(item.link, slug)
-                continue
+        # We act on this listing one way or another below, so it is recorded
+        # as seen *except* on a genuine write failure (handled at stage time),
+        # which leaves it for a later run to retry.
+        if not _passes_location(item, profile):
+            seen.add(item.link, slug)
+            continue
 
-            score, hits = classify(item.role, item.description, profile.keywords)
-            # Opted in: Jev's fit replaces the keyword score, held to the same floor. It is
-            # asked even with no keyword hit -- most of what it catches is a role the list
-            # never names ("Data Engineer", "Backend Software Engineer") (#300).
-            fit = judge.fit(item, profile.keywords) if judge is not None else None
-            if fit is not None:
-                score = fit
-            if (fit is None and not hits) or score < profile.min_fit_score:
-                seen.add(item.link, slug)
-                continue
+        # A dead-end aggregator's listing, or one whose Apply leads to it (a LinkedIn
+        # "employer" fronting the network): nothing to apply to, so nothing to stage (#281).
+        if is_dead_end_link(item.link) or is_dead_end_link(item.apply_link):
+            logger.info("skipped %s — %s: dead-end aggregator", item.company, item.role)
+            seen.add(item.link, slug)
+            continue
 
-            # A dead-end aggregator's listing, or one whose Apply leads to it (a LinkedIn
-            # "employer" fronting the network): nothing to apply to, so nothing to stage (#281).
-            if is_dead_end_link(item.link) or is_dead_end_link(item.apply_link):
-                logger.info("skipped %s — %s: dead-end aggregator", item.company, item.role)
-                seen.add(item.link, slug)
-                continue
+        pending.add(once)
+        score, hits = classify(item.role, item.description, profile.keywords)
+        scored.append((item, slug, score, hits))
 
-            pending.add(once)
-            candidates.append(_Candidate(item, slug, score, hits, judged=fit is not None))
-    finally:
-        if judge is not None:
+    # Opted in: Jev's fit replaces the keyword score, held to the same floor. It is
+    # asked even with no keyword hit -- most of what it catches is a role the list
+    # never names ("Data Engineer", "Backend Software Engineer") (#300). The first call
+    # goes alone, so an outage still costs one timeout, not one per worker; the rest go
+    # out a few at a time rather than one after another (#348).
+    fits: list[int | None] = [None] * len(scored)
+    judge = jev_judge_for(repo) if scored else None
+    if judge is not None:
+        try:
+            fits[0] = judge.fit(scored[0][0], profile.keywords)
+            if not judge.broken:
+                outcomes = run_bounded(
+                    (("jev", partial(judge.fit, item, profile.keywords))
+                     for item, *_ in scored[1:]),
+                    workers=JEV_WORKERS,
+                    per_host=JEV_WORKERS,
+                )
+                fits[1:] = [None if isinstance(o, Exception) else o for o in outcomes]
+        finally:
             judge.close()
+
+    candidates: list[_Candidate] = []
+    for (item, slug, score, hits), fit in zip(scored, fits, strict=True):
+        if fit is not None:
+            score = fit
+        if (fit is None and not hits) or score < profile.min_fit_score:
+            seen.add(item.link, slug)
+            continue
+        candidates.append(_Candidate(item, slug, score, hits, judged=fit is not None))
 
     if verify_links and candidates:
         candidates = _verify_candidates(
             candidates, link_cache if link_cache is not None else LinkCache()
         )
+        # The employer postings behind aggregator listings were not known when the
+        # ledger was read: read just those keys now (#348).
+        resolved = {_norm_url(c.resolved) for c in candidates if c.resolved} - {""}
+        if resolved:
+            for key in repo.load_seen(resolved, set())[0]:
+                seen.urls.add(key)
 
     added: list[str] = []
     for cand in candidates:

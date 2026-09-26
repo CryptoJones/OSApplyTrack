@@ -375,7 +375,7 @@ def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Li
         def remember(url: str) -> None:
             from applytrack.poll import _norm_url
 
-            repo.mark_seen(_norm_url(url), "")
+            repo.mark_seen_many([(_norm_url(url), "")])
 
         with httpx.Client(timeout=30.0, follow_redirects=False, headers=BROWSER_HEADERS) as client:
             li = linkedin.Client(client, account)

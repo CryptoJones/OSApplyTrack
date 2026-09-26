@@ -33,10 +33,10 @@ class FakeRepo:
     def blacklist_companies(self) -> list[str]:
         return []
 
-    def load_seen(self) -> tuple[set[str], set[str]]:
+    def load_seen(self, url_keys: object, slug_keys: object) -> tuple[set[str], set[str]]:
         return set(), set()
 
-    def mark_seen(self, url_key: str, slug_key: str) -> None:
+    def mark_seen_many(self, keys: object) -> None:
         pass
 
     def add_lead(self, fields: AppFields) -> str:
@@ -193,3 +193,38 @@ def test_guard_86_suffixes_only_for_long_keywords() -> None:
     assert classify("x", "the debate rages on", ["rag"]) == (0, [])
     assert classify("x", "we are going places", ["go"]) == (0, [])
     assert classify("x", "mled and mls", ["ml"]) == (0, [])
+
+
+# -- Jev only sees what the free filters kept, and not one call at a time (#348) --
+
+
+def test_a_dead_end_or_out_of_area_listing_is_never_sent_to_jev(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[dict] = []
+    monkeypatch.setattr(poll, "jev_judge_for", lambda repo: _judge(0.9, asked))
+    dead = Listing(company="Netrolynx", role="Backend Engineer",
+                   link="https://www.sundayy.com/job/1")
+    onsite = Listing(company="Hooli", role="Backend Engineer", link="https://hooli.example/1",
+                     location="Onsite — Paris")
+
+    class Repo(JevRepo):
+        def load_profile(self) -> Criteria:
+            return Criteria(keywords=KEYWORDS, min_fit_score=55, exclude_locations=["paris"])
+
+    repo = Repo()
+    score_and_stage(repo, repo.load_profile(), [dead, onsite, ASP])
+    assert [a["body"]["state"]["posting"]["title"] for a in asked] == [ASP.role]
+
+
+def test_jev_fits_land_on_their_own_listings_when_asked_in_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listings = [Listing(company=f"Co{n}", role=f"Role {n}", link=f"https://co{n}.example/j")
+                for n in range(12)]
+    # Even-numbered roles fit; odd ones do not.
+    fit = {f"Role {n}": 0.9 if n % 2 == 0 else 0.1 for n in range(12)}
+    monkeypatch.setattr(poll, "jev_judge_for", lambda repo: _judge(fit.get))
+    repo = JevRepo()
+    score_and_stage(repo, repo.load_profile(), listings)
+    assert sorted(f.role for f in repo.added) == sorted(f"Role {n}" for n in range(0, 12, 2))

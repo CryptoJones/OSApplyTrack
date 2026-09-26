@@ -151,10 +151,10 @@ class _Repo:
     def blacklist_companies(self) -> list[str]:
         return []
 
-    def load_seen(self) -> tuple[set[str], set[str]]:
+    def load_seen(self, url_keys: object, slug_keys: object) -> tuple[set[str], set[str]]:
         return set(), set()
 
-    def mark_seen(self, url_key: str, slug_key: str) -> None:
+    def mark_seen_many(self, keys: object) -> None:
         pass
 
     def add_lead(self, fields) -> str:  # type: ignore[no-untyped-def]
