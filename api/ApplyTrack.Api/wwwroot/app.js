@@ -824,7 +824,15 @@ async function openAnalytics({ focus = true } = {}) {
 }
 
 async function loadAnalytics(gen) {
-  const since = state.analyticsDays ? `?since=${isoDate(-Number(state.analyticsDays))}` : "";
+  // The range starts at local midnight N days back, sent as the UTC instant it is — a bare
+  // date would be read as UTC midnight, hours off the day the person means.
+  let since = "";
+  if (state.analyticsDays) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - Number(state.analyticsDays));
+    since = `?since=${encodeURIComponent(d.toISOString())}`;
+  }
   let data;
   try {
     data = await api("GET", `/api/analytics${since}`);
@@ -1232,14 +1240,17 @@ function renderView(data) {
 
 // The application's timeline (#353), oldest first, filled in once the sheet is up.
 async function loadHistory(name) {
+  // Bound to this sheet's list: a reopened sheet has a new one, and a slower answer for
+  // the old one must not overwrite it.
+  const list = document.getElementById("history-list");
   let entries;
   try {
     entries = await api("GET", `/api/apps/${encodeURIComponent(name)}/history`);
   } catch {
     entries = null;
   }
-  const list = document.getElementById("history-list");
-  if (!list || state.current !== name || state.mode !== "view") return;
+  if (!list || !list.isConnected || document.getElementById("history-list") !== list
+    || state.current !== name || state.mode !== "view") return;
   list.removeAttribute("aria-busy");
   if (!Array.isArray(entries)) { list.innerHTML = `<li class="field-help">History is unavailable right now.</li>`; return; }
   if (!entries.length) { list.innerHTML = `<li class="field-help">No status changes recorded.</li>`; return; }

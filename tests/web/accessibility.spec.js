@@ -1043,7 +1043,7 @@ test("the Analytics button opens the funnel, response rate and breakdowns as tab
   // The range asks for applications applied since that many days ago.
   const ranged = page.waitForRequest((r) => new URL(r.url()).pathname === "/api/analytics");
   await page.getByLabel("Applied in").selectOption("30");
-  expect(new URL((await ranged).url()).searchParams.get("since")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(new URL((await ranged).url()).searchParams.get("since")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 
   // Another view takes the pane and un-presses the button.
   await page.getByRole("button", { name: "Pipeline" }).click();

@@ -265,6 +265,26 @@ public class StatusHistoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_snapshot_with_history_replaces_it_for_every_app_it_brings_even_one_given_none()
+    {
+        var name = await CreateAsync("Acme");
+        await SetStatusAsync(name, "applied");
+        var other = await CreateAsync("Untouched");
+        var res = await _client.PostAsync("/api/account/import", Json(JsonSerializer.Serialize(new
+        {
+            format = "applytrack-export",
+            applications = new[] { new { name, company = "Acme", role = "Engineer", status = "applied" } },
+            status_events = Array.Empty<object>(),
+        })));
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Equal(0, (await ReadJsonAsync(await _client.GetAsync($"/api/apps/{name}/history"))).GetArrayLength());
+        Assert.Equal(1, (await ReadJsonAsync(await _client.GetAsync($"/api/apps/{other}/history"))).GetArrayLength());
+
+        var since = Uri.EscapeDataString(DateTime.UtcNow.AddDays(-1).ToString("O"));
+        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync($"/api/analytics?since={since}")).StatusCode);
+    }
+
+    [Fact]
     public async Task The_migration_is_rerunnable_and_seeds_history_from_a_valid_applied_date()
     {
         await using var conn = await OwnerAsync();

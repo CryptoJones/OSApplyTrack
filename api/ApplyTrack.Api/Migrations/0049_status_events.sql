@@ -83,4 +83,6 @@ SELECT a.tenant_id, a.id, NULL, a.status,
                      THEN pg_temp.iso_day(a.applied) END,
                 a.created_at)
 FROM applications a
-WHERE NOT EXISTS (SELECT 1 FROM status_events e WHERE e.application_id = a.id);
+WHERE NOT EXISTS (
+    SELECT 1 FROM status_events e
+    WHERE e.tenant_id = a.tenant_id AND e.application_id = a.id);

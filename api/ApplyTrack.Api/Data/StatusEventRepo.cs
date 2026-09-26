@@ -86,16 +86,27 @@ public sealed class StatusEventRepo
             new { t = _t })).ToList();
 
     /// <summary>
-    /// Replace the history of every application the file carries history for with that
-    /// history — the import's restore, run in its transaction after the upsert. An app
-    /// with no events in the file keeps what the trigger just wrote; an event naming an
-    /// app that does not exist is dropped. Statuses are clamped like any other write.
-    /// Returns how many events were written.
+    /// Replace the history of every application in <paramref name="applications"/> with the
+    /// file's events for it — the import's restore, run in its transaction after the upsert.
+    /// An app the file lists with no events ends up with none, as the snapshot says; an
+    /// event for an app outside the set is dropped. Statuses are clamped like any other
+    /// write. Returns how many events were written.
     /// </summary>
-    public async Task<int> ReplaceAsync(IEnumerable<StatusEventExport> events, IDbTransaction? tx = null)
+    public async Task<int> ReplaceAsync(
+        IEnumerable<string> applications, IEnumerable<StatusEventExport> events, IDbTransaction? tx = null)
     {
+        var apps = applications.Select(Slug.Normalize).Distinct(StringComparer.Ordinal).ToArray();
+        if (apps.Length == 0)
+            return 0;
+        var wanted = apps.ToHashSet(StringComparer.Ordinal);
+        await _conn.ExecuteAsync(
+            """
+            DELETE FROM status_events e USING applications a
+            WHERE e.tenant_id = @t AND a.tenant_id = @t AND a.id = e.application_id AND a.name = ANY(@apps)
+            """,
+            new { t = _t, apps }, tx);
         var rows = events
-            .Where(e => AppFields.Statuses.Contains(e.ToStatus))
+            .Where(e => AppFields.Statuses.Contains(e.ToStatus) && wanted.Contains(Slug.Normalize(e.Application)))
             .Select(e => (
                 App: Slug.Normalize(e.Application),
                 From: e.FromStatus is { } f && AppFields.Statuses.Contains(f) ? f : null,
@@ -104,13 +115,6 @@ public sealed class StatusEventRepo
             .ToList();
         if (rows.Count == 0)
             return 0;
-        var apps = rows.Select(r => r.App).Distinct(StringComparer.Ordinal).ToArray();
-        await _conn.ExecuteAsync(
-            """
-            DELETE FROM status_events e USING applications a
-            WHERE e.tenant_id = @t AND a.tenant_id = @t AND a.id = e.application_id AND a.name = ANY(@apps)
-            """,
-            new { t = _t, apps }, tx);
         return await _conn.ExecuteAsync(
             """
             INSERT INTO status_events (tenant_id, application_id, from_status, to_status, at)
@@ -145,6 +149,10 @@ public sealed class StatusEventRepo
     /// (all time when null): how many reached each stage, how many heard back (a screen or
     /// later, or a rejection), and the median days from applying to the first answer —
     /// timed only where the history shows the application applied before it was answered.
+    /// The two populations differ on purpose: <c>responded</c> counts every application that
+    /// ever reached a screen or later or a rejection, whatever the order of its events (one
+    /// created straight into <c>screen</c> heard back), while the median covers only those
+    /// with an answer strictly after their first applied event, since only they can be timed.
     /// </summary>
     public async Task<Analytics> AnalyticsAsync(DateTime? since)
     {

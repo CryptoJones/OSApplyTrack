@@ -149,12 +149,12 @@ public static class AccountEndpoints
 
             var importedApps = body.Applications?.Count ?? 0;
             await apps.UpsertManyAsync((body.Applications ?? []).Select(a => (a.Name, a.ToFields())), tx);
-            // The dated history the file carries replaces the "entered at import time" rows
-            // the upsert just wrote (#353) — only for the apps this file brings, so another
-            // app's history is never touched. A file without history keeps those rows.
-            var imported = (body.Applications ?? []).Select(a => Slug.Normalize(a.Name)).ToHashSet(StringComparer.Ordinal);
-            await history.ReplaceAsync(
-                (body.StatusEvents ?? []).Where(e => imported.Contains(Slug.Normalize(e.Application))), tx);
+            // A snapshot's status_events is the whole history of the apps it brings (#353): it
+            // replaces theirs, "entered at import time" rows included, and an app it gives no
+            // events ends up with none. Only those apps — another app's history is never
+            // touched. A file with no status_events field (pre-1.59) keeps the import's rows.
+            if (body.StatusEvents is not null)
+                await history.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.StatusEvents, tx);
 
             if (hasCriteria)
                 await criteria.UpsertAsync(Criteria.FromJson(body.Criteria!.Value), tx);
