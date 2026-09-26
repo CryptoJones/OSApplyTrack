@@ -92,12 +92,18 @@ public class DisqualifierTests
         Assert.Null(Disqualifiers.EmployerContradictsRemote(DtccPage, new Criteria { RemoteOnly = false }));
     }
 
+    private static readonly EmployerWorkplace OnSite = new(false, "Greenhouse location \"Dallas, TX\"");
+
     [Fact]
-    public void A_whole_employer_posting_that_never_says_remote_contradicts_a_remote_listing()
+    public void A_posting_that_never_says_remote_contradicts_a_remote_listing_only_next_to_an_on_site_workplace()
     {
         // "distributed backend systems" is not remote; "in office" twice-weekly lunch is no statement.
-        var why = Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true });
-        Assert.Equal("the employer's own posting never says the role is remote — the profile is remote-only", why);
+        var why = Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true }, OnSite);
+        Assert.Equal("the employer's posting is marked Greenhouse location \"Dallas, TX\" and never says the role is remote — the profile is remote-only", why);
+        // Silence alone, or next to an ATS field that says Remote, says nothing (#334).
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true }));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true }, new EmployerWorkplace(true, "Ashby workplaceType \"Remote\"")));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = false }, OnSite));
     }
 
     [Theory]
@@ -107,6 +113,8 @@ public class DisqualifierTests
     {
         var page = string.Concat(Enumerable.Repeat(sentence, 20));
         Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }));
+        // The text saying remote wins over a structured field that does not.
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }, OnSite));
     }
 
     [Theory]
@@ -135,12 +143,8 @@ public class DisqualifierTests
     public void Remote_said_of_a_tool_is_not_remote_said_of_the_job()
     {
         var page = string.Concat(Enumerable.Repeat("You will build remote access tools and distributed systems in our Dallas office. ", 25));
-        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }));
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }, OnSite));
     }
-
-    [Fact]
-    public void Silence_in_text_that_may_have_been_cut_short_proves_nothing() =>
-        Assert.Null(Disqualifiers.EmployerContradictsRemote(WingstopPage, new Criteria { RemoteOnly = true }, complete: false));
 
     [Theory]
     [InlineData("https://job-boards.eu.greenhouse.io/neoris/jobs/4904857101", "United States", true)]
@@ -159,10 +163,58 @@ public class DisqualifierTests
     public void A_description_that_never_says_remote_is_not_judged_when_it_is_not_the_whole_posting()
     {
         // Bankjoy's Ashby posting is marked Remote in its location field; the description never
-        // says so, and it was passed for that (#334). The worker now asks without silence.
+        // says so, and it was passed for that (#334). Without the structured field, silence is never judged.
         var page = string.Concat(Enumerable.Repeat("Build and ship full-stack .NET features for credit unions. ", 40));
-        Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }, complete: false));
+        Assert.Null(Disqualifiers.EmployerContradictsRemote(page, new Criteria { RemoteOnly = true }));
         // An explicit statement still counts.
-        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page + " This role is hybrid (Mon through Thu on-site / Fri remote).", new Criteria { RemoteOnly = true }, complete: false));
+        Assert.NotNull(Disqualifiers.EmployerContradictsRemote(page + " This role is hybrid (Mon through Thu on-site / Fri remote).", new Criteria { RemoteOnly = true }));
     }
+    [Theory]
+    [InlineData("https://jobs.ashbyhq.com/bankjoy/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21", "", "ashby",
+        "https://api.ashbyhq.com/posting-api/job-board/bankjoy")]
+    [InlineData("https://jobs.ashbyhq.com/bankjoy/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21/application", "", "ashby",
+        "https://api.ashbyhq.com/posting-api/job-board/bankjoy")]
+    [InlineData("https://jobs.lever.co/acme/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21/apply", "", "lever",
+        "https://api.lever.co/v0/postings/acme/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21")]
+    [InlineData("https://jobs.eu.lever.co/acme/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21", "", "lever",
+        "https://api.eu.lever.co/v0/postings/acme/0b3c6a3e-1f2d-4c5b-9a8e-7d6c5b4a3f21")]
+    [InlineData("https://job-boards.greenhouse.io/wingstop/jobs/4567", "", "greenhouse",
+        "https://boards-api.greenhouse.io/v1/boards/wingstop/jobs/4567")]
+    [InlineData("https://careers.acme.com/job?gh_jid=4567", "auto:greenhouse:acme", "greenhouse",
+        "https://boards-api.greenhouse.io/v1/boards/acme/jobs/4567")]
+    public void The_structured_workplace_is_read_from_the_ATSs_public_API(string link, string source, string provider, string api)
+    {
+        Assert.Equal(api, EmployerWorkplace.ApiUrl(link, source, out var p, out _));
+        Assert.Equal(provider, p);
+    }
+
+    [Theory]
+    [InlineData("https://acme.wd1.myworkdayjobs.com/Careers/job/Dallas/Engineer_R1")]
+    [InlineData("https://careers.acme.com/jobs/1")]
+    [InlineData("https://jobs.ashbyhq.com/bankjoy")]
+    public void An_ATS_without_a_structured_workplace_is_never_asked(string link) =>
+        Assert.Null(EmployerWorkplace.ApiUrl(link, "", out _, out _));
+
+    [Theory]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"OnSite\"},{\"id\":\"b\",\"workplaceType\":\"Remote\",\"isRemote\":true}]}", "b", true)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"OnSite\",\"isRemote\":false}]}", "a", false)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"Hybrid\"}]}", "a", false)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"Hybrid\",\"isRemote\":true}]}", "a", true)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\"}]}", "a", null)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"OnSite\"}]}", "zzz", null)]
+    [InlineData("lever", "{\"workplaceType\":\"remote\"}", "", true)]
+    [InlineData("lever", "{\"workplaceType\":\"onsite\"}", "", false)]
+    [InlineData("lever", "{\"workplaceType\":\"hybrid\"}", "", false)]
+    [InlineData("lever", "{\"workplaceType\":\"unspecified\"}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Dallas, TX\"}}", "", false)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Remote, United States\"}}", "", true)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Dallas, TX or Remote\"}}", "", true)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"United States\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"United States, Canada\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Americas, US\"}}", "", null)]
+    [InlineData("greenhouse", "{\"location\":{\"name\":\"Toronto, ON, Canada\"}}", "", false)]
+    [InlineData("ashby", "{\"jobs\":[{\"id\":\"a\",\"workplaceType\":\"onsite\"}]}", "a", false)]
+    [InlineData("greenhouse", "not json", "", null)]
+    public void Only_a_plain_structured_statement_decides_the_workplace(string provider, string json, string jobId, bool? remote) =>
+        Assert.Equal(remote, EmployerWorkplace.Parse(provider, json, jobId)?.Remote);
 }
