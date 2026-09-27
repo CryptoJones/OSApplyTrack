@@ -183,11 +183,15 @@ async function mockApi(page) {
     else if (path === "/api/pipeline") body = pipeline;
     else if (path === "/api/analytics") body = analytics;
     else if (path.endsWith("/history")) body = history;
+    else if (path.endsWith("/interviews") && method === "GET") body = [];
+    else if (path === "/api/due") body = { today: "2026-09-26", followups: [], interviews: [] };
     else if (path === "/api/notifications") body = {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
       email_enabled: false, email_available: true, email_address: "ada@example.com",
       notify_packet_ready: true, notify_security_code: true, notify_submit_failed: true,
       digest_enabled: false, digest_insults: false, digest_hour: 12,
+      notify_followup_due: true, reminder_hour: 12,
+      calendar_feed_enabled: false, calendar_feed_created_at: null, calendar_feed_last_used_at: null,
     };
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
@@ -415,7 +419,7 @@ test("notifications offer email beside Telegram, with per-event toggles that sav
   await openSettings(page);
   await page.getByRole("tab", { name: "Notifications", exact: true }).click();
   const events = page.getByRole("group", { name: "What to hear about" });
-  await expect(events.getByRole("checkbox")).toHaveCount(3);
+  await expect(events.getByRole("checkbox")).toHaveCount(4);
   await expect(page.getByText("ada@example.com")).toBeVisible();
   await expectNoSeriousViolations(page);
 
@@ -1073,4 +1077,133 @@ test("an application's sheet lists its status history, oldest first (#353)", asy
   await expect(items.nth(1)).toContainText("Applied");
   await expect(items.nth(1).locator("time")).toHaveAttribute("datetime", "2026-09-03T12:00:00Z");
   await expectNoSeriousViolations(page);
+});
+
+// ---- Follow-ups, interviews and the calendar feed (#354) ----------------------------
+
+test("the Due chip opens follow-ups due or overdue and the coming interviews (#354)", async ({ page }) => {
+  const withFollowups = applications.map((a) => a === appliedApp ? { ...a, followup: "2026-03-08" } : a);
+  await page.route("**/api/apps", (route) => route.fulfill({
+    status: 200, contentType: "application/json", headers: { ETag: '"apps-due"' }, body: JSON.stringify(withFollowups),
+  }));
+  const soon = new Date(Date.now() + 2 * 86400000).toISOString();
+  await page.route("**/api/due*", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ today: "2026-09-26", followups: [], interviews: [
+      { id: 7, name: application.filename, company: application.company, role: application.role, at: soon, note: "Panel with the team" },
+    ] }),
+  }));
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+
+  // The overdue follow-up is flagged on its card.
+  await expect(page.locator("#app-list").getByRole("button", { name: /Aurora Systems/ })).toContainText("Overdue");
+
+  await page.getByRole("button", { name: "2 due — follow-ups and interviews" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Due" })).toBeFocused();
+  const interviews = page.getByRole("table", { name: "Interviews in the coming week" });
+  await expect(interviews.getByRole("row").filter({ hasText: "Example Co" })).toContainText("Panel with the team");
+  const followups = page.getByRole("table", { name: "Follow-ups due today or overdue" });
+  const row = followups.getByRole("row").filter({ hasText: "Aurora Systems" });
+  await expect(row).toContainText("2026-03-08");
+  await expect(row).toContainText("Overdue");
+  await expect(page.getByRole("button", { name: "2 due — follow-ups and interviews" })).toHaveAttribute("aria-pressed", "true");
+  await expectNoSeriousViolations(page);
+
+  await row.getByRole("button", { name: /Aurora Systems/ }).click();
+  await expect(page.getByRole("heading", { name: "Aurora Systems", level: 2 })).toBeVisible();
+});
+
+test("an application's sheet schedules and removes interviews, and the timeline shows them (#354)", async ({ page }) => {
+  let scheduled = [];
+  let posted = null;
+  let removed = null;
+  await page.route(`**/api/apps/${application.filename}/interviews**`, async (route) => {
+    const req = route.request();
+    if (req.method() === "POST") {
+      posted = req.postDataJSON();
+      scheduled = [{ id: 11, at: posted.at, note: posted.note }];
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(scheduled[0]) });
+    } else if (req.method() === "DELETE") {
+      removed = new URL(req.url()).pathname;
+      scheduled = [];
+      await route.fulfill({ status: 204 });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scheduled) });
+    }
+  });
+  await page.route("**/history", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify([
+      ...history,
+      { kind: "interview", from_status: null, to_status: "", at: "2026-09-10T15:00:00Z", note: "Phone screen" },
+      { kind: "followup", from_status: null, to_status: "", at: "2026-09-12T00:00:00Z", note: null },
+    ]),
+  }));
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.getByRole("heading", { name: "Interviews", level: 3 })).toBeVisible();
+  await expect(page.locator("#interview-list")).toContainText("No interviews scheduled.");
+  const timeline = page.locator("#history-list li");
+  await expect(timeline).toHaveCount(4);
+  await expect(timeline.nth(2)).toContainText("Interview — Phone screen");
+  await expect(timeline.nth(3)).toContainText("Follow-up due");
+  await expect(timeline.nth(3).locator("time")).toHaveAttribute("datetime", "2026-09-12");
+
+  // No date: the field says so and nothing is sent.
+  await page.getByRole("button", { name: "Add interview" }).click();
+  await expect(page.getByLabel("Date and time")).toHaveAttribute("aria-invalid", "true");
+  expect(posted).toBeNull();
+
+  await page.getByLabel("Date and time").fill("2026-10-01T15:00");
+  await page.getByLabel("Note (optional)").fill("Onsite with the platform team");
+  await page.getByRole("button", { name: "Add interview" }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(new Date(posted.at).getTime()).toBe(new Date("2026-10-01T15:00").getTime());
+  expect(posted.note).toBe("Onsite with the platform team");
+  await expect(page.locator("#interview-list")).toContainText("Onsite with the platform team");
+  await expectNoSeriousViolations(page);
+
+  await page.locator("#interview-list").getByRole("button", { name: /Remove the interview on/ }).click();
+  await expect.poll(() => removed).toBe(`/api/apps/${application.filename}/interviews/11`);
+  await expect(page.locator("#interview-list")).toContainText("No interviews scheduled.");
+});
+
+test("notifications carry the reminder toggle and hour, and make a calendar link shown once (#354)", async ({ page }) => {
+  let saved = null;
+  let revoked = false;
+  page.on("request", (r) => {
+    if (r.method() === "PUT" && new URL(r.url()).pathname === "/api/notifications") saved = r.postDataJSON();
+  });
+  await page.route("**/api/calendar/feed", async (route) => {
+    if (route.request().method() === "DELETE") { revoked = true; await route.fulfill({ status: 204 }); return; }
+    await route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify({ enabled: true, path: "/api/calendar.ics?token=abc123", url: null, created_at: "2026-09-26T12:00:00Z" }) });
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Notifications", exact: true }).click();
+  const reminder = page.getByRole("checkbox", { name: /Follow-ups due today and interviews/ });
+  await expect(reminder).toBeChecked();
+  await expect(page.getByRole("combobox", { name: "Send the daily reminder at" })).toHaveValue("12");
+  await expect(page.getByText("No calendar link yet.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Turn the link off" })).toBeDisabled();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "Make a link" }).click();
+  const link = page.getByLabel(/Your calendar link/);
+  await expect(link).toBeFocused();
+  await expect(link).toHaveValue(/\/api\/calendar\.ics\?token=abc123$/);
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "Turn the link off" }).click();
+  await page.getByRole("button", { name: "Turn it off" }).click();
+  await expect.poll(() => revoked).toBe(true);
+  await expect(link).toBeHidden();
+  await expect(page.getByText("The calendar link is off.")).toBeVisible();
+
+  await reminder.uncheck();
+  await page.getByRole("combobox", { name: "Send the daily reminder at" }).selectOption("7");
+  await page.getByRole("button", { name: "Save notifications" }).click();
+  await expect.poll(() => saved).not.toBeNull();
+  expect(saved.notify_followup_due).toBe(false);
+  expect(saved.reminder_hour).toBe(7);
 });

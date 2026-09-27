@@ -14,8 +14,10 @@ namespace ApplyTrack.Api.Data;
 public sealed record TelegramSettingsView(bool Enabled, bool HasBotToken, string ChatId,
     bool EmailEnabled = false, NotificationEvents? Events = null);
 
-/// <summary>The per-event toggles (#355). They gate every channel; all default on.</summary>
-public sealed record NotificationEvents(bool PacketReady = true, bool SecurityCode = true, bool SubmitFailed = true);
+/// <summary>The per-event toggles (#355). They gate every channel; all default on.
+/// <c>FollowupDue</c> is the daily follow-up and interview reminder (#354).</summary>
+public sealed record NotificationEvents(bool PacketReady = true, bool SecurityCode = true, bool SubmitFailed = true,
+    bool FollowupDue = true);
 
 /// <summary>Where a notification goes right now: the Telegram target when that channel is on
 /// and usable, the account's address when email is on, and which events are wanted.</summary>
@@ -53,9 +55,9 @@ public sealed class NotificationSettingsRepo
     }
 
     private sealed record Row(bool TelegramEnabled, string TelegramBotTokenCiphertext, string TelegramChatId,
-        bool EmailEnabled, bool NotifyPacketReady, bool NotifySecurityCode, bool NotifySubmitFailed)
+        bool EmailEnabled, bool NotifyPacketReady, bool NotifySecurityCode, bool NotifySubmitFailed, bool NotifyFollowupDue)
     {
-        public NotificationEvents Events => new(NotifyPacketReady, NotifySecurityCode, NotifySubmitFailed);
+        public NotificationEvents Events => new(NotifyPacketReady, NotifySecurityCode, NotifySubmitFailed, NotifyFollowupDue);
     }
 
     public async Task<TelegramSettingsView> GetViewAsync()
@@ -155,20 +157,43 @@ public sealed class NotificationSettingsRepo
     /// needs no address or secret stored: it goes to the account's own address.
     /// </summary>
     public async Task UpsertPreferencesAsync(
-        bool? emailEnabled, bool? packetReady = null, bool? securityCode = null, bool? submitFailed = null) =>
+        bool? emailEnabled, bool? packetReady = null, bool? securityCode = null, bool? submitFailed = null,
+        bool? followupDue = null) =>
         await _conn.ExecuteAsync(
             """
             INSERT INTO notification_settings (
-                tenant_id, email_enabled, notify_packet_ready, notify_security_code, notify_submit_failed, updated_at)
-            VALUES (@t, coalesce(@emailEnabled, false), coalesce(@ready, true), coalesce(@code, true), coalesce(@failed, true), now())
+                tenant_id, email_enabled, notify_packet_ready, notify_security_code, notify_submit_failed,
+                notify_followup_due, updated_at)
+            VALUES (@t, coalesce(@emailEnabled, false), coalesce(@ready, true), coalesce(@code, true), coalesce(@failed, true),
+                coalesce(@due, true), now())
             ON CONFLICT (tenant_id) DO UPDATE SET
                 email_enabled        = coalesce(@emailEnabled, notification_settings.email_enabled),
                 notify_packet_ready  = coalesce(@ready, notification_settings.notify_packet_ready),
                 notify_security_code = coalesce(@code, notification_settings.notify_security_code),
                 notify_submit_failed = coalesce(@failed, notification_settings.notify_submit_failed),
+                notify_followup_due  = coalesce(@due, notification_settings.notify_followup_due),
                 updated_at           = now()
             """,
-            new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed });
+            new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed, due = followupDue });
+
+    /// <summary>The UTC hour the daily reminder (#354) goes out at; noon by default.</summary>
+    public async Task<int> GetReminderHourAsync() =>
+        await _conn.QuerySingleOrDefaultAsync<int?>(
+            "SELECT reminder_hour::int FROM notification_settings WHERE tenant_id = @t", new { t = _t })
+        ?? DigestSettings.DefaultHour;
+
+    /// <summary>Save the reminder's UTC hour (0–23).</summary>
+    public async Task UpsertReminderHourAsync(int hour)
+    {
+        if (hour is < 0 or > 23)
+            throw new AppValidationException("the reminder hour is a number from 0 to 23 (UTC)");
+        await _conn.ExecuteAsync(
+            """
+            INSERT INTO notification_settings (tenant_id, reminder_hour, updated_at) VALUES (@t, @hour, now())
+            ON CONFLICT (tenant_id) DO UPDATE SET reminder_hour = @hour, updated_at = now()
+            """,
+            new { t = _t, hour = (short)hour });
+    }
 
     public async Task<DigestSettings> GetDigestAsync() =>
         await _conn.QuerySingleOrDefaultAsync<DigestSettings?>(
@@ -200,7 +225,8 @@ public sealed class NotificationSettingsRepo
             + "telegram_bot_token_ciphertext AS telegrambottokenciphertext, "
             + "telegram_chat_id AS telegramchatid, "
             + "email_enabled AS emailenabled, notify_packet_ready AS notifypacketready, "
-            + "notify_security_code AS notifysecuritycode, notify_submit_failed AS notifysubmitfailed "
+            + "notify_security_code AS notifysecuritycode, notify_submit_failed AS notifysubmitfailed, "
+            + "notify_followup_due AS notifyfollowupdue "
             + "FROM notification_settings WHERE tenant_id = @t",
             new { t = _t });
 }

@@ -62,6 +62,11 @@ builder.Services.AddScoped(sp => new ApplicationRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new StatusEventRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+// Interviews and follow-ups (#354), and the scoped tokens behind the calendar feed.
+builder.Services.AddScoped(sp => new AppEventRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new ApiTokenRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new CriteriaRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new BlacklistRepo(
@@ -221,6 +226,9 @@ if (retentionOptions.Enabled
 // The daily applied-jobs digest (#336): the same container, the one that sends sign-in mail.
 if (!string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
     builder.Services.AddHostedService<DailyDigestWorker>();
+// The daily follow-up and interview reminder (#354): the same container, every channel.
+if (!string.Equals(builder.Configuration["Migrations:Mode"], "wait", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddHostedService<ReminderWorker>();
 
 // The JSON contract the SPA depends on: C# PascalCase <-> snake_case JSON
 // (ContactEmail <-> contact_email), case-insensitive on the way in. The dictionary
@@ -265,6 +273,11 @@ builder.Services.AddRateLimiter(options =>
     options.AddPolicy("notify", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 5, Window = TimeSpan.FromMinutes(5) }));
+    // The calendar feed (#354) is read with a token, not a session: a calendar client polls it
+    // every so often, so a generous budget, but a bound on guessing all the same.
+    options.AddPolicy("calendar", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ClientPartition(ctx),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
     // Each scrape is an outbound fetch of an arbitrary site — same budget as poll.
     options.AddPolicy("scrape", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ClientPartition(ctx),
@@ -429,6 +442,7 @@ app.MapBoardAccountEndpoints();
 app.MapReadyEndpoints();
 app.MapPipelineEndpoints();
 app.MapErrorsEndpoints();
+app.MapRemindersEndpoints();
 
 app.Run();
 

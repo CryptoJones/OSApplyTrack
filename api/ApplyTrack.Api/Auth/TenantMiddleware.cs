@@ -7,7 +7,8 @@ namespace ApplyTrack.Api.Auth;
 
 /// <summary>
 /// The tenancy choke-point. Resolves the session cookie to a user/tenant and stamps
-/// the request's <see cref="TenantContext"/> — the one place a tenant_id is derived.
+/// the request's <see cref="TenantContext"/> — the one place a tenant_id is derived from a
+/// session (the calendar feed resolves its own feed-only token, #354).
 /// Protected <c>/api</c> routes get a 401 <c>{"detail"}</c> when unauthenticated; the
 /// auth routes (<c>/api/auth/*</c>), static files, and <c>/health</c> pass through, so
 /// the SPA shell loads and login works before there is a session.
@@ -39,6 +40,8 @@ public sealed class TenantMiddleware(RequestDelegate next)
         await next(context);
     }
 
+    // The calendar feed (#354) carries its own feed-only token: a calendar client can't send the cookie.
     private static bool RequiresAuth(PathString path) =>
-        path.StartsWithSegments("/api") && !path.StartsWithSegments("/api/auth");
+        path.StartsWithSegments("/api") && !path.StartsWithSegments("/api/auth")
+        && !path.Equals(Endpoints.RemindersEndpoints.FeedPath, StringComparison.OrdinalIgnoreCase);
 }
