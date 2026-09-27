@@ -185,6 +185,12 @@ class PollRepo:
         """Keep the Handshake session sealed on the board-account row (blank clears it)."""
         self._save_session(handshake.ACCOUNT_HOSTS, session, expires_at)
 
+    def mark_polled(self) -> None:
+        """Stamp ``users.last_polled_at`` for this tenant: the pass finished (#358). The
+        operator's ``admin usage`` reads it; nothing in the app depends on it."""
+        with self._conn.cursor() as cur:
+            cur.execute("UPDATE users SET last_polled_at = now() WHERE id = %s", (self._t,))
+
     def seen_url(self, url: str) -> bool:
         """Is this listing URL already in the tenant's ledger? A source that pays a
         request per listing asks before reading one (#233). The ledger's URL keys are

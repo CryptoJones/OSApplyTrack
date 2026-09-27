@@ -448,6 +448,40 @@ def test_run_all_tenants_routes_sources_per_profile() -> None:
     assert {tid: len(names) for tid, names in results.items()} == {1: 1, 2: 1}
 
 
+def test_run_all_tenants_stamps_each_finished_pass_but_not_a_failed_one() -> None:
+    # The operator's `admin usage` shows when each tenant was last polled (#358): a
+    # finished pass stamps it, a failed one does not, and a stamp that fails (a database
+    # the api has not migrated yet) never fails the poll that already staged its leads.
+    class StampRepo(FakeRepo):
+        stamped = 0
+
+        def mark_polled(self) -> None:
+            self.stamped += 1
+
+    class BrokenStampRepo(FakeRepo):
+        def mark_polled(self) -> None:
+            raise RuntimeError('column "last_polled_at" does not exist')
+
+    class BoomRepo(StampRepo):
+        def add_lead(self, fields: AppFields) -> str:
+            raise RuntimeError("boom")
+
+    profile = Criteria(keywords=["engineer"], sources={"remotive": True})
+    ok, broken, boom = StampRepo(profile=profile), BrokenStampRepo(profile=profile), BoomRepo(
+        profile=profile
+    )
+    repos: dict[int, FakeRepo] = {1: ok, 2: broken, 3: boom}
+    results = run_all_tenants(
+        tenant_ids=[1, 2, 3],
+        repo_for=lambda tid: repos[tid],
+        gathered={"remotive": [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]},
+        verify_links=False,
+    )
+    assert ok.stamped == 1
+    assert boom.stamped == 0
+    assert {tid: len(names) for tid, names in results.items()} == {1: 1, 2: 1, 3: 0}
+
+
 def test_run_all_tenants_routes_custom_feeds_per_profile() -> None:
     # Custom feeds route by "rss:{url}" like a source id, so a feed only reaches the
     # tenants that follow it — and one shared fetch serves all of them.

@@ -15,9 +15,10 @@ BEGIN
         REVOKE ALL ON ALL TABLES IN SCHEMA public FROM applytrack_poller;
         GRANT USAGE ON SCHEMA public TO applytrack_poller;
         GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO applytrack_poller;
-        -- Active tenants; the list-revision trigger bumps the revision on each lead.
+        -- Active tenants; the list-revision trigger bumps the revision on each lead, and
+        -- each finished pass stamps last_polled_at (#358).
         GRANT SELECT (id, status, applications_revision) ON users TO applytrack_poller;
-        GRANT UPDATE (applications_revision) ON users TO applytrack_poller;
+        GRANT UPDATE (applications_revision, last_polled_at) ON users TO applytrack_poller;
         GRANT SELECT ON search_profiles, blacklist, agent_settings TO applytrack_poller;
         GRANT SELECT, INSERT ON applications, seen TO applytrack_poller;
         -- The status-history trigger (#353) records each staged lead's first status.
