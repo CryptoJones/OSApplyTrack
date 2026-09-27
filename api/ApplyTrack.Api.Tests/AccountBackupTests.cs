@@ -101,7 +101,9 @@ public class AccountBackupTests : IAsyncLifetime
     public async Task Export_v2_carries_the_whole_account_and_no_secret()
     {
         await SeedAsync();
-        var text = await _a.GetStringAsync("/api/account/export");
+        var res = await _a.GetAsync("/api/account/export");
+        Assert.True(res.Headers.CacheControl?.NoStore);
+        var text = await res.Content.ReadAsStringAsync();
         var doc = JsonDocument.Parse(text).RootElement;
 
         Assert.Equal(2, doc.GetProperty("version").GetInt32());
@@ -283,6 +285,7 @@ public class AccountBackupTests : IAsyncLifetime
         var res = await _a.GetAsync(AccountEndpoints.CsvPath);
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Equal("text/csv", res.Content.Headers.ContentType?.MediaType);
+        Assert.True(res.Headers.CacheControl?.NoStore);
         Assert.EndsWith(".csv", res.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
         var bytes = await res.Content.ReadAsByteArrayAsync();
         Assert.Equal(Encoding.UTF8.GetPreamble(), bytes[..3]);

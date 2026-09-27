@@ -71,8 +71,10 @@ public static class AccountEndpoints
             ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history,
             AppEventRepo interviews, ResumeRepo resume, CoverLetterRepo letters, AnswerBankRepo answers,
             AgentSettingsRepo agent, LlmSettingsRepo llm, NotificationSettingsRepo notifications,
-            TenantContext tenant) =>
+            TenantContext tenant, HttpContext http) =>
         {
+            // The whole account at a fixed URL: no browser or proxy may keep a copy.
+            http.Response.Headers.CacheControl = "no-store";
             var records = await apps.ExportAllAsync();
             var session = tenant.TokenScope is null;
             var doc = new ExportDoc(
@@ -95,8 +97,9 @@ public static class AccountEndpoints
 
         // The applications alone as a spreadsheet (#357): RFC 4180 CSV, one row per app, the
         // export's columns. Not a backup and never imported — a view for Excel or Sheets.
-        app.MapGet(CsvPath, async (ApplicationRepo apps) =>
+        app.MapGet(CsvPath, async (ApplicationRepo apps, HttpContext http) =>
         {
+            http.Response.Headers.CacheControl = "no-store";
             var records = await apps.ExportAllAsync();
             var bytes = ApplicationsCsv.Write(records.Select(ApplicationExport.From));
             var filename = $"applytrack-applications-{DateTime.UtcNow:yyyy-MM-dd}.csv";
