@@ -1131,7 +1131,8 @@ nothing anywhere.
   HttpClient's and Npgsql's.
 - **Prometheus** — set `Metrics__Port` (e.g. `9464`) and scrape `http://<container>:9464/metrics`.
   The endpoint exists on that port only: it is not reachable through the app's port or its
-  reverse proxy, and a forged `Host` header does not open it. Publish the port to your
+  reverse proxy, a forged `Host` header does not open it, and the port serves nothing else
+  (every other path there is a 404). Publish the port to your
   scraper's network, not the internet.
 
 The app's own metrics (meter `ApplyTrack`) are tagged only with fixed vocabularies — never

@@ -92,6 +92,9 @@ public static class Telemetry
                 .AddAspNetCoreInstrumentation(o =>
                 {
                     o.Filter = ctx => !ctx.Request.Path.StartsWithSegments(MetricsPath);
+                    // At the start too: a request that ends in an exception may never reach the
+                    // response enricher, and its span must not keep the raw path either.
+                    o.EnrichWithHttpRequest = (activity, request) => ScrubRequest(activity, request.HttpContext);
                     o.EnrichWithHttpResponse = (activity, response) => ScrubRequest(activity, response.HttpContext);
                 })
                 .AddHttpClientInstrumentation(o =>
@@ -103,15 +106,24 @@ public static class Telemetry
                 .AddOtlpExporter());
     }
 
-    /// <summary>Serve <c>/metrics</c> on the metrics port only. Placed before everything else,
-    /// so the scrape never meets the session gate, and a request for it on any other port
-    /// falls through to a plain 404.</summary>
+    /// <summary>Serve <c>/metrics</c> on the metrics port only, and only <c>/metrics</c> there.
+    /// Placed before everything else, so the scrape never meets the session gate; a request
+    /// for it on any other port falls through to a plain 404, and anything else that reaches
+    /// the metrics port gets a 404 too — a route opened for a scraper is not a second way
+    /// into the app around its reverse proxy.</summary>
     public static void UseApplyTrackMetricsEndpoint(this WebApplication app)
     {
         var options = app.Services.GetRequiredService<TelemetryOptions>();
         if (!options.Prometheus)
             return;
         app.UseOpenTelemetryPrometheusScrapingEndpoint(ctx => IsScrape(ctx, options.MetricsPort));
+        app.Use(next => ctx =>
+        {
+            if (ctx.Connection.LocalPort != options.MetricsPort)
+                return next(ctx);
+            ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+            return Task.CompletedTask;
+        });
     }
 
     /// <summary>The port the request arrived on, not its Host header: a Host header is the

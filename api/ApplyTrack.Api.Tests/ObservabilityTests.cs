@@ -111,6 +111,11 @@ public class ObservabilityTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(Get("/metrics"))).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await client.SendAsync(Get("/metrics", host: $"localhost:{MetricsPort}"))).StatusCode);
+
+        // And the metrics port serves nothing but the scrape: not the SPA, the API or the probes.
+        foreach (var path in new[] { "/", "/health", "/api/auth/me", "/api/poll/status" })
+            Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(Get(path, MetricsPort))).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(Get("/health"))).StatusCode);
     }
 
     [Theory]
@@ -176,6 +181,15 @@ public class ObservabilityTests(PostgresFixture pg) : IAsyncLifetime
         Telemetry.ScrubRequest(inbound, ctx);
         Assert.Equal("/api/apps/{name}", inbound.GetTagItem("url.path"));
         Assert.Null(inbound.GetTagItem("url.query"));
+
+        // Scrubbed at the request's start too, before any route is known: a request that
+        // throws before its response keeps neither the raw path nor the query.
+        using var early = new Activity("early");
+        early.SetTag("url.path", "/api/apps/secret-company-engineer.md");
+        early.SetTag("url.query", "?token=abc");
+        Telemetry.ScrubRequest(early, new DefaultHttpContext());
+        Assert.Null(early.GetTagItem("url.path"));
+        Assert.Null(early.GetTagItem("url.query"));
     }
 
     [Fact]
