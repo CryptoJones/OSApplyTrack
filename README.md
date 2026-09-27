@@ -269,7 +269,8 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 
 ## API reference
 
-All `/api/*` routes except the auth handshake require a valid session cookie;
+All `/api/*` routes except the auth handshake require a valid session cookie or a
+personal API token sent as `Authorization: Bearer <token>` (see [API tokens](#api-tokens));
 unauthenticated calls get **401** with a `{"detail": "..."}` body. The `/health`
 and `/health/ready` probes are open. Error bodies are uniform `{"detail": "..."}`
 across 400/404/409/500.
@@ -338,6 +339,33 @@ killing the process:
 | `GET`    | `/api/account/sessions` | Where you're signed in: `id`, `created_at`, `last_seen_at`, `expires_at`, `user_agent`, and `current` for this browser. |
 | `DELETE` | `/api/account/sessions` | Sign out everywhere else: `{revoked}` — every session but this browser's. |
 | `DELETE` | `/api/account/sessions/{id}` | Revoke one listed session (**204**; **404** if it isn't yours). |
+| `GET`    | `/api/account/tokens` | Your personal API tokens, newest first: `[{id, name, scope, created_at, last_used_at}]` — never the secret. |
+| `POST`   | `/api/account/tokens` | Make one: `{name, scope}` with `scope` `read` or `write` → **201** with the listing plus `token`, the secret, in this answer only. At most 25 per account. |
+| `DELETE` | `/api/account/tokens/{id}` | Revoke one: it stops working at once. **204**; **404** if it isn't yours. |
+
+### API tokens
+
+For scripts, a browser clipper, anything that can't carry the cookie: make a token under
+**Settings · Account · API tokens** (or `POST /api/account/tokens` from a session) and send
+it as `Authorization: Bearer atk_…` on any `/api` route.
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://apply.example/api/apps
+```
+
+- **`read`** tokens get the `GET` routes; **`write`** tokens every method. **403** otherwise.
+- **No token manages the account's credentials:** `/api/account/tokens`,
+  `/api/account/sessions`, `/api/calendar/feed` and `DELETE /api/account` answer **403** to
+  a token, so a leaked one can't mint more, sign its owner out, or delete the account. Nor
+  do the secret-bearing settings — `/api/llm-settings`, `/api/notifications`,
+  `/api/board-accounts` — so it can't redirect prompts, codes or messages. Export and
+  import stay open to tokens.
+- Stored by SHA-256 only; the secret is shown once. A token of a disabled account, or a
+  revoked one, gets **401**. The session cookie wins when a request carries both.
+- Each token has its own rate limit — 120 requests a minute — on top of the per-route ones.
+  `last_used_at` is written at most once a minute.
+- Bearer requests need no CSRF defence (a browser can't attach the header cross-site
+  without a CORS grant the API never gives); cookie requests keep theirs unchanged.
 
 ### Materials (cover letters)
 
@@ -419,7 +447,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `agent_evidence` | Browser execution artifacts: screenshots, page confirmation text, validation issues, labels for questions needing human intervention (`needs_you`), and parked states (`awaiting_code`). |
 | `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, the daily digest's switches, hour and last day sent, the daily reminder's hour and last day sent, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
 | `app_events` | Dated events on an application beyond its status — today its interviews (`kind = 'interview'`, `at`, `note`). |
-| `api_tokens` | Scoped secret tokens, stored by SHA-256 only. Today one scope, `calendar`: at most one per tenant, opening its ICS feed and nothing else. |
+| `api_tokens` | Scoped secret tokens, stored by SHA-256 only. `calendar`: at most one per tenant, opening its ICS feed and nothing else. `read` / `write`: named personal API tokens sent as `Authorization: Bearer` (up to 25 per tenant). |
 | `agent_allowlist` | Operator-managed database table allowlisting tenant accounts permitted to use auto-apply automation. |
 | `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
 | `answer_bank` | Reusable repository of screening questions and answers across job forms, tracking `human` vs `agent` source, occurrence counts, and timestamps. |
@@ -916,7 +944,8 @@ OSApplyTrack is built to face the public internet behind a reverse proxy:
   for known, unknown, and malformed addresses.
 - **Single-use, short-lived tokens.** Login tokens are 15-minute, one-shot, and
   stored only as SHA-256. Sessions are opaque and server-side, so logout revokes
-  instantly (no stranded JWTs).
+  instantly (no stranded JWTs). Personal API tokens are hashed the same way, scoped
+  `read`/`write`, revocable at once, and can't touch the account's credentials.
 - **Hard tenant isolation.** Repositories are DI-scoped per tenant; every query
   filters `tenant_id`. There is no endpoint path that reads across tenants.
 - **Strict security headers on every response** (custom middleware), and the app
@@ -1115,10 +1144,12 @@ five applications spread across the pipeline. With the API running on
 `localhost:5049`, sign in, then import the seed and capture:
 
 ```sh
-# SID = your session cookie (applytrack_session) from the browser or the sessions table
+# TOKEN = a write API token (Settings · Account · API tokens)
 curl -X POST http://localhost:5049/api/account/import \
-  -H 'Content-Type: application/json' -H "Cookie: applytrack_session=$SID" \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
   --data-binary @scripts/demo-seed.json
+
+# SID = your session cookie (applytrack_session) from the browser or the sessions table
 
 APPLYTRACK_SESSION_NAME=applytrack_session APPLYTRACK_SESSION_VALUE="$SID" \
   npm run screenshots

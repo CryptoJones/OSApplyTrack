@@ -168,6 +168,9 @@ async function mockApi(page) {
         expires_at: "2026-10-02T12:00:00Z", user_agent: "Safari on iPhone", current: false },
     ];
     else if (path === "/api/account/sessions" && method === "DELETE") body = { revoked: 1 };
+    else if (path === "/api/account/tokens" && method === "GET") body = [
+      { id: 7, name: "Laptop CLI", scope: "read", created_at: "2026-09-20T12:00:00Z", last_used_at: null },
+    ];
   else if (path === "/api/answers") body = [
     { key: "salary requirements", label: "Salary Requirements", help: "", type: "text", options: [], answer: "125000", source: "agent",
       first_application: "acme-engineer.md", times_seen: 3, first_seen_at: "2026-09-10T12:00:00Z", last_seen_at: "2026-09-13T12:00:00Z", updated_at: "2026-09-13T12:00:00Z" },
@@ -726,6 +729,48 @@ test("the Account tab lists signed-in browsers and signs out everywhere else", a
   await page.getByRole("button", { name: "Sign out everywhere else" }).click();
   await expect(page.locator("#toast")).toHaveText("Signed out 1 other session.");
   expect(revoked).toBe(true);
+});
+
+test("the Account tab makes an API token shown once and revokes one (#356)", async ({ page }) => {
+  let made = null;
+  let revoked = null;
+  await page.route("**/api/account/tokens**", async (route) => {
+    const r = route.request();
+    const path = new URL(r.url()).pathname;
+    if (r.method() === "POST") {
+      made = r.postDataJSON();
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({
+        id: 8, name: made.name, scope: made.scope, created_at: "2026-09-26T12:00:00Z", last_used_at: null, token: "atk_secret123" }) });
+      return;
+    }
+    if (r.method() === "DELETE") { revoked = path; await route.fulfill({ status: 204 }); return; }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([
+      { id: 7, name: "Laptop CLI", scope: "read", created_at: "2026-09-20T12:00:00Z", last_used_at: null },
+    ]) });
+  });
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Account" }).click();
+
+  const list = page.getByRole("list", { name: "API tokens" });
+  await expect(list).toContainText("Laptop CLI");
+  await expect(list).toContainText("never used");
+  await expectNoSeriousViolations(page);
+
+  await page.getByLabel("Name", { exact: true }).fill("Clipper");
+  await page.getByLabel("Access").selectOption("write");
+  await page.getByRole("button", { name: "Make a token" }).click();
+  const secret = page.getByLabel(/Your new token/);
+  await expect(secret).toBeFocused();
+  await expect(secret).toHaveValue("atk_secret123");
+  expect(made).toEqual({ name: "Clipper", scope: "write" });
+  await expect(page.getByRole("status").filter({ hasText: "Made the token" })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  await page.getByRole("button", { name: "Revoke the token Laptop CLI" }).click();
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  await expect.poll(() => revoked).toBe("/api/account/tokens/7");
+  await expect(secret).toBeHidden();
+  await expect(page.getByText("Token revoked.")).toBeVisible();
 });
 
 test("DELETE MY DATA needs the phrase typed before it will fire", async ({ page }) => {

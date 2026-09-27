@@ -250,6 +250,7 @@ static string ClientPartition(HttpContext ctx) =>
 
 const int UploadPermits = 10;
 const int DraftPermits = 10;
+const int TokenPermits = ApiTokenRepo.RequestsPerMinute;
 static bool IsDraftRoute(HttpContext ctx) =>
     ctx.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == "draft";
 static bool IsUploadRoute(HttpRequest req) =>
@@ -291,7 +292,7 @@ builder.Services.AddRateLimiter(options =>
     // The model-backed routes ("draft") get the same per-tenant partition (#346): the per-IP
     // budget alone lets one account spread across addresses spend the operator's LLM key.
     // The daily per-tenant cap on that key is LlmUsageRepo.
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    var tenantLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
         ctx.RequestServices.GetRequiredService<TenantContext>().UserId is not { } tenantId
             ? RateLimitPartition.GetNoLimiter("")
             : IsUploadRoute(ctx.Request)
@@ -301,6 +302,14 @@ builder.Services.AddRateLimiter(options =>
                     ? RateLimitPartition.GetFixedWindowLimiter($"draft:{tenantId}",
                         _ => new FixedWindowRateLimiterOptions { PermitLimit = DraftPermits, Window = TimeSpan.FromMinutes(5) })
                     : RateLimitPartition.GetNoLimiter(""));
+    // Each personal API token (#356) gets its own budget on top: a runaway script is cut off
+    // without throttling its owner's browser, and a leaked token can't hammer the API.
+    var tokenLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+        ctx.RequestServices.GetRequiredService<TenantContext>().TokenId is { } tokenId
+            ? RateLimitPartition.GetFixedWindowLimiter($"token:{tokenId}",
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = TokenPermits, Window = TimeSpan.FromMinutes(1) })
+            : RateLimitPartition.GetNoLimiter(""));
+    options.GlobalLimiter = PartitionedRateLimiter.CreateChained(tenantLimiter, tokenLimiter);
 });
 
 var app = builder.Build();

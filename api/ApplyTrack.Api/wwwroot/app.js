@@ -4002,6 +4002,40 @@ async function loadAccountTab(body) {
       </div>
 
       <div class="mt-5 border-t border-rule pt-4">
+        <h3 class="field-label" id="tokens-heading">API tokens</h3>
+        <p class="field-help" id="tokens-help">
+          For scripts and clippers: send one as <code>Authorization: Bearer &lt;token&gt;</code>.
+          Read tokens can only look; write tokens can change your applications too. No token can
+          manage tokens, sessions or the calendar link, or delete the account.
+        </p>
+        <form id="token-form" class="mt-3 flex flex-wrap items-end gap-2" aria-labelledby="tokens-heading">
+          <div>
+            <label class="field-label" for="token-name">Name</label>
+            <input id="token-name" class="field-input" maxlength="80" autocomplete="off" required placeholder="Laptop CLI" />
+          </div>
+          <div>
+            <label class="field-label" for="token-scope">Access</label>
+            <select id="token-scope" class="field-input">
+              <option value="read">Read only</option>
+              <option value="write">Read and write</option>
+            </select>
+          </div>
+          <button class="btn btn-ghost" type="submit">Make a token</button>
+        </form>
+        <p id="token-status" class="mt-3" role="status"></p>
+        <div id="token-new-wrap" class="mt-3" hidden>
+          <label class="field-label" for="token-new">Your new token — copy it now, it is shown only once</label>
+          <input id="token-new" class="field-input mono" readonly aria-describedby="tokens-help" />
+          <div class="mt-2">
+            <button class="btn btn-ghost" data-act="token-copy" type="button">Copy token</button>
+          </div>
+        </div>
+        <ul id="account-tokens" class="agent-log" aria-labelledby="tokens-heading">
+          <li class="mt-2 text-sm text-ink-faint">Loading…</li>
+        </ul>
+      </div>
+
+      <div class="mt-5 border-t border-rule pt-4">
         <div class="field-label">Danger zone</div>
         <p class="field-help">
           Deletes your account and every application, setting, and session with it. Immediate and unrecoverable.
@@ -4051,6 +4085,7 @@ async function loadAccountTab(body) {
       toast(e.message);
     }
   };
+  wireApiTokens(body);
   act("delete-account").onclick = async () => {
     // A yes/no confirm is too easy to click through for something unrecoverable, so this
     // one asks them to type the words. The button stays inert until the text matches.
@@ -4064,6 +4099,74 @@ async function loadAccountTab(body) {
     try {
       await api("DELETE", "/api/account");
       location.reload();
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
+// Settings · Account · API tokens (#356): made and revoked at once. The secret is in the
+// answer to "make" only — the server keeps a hash — so it is shown then and never again.
+function wireApiTokens(body) {
+  const form = body.querySelector("#token-form");
+  const list = body.querySelector("#account-tokens");
+  const statusEl = body.querySelector("#token-status");
+  const newWrap = body.querySelector("#token-new-wrap");
+  const newEl = body.querySelector("#token-new");
+  const scopeLabel = { read: "Read only", write: "Read and write" };
+  const load = async () => {
+    try {
+      const tokens = await api("GET", "/api/account/tokens");
+      list.innerHTML = tokens.map((k) => `
+        <li class="mt-2 text-sm">
+          <span>${escapeHtml(k.name)}</span> · <span>${escapeHtml(scopeLabel[k.scope] || k.scope)}</span>
+          <div class="field-help">Made ${escapeHtml(new Date(k.created_at).toLocaleString())}
+            · ${k.last_used_at ? `last used ${escapeHtml(new Date(k.last_used_at).toLocaleString())}` : "never used"}</div>
+          <button class="btn btn-ghost mt-1" type="button" data-token-id="${Number(k.id)}"
+            aria-label="Revoke the token ${escapeHtml(k.name)}">Revoke</button>
+        </li>`).join("") || `<li class="mt-2 text-sm">No API tokens.</li>`;
+    } catch (e) {
+      list.innerHTML = `<li class="mt-2 text-sm">${escapeHtml(e.message)}</li>`;
+    }
+  };
+  load();
+  body.querySelector('[data-act="token-copy"]').onclick = () => copyText(newEl.value, "Token copied.");
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const nameEl = form.querySelector("#token-name");
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      const r = await api("POST", "/api/account/tokens",
+        { name: nameEl.value, scope: form.querySelector("#token-scope").value });
+      newEl.value = r.token;
+      newWrap.hidden = false;
+      statusEl.textContent = `Made the token “${r.name}”. Copy it now; it won't be shown again.`;
+      nameEl.value = "";
+      await load();
+      newEl.focus();
+      newEl.select();
+    } catch (e) {
+      statusEl.textContent = e.message;
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  list.onclick = async (ev) => {
+    const btn = ev.target.closest("[data-token-id]");
+    if (!btn) return;
+    if (!await confirmAction({
+      title: "Revoke this token?",
+      message: "Anything using it stops working at once.",
+      confirmLabel: "Revoke",
+    })) return;
+    try {
+      await api("DELETE", `/api/account/tokens/${btn.dataset.tokenId}`);
+      newEl.value = "";
+      newWrap.hidden = true;
+      statusEl.textContent = "Token revoked.";
+      await load();
+      form.querySelector("#token-name").focus();
     } catch (e) {
       toast(e.message);
     }
