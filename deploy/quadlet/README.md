@@ -116,6 +116,12 @@ shows in their journals as `password authentication failed for user
 "applytrack_agent"` (or `_poller`); the agent waits up to five minutes for its
 role, the poller retries every tick.
 
+Images 1.55.13 through 1.65.2 shipped the Playwright driver executable by root
+only, so an agent on these units logged `Win32Exception (13) ... trying to start
+process '/app/.playwright/node/linux-x64/node' ... Permission denied` on every
+packet build and submission (#392). Use 1.65.3 or later; if you ran the agent as
+`User=root` to get past it, put it back on `User=1654:1654`.
+
 ## Port guard rail
 
 `applytrack-api.container` publishes host port **8080** (loopback only) by default and ships an
