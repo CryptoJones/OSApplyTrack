@@ -92,6 +92,14 @@ jobs:
         run: pytest -q
       - name: Audit Python packages
         run: pip-audit
+      # The step above audits a fresh resolution, which can be clean while uv.lock
+      # still pins a vulnerable version (anyio 4.14.0 did, #390). Audit the locked
+      # set too; --locked also fails if uv.lock has drifted from pyproject.toml.
+      - name: Audit locked Python packages (uv.lock)
+        run: |
+          pip install --no-cache-dir uv
+          uv export --locked --all-extras --no-emit-project -o "$RUNNER_TEMP/locked.txt"
+          pip-audit --disable-pip --require-hashes -r "$RUNNER_TEMP/locked.txt"
 
   # A red build on main is visible only to whoever happens to open the Actions tab.
   # The weekly schedule makes that worse: an advisory published after a merge turns
