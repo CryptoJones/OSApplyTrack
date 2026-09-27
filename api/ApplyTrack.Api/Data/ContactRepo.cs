@@ -111,16 +111,16 @@ public sealed class ContactRepo
         new(r.Id, r.Name, Open(r.Email), Open(r.Phone), r.Role, r.Company, Open(r.Linkedin), Open(r.Notes),
             r.Version.ToString(), links);
 
-    private async Task<Dictionary<long, List<ContactLink>>> LinksAsync(long? contactId = null)
+    private async Task<Dictionary<long, List<ContactLink>>> LinksAsync(long[]? contactIds = null)
     {
         var rows = await _conn.QueryAsync<LinkRow>(
             """
             SELECT l.contact_id, a.name AS application, l.role
             FROM application_contacts l JOIN applications a ON a.id = l.application_id AND a.tenant_id = l.tenant_id
-            WHERE l.tenant_id = @t AND (@c::bigint IS NULL OR l.contact_id = @c)
+            WHERE l.tenant_id = @t AND (@c::bigint[] IS NULL OR l.contact_id = ANY(@c))
             ORDER BY a.name
             """,
-            new { t = _t, c = contactId });
+            new { t = _t, c = contactIds });
         return rows.GroupBy(r => r.ContactId)
             .ToDictionary(g => g.Key, g => g.Select(r => new ContactLink(r.Application, r.Role)).ToList());
     }
@@ -141,7 +141,7 @@ public sealed class ContactRepo
             $"SELECT {Columns} FROM contacts WHERE tenant_id = @t AND id = @id", new { t = _t, id });
         if (row is null)
             return null;
-        var links = await LinksAsync(id);
+        var links = await LinksAsync([id]);
         return ToContact(row, links.GetValueOrDefault(id) ?? []);
     }
 
@@ -217,7 +217,7 @@ public sealed class ContactRepo
         var contacts = (await _conn.QueryAsync<Row>(
             $"SELECT {Columns} FROM contacts WHERE tenant_id = @t AND id = ANY(@ids)", new { t = _t, ids }))
             .ToDictionary(r => r.Id);
-        var links = await LinksAsync();
+        var links = await LinksAsync(ids);
         return rows.Where(r => contacts.ContainsKey(r.Id))
             .Select(r => new LinkedContact(ToContact(contacts[r.Id], links.GetValueOrDefault(r.Id) ?? []), r.LinkRole))
             .ToList();

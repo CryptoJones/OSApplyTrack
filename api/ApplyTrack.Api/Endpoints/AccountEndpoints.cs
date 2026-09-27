@@ -220,6 +220,11 @@ public static class AccountEndpoints
             var importedContacts = (body.Contacts ?? [])
                 .Select(c => (c.Id, new ContactFields(c.Name, c.Email, c.Phone, c.Role, c.Company, c.Linkedin, c.Notes).Normalized()))
                 .ToList();
+            // A link must name a contact the file carries: otherwise restoring the links would
+            // clear the apps' people and put nobody back.
+            var fileContacts = importedContacts.Select(c => c.Id).ToHashSet();
+            if (body.ApplicationContacts?.FirstOrDefault(l => !fileContacts.Contains(l.Contact)) is { } orphan)
+                throw new AppValidationException($"application_contacts names contact {orphan.Contact}, which the file's contacts don't carry");
 
             var db = (DbConnection)conn;
             if (db.State != ConnectionState.Open)

@@ -340,6 +340,24 @@ public class ContactsNotesTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_import_refuses_a_link_to_a_contact_the_file_does_not_carry()
+    {
+        var app = await CreateAppAsync("Acme");
+        var c = await CreateContactAsync(new { name = "Rae" });
+        await _client.PostAsync($"/api/apps/{app}/contacts", Json(new { contact_id = c.GetProperty("id").GetInt64() }));
+        var doc = JsonSerializer.Serialize(new
+        {
+            format = "applytrack-export", version = 2,
+            applications = new[] { new { name = app, company = "Acme", role = "Engineer" } },
+            application_contacts = new[] { new { application = app, contact = 1, role = "recruiter" } },
+        });
+        var res = await _client.PostAsync("/api/account/import", new StringContent(doc, Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        // The existing link is untouched.
+        Assert.Single((await ReadJsonAsync(await _client.GetAsync($"/api/apps/{app}/contacts"))).EnumerateArray());
+    }
+
+    [Fact]
     public async Task An_import_refuses_a_bad_contact_before_it_writes_anything()
     {
         var doc = JsonSerializer.Serialize(new

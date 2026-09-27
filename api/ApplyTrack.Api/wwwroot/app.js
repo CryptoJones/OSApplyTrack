@@ -1478,15 +1478,16 @@ async function loadPeople(name) {
   const byId = new Map(people.map((p) => [String(p.contact.id), p]));
   list.querySelectorAll("li.person").forEach((li) => {
     const p = byId.get(li.dataset.contact);
-    li.querySelector("[data-person-remove]").addEventListener("click", async (ev) => {
-      ev.currentTarget.disabled = true;
+    const removeBtn = li.querySelector("[data-person-remove]");
+    removeBtn.addEventListener("click", async () => {
+      removeBtn.disabled = true;
       try {
         await api("DELETE", `/api/apps/${encodeURIComponent(name)}/contacts/${encodeURIComponent(li.dataset.contact)}`);
         toast(`${p.contact.name} removed from this application.`);
         await loadPeople(name);
         document.getElementById("pp-existing")?.focus();
       } catch (e) {
-        ev.currentTarget.disabled = false;
+        removeBtn.disabled = false;
         toast(e.message);
       }
     });

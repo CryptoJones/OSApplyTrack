@@ -123,6 +123,7 @@ public class DbRoleTests(PostgresFixture pg)
         await AssertDeniedAsync(agent, "SELECT * FROM api_tokens");
         // Nor the people in a process or the notes log (#360).
         await AssertDeniedAsync(agent, "SELECT * FROM contacts");
+        await AssertDeniedAsync(agent, "SELECT * FROM application_contacts");
         await AssertDeniedAsync(agent, "SELECT * FROM app_notes");
     }
 
