@@ -212,7 +212,23 @@ public static class AccountEndpoints
                 ctx.Response.Cookies.Delete(AuthCookie.Name, AuthCookie.DeleteOptions(ctx.Request.IsHttps));
             return Results.NoContent();
         });
+
+        // Personal API tokens (#356): for scripts and clippers that can't carry the cookie. The
+        // secret is in the create answer only; the list never has it. A token can't reach
+        // these routes itself (TenantMiddleware.TokenMayReach), so only a session makes them.
+        app.MapGet("/api/account/tokens", async (ApiTokenRepo tokens) => Results.Ok(await tokens.ListAsync()));
+
+        app.MapPost("/api/account/tokens", async (NewTokenRequest body, ApiTokenRepo tokens) =>
+        {
+            var made = await tokens.CreateAsync(body.Name, body.Scope);
+            return Results.Created($"/api/account/tokens/{made.Id}", made);
+        });
+
+        app.MapDelete("/api/account/tokens/{id:long}", async (long id, ApiTokenRepo tokens) =>
+            await tokens.RevokeAsync(id) ? Results.NoContent() : throw new AppNotFoundException("token not found"));
     }
+
+    public sealed record NewTokenRequest(string? Name, string? Scope);
 
     /// <summary>The export envelope — a versioned, self-describing migration snapshot.</summary>
     private sealed record ExportDoc(
