@@ -20,6 +20,10 @@ public sealed record AnswerBankEntry(
     public const string Human = "human";
 }
 
+/// <summary>One of the person's own answers in the account export (#357). The agent's drafts stay
+/// behind: they are redrafted on the next packet, and only a person's answer is worth carrying.</summary>
+public sealed record AnswerExport(string Key, string Label, string Help, string Type, List<string>? Options, string Answer);
+
 /// <summary>
 /// Tenant-scoped read/write of <c>answer_bank</c>: every custom screening question the
 /// agent has encountered, keyed by the question as the form asked it, with the answer
@@ -239,6 +243,59 @@ public sealed partial class AnswerBankRepo
                 options = System.Text.Json.JsonSerializer.Serialize(q.Options), answer = Seal(answer),
                 human = AnswerBankEntry.Human, app = Slug.Normalize(applicationName),
             });
+    }
+
+    /// <summary>The person's own answers, for the account export (#357).</summary>
+    public async Task<IReadOnlyList<AnswerExport>> ExportHumanAsync() =>
+        (await ListAsync())
+            .Where(e => e.Source == AnswerBankEntry.Human && e.Answer.Length > 0)
+            .Select(e => new AnswerExport(e.Key, e.Label, e.Help, e.Type, e.Options, e.Answer))
+            .ToList();
+
+    /// <summary>
+    /// Restore exported answers (#357), in the import's transaction: each becomes the person's
+    /// answer for its question — filed fresh (never yet seen here, so times_seen 0) or, for a
+    /// question already met, taking over its answer. A blank answer is skipped. Returns how
+    /// many were written.
+    /// </summary>
+    public async Task<int> ImportAsync(IEnumerable<AnswerExport> answers, IDbTransaction? tx = null)
+    {
+        var written = 0;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var a in answers)
+        {
+            var key = KeyFor(a.Key ?? "");
+            var answer = (a.Answer ?? "").Trim();
+            if (key.Length == 0 || answer.Length == 0 || !seen.Add(key)) continue;
+            var label = (a.Label ?? "").Trim();
+            var help = (a.Help ?? "").Trim();
+            var type = (a.Type ?? "").Trim();
+            var options = (a.Options ?? []).Where(o => o is not null).ToList();
+            InputLimits.Text("answer", answer, InputLimits.PacketAnswer);
+            InputLimits.Text("label", label, InputLimits.ResumeItem);
+            InputLimits.Text("help", help, InputLimits.ResumeItem);
+            InputLimits.Text("type", type, InputLimits.Lane);
+            InputLimits.Count("options", options.Count, InputLimits.ResumeSkills);
+            foreach (var o in options) InputLimits.Text("option", o, InputLimits.ResumeItem);
+            await _conn.ExecuteAsync(
+                """
+                INSERT INTO answer_bank (tenant_id, key, label, help, type, options, answer_ciphertext, source, first_application, times_seen)
+                VALUES (@t, @key, @label, @help, @type, @options::jsonb, @answer, @human, '', 0)
+                ON CONFLICT (tenant_id, key) DO UPDATE SET
+                    answer_ciphertext = EXCLUDED.answer_ciphertext,
+                    source            = EXCLUDED.source,
+                    updated_at        = now()
+                """,
+                new
+                {
+                    t = _t, key, label = label.Length > 0 ? label : key, help,
+                    type = type.Length > 0 ? type : PacketQuestion.Text,
+                    options = JsonSerializer.Serialize(options, Json), answer = Seal(answer), human = AnswerBankEntry.Human,
+                },
+                tx);
+            written++;
+        }
+        return written;
     }
 
     public async Task<bool> DeleteAsync(string key) =>

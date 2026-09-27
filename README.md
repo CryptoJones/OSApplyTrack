@@ -332,7 +332,8 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist + `status_events` (the dated status history) + `interviews`. |
+| `GET`    | `/api/account/export` | One JSON snapshot (`version: 2`): every application + criteria + blacklist + `status_events` (the dated status history) + `interviews` + `resume` (with its PDF, base64) + `cover_letters` + `answer_bank` (your own answers) + `agent_settings` + `llm_settings` + `notification_settings`. No secrets. |
+| `GET`    | `/api/account/export.csv` | The applications alone as RFC 4180 CSV for a spreadsheet; formula-like cells (`= + - @`) are prefixed with `'`. |
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
 | `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
@@ -1039,12 +1040,26 @@ value.
 
 - **Export** — `GET /api/account/export` returns a single JSON snapshot of your
   whole account: every application (all fields + its slug, so apply links survive a
-  move), your search criteria, your company blacklist, and every application's
-  dated status history and interviews. A real backup, and the door's never locked.
+  move), your search criteria, your company blacklist, every application's dated
+  status history and interviews, your résumé with its source PDF, your cover letters,
+  the answers you gave the answer bank yourself, and your agent, AI (endpoint, model,
+  cover-letter switch and signature) and notification settings. A real backup, and
+  the door's never locked.
+  **Secrets never leave:** not the LLM API key, the Telegram bot token (or its chat
+  id), the mailbox or job-board passwords, sessions, API tokens or the calendar link.
+  Enter them again after a move. An API token's export also leaves out the AI and
+  notification settings, which a token can't read.
+- **Spreadsheet** — `GET /api/account/export.csv` returns the applications alone as
+  RFC 4180 CSV. Any cell starting `=`, `+`, `-` or `@` gets a leading `'` so a
+  spreadsheet shows it rather than running it. It is a view, not a backup.
 - **Import** — `POST /api/account/import` loads a snapshot back. Applications
   upsert by slug (an incoming app overwrites a matching local one, new slugs are
   added, untouched apps stay), so re-importing is idempotent. An imported app's
-  status history and interviews are replaced by the ones in the file, when the file carries them. The whole load runs in
+  status history and interviews are replaced by the ones in the file, when the file carries them.
+  Version-1 files still import; a section a file lacks leaves yours alone. A cover letter
+  comes only with its application, a blank résumé never replaces yours, the agent's on
+  switch and dry-run stay as they are here, and an LLM key you stored is dropped if the
+  file names a different endpoint. The whole load runs in
   one transaction — a mid-import failure leaves your account untouched. Use it to
   migrate from one instance to another: export here, import there.
 - **Share** — `GET /api/account/export/shared` exports a peer-shareable

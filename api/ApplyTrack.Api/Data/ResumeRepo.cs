@@ -63,7 +63,7 @@ public sealed class ResumeRepo
     /// <summary>Keep the uploaded PDF bytes alongside the extracted text, so the browser
     /// can attach the real file at submit time. Only these two columns are touched. The
     /// bytes are sealed at rest: a database dump holds no résumé.</summary>
-    public Task StorePdfAsync(byte[] bytes, string fileName) =>
+    public Task StorePdfAsync(byte[] bytes, string fileName, IDbTransaction? tx = null) =>
         _conn.ExecuteAsync(
             """
             INSERT INTO resume_profiles (tenant_id, source_pdf, source_pdf_name, updated_at)
@@ -71,7 +71,7 @@ public sealed class ResumeRepo
             ON CONFLICT (tenant_id) DO UPDATE SET
                 source_pdf = EXCLUDED.source_pdf, source_pdf_name = EXCLUDED.source_pdf_name, updated_at = now()
             """,
-            new { t = _t, bytes = _protector.ProtectBytes(bytes), name = fileName });
+            new { t = _t, bytes = _protector.ProtectBytes(bytes), name = fileName }, tx);
 
     /// <summary>The stored PDF, or null when the résumé was never uploaded as a file. A row an
     /// older release stored in the clear is read as is (the startup sweep seals it).</summary>

@@ -76,7 +76,8 @@ public sealed class TenantMiddleware(RequestDelegate next)
     /// token must not be able to mint more, lock its owner out, or outlive its revocation.
     /// Nor the settings that hold secrets or say where data goes — the LLM endpoint and key,
     /// Telegram and mailbox credentials, job-board passwords — so it can't redirect prompts,
-    /// codes or messages. Export and import stay open, being what a script is for.
+    /// codes or messages. Export (JSON and CSV) and import stay open, being what a script is
+    /// for — less those settings, which the account endpoints leave out for a token (#357).
     /// </summary>
     public static bool TokenMayReach(HttpRequest request, string scope)
     {
@@ -85,7 +86,8 @@ public sealed class TenantMiddleware(RequestDelegate next)
             || path.StartsWithSegments("/api/notifications") || path.StartsWithSegments("/api/board-accounts"))
             return false;
         if (path.StartsWithSegments("/api/account")
-            && !path.StartsWithSegments("/api/account/export") && !path.StartsWithSegments("/api/account/import"))
+            && !path.StartsWithSegments("/api/account/export") && !path.StartsWithSegments("/api/account/import")
+            && !path.Equals(Endpoints.AccountEndpoints.CsvPath, StringComparison.OrdinalIgnoreCase))
             return false;
         return scope == ApiTokenRepo.WriteScope || IsSafe(request.Method);
     }

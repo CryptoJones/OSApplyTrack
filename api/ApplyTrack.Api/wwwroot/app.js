@@ -3968,11 +3968,14 @@ async function loadAccountTab(body) {
       <div class="mt-5">
         <div class="field-label">Export — private migration snapshot</div>
         <p class="field-help">
-          Everything: applications, criteria, blacklist. Import it on another instance to move home.
+          Everything: applications with their history and interviews, résumé and its PDF, cover letters,
+          your own answers, criteria, blacklist, and agent, AI and notification settings. Import it on
+          another instance to move home. No passwords, keys or tokens leave — enter those again there.
         </p>
         <div class="mt-3 flex flex-wrap items-center gap-2">
           <button class="btn btn-ghost" data-act="export" type="button">⤓ Export my data</button>
           <button class="btn btn-ghost" data-act="import" type="button">⤒ Import a file</button>
+          <button class="btn btn-ghost" data-act="export-csv" type="button">⤓ Applications as a spreadsheet (CSV)</button>
         </div>
       </div>
 
@@ -4050,6 +4053,9 @@ async function loadAccountTab(body) {
   act("export").onclick = () =>
     downloadExport(act("export"), "/api/account/export",
       "applytrack-export.json", "Exported your data.");
+  act("export-csv").onclick = () =>
+    downloadExport(act("export-csv"), "/api/account/export.csv",
+      "applytrack-applications.csv", "Exported your applications as CSV.");
   act("share").onclick = () =>
     downloadExport(act("share"), "/api/account/export/shared",
       "applytrack-shared.json", "Exported a shareable list — personal state stripped.");

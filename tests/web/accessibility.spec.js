@@ -773,6 +773,24 @@ test("the Account tab makes an API token shown once and revokes one (#356)", asy
   await expect(page.getByText("Token revoked.")).toBeVisible();
 });
 
+test("the Account tab downloads the applications as CSV (#357)", async ({ page }) => {
+  await page.route("**/api/account/export.csv", (route) => route.fulfill({
+    status: 200,
+    headers: { "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="applytrack-applications-2026-09-26.csv"' },
+    body: "name,company\r\nacme.md,'=1+1\r\n",
+  }));
+  await openSettings(page);
+  await page.getByRole("tab", { name: "Account" }).click();
+  await expect(page.getByText(/No passwords, keys or tokens leave/)).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Applications as a spreadsheet (CSV)" }).click();
+  expect((await download).suggestedFilename()).toBe("applytrack-applications-2026-09-26.csv");
+  await expect(page.locator("#toast")).toHaveText("Exported your applications as CSV.");
+});
+
 test("DELETE MY DATA needs the phrase typed before it will fire", async ({ page }) => {
   let deleted = false;
   await page.route("**/api/account", async (route) => {
