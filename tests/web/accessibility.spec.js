@@ -198,6 +198,8 @@ async function mockApi(page) {
     else if (path === "/api/analytics") body = analytics;
     else if (path.endsWith("/history")) body = history;
     else if (path.endsWith("/interviews") && method === "GET") body = [];
+    else if (path.endsWith("/contacts") && method === "GET") body = [];
+    else if (path.endsWith("/notes") && method === "GET") body = [];
     else if (path === "/api/due") body = { today: "2026-09-26", followups: [], interviews: [] };
     else if (path === "/api/notifications") body = {
       telegram_enabled: false, has_bot_token: false, telegram_chat_id: "", secrets_available: true,
@@ -1299,4 +1301,128 @@ test("the list says when the poller last ran and which sources failed (#359)", a
   await expect(status.getByText("remoteok")).toBeVisible();
   await expect(status).toContainText("HTTPStatusError: Client error '404 Not Found'");
   await expectNoSeriousViolations(page);
+});
+
+// ---- People and the notes log (#360) -------------------------------------------------
+
+test("an application's sheet adds people with their part, edits one under its version, and removes them (#360)", async ({ page }) => {
+  const rae = { id: 5, name: "Rae Recruiter", email: "rae@example.com", phone: "", role: "", company: "Example Co", linkedin: "https://www.linkedin.com/in/rae", notes: "", version: "1", applications: [] };
+  const pat = { id: 6, name: "Pat Panel", email: "", phone: "", role: "", company: "", linkedin: "", notes: "", version: "1", applications: [] };
+  let everyone = [pat];
+  let linked = [];
+  let posted = null;
+  let put = null;
+  let removed = null;
+  await page.route("**/api/contacts", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(everyone) }));
+  await page.route("**/api/contacts/5?*", async (route) => {
+    put = { url: route.request().url(), body: route.request().postDataJSON() };
+    linked = [{ contact: { ...rae, ...put.body, version: "2" }, role: "Recruiter" }];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(linked[0].contact) });
+  });
+  await page.route(`**/api/apps/${application.filename}/contacts**`, async (route) => {
+    const req = route.request();
+    if (req.method() === "POST") {
+      posted = req.postDataJSON();
+      linked = [{ contact: rae, role: posted.role }];
+      everyone = [rae, pat];
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(linked[0]) });
+    } else if (req.method() === "DELETE") {
+      removed = new URL(req.url()).pathname;
+      linked = [];
+      await route.fulfill({ status: 204 });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(linked) });
+    }
+  });
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.getByRole("heading", { name: "People", level: 3 })).toBeVisible();
+  await expect(page.locator("#people-list")).toContainText("No people added yet.");
+  await expect(page.getByLabel("Person", { exact: true }).locator("option")).toHaveCount(2);
+
+  // No name and nobody picked: the field says so and nothing is sent.
+  await page.getByRole("button", { name: "Add person" }).click();
+  await expect(page.getByLabel("Name", { exact: true })).toHaveAttribute("aria-invalid", "true");
+  expect(posted).toBeNull();
+
+  await page.getByLabel("Name", { exact: true }).fill("Rae Recruiter");
+  await page.getByLabel("Email (optional)").fill("rae@example.com");
+  await page.getByLabel("Part in this process (optional)").fill("Recruiter");
+  await page.getByRole("button", { name: "Add person" }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(posted.contact).toEqual({ name: "Rae Recruiter", email: "rae@example.com", phone: "" });
+  expect(posted.role).toBe("Recruiter");
+  const person = page.locator("#people-list li.person");
+  await expect(person).toContainText("Rae Recruiter");
+  await expect(person.getByRole("link", { name: "rae@example.com" })).toHaveAttribute("href", "mailto:rae@example.com");
+  await expect(person.getByRole("link", { name: /Rae Recruiter's profile/ })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  // Picking someone already known hides the new-person fields.
+  await page.getByLabel("Person", { exact: true }).selectOption("6");
+  await expect(page.getByLabel("Name", { exact: true })).toBeHidden();
+
+  await person.getByRole("button", { name: "Edit Rae Recruiter" }).click();
+  const edit = page.getByRole("form", { name: "Edit Rae Recruiter" });
+  await expect(edit.getByLabel("Name")).toBeFocused();
+  await expectNoSeriousViolations(page);
+  await edit.getByLabel("Phone").fill("+1 402 555 0100");
+  await edit.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => put).not.toBeNull();
+  expect(put.url).toContain("expected_version=1");
+  expect(put.body.phone).toBe("+1 402 555 0100");
+  expect(put.body.linkedin).toBe("https://www.linkedin.com/in/rae");
+  await expect(page.locator("#people-list")).toContainText("+1 402 555 0100");
+
+  await page.getByRole("button", { name: "Take Rae Recruiter off this application" }).click();
+  await expect.poll(() => removed).toBe(`/api/apps/${application.filename}/contacts/5`);
+  await expect(page.locator("#people-list")).toContainText("No people added yet.");
+});
+
+test("an application's sheet keeps a notes log, newest first, and the timeline shows it (#360)", async ({ page }) => {
+  let notes = [];
+  let posted = null;
+  let removed = null;
+  await page.route(`**/api/apps/${application.filename}/notes**`, async (route) => {
+    const req = route.request();
+    if (req.method() === "POST") {
+      posted = req.postDataJSON();
+      notes = [...notes, { id: 22, at: "2026-09-20T15:00:00Z", body: posted.body }];
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify(notes.at(-1)) });
+    } else if (req.method() === "DELETE") {
+      removed = new URL(req.url()).pathname;
+      notes = notes.filter((n) => n.id !== 22);
+      await route.fulfill({ status: 204 });
+    } else {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(notes) });
+    }
+  });
+  notes = [{ id: 21, at: "2026-09-10T15:00:00Z", body: "Recruiter call" }];
+  await page.route("**/history", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify([
+      ...history,
+      { kind: "note", from_status: null, to_status: "", at: "2026-09-10T15:00:00Z", note: "Recruiter call" },
+    ]),
+  }));
+  await page.getByRole("button", { name: /Example Co/ }).click();
+  await expect(page.getByRole("heading", { name: "Notes log", level: 3 })).toBeVisible();
+  await expect(page.locator("#note-list li")).toHaveCount(1);
+  await expect(page.locator("#history-list li").last()).toContainText("Note — Recruiter call");
+
+  await page.getByRole("button", { name: "Add note" }).click();
+  await expect(page.getByLabel("What happened")).toHaveAttribute("aria-invalid", "true");
+  expect(posted).toBeNull();
+
+  await page.getByLabel("What happened").fill("Sent the thank-you\nand the portfolio link");
+  await page.getByRole("button", { name: "Add note" }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(posted.body).toBe("Sent the thank-you\nand the portfolio link");
+  const items = page.locator("#note-list li");
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText("Sent the thank-you");
+  await expect(page.getByLabel("What happened")).toHaveValue("");
+  await expectNoSeriousViolations(page);
+
+  await items.first().getByRole("button", { name: /Remove the note from/ }).click();
+  await expect.poll(() => removed).toBe(`/api/apps/${application.filename}/notes/22`);
+  await expect(items).toHaveCount(1);
 });
