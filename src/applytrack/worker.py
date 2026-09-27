@@ -165,6 +165,19 @@ def _fetch_feed(url: str, clients: ThreadClients, limit: int) -> list[Listing]:
     return make_rss_fetcher(url)(clients.get(), limit)
 
 
+def _mark_polled(repo: TenantRepo, tenant_id: int) -> None:
+    """Record the finished pass for the operator's usage view (#358). Best effort: a
+    database the api has not migrated yet (no ``last_polled_at``) must not fail a poll
+    that already staged its leads, and the offline fakes have no such method."""
+    mark = getattr(repo, "mark_polled", None)
+    if mark is None:
+        return
+    try:
+        mark()
+    except Exception:  # noqa: BLE001 - the leads are in; the stamp is bookkeeping
+        logger.warning("could not stamp last_polled_at for tenant %s", tenant_id, exc_info=True)
+
+
 def run_all_tenants(
     conn: psycopg.Connection | None = None,
     *,
@@ -291,6 +304,8 @@ def run_all_tenants(
             except Exception:  # noqa: BLE001 - isolate one tenant's failure
                 results[tid] = []
                 logger.warning("poll failed for tenant %s", tid, exc_info=True)
+                continue
+            _mark_polled(repos[tid], tid)
         return results
     finally:
         if conn is not None:

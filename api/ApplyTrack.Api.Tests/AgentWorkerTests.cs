@@ -758,6 +758,25 @@ public class AgentWorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task A_disabled_tenant_is_never_judged_and_its_queued_run_is_never_claimed()
+    {
+        // `admin disable` (#358): allowed and enabled, but the operator switched the account off.
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        var name = (await new ApplicationRepo(conn, t).ListAsync()).First().Filename;
+        await new SubmitRequestRepo(conn, t).EnqueueAsync(name, dryRun: true);
+        await conn.ExecuteAsync("UPDATE users SET status = 'disabled' WHERE id = @t", new { t });
+        var stub = new StubLlmClient(Responders.Agent());
+        var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier());
+
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(0, stub.Calls);
+        Assert.Empty(await new AgentEventRepo(conn, t).ListRecentAsync(50));
+        Assert.Null(await SubmitQueue.ClaimNextAsync(conn));
+        await conn.ExecuteAsync("DELETE FROM submit_requests WHERE tenant_id = @t", new { t });
+    }
+
+    [Fact]
     public async Task A_pass_stamps_the_workers_heartbeat_and_the_api_side_reads_a_browser_from_it()
     {
         // The api container never has Browser__Endpoint on any shipped deployment shape;

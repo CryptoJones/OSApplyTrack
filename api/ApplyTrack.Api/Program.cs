@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using ApplyTrack.Api;
+using ApplyTrack.Api.Admin;
 using ApplyTrack.Api.Agent;
 using ApplyTrack.Api.Agent.Browser;
 using ApplyTrack.Api.Auth;
@@ -21,6 +22,13 @@ using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Npgsql;
+
+// `dotnet ApplyTrack.Api.dll admin <command>`: the operator's CLI (#358), not the web host.
+if (AdminCli.IsAdmin(args))
+{
+    Environment.ExitCode = await AdminCli.RunAsync(args[1..], AdminCli.ConnectionString(), Console.Out, Console.Error);
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 

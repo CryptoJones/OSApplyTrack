@@ -59,6 +59,7 @@ telemetry, no SaaS.
   - [The pipeline view](#the-pipeline-view)
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
+- [Operating an instance](#operating-an-instance)
 - [Accessibility](#accessibility)
 - [First-run import](#first-run-import-optional)
 - [Local development](#local-development)
@@ -429,7 +430,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 
 | Table | Holds |
 | --- | --- |
-| `users` | Accounts. A user's `id` **is** its `tenant_id` (tenants are users). |
+| `users` | Accounts. A user's `id` **is** its `tenant_id` (tenants are users). `status` is `active` or, set by `admin disable`, anything else; `last_polled_at` is when the poller last finished a pass for it. |
 | `applications` | The tracked applications. `UNIQUE (tenant_id, name)`; `version` for optimistic locking. |
 | `search_profiles` | Per-tenant discovery criteria the poller reads — keywords, filters, enabled sources, ATS boards, and custom RSS feeds. |
 | `blacklist` | Per-tenant blocked companies. |
@@ -449,7 +450,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, the daily digest's switches, hour and last day sent, the daily reminder's hour and last day sent, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
 | `app_events` | Dated events on an application beyond its status — today its interviews (`kind = 'interview'`, `at`, `note`). |
 | `api_tokens` | Scoped secret tokens, stored by SHA-256 only. `calendar`: at most one per tenant, opening its ICS feed and nothing else. `read` / `write`: named personal API tokens sent as `Authorization: Bearer` (up to 25 per tenant). |
-| `agent_allowlist` | Operator-managed database table allowlisting tenant accounts permitted to use auto-apply automation. |
+| `agent_allowlist` | The accounts the operator allows to use auto-apply, managed with `admin allow` / `admin disallow`. |
 | `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
 | `answer_bank` | Reusable repository of screening questions and answers across job forms, tracking `human` vs `agent` source, occurrence counts, and timestamps. |
 
@@ -563,13 +564,14 @@ résumé you control — provider-agnostic, and built so your data can stay on-p
 > account by an allowlist in the database, `agent_allowlist`, with no API on purpose.
 > An account not in it sees the agent switch disabled, and `PUT /api/agent-settings`
 > with `enabled`, `packet/prepare`, `submit` and `security-code` answer **403**; the
-> worker never fans out over it and never claims its queue rows. To allow an account:
+> worker never fans out over it and never claims its queue rows. To allow an account,
+> use the [admin CLI](#operating-an-instance) in the api container:
 >
-> ```sql
-> INSERT INTO agent_allowlist (tenant_id, note) VALUES (1, 'the operator');
+> ```sh
+> docker compose exec api dotnet ApplyTrack.Api.dll admin allow ada@example.com the operator
 > ```
 >
-> Delete the row to take it away again. Standing answers and hand-run verdicts stay
+> `admin disallow` takes it away again (both are a row in `agent_allowlist`). Standing answers and hand-run verdicts stay
 > available to every account.
 
 The agent is the opt-in, step-by-step automation of the application itself. It
@@ -1079,6 +1081,33 @@ value.
   live lead or Ready application). The dedup ledger is kept unless `Retention__SeenDays`
   is set. Cleared screenshot space is reused by Postgres; `VACUUM FULL agent_evidence`
   returns it to the disk. All windows are in [Configuration](#configuration).
+
+## Operating an instance
+
+For operators running an instance for other people. The full runbook is
+[`docs/operations.md`](docs/operations.md).
+
+- **Admin CLI** — no admin HTTP API, on purpose; the api image carries a command line
+  instead, run in the api container (it needs the owner's connection, never the agent's
+  or poller's role):
+
+  ```sh
+  docker compose exec api dotnet ApplyTrack.Api.dll admin users
+  podman exec applytrack-api dotnet ApplyTrack.Api.dll admin usage ada@example.com
+  ```
+
+  `users` lists accounts; `usage [<user>]` shows per-account counts (applications,
+  letters, evidence rows and bytes, live sessions) and last sign-in, last seen and
+  last poll; `allow` / `disallow` manage the auto-apply allowlist; `disable` / `enable`
+  flip `users.status` — a disabled account is signed out on its next request, its API
+  tokens stop working, it gets no sign-in link, and the poller and agent skip it.
+  `<user>` is an id or an email.
+- **Backup & restore** — a backup is the database (`pg_dump -Fc`) **and** the
+  encryption key (`APPLYTRACK_SECRETS_KEY` or the generated key file in the `secrets`
+  volume). Without the key the sealed columns are unrecoverable. The runbook covers
+  compose and quadlet, a restore that lets the api recreate the agent and poller roles,
+  the retention sweep on an old dump, and a restore drill. Per-account export (above)
+  is each user's own backup; this is the instance's.
 
 ## Accessibility
 

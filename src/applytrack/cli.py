@@ -32,7 +32,7 @@ def _poll(args: argparse.Namespace) -> int:
     from applytrack.db import PollRepo
     from applytrack.importer import connect
     from applytrack.poll import run_poll
-    from applytrack.worker import drain_requests, run_all_tenants
+    from applytrack.worker import _mark_polled, drain_requests, run_all_tenants
 
     with connect(args.database_url) as conn:
         # Each lead/seen-key stands alone: a slug collision must skip one listing,
@@ -58,6 +58,7 @@ def _poll(args: argparse.Namespace) -> int:
         repo = PollRepo(conn, args.tenant)
         profile = repo.load_profile()
         added = run_poll(repo, profile, limit_per_source=args.limit)
+        _mark_polled(repo, args.tenant)
     print(f"applytrack poll: {len(added)} new lead(s) added for tenant {args.tenant}.")
     for name in added:
         print(f"  + {name}")

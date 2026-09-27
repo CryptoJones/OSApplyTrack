@@ -84,6 +84,14 @@ systemctl --user start applytrack-api.service applytrack-poller.service applytra
 loginctl enable-linger "$USER"   # keep it running after logout
 ```
 
+## Admin and backups
+
+Accounts are managed with the admin CLI in the api container
+(`podman exec applytrack-api dotnet ApplyTrack.Api.dll admin users`), and a backup is a
+`pg_dump` of `applytrack-db` **plus** the encryption key (the `APPLYTRACK_SECRETS_KEY`
+line, or `podman volume export applytrack-secrets`). Commands, restore and a restore
+drill: [`docs/operations.md`](../../docs/operations.md).
+
 ## Upgrading a deploy from before 1.55.13 (#345)
 
 1.55.13 gives the agent and the poller their own Postgres roles and env files, runs
