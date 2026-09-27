@@ -92,6 +92,23 @@ jobs:
         run: pytest -q
       - name: Audit Python packages
         run: pip-audit
+      # The step above audits a fresh resolution, which can be clean while uv.lock
+      # still pins a vulnerable version (anyio 4.14.0 did, #390). Audit the locked
+      # set too; --locked also fails if uv.lock has drifted from pyproject.toml.
+      # The lock forks by Python version (anyio 4.14.x on 3.10, 4.15.x on 3.11+), and
+      # pip-audit skips pins whose marker doesn't match this runner's 3.12 — so the
+      # markers are stripped and every fork's pins audited. pip-audit refuses a name
+      # twice in one file, so the Nth pin of each name goes to locked-N.txt.
+      - name: Audit locked Python packages (uv.lock, every fork)
+        run: |
+          pip install --no-cache-dir uv
+          d="$RUNNER_TEMP/locked"; mkdir -p "$d"
+          uv export --locked --all-extras --no-emit-project --no-hashes --no-header --no-annotate \
+            | sed 's/ *;.*//' \
+            | awk -F'==' -v d="$d" '{ print > (d "/locked-" (++seen[$1]) ".txt") }'
+          for f in "$d"/locked-*.txt; do
+            pip-audit --disable-pip --no-deps -r "$f"
+          done
 
   # A red build on main is visible only to whoever happens to open the Actions tab.
   # The weekly schedule makes that worse: an advisory published after a merge turns
