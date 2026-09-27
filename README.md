@@ -356,8 +356,10 @@ curl -H "Authorization: Bearer $TOKEN" https://apply.example/api/apps
 - **`read`** tokens get the `GET` routes; **`write`** tokens every method. **403** otherwise.
 - **No token manages the account's credentials:** `/api/account/tokens`,
   `/api/account/sessions`, `/api/calendar/feed` and `DELETE /api/account` answer **403** to
-  a token, so a leaked one can't mint more, sign its owner out, or delete the account.
-  Export and import stay open to tokens.
+  a token, so a leaked one can't mint more, sign its owner out, or delete the account. Nor
+  do the secret-bearing settings — `/api/llm-settings`, `/api/notifications`,
+  `/api/board-accounts` — so it can't redirect prompts, codes or messages. Export and
+  import stay open to tokens.
 - Stored by SHA-256 only; the secret is shown once. A token of a disabled account, or a
   revoked one, gets **401**. The session cookie wins when a request carries both.
 - Each token has its own rate limit — 120 requests a minute — on top of the per-route ones.

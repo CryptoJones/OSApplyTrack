@@ -106,7 +106,17 @@ public class ApiTokenTests : IAsyncLifetime
             (await _session.PostAsync("/api/account/tokens", Json(new { name, scope }))).StatusCode);
 
     [Fact]
-    public async Task An_account_holds_a_bounded_number_of_tokens()
+    public async Task An_account_holds_a_bounded_number_of_tokens_even_when_makers_race()
+    {
+        var racing = await Task.WhenAll(Enumerable.Range(0, ApiTokenRepo.MaxPersonal + 5).Select(i =>
+            _session.PostAsync("/api/account/tokens", Json(new { name = $"racer {i}", scope = "read" }))));
+        Assert.Equal(ApiTokenRepo.MaxPersonal, racing.Count(r => r.StatusCode == HttpStatusCode.Created));
+        Assert.All(racing.Where(r => r.StatusCode != HttpStatusCode.Created),
+            r => Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode));
+    }
+
+    [Fact]
+    public async Task The_cap_counts_tokens_already_held()
     {
         await using var conn = await OwnerAsync();
         for (var i = 0; i < ApiTokenRepo.MaxPersonal; i++)
@@ -162,13 +172,19 @@ public class ApiTokenTests : IAsyncLifetime
     [InlineData("GET", "/api/calendar/feed")]
     [InlineData("POST", "/api/calendar/feed")]
     [InlineData("DELETE", "/api/calendar/feed")]
+    [InlineData("GET", "/api/llm-settings")]
+    [InlineData("PUT", "/api/llm-settings")]
+    [InlineData("GET", "/api/notifications")]
+    [InlineData("PUT", "/api/notifications")]
+    [InlineData("POST", "/api/notifications/test")]
+    [InlineData("GET", "/api/board-accounts")]
     public async Task A_token_cannot_manage_the_accounts_credentials(string method, string path)
     {
         var (_, token) = await MakeAsync("write");
         using var client = Bearer(token);
         var res = await client.SendAsync(new HttpRequestMessage(new HttpMethod(method), path)
         {
-            Content = method == "POST" ? Json(new { name = "more", scope = "write" }) : null,
+            Content = method is "POST" or "PUT" ? Json(new { name = "more", scope = "write" }) : null,
         });
         Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
 

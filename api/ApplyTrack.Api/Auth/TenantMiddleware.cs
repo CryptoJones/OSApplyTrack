@@ -17,8 +17,8 @@ namespace ApplyTrack.Api.Auth;
 /// the SPA shell loads and login works before there is a session.
 ///
 /// A token never outranks a session: a <c>read</c> token gets the GET routes, a
-/// <c>write</c> token every method, and neither reaches the account's credentials or its
-/// deletion (<see cref="TokenMayReach"/>). A browser can't attach the header cross-site
+/// <c>write</c> token every method, and neither reaches the account's credentials, the
+/// secret-bearing settings, or its deletion (<see cref="TokenMayReach"/>). A browser can't attach the header cross-site
 /// without a CORS grant the API never gives, so bearer requests need no CSRF defense and
 /// the cookie's (SameSite=Lax plus JSON-only mutations) is unchanged.
 /// </summary>
@@ -62,7 +62,7 @@ public sealed class TenantMiddleware(RequestDelegate next)
             {
                 detail = scope == ApiTokenRepo.ReadScope && !IsSafe(context.Request.Method)
                     ? "this API token is read-only"
-                    : "API tokens can't manage the account; sign in",
+                    : "API tokens can't manage the account or its credentials; sign in",
             });
             return;
         }
@@ -74,12 +74,15 @@ public sealed class TenantMiddleware(RequestDelegate next)
     /// Whether a personal token of <paramref name="scope"/> may make this request. Never the
     /// account's credentials — its tokens, sessions, calendar link — nor deleting it: a leaked
     /// token must not be able to mint more, lock its owner out, or outlive its revocation.
-    /// Export and import stay open, being what a script is for.
+    /// Nor the settings that hold secrets or say where data goes — the LLM endpoint and key,
+    /// Telegram and mailbox credentials, job-board passwords — so it can't redirect prompts,
+    /// codes or messages. Export and import stay open, being what a script is for.
     /// </summary>
     public static bool TokenMayReach(HttpRequest request, string scope)
     {
         var path = request.Path;
-        if (path.StartsWithSegments("/api/calendar/feed"))
+        if (path.StartsWithSegments("/api/calendar/feed") || path.StartsWithSegments("/api/llm-settings")
+            || path.StartsWithSegments("/api/notifications") || path.StartsWithSegments("/api/board-accounts"))
             return false;
         if (path.StartsWithSegments("/api/account")
             && !path.StartsWithSegments("/api/account/export") && !path.StartsWithSegments("/api/account/import"))

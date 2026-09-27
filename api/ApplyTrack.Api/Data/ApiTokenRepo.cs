@@ -2,6 +2,7 @@
 // Copyright 2026 Aaron K. Clark
 
 using System.Data;
+using System.Data.Common;
 using ApplyTrack.Api.Auth;
 using Dapper;
 
@@ -126,7 +127,13 @@ public sealed class ApiTokenRepo
             throw new AppValidationException("scope must be 'read' or 'write'");
 
         var token = Prefix + Tokens.NewOpaque();
-        // The cap is checked in the insert itself, so two racing requests can't both slip under it.
+        // Serialize makers per tenant first: a count in the insert alone reads a snapshot taken
+        // before any wait, so two racing requests could both slip under the cap.
+        var db = (DbConnection)_conn;
+        if (db.State != ConnectionState.Open)
+            await db.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync();
+        await _conn.ExecuteAsync("SELECT pg_advisory_xact_lock(hashtextextended('applytrack:api_tokens:' || @t, 0))", new { t = _t }, tx);
         var row = await _conn.QuerySingleOrDefaultAsync<ApiTokenView?>(
             """
             INSERT INTO api_tokens (tenant_id, scope, name, token_hash)
@@ -134,8 +141,9 @@ public sealed class ApiTokenRepo
             WHERE (SELECT count(*) FROM api_tokens WHERE tenant_id = @t AND scope IN ('read', 'write')) < @max
             RETURNING id, name, scope, created_at AS createdat, last_used_at AS lastusedat
             """,
-            new { t = _t, scope = sc, name = n, hash = Tokens.Sha256(token), max = MaxPersonal })
+            new { t = _t, scope = sc, name = n, hash = Tokens.Sha256(token), max = MaxPersonal }, tx)
             ?? throw new AppValidationException($"at most {MaxPersonal} API tokens; revoke one first");
+        await tx.CommitAsync();
         return new NewApiToken(row.Id, row.Name, row.Scope, row.CreatedAt, row.LastUsedAt, token);
     }
 
