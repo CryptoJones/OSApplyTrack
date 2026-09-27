@@ -121,6 +121,10 @@ public class DbRoleTests(PostgresFixture pg)
         await AssertDeniedAsync(agent, "SELECT * FROM sessions");
         // The calendar feed's token hashes (#354) are no business of the agent's either.
         await AssertDeniedAsync(agent, "SELECT * FROM api_tokens");
+        // Nor the people in a process or the notes log (#360).
+        await AssertDeniedAsync(agent, "SELECT * FROM contacts");
+        await AssertDeniedAsync(agent, "SELECT * FROM application_contacts");
+        await AssertDeniedAsync(agent, "SELECT * FROM app_notes");
     }
 
     [Fact]

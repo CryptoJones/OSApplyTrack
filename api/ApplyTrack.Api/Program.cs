@@ -132,6 +132,13 @@ builder.Services.AddScoped(sp => new LlmUsageRepo(
 builder.Services.AddScoped(sp => new CoverLetterRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>()));
+// Contacts and the interaction log (#360): personal data, sealed at rest.
+builder.Services.AddScoped(sp => new ContactRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
+builder.Services.AddScoped(sp => new AppNoteRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
+    sp.GetRequiredService<SecretProtector>()));
 
 // The editor's Autofill button: server-side fetch of a job-posting URL (SSRF-guarded;
 // its own pinned HttpClient, so not from the factory) + the JobPosting/OG parser.
@@ -471,6 +478,7 @@ app.MapReadyEndpoints();
 app.MapPipelineEndpoints();
 app.MapErrorsEndpoints();
 app.MapRemindersEndpoints();
+app.MapContactsEndpoints();
 
 app.Run();
 

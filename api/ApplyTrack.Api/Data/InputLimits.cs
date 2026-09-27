@@ -22,6 +22,13 @@ public static class InputLimits
     public const int Notes = 64 * 1024;
     public const int RawApplication = Notes + 8 * 1024;
 
+    // Contacts and the interaction log (#360).
+    public const int ContactName = 256;
+    public const int ContactPhone = 64;
+    public const int ContactRole = 128;
+    public const int ContactNotes = 16 * 1024;
+    public const int AppNote = 16 * 1024;
+
     public const int Keywords = 100;
     public const int Keyword = 100;
     public const int ExcludedLocations = 100;

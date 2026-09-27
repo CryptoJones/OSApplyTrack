@@ -20,7 +20,8 @@ namespace ApplyTrack.Api.Crypto;
 /// <c>agent_packets.answers</c> / <c>posting_excerpt</c>, <c>agent_evidence.screenshot</c>,
 /// and the two columns that were already encrypted (<c>llm_settings.api_key_ciphertext</c>,
 /// <c>notification_settings.telegram_bot_token_ciphertext</c>) so they too move to the
-/// current key. Not covered, by design: what the list and the poller query — company, role,
+/// current key; since 1.65 the contacts' email, phone, profile link and notes and the
+/// application notes log (<c>app_notes.body</c>, #360). Not covered, by design: what the list and the poller query — company, role,
 /// status, score, dates, application notes — and the login email.
 /// </summary>
 public static class AtRestEncryptor
@@ -43,6 +44,11 @@ public static class AtRestEncryptor
         Tally(await TextAsync(conn, protector, log, "agent_packets", "posting_excerpt", ["tenant_id", "application_name"], legacyIsCiphertext: false, scope));
         Tally(await TextAsync(conn, protector, log, "llm_settings", "api_key_ciphertext", ["tenant_id"], legacyIsCiphertext: true, scope));
         Tally(await TextAsync(conn, protector, log, "notification_settings", "telegram_bot_token_ciphertext", ["tenant_id"], legacyIsCiphertext: true, scope));
+        // Contacts and the notes log (#360) are sealed from their first write; covered so a
+        // rotation moves them to the current key.
+        foreach (var column in new[] { "email", "phone", "linkedin", "notes" })
+            Tally(await TextAsync(conn, protector, log, "contacts", column, ["id"], legacyIsCiphertext: false, scope));
+        Tally(await TextAsync(conn, protector, log, "app_notes", "body", ["id"], legacyIsCiphertext: false, scope));
         Tally(await AnswersAsync(conn, protector, log, scope));
         Tally(await BytesAsync(conn, protector, log, "resume_profiles", "source_pdf", ["tenant_id"], scope));
         Tally(await BytesAsync(conn, protector, log, "agent_evidence", "screenshot", ["id"], scope));

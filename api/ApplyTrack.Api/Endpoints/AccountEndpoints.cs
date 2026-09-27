@@ -61,8 +61,8 @@ public static class AccountEndpoints
         // A full personal snapshot: every application (all fields + its slug, so apply links
         // survive a move) with its history and interviews, the search criteria and blacklist,
         // and since v2 (#357) the résumé with its source PDF, the cover letters, the person's
-        // own answers, and the agent, LLM and notification settings — as one downloadable
-        // JSON. No secret travels: not the LLM key, the Telegram token, the mailbox or
+        // own answers, and the agent, LLM and notification settings, and the contacts, their
+        // links and the notes log (#360) — as one downloadable JSON. No secret travels: not the LLM key, the Telegram token, the mailbox or
         // job-board passwords, sessions or API tokens; those are re-entered after a move.
         // An API token's export leaves out the LLM and notification settings too, as it
         // can't read those routes (TenantMiddleware.TokenMayReach). Built in memory — a
@@ -71,12 +71,13 @@ public static class AccountEndpoints
             ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history,
             AppEventRepo interviews, ResumeRepo resume, CoverLetterRepo letters, AnswerBankRepo answers,
             AgentSettingsRepo agent, LlmSettingsRepo llm, NotificationSettingsRepo notifications,
-            TenantContext tenant, HttpContext http) =>
+            ContactRepo contacts, AppNoteRepo notes, TenantContext tenant, HttpContext http) =>
         {
             // The whole account at a fixed URL: no browser or proxy may keep a copy.
             http.Response.Headers.CacheControl = "no-store";
             var records = await apps.ExportAllAsync();
             var session = tenant.TokenScope is null;
+            var (people, links) = await contacts.ExportAllAsync();
             var doc = new ExportDoc(
                 Applications: records.Select(ApplicationExport.From).ToList(),
                 Criteria: await criteria.GetAsync(),
@@ -88,7 +89,10 @@ public static class AccountEndpoints
                 AnswerBank: await answers.ExportHumanAsync(),
                 AgentSettings: await agent.GetAsync(),
                 LlmSettings: session ? await ExportLlmAsync(llm) : null,
-                NotificationSettings: session ? await ExportNotificationsAsync(notifications) : null);
+                NotificationSettings: session ? await ExportNotificationsAsync(notifications) : null,
+                Contacts: people,
+                ApplicationContacts: links,
+                Notes: await notes.ExportAllAsync());
 
             var bytes = JsonSerializer.SerializeToUtf8Bytes(doc, ExportJson);
             var filename = $"applytrack-export-{DateTime.UtcNow:yyyy-MM-dd}.json";
@@ -131,7 +135,8 @@ public static class AccountEndpoints
             ImportDoc body, IDbConnection conn, TenantContext tenant,
             ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history,
             AppEventRepo interviews, ResumeRepo resume, CoverLetterRepo letters, AnswerBankRepo answers,
-            AgentSettingsRepo agent, LlmSettingsRepo llm, NotificationSettingsRepo notifications) =>
+            AgentSettingsRepo agent, LlmSettingsRepo llm, NotificationSettingsRepo notifications,
+            ContactRepo contacts, AppNoteRepo notes) =>
         {
             var hasApps = body.Applications is { Count: > 0 };
 
@@ -183,14 +188,17 @@ public static class AccountEndpoints
             var hasLlm = session && body.LlmSettings is not null;
             var hasNotifications = session && body.NotificationSettings is not null;
             if (!hasApps && !hasCriteria && !hasBlacklist && !hasResume && !hasAgent && !hasLlm && !hasNotifications
-                && body.AnswerBank is not { Count: > 0 })
+                && body.AnswerBank is not { Count: > 0 } && body.Contacts is not { Count: > 0 })
                 throw new AppValidationException("no importable data in file");
             if ((body.Applications?.Count ?? 0) > MaxImportItems
                 || (body.Blacklist?.Count ?? 0) > MaxImportItems
                 || (body.StatusEvents?.Count ?? 0) > MaxImportEvents
                 || (body.Interviews?.Count ?? 0) > MaxImportEvents
                 || (body.CoverLetters?.Count ?? 0) > MaxImportItems
-                || (body.AnswerBank?.Count ?? 0) > MaxImportItems)
+                || (body.AnswerBank?.Count ?? 0) > MaxImportItems
+                || (body.Contacts?.Count ?? 0) > MaxImportItems
+                || (body.ApplicationContacts?.Count ?? 0) > MaxImportEvents
+                || (body.Notes?.Count ?? 0) > MaxImportEvents)
                 throw new AppValidationException($"import too large (max {MaxImportItems} items)");
 
             // Everything that can refuse the file is checked before the transaction opens.
@@ -208,6 +216,15 @@ public static class AccountEndpoints
             var llmPlan = hasLlm ? await PlanLlmAsync(body.LlmSettings!, llm) : null;
             if (hasNotifications)
                 ValidateNotifications(body.NotificationSettings!);
+            // Contacts (#360) are checked as the contacts routes check them.
+            var importedContacts = (body.Contacts ?? [])
+                .Select(c => (c.Id, new ContactFields(c.Name, c.Email, c.Phone, c.Role, c.Company, c.Linkedin, c.Notes).Normalized()))
+                .ToList();
+            // A link must name a contact the file carries: otherwise restoring the links would
+            // clear the apps' people and put nobody back.
+            var fileContacts = importedContacts.Select(c => c.Id).ToHashSet();
+            if (body.ApplicationContacts?.FirstOrDefault(l => !fileContacts.Contains(l.Contact)) is { } orphan)
+                throw new AppValidationException($"application_contacts names contact {orphan.Contact}, which the file's contacts don't carry");
 
             var db = (DbConnection)conn;
             if (db.State != ConnectionState.Open)
@@ -226,6 +243,14 @@ public static class AccountEndpoints
             // a file without the field (pre-1.60) leaves every app's interviews alone.
             if (body.Interviews is not null)
                 await interviews.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.Interviews, tx);
+            // The notes log and contacts (#360), the same way: the file's notes and contact links
+            // are the whole set for the apps it brings; a file without the field (pre-1.65)
+            // leaves them alone. A contact matching one here by name and email overwrites it.
+            var importedNotes = body.Notes is null ? 0
+                : await notes.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.Notes, tx);
+            var contactIds = importedContacts.Count > 0 ? await contacts.MergeAsync(importedContacts, tx) : [];
+            if (body.ApplicationContacts is not null)
+                await contacts.ReplaceLinksAsync((body.Applications ?? []).Select(a => a.Name), body.ApplicationContacts, contactIds, tx);
 
             if (hasCriteria)
                 await criteria.UpsertAsync(Criteria.FromJson(body.Criteria!.Value), tx);
@@ -296,6 +321,8 @@ public static class AccountEndpoints
                 agent_settings_applied = importedAgent is not null,
                 llm_settings_applied = llmPlan is not null,
                 notification_settings_applied = hasNotifications,
+                imported_contacts = importedContacts.Count,
+                imported_notes = importedNotes,
             });
         }).RequireRateLimiting("upload");
 
@@ -427,7 +454,9 @@ public static class AccountEndpoints
     }
 
     /// <summary>The export envelope — a versioned, self-describing migration snapshot.
-    /// Version 2 (#357) added everything after <c>interviews</c>; import takes either.</summary>
+    /// Version 2 (#357) added everything after <c>interviews</c>; import takes either. The
+    /// contacts, their links and the notes log (#360) are later v2 sections, additive: an older
+    /// release's import ignores them.</summary>
     private sealed record ExportDoc(
         IReadOnlyList<ApplicationExport> Applications,
         Criteria Criteria,
@@ -439,7 +468,10 @@ public static class AccountEndpoints
         IReadOnlyList<AnswerExport> AnswerBank,
         AgentSettings AgentSettings,
         LlmSettingsExport? LlmSettings,
-        NotificationSettingsExport? NotificationSettings)
+        NotificationSettingsExport? NotificationSettings,
+        IReadOnlyList<ContactExport> Contacts,
+        IReadOnlyList<ApplicationContactExport> ApplicationContacts,
+        IReadOnlyList<AppNoteExport> Notes)
     {
         [JsonPropertyOrder(-3)] public string Format => ExportFormat;
         [JsonPropertyOrder(-2)] public int Version => 2;
@@ -582,4 +614,7 @@ public sealed record ImportDoc(
     List<AnswerExport>? AnswerBank = null,
     JsonElement? AgentSettings = null,
     LlmSettingsExport? LlmSettings = null,
-    NotificationSettingsExport? NotificationSettings = null);
+    NotificationSettingsExport? NotificationSettings = null,
+    List<ContactExport>? Contacts = null,
+    List<ApplicationContactExport>? ApplicationContacts = null,
+    List<AppNoteExport>? Notes = null);

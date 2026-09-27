@@ -307,10 +307,16 @@ killing the process:
 | `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
 | `GET`    | `/api/analytics?since=…` | Funnel analytics over the status history, for applications first applied for on or after `since` (a `YYYY-MM-DD` date or ISO timestamp, UTC; all time when absent): `{since, applied, responded, rejected, response_rate, median_days_to_response, funnel:[{stage,count}], by_source:[…], by_lane:[…]}`, each breakdown row `{key, applied, responded, response_rate, median_days_to_response}`. A response is the first move to screen, onsite, offer or rejected. |
-| `GET`    | `/api/apps/{name}/history` | The application's timeline, oldest first: `[{kind, from_status, to_status, at, note}]`. `kind` is `status` for a status it entered (`from_status` is `null` on the row it was created with), `interview` for a scheduled interview (with its `note`) and `followup` for its follow-up date (midnight UTC of that day); the last two carry an empty `to_status`. |
+| `GET`    | `/api/apps/{name}/history` | The application's timeline, oldest first: `[{kind, from_status, to_status, at, note}]`. `kind` is `status` for a status it entered (`from_status` is `null` on the row it was created with), `interview` for a scheduled interview (with its `note`) and `followup` for its follow-up date (midnight UTC of that day) and `note` for an entry of its notes log (the text in `note`); all but `status` carry an empty `to_status`. |
 | `GET`    | `/api/apps/{name}/interviews` | The application's interviews, soonest first: `[{id, at, note}]`. |
 | `POST`   | `/api/apps/{name}/interviews` | Schedule one: `{at, note}` — `at` an ISO 8601 instant (no offset means UTC), `note` optional free text. **201** with the interview. |
 | `DELETE` | `/api/apps/{name}/interviews/{id}` | Remove one. **204**, or **404**. |
+| `GET`    | `/api/apps/{name}/notes` | The application's notes log, oldest first: `[{id, at, body}]`. |
+| `POST`   | `/api/apps/{name}/notes` | Log one: `{body, at}` — `at` optional (an ISO 8601 instant; now when absent). Notes are never edited. **201** with the note. |
+| `DELETE` | `/api/apps/{name}/notes/{id}` | Remove one. **204**, or **404**. |
+| `GET`    | `/api/apps/{name}/contacts` | The people on the application: `[{contact, role}]` — `contact` as below, `role` their part in this process (recruiter, hiring manager, panel…). |
+| `POST`   | `/api/apps/{name}/contacts` | Put someone on it: `{contact_id, role}`, or `{contact:{name, email, …}, role}` to add a new contact and link them at once. Linking again replaces the role. **201** with `{contact, role}`. |
+| `DELETE` | `/api/apps/{name}/contacts/{id}` | Take a contact off the application (the contact stays). **204**, or **404**. |
 | `GET`    | `/api/due?today=YYYY-MM-DD` | What needs you: `{today, followups:[{id, name, company, role, status, followup, overdue}], interviews:[{id, name, company, role, at, note}]}` — follow-ups dated on or before `today` (the caller's date; UTC when absent) on applications that are applied, screen, onsite or offer, and interviews from twelve hours ago to a week ahead. |
 | `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict, packet}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
@@ -322,6 +328,16 @@ killing the process:
 | `POST`   | `/api/poll` | Enqueue an on-demand poll → `{count:0}`. Rate-limited; the worker drains it. |
 | `GET`    | `/api/poll/status` | The poller's latest passes for this account: `{last_polled_at, last_leads_added, failing:[{source, error}]}` — `last_polled_at` is `null` before the first pass. `failing` is the newest full pass's failed sources, with the ATS boards taken from a newer fast-lane pass. |
 | `POST`   | `/api/scrape` | Body `{url}`. Fetch a posting page server-side (SSRF-guarded) and extract `{company, role, location, salary, source, description}` for the editor's Autofill. Rate-limited; 502 when the page can't be read. |
+
+### Contacts
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET`    | `/api/contacts` | Every contact, by name: `[{id, name, email, phone, role, company, linkedin, notes, version, applications:[{application, role}]}]` — `role` is their job title; each link's `role` their part in that process. |
+| `POST`   | `/api/contacts` | Add one: `{name, email, phone, role, company, linkedin, notes}` — a name required, `linkedin` an http(s) link. **201** with the contact. |
+| `GET`    | `/api/contacts/{id}` | One contact, or **404**. |
+| `PUT`    | `/api/contacts/{id}?expected_version=…` | Replace its fields. With `expected_version`, a contact changed since answers **409** (same flow as an application). |
+| `DELETE` | `/api/contacts/{id}` | Delete it and every link to it. **204**, or **404**. |
 
 ### Criteria & blacklist
 
@@ -338,7 +354,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/account/export` | One JSON snapshot (`version: 2`): every application + criteria + blacklist + `status_events` (the dated status history) + `interviews` + `resume` (with its PDF, base64) + `cover_letters` + `answer_bank` (your own answers) + `agent_settings` + `llm_settings` + `notification_settings`. No secrets. |
+| `GET`    | `/api/account/export` | One JSON snapshot (`version: 2`): every application + criteria + blacklist + `status_events` (the dated status history) + `interviews` + `resume` (with its PDF, base64) + `cover_letters` + `answer_bank` (your own answers) + `agent_settings` + `llm_settings` + `notification_settings` + `contacts` + `application_contacts` + `notes` (the notes log). No secrets. |
 | `GET`    | `/api/account/export.csv` | The applications alone as RFC 4180 CSV for a spreadsheet; formula-like cells (`= + - @`) are prefixed with `'`. |
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
 | `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
@@ -455,6 +471,9 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `agent_evidence` | Browser execution artifacts: screenshots, page confirmation text, validation issues, labels for questions needing human intervention (`needs_you`), and parked states (`awaiting_code`). |
 | `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, the daily digest's switches, hour and last day sent, the daily reminder's hour and last day sent, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
 | `app_events` | Dated events on an application beyond its status — today its interviews (`kind = 'interview'`, `at`, `note`). |
+| `contacts` | The people behind a process, once per tenant: name, job title and company in the clear; email, phone, profile link and notes encrypted at rest. `version` is the optimistic lock. |
+| `application_contacts` | Who is on which application, and their part in it (`role`). Gone with either side. |
+| `app_notes` | The notes log: dated notes on an application (`at`, `body` encrypted at rest), never edited. |
 | `api_tokens` | Scoped secret tokens, stored by SHA-256 only. `calendar`: at most one per tenant, opening its ICS feed and nothing else. `read` / `write`: named personal API tokens sent as `Authorization: Bearer` (up to 25 per tenant). |
 | `agent_allowlist` | The accounts the operator allows to use auto-apply, managed with `admin allow` / `admin disallow`. |
 | `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
@@ -713,6 +732,17 @@ ICS feed of the same dates for any calendar app's "subscribe by URL": the follow
 as all-day events, the interviews as an hour each. A calendar can't sign in, so the
 link carries a secret token that opens that feed and nothing else — stored only as
 a hash and shown once; making a new link revokes the old, and it can be turned off.
+
+**People and the notes log.** An application's sheet lists the **People** in its
+process — a recruiter, a hiring manager, a panel — each with their part in it, email,
+phone and profile link. Add someone new or pick someone you already added: a contact
+is kept once and can turn up on any number of applications, and editing one is
+guarded like an application edit, so two tabs can't overwrite each other. Below it
+the **Notes log** keeps dated notes of what happened — a call, an email, what the
+salary band was — never edited, newest first, and each joins the timeline. Contact
+emails, phones, profile links and notes, and every log entry, are encrypted at rest;
+the agent's database role can't read them. The `Contact` fields on the application
+itself stay as they were.
 
 **Step 4 — the browser fills it in; you click Apply.** With a browser container
 configured, a prepared packet gets a **dry run** automatically: the browser opens
@@ -1049,7 +1079,8 @@ value.
 - **Export** — `GET /api/account/export` returns a single JSON snapshot of your
   whole account: every application (all fields + its slug, so apply links survive a
   move), your search criteria, your company blacklist, every application's dated
-  status history and interviews, your résumé with its source PDF, your cover letters,
+  status history, interviews and notes log, your contacts and who is on which
+  application, your résumé with its source PDF, your cover letters,
   the answers you gave the answer bank yourself, and your agent, AI (endpoint, model,
   cover-letter switch and signature) and notification settings. A real backup, and
   the door's never locked.
@@ -1063,7 +1094,9 @@ value.
 - **Import** — `POST /api/account/import` loads a snapshot back. Applications
   upsert by slug (an incoming app overwrites a matching local one, new slugs are
   added, untouched apps stay), so re-importing is idempotent. An imported app's
-  status history and interviews are replaced by the ones in the file, when the file carries them.
+  status history, interviews, notes and contact links are replaced by the ones in the file,
+  when the file carries them. A contact in the file overwrites one here with the same name and
+  email, or is added, so re-importing adds nobody twice.
   Version-1 files still import; a section a file lacks leaves yours alone. A cover letter
   comes only with its application, a blank résumé never replaces yours, the agent's on
   switch and dry-run stay as they are here, and an LLM key you stored is dropped if the

@@ -1322,6 +1322,52 @@ function renderView(data) {
         </form>
         <p class="field-help" id="iv-help">In this device's time zone. Interviews show under Due, in the daily reminder and in the calendar feed.</p>
       </section>
+      <section class="detail-section" aria-labelledby="people-heading">
+        <div class="section-heading">
+          <span class="section-kicker">Contacts</span>
+          <h3 id="people-heading">People</h3>
+        </div>
+        <ul id="people-list" class="people-list" aria-busy="true"><li class="field-help">Loading…</li></ul>
+        <form id="person-form" class="person-form mt-3" novalidate>
+          <div>
+            <label class="field-label" for="pp-existing">Person</label>
+            <select id="pp-existing" class="field-input"><option value="">Someone new</option></select>
+          </div>
+          <div data-new-person>
+            <label class="field-label" for="pp-name">Name</label>
+            <input id="pp-name" class="field-input" maxlength="256" autocomplete="off" />
+          </div>
+          <div data-new-person>
+            <label class="field-label" for="pp-email">Email (optional)</label>
+            <input id="pp-email" type="email" class="field-input" maxlength="320" autocomplete="off" />
+          </div>
+          <div data-new-person>
+            <label class="field-label" for="pp-phone">Phone (optional)</label>
+            <input id="pp-phone" type="tel" class="field-input" maxlength="64" autocomplete="off" />
+          </div>
+          <div>
+            <label class="field-label" for="pp-role">Part in this process (optional)</label>
+            <input id="pp-role" class="field-input" maxlength="128" autocomplete="off" list="pp-roles" placeholder="Recruiter, hiring manager, panel…" />
+            <datalist id="pp-roles">${PROCESS_ROLES.map((r) => `<option value="${escapeHtml(r)}"></option>`).join("")}</datalist>
+          </div>
+          <button type="submit" class="btn btn-ghost">Add person</button>
+        </form>
+        <p class="field-help">Someone you add here is kept once, for every application they turn up in. Email, phone and notes are encrypted at rest.</p>
+      </section>
+      <section class="detail-section" aria-labelledby="log-heading">
+        <div class="section-heading">
+          <span class="section-kicker">Interactions</span>
+          <h3 id="log-heading">Notes log</h3>
+        </div>
+        <form id="note-form" class="note-form" novalidate>
+          <label class="field-label" for="nl-body">What happened</label>
+          <textarea id="nl-body" class="field-textarea" rows="3" maxlength="16384" aria-describedby="nl-help"
+            placeholder="Recruiter call: salary band, next steps, who you spoke to"></textarea>
+          <p class="field-help" id="nl-help">Dated now. Notes are kept in order, never edited, and join the timeline below.</p>
+          <button type="submit" class="btn btn-ghost">Add note</button>
+        </form>
+        <ol id="note-list" class="timeline mt-3" aria-busy="true" aria-label="Notes, newest first"><li class="field-help">Loading…</li></ol>
+      </section>
       <section class="detail-section" aria-labelledby="history-heading">
         <div class="section-heading">
           <span class="section-kicker">Timeline</span>
@@ -1368,7 +1414,239 @@ function renderView(data) {
   wirePacket(data);
   wireInterviews(data.filename);
   loadInterviews(data.filename);
+  wirePeople(data.filename);
+  loadPeople(data.filename);
+  wireNotes(data.filename);
+  loadNotes(data.filename);
   loadHistory(data.filename);
+}
+
+// ---- People and the notes log (#360) --------------------------------------------
+// The contacts on an application with their part in the process, and its dated notes.
+
+const PROCESS_ROLES = ["Recruiter", "Hiring manager", "Interviewer", "Panel", "Referral", "Coordinator"];
+
+// Whether a list element still belongs to the sheet that asked for it.
+const sheetStill = (list, id, name) => list && list.isConnected && document.getElementById(id) === list
+  && state.current === name && state.mode === "view";
+
+function personLine(p) {
+  const c = p.contact;
+  const bits = [];
+  if (c.email) bits.push(`<a href="mailto:${escapeHtml(c.email)}">${escapeHtml(c.email)}</a>`);
+  if (c.phone) bits.push(`<a href="tel:${escapeHtml(c.phone.replace(/[^\d+]/g, ""))}">${escapeHtml(c.phone)}</a>`);
+  if (/^https?:\/\//i.test(c.linkedin || "")) bits.push(`<a href="${escapeHtml(c.linkedin)}" target="_blank" rel="noopener noreferrer"
+    aria-label="${escapeHtml(c.name)}'s profile (opens in a new tab)">Profile ↗</a>`);
+  const title = [c.role, c.company].filter(Boolean).join(", ");
+  return `<li class="person" data-contact="${escapeHtml(String(c.id))}">
+      <div><strong>${escapeHtml(c.name)}</strong>${p.role ? ` <span class="badge">${escapeHtml(p.role)}</span>` : ""}
+        ${title ? `<span class="person-title"> · ${escapeHtml(title)}</span>` : ""}</div>
+      ${bits.length ? `<div class="person-links">${bits.join(" · ")}</div>` : ""}
+      ${c.notes ? `<div class="field-help">${escapeHtml(c.notes)}</div>` : ""}
+      <div class="person-actions">
+        <button type="button" class="btn btn-xs" data-person-edit aria-label="Edit ${escapeHtml(c.name)}">Edit</button>
+        <button type="button" class="btn btn-xs" data-person-remove aria-label="Take ${escapeHtml(c.name)} off this application">Remove</button>
+      </div>
+    </li>`;
+}
+
+async function loadPeople(name) {
+  const list = document.getElementById("people-list");
+  let people;
+  let everyone;
+  try {
+    [people, everyone] = await Promise.all([
+      api("GET", `/api/apps/${encodeURIComponent(name)}/contacts`),
+      api("GET", "/api/contacts"),
+    ]);
+  } catch {
+    people = null;
+  }
+  if (!sheetStill(list, "people-list", name)) return;
+  list.removeAttribute("aria-busy");
+  if (!Array.isArray(people)) { list.innerHTML = `<li class="field-help">People are unavailable right now.</li>`; return; }
+  // The picker offers everyone not already on this application.
+  const on = new Set(people.map((p) => p.contact.id));
+  const pick = document.getElementById("pp-existing");
+  if (pick) {
+    pick.innerHTML = `<option value="">Someone new</option>` + (Array.isArray(everyone) ? everyone : [])
+      .filter((c) => !on.has(c.id))
+      .map((c) => `<option value="${escapeHtml(String(c.id))}">${escapeHtml(c.name)}${c.company ? ` (${escapeHtml(c.company)})` : ""}</option>`).join("");
+    syncPersonForm();
+  }
+  list.innerHTML = people.length ? people.map(personLine).join("") : `<li class="field-help">No people added yet.</li>`;
+  const byId = new Map(people.map((p) => [String(p.contact.id), p]));
+  list.querySelectorAll("li.person").forEach((li) => {
+    const p = byId.get(li.dataset.contact);
+    const removeBtn = li.querySelector("[data-person-remove]");
+    removeBtn.addEventListener("click", async () => {
+      removeBtn.disabled = true;
+      try {
+        await api("DELETE", `/api/apps/${encodeURIComponent(name)}/contacts/${encodeURIComponent(li.dataset.contact)}`);
+        toast(`${p.contact.name} removed from this application.`);
+        await loadPeople(name);
+        document.getElementById("pp-existing")?.focus();
+      } catch (e) {
+        removeBtn.disabled = false;
+        toast(e.message);
+      }
+    });
+    li.querySelector("[data-person-edit]").addEventListener("click", () => editPerson(name, li, p.contact));
+  });
+}
+
+// Edit a contact in place. Saved under its version: if it changed elsewhere, say so and reload.
+function editPerson(name, li, c) {
+  const id = `pe-${c.id}`;
+  const field = (key, label, type = "text", max = 256) => `
+    <div><label class="field-label" for="${id}-${key}">${label}</label>
+      <input id="${id}-${key}" type="${type}" class="field-input" maxlength="${max}" autocomplete="off" value="${escapeHtml(c[key] || "")}" /></div>`;
+  li.innerHTML = `
+    <form class="person-edit" novalidate aria-label="Edit ${escapeHtml(c.name)}">
+      ${field("name", "Name")}${field("email", "Email", "email", 320)}${field("phone", "Phone", "tel", 64)}
+      ${field("role", "Job title", "text", 128)}${field("company", "Company")}${field("linkedin", "Profile link", "url", 2048)}
+      <div class="person-edit-notes"><label class="field-label" for="${id}-notes">About them</label>
+        <textarea id="${id}-notes" class="field-textarea" rows="2" maxlength="16384">${escapeHtml(c.notes || "")}</textarea></div>
+      <div class="person-actions">
+        <button type="submit" class="btn btn-primary btn-xs">Save</button>
+        <button type="button" class="btn btn-xs" data-cancel>Cancel</button>
+      </div>
+    </form>`;
+  const form = li.querySelector("form");
+  const nameEl = document.getElementById(`${id}-name`);
+  nameEl.focus();
+  form.querySelector("[data-cancel]").addEventListener("click", async () => {
+    await loadPeople(name);
+    document.querySelector(`#people-list li[data-contact="${CSS.escape(String(c.id))}"] [data-person-edit]`)?.focus();
+  });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (!nameEl.value.trim()) {
+      nameEl.setAttribute("aria-invalid", "true");
+      toast("A contact needs a name.");
+      nameEl.focus();
+      return;
+    }
+    const body = {};
+    for (const key of ["name", "email", "phone", "role", "company", "linkedin", "notes"]) body[key] = document.getElementById(`${id}-${key}`).value.trim();
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await api("PUT", `/api/contacts/${encodeURIComponent(String(c.id))}?expected_version=${encodeURIComponent(c.version)}`, body);
+      toast(`${body.name} saved.`);
+    } catch (e) {
+      btn.disabled = false;
+      if (e.status !== 409) { toast(e.message); return; }
+      toast("This contact changed somewhere else — showing the latest. Make your edit again.");
+    }
+    await loadPeople(name);
+    document.querySelector(`#people-list li[data-contact="${CSS.escape(String(c.id))}"] [data-person-edit]`)?.focus();
+  });
+}
+
+// The new-person fields only matter when no existing contact is picked.
+function syncPersonForm() {
+  const pick = document.getElementById("pp-existing");
+  if (!pick) return;
+  document.querySelectorAll("#person-form [data-new-person]").forEach((el) => { el.hidden = pick.value !== ""; });
+}
+
+function wirePeople(name) {
+  const form = document.getElementById("person-form");
+  if (!form) return;
+  document.getElementById("pp-existing").addEventListener("change", syncPersonForm);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const pick = document.getElementById("pp-existing");
+    const nameEl = document.getElementById("pp-name");
+    const role = document.getElementById("pp-role").value.trim();
+    let body;
+    if (pick.value) {
+      body = { contact_id: Number(pick.value), role };
+    } else {
+      if (!nameEl.value.trim()) {
+        nameEl.setAttribute("aria-invalid", "true");
+        toast("Give the person's name, or pick someone you already added.");
+        nameEl.focus();
+        return;
+      }
+      body = { contact: { name: nameEl.value.trim(), email: document.getElementById("pp-email").value.trim(),
+        phone: document.getElementById("pp-phone").value.trim() }, role };
+    }
+    nameEl.removeAttribute("aria-invalid");
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const linked = await api("POST", `/api/apps/${encodeURIComponent(name)}/contacts`, body);
+      form.reset();
+      toast(`${linked.contact.name} added.`);
+      await loadPeople(name);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+async function loadNotes(name) {
+  const list = document.getElementById("note-list");
+  let notes;
+  try {
+    notes = await api("GET", `/api/apps/${encodeURIComponent(name)}/notes`);
+  } catch {
+    notes = null;
+  }
+  if (!sheetStill(list, "note-list", name)) return;
+  list.removeAttribute("aria-busy");
+  if (!Array.isArray(notes)) { list.innerHTML = `<li class="field-help">The notes log is unavailable right now.</li>`; return; }
+  if (!notes.length) { list.innerHTML = `<li class="field-help">No notes yet.</li>`; return; }
+  const when = (at) => new Date(at).toLocaleString();
+  list.innerHTML = notes.slice().reverse().map((n) => `
+    <li><time datetime="${escapeHtml(n.at)}">${escapeHtml(when(n.at))}</time>
+      <span class="note-body">${escapeHtml(n.body)}</span>
+      <button type="button" class="btn btn-xs" data-note-remove="${escapeHtml(String(n.id))}"
+        aria-label="Remove the note from ${escapeHtml(when(n.at))}">Remove</button></li>`).join("");
+  list.querySelectorAll("[data-note-remove]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await api("DELETE", `/api/apps/${encodeURIComponent(name)}/notes/${encodeURIComponent(b.dataset.noteRemove)}`);
+      toast("Note removed.");
+      await Promise.all([loadNotes(name), loadHistory(name)]);
+      document.getElementById("nl-body")?.focus();
+    } catch (e) {
+      b.disabled = false;
+      toast(e.message);
+    }
+  }));
+}
+
+function wireNotes(name) {
+  const form = document.getElementById("note-form");
+  if (!form) return;
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const bodyEl = document.getElementById("nl-body");
+    if (!bodyEl.value.trim()) {
+      bodyEl.setAttribute("aria-invalid", "true");
+      toast("Write what happened first.");
+      bodyEl.focus();
+      return;
+    }
+    bodyEl.removeAttribute("aria-invalid");
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await api("POST", `/api/apps/${encodeURIComponent(name)}/notes`, { body: bodyEl.value.trim() });
+      bodyEl.value = "";
+      toast("Note added.");
+      await Promise.all([loadNotes(name), loadHistory(name)]);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // The application's interviews (#354), soonest first, with a Remove button each.
@@ -1458,7 +1736,9 @@ async function loadHistory(name) {
   if (!entries.length) { list.innerHTML = `<li class="field-help">No status changes recorded.</li>`; return; }
   const label = (st) => escapeHtml((STATUS_LABEL[st] || st).replace(/^./, (c) => c.toUpperCase()));
   // Interviews and the follow-up date (#354) sit among the statuses; a follow-up is a day.
+  // A note from the log (#360) shows its first 280 characters.
   const what = (e) => e.kind === "interview" ? `Interview${e.note ? ` — ${escapeHtml(e.note)}` : ""}`
+    : e.kind === "note" ? `Note — ${escapeHtml((e.note || "").length > 280 ? `${e.note.slice(0, 280)}…` : e.note || "")}`
     : e.kind === "followup" ? "Follow-up due"
     : e.from_status ? `${label(e.from_status)} <span aria-hidden="true">→</span><span class="sr-only">to</span> ${label(e.to_status)}`
     : `Added as ${label(e.to_status)}`;
@@ -4008,7 +4288,7 @@ async function loadAccountTab(body) {
       <div class="mt-5">
         <div class="field-label">Export — private migration snapshot</div>
         <p class="field-help">
-          Everything: applications with their history and interviews, résumé and its PDF, cover letters,
+          Everything: applications with their history, interviews, notes log and people, résumé and its PDF, cover letters,
           your own answers, criteria, blacklist, and agent, AI and notification settings. Import it on
           another instance to move home. No passwords, keys or tokens leave — enter those again there.
         </p>

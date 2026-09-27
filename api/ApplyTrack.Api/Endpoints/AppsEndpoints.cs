@@ -70,10 +70,14 @@ public static class AppsEndpoints
             return Results.Ok(await history.AnalyticsAsync(from));
         });
 
-        // The application's status timeline, oldest first (#353).
-        app.MapGet("/api/apps/{name}/history", async (string name, StatusEventRepo history) =>
-            Results.Ok(await history.HistoryAsync(name)
-                ?? throw new AppNotFoundException($"application not found: '{name}'")));
+        // The application's timeline, oldest first (#353): statuses, interviews and the
+        // follow-up (#354), and the notes log as kind `note` (#360).
+        app.MapGet("/api/apps/{name}/history", async (string name, StatusEventRepo history, AppNoteRepo notes) =>
+        {
+            var entries = await history.HistoryAsync(name)
+                ?? throw new AppNotFoundException($"application not found: '{name}'");
+            return Results.Ok(ContactsEndpoints.WithNotes(entries, await notes.ListAsync(name) ?? []));
+        });
 
         app.MapGet("/api/apps/{name}", async (
             string name, ApplicationRepo repo, CoverLetterRepo letters, AgentEventRepo events,
