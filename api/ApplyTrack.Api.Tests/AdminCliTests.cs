@@ -144,7 +144,7 @@ public class AdminCliTests(PostgresFixture pg)
     }
 
     [Fact]
-    public async Task The_poller_role_can_stamp_its_last_poll_but_cannot_run_the_cli()
+    public async Task The_poller_role_can_stamp_its_last_poll_but_neither_worker_role_can_run_the_cli()
     {
         Migrator.Upgrade(pg.ConnectionString, rolePasswords: new Dictionary<string, string?>
         {
@@ -170,5 +170,15 @@ public class AdminCliTests(PostgresFixture pg)
         Assert.Equal(1, code);
         Assert.Contains("owner", err);
         Assert.Equal("active", await conn.ExecuteScalarAsync<string>("SELECT status FROM users WHERE id = @t", new { t }));
+
+        // The agent's role can SELECT every table, so even a read is refused up front.
+        var agent = new NpgsqlConnectionStringBuilder(pg.ConnectionString)
+        {
+            Username = Migrator.AgentRole, Password = "agent-pw", Pooling = false,
+        }.ConnectionString;
+        var listed = await RunWithAsync(agent, "users");
+        Assert.Equal(1, listed.Code);
+        Assert.Equal("", listed.Out);
+        Assert.Contains("applytrack_agent is not the database owner", listed.Err);
     }
 }

@@ -104,10 +104,14 @@ Restore into an empty database, then let the api put the roles and grants back.
    running).
    - Compose: `docker compose -f docker-compose.production.yml stop api agent poller`
    - Quadlet: `systemctl --user stop applytrack-api applytrack-agent applytrack-poller`
-2. **Put the key back first.** The same `APPLYTRACK_SECRETS_KEY` in the env file(s) —
-   api, agent and poller must all see it — or the key file back in the `secrets`
-   volume (`docker compose cp ./applytrack-secrets.key api:/var/lib/applytrack/secrets.key`;
-   `podman volume import applytrack-secrets applytrack-secrets.tar`).
+2. **Put the key back first**, where the api, the agent and the poller all see it:
+   - Production compose: the same `APPLYTRACK_SECRETS_KEY` in `.env.production` (its
+     containers are read-only and have no key volume; the env value is the only way).
+   - Quickstart compose with a generated key: copy it back into the `secrets` volume,
+     `docker compose cp ./applytrack-secrets.key api:/var/lib/applytrack/secrets.key`.
+   - Quadlet: the same `APPLYTRACK_SECRETS_KEY` line in `applytrack.env`, `agent.env` and
+     `poller.env`, or, for a generated key,
+     `podman volume import applytrack-secrets applytrack-secrets.tar`.
 3. **Recreate the database and load the dump.** `--no-owner --no-privileges` because the
    agent's and poller's roles may not exist on this server yet; the api re-creates them
    and re-applies every grant on boot.

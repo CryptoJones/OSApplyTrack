@@ -76,6 +76,16 @@ public static class AdminCli
         {
             await using var conn = new NpgsqlConnection(connectionString);
             await conn.OpenAsync();
+            // Owner only, checked before any command runs: the agent's role can SELECT every
+            // table, so a read like `users` would otherwise work from the agent container.
+            // Whoever owns `users` (or a superuser) is the migrating owner; nobody else is.
+            if (!await conn.ExecuteScalarAsync<bool>(
+                    "SELECT pg_has_role(current_user, relowner, 'MEMBER') FROM pg_class WHERE oid = 'public.users'::regclass"))
+            {
+                error.WriteLine($"admin: {await conn.ExecuteScalarAsync<string>("SELECT current_user")} is not the database "
+                    + "owner — run this with the owner's connection (the api container), not the agent's or the poller's role.");
+                return 1;
+            }
             return cmd switch
             {
                 "users" when rest.Length == 0 => await UsersAsync(conn, output),
