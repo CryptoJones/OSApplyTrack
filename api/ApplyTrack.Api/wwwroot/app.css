@@ -750,6 +750,11 @@ h3 { font-size: 1.15rem; letter-spacing: -0.02em; }
 .stat-tile dd { margin: 0.2rem 0 0; font-size: 1.5rem; font-weight: 750; }
 .timeline { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; }
 .timeline time { display: inline-block; min-width: 11rem; color: var(--text-muted); font-size: 0.9rem; margin-right: 0.5rem; }
+/* Interviews on the sheet and the Due view (#354). */
+.interview-form { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr) auto; gap: 0.75rem; align-items: end; }
+@media (max-width: 640px) { .interview-form { grid-template-columns: 1fr; } }
+#interview-list .btn-xs { margin-left: 0.5rem; }
+.due-section-title { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.5rem; }
 @media (forced-colors: active) {
   .stat-bar-track { fill: Canvas; stroke: CanvasText; stroke-width: 0.5; }
   .stat-bar-fill { fill: CanvasText; }

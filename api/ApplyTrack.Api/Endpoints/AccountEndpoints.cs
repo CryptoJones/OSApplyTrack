@@ -55,14 +55,16 @@ public static class AccountEndpoints
         // links survive a move) plus the search criteria and company blacklist, as one
         // downloadable JSON. Built in memory — a self-host account is small.
         app.MapGet("/api/account/export", async (
-            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history) =>
+            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history,
+            AppEventRepo interviews) =>
         {
             var records = await apps.ExportAllAsync();
             var doc = new ExportDoc(
                 Applications: records.Select(ApplicationExport.From).ToList(),
                 Criteria: await criteria.GetAsync(),
                 Blacklist: await blacklist.ListAsync(),
-                StatusEvents: await history.ExportAllAsync());
+                StatusEvents: await history.ExportAllAsync(),
+                Interviews: await interviews.ExportAllAsync());
 
             var bytes = JsonSerializer.SerializeToUtf8Bytes(doc, ExportJson);
             var filename = $"applytrack-export-{DateTime.UtcNow:yyyy-MM-dd}.json";
@@ -92,7 +94,8 @@ public static class AccountEndpoints
         // one transaction so a mid-import failure leaves the account untouched.
         app.MapPost("/api/account/import", async (
             ImportDoc body, IDbConnection conn,
-            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history) =>
+            ApplicationRepo apps, CriteriaRepo criteria, BlacklistRepo blacklist, StatusEventRepo history,
+            AppEventRepo interviews) =>
         {
             var hasApps = body.Applications is { Count: > 0 };
 
@@ -139,7 +142,8 @@ public static class AccountEndpoints
                 throw new AppValidationException("no importable data in file");
             if ((body.Applications?.Count ?? 0) > MaxImportItems
                 || (body.Blacklist?.Count ?? 0) > MaxImportItems
-                || (body.StatusEvents?.Count ?? 0) > MaxImportEvents)
+                || (body.StatusEvents?.Count ?? 0) > MaxImportEvents
+                || (body.Interviews?.Count ?? 0) > MaxImportEvents)
                 throw new AppValidationException($"import too large (max {MaxImportItems} items)");
 
             var db = (DbConnection)conn;
@@ -155,6 +159,10 @@ public static class AccountEndpoints
             // touched. A file with no status_events field (pre-1.59) keeps the import's rows.
             if (body.StatusEvents is not null)
                 await history.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.StatusEvents, tx);
+            // Interviews (#354) likewise: the file's are the whole set for the apps it brings;
+            // a file without the field (pre-1.60) leaves every app's interviews alone.
+            if (body.Interviews is not null)
+                await interviews.ReplaceAsync((body.Applications ?? []).Select(a => a.Name), body.Interviews, tx);
 
             if (hasCriteria)
                 await criteria.UpsertAsync(Criteria.FromJson(body.Criteria!.Value), tx);
@@ -211,7 +219,8 @@ public static class AccountEndpoints
         IReadOnlyList<ApplicationExport> Applications,
         Criteria Criteria,
         IReadOnlyList<string> Blacklist,
-        IReadOnlyList<StatusEventExport> StatusEvents)
+        IReadOnlyList<StatusEventExport> StatusEvents,
+        IReadOnlyList<InterviewExport> Interviews)
     {
         [JsonPropertyOrder(-3)] public string Format => ExportFormat;
         [JsonPropertyOrder(-2)] public int Version => 1;
@@ -295,4 +304,5 @@ public sealed record ImportDoc(
     List<ApplicationExport>? Applications,
     JsonElement? Criteria,
     List<string>? Blacklist,
-    List<StatusEventExport>? StatusEvents = null);
+    List<StatusEventExport>? StatusEvents = null,
+    List<InterviewExport>? Interviews = null);

@@ -111,6 +111,8 @@ public class DbRoleTests(PostgresFixture pg)
         await AssertDeniedAsync(agent, "UPDATE applications SET name = 'stolen.md' WHERE tenant_id = @t", new { t });
         await AssertDeniedAsync(agent, "DELETE FROM applications WHERE tenant_id = @t", new { t });
         await AssertDeniedAsync(agent, "SELECT * FROM sessions");
+        // The calendar feed's token hashes (#354) are no business of the agent's either.
+        await AssertDeniedAsync(agent, "SELECT * FROM api_tokens");
     }
 
     [Fact]

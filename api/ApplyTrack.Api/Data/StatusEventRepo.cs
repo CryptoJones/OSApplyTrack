@@ -7,11 +7,13 @@ using Dapper;
 namespace ApplyTrack.Api.Data;
 
 /// <summary>
-/// One entry of an application's timeline. <c>kind</c> is <c>status</c> for every row
-/// today; it is on the wire so later sources (reminders, a notes log) can merge into the
-/// same list without a shape change. <c>from_status</c> is null on the creating row.
+/// One entry of an application's timeline. <c>kind</c> is <c>status</c> for a status the
+/// application entered (<c>from_status</c> null on the creating row), <c>interview</c> for a
+/// scheduled interview and <c>followup</c> for its follow-up date (#354) — those two carry
+/// an empty <c>to_status</c>, and the interview its <c>note</c>. A follow-up is dated at
+/// midnight UTC of its day.
 /// </summary>
-public sealed record TimelineEntry(string Kind, string? FromStatus, string ToStatus, DateTime At);
+public sealed record TimelineEntry(string Kind, string? FromStatus, string ToStatus, DateTime At, string? Note = null);
 
 /// <summary>One status event as the account export carries it, keyed by the app's slug.</summary>
 public sealed record StatusEventExport(string Application, string? FromStatus, string ToStatus, DateTime At);
@@ -57,21 +59,37 @@ public sealed class StatusEventRepo
         _t = tenantId;
     }
 
-    /// <summary>The application's timeline, oldest first; null when there is no such app.</summary>
+    private sealed record AppRef(long Id, string Followup);
+
+    /// <summary>The application's timeline — its statuses, interviews and follow-up date
+    /// (#354) — oldest first; null when there is no such app.</summary>
     public async Task<IReadOnlyList<TimelineEntry>?> HistoryAsync(string name)
     {
         var n = Slug.Normalize(name);
-        var id = await _conn.QuerySingleOrDefaultAsync<long?>(
-            "SELECT id FROM applications WHERE tenant_id = @t AND name = @n", new { t = _t, n });
-        if (id is null)
+        var app = await _conn.QuerySingleOrDefaultAsync<AppRef?>(
+            "SELECT id, followup FROM applications WHERE tenant_id = @t AND name = @n", new { t = _t, n });
+        if (app is not { } a)
             return null;
-        return (await _conn.QueryAsync<TimelineEntry>(
+        var entries = (await _conn.QueryAsync<TimelineEntry>(
             """
-            SELECT 'status' AS kind, from_status AS fromstatus, to_status AS tostatus, at
-            FROM status_events WHERE tenant_id = @t AND application_id = @id
-            ORDER BY at, id
+            SELECT kind, fromstatus, tostatus, at, note FROM (
+                SELECT 'status' AS kind, from_status AS fromstatus, to_status AS tostatus, at,
+                       NULL::text AS note, 0 AS src, id
+                FROM status_events WHERE tenant_id = @t AND application_id = @id
+                UNION ALL
+                SELECT kind, NULL, '', at, note, 1, id
+                FROM app_events WHERE tenant_id = @t AND application_id = @id
+            ) x
+            ORDER BY at, src, id
             """,
-            new { t = _t, id })).ToList();
+            new { t = _t, id = a.Id })).ToList();
+        if (AppEventRepo.ParseDay(a.Followup) is { } due)
+        {
+            var at = due.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            var i = entries.FindIndex(e => e.At > at);
+            entries.Insert(i < 0 ? entries.Count : i, new TimelineEntry("followup", null, "", at));
+        }
+        return entries;
     }
 
     /// <summary>Every event, for the account export: by slug, then oldest first.</summary>

@@ -301,7 +301,11 @@ killing the process:
 | `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
 | `GET`    | `/api/stats` | Counts by `{status, lane}`. |
 | `GET`    | `/api/analytics?since=…` | Funnel analytics over the status history, for applications first applied for on or after `since` (a `YYYY-MM-DD` date or ISO timestamp, UTC; all time when absent): `{since, applied, responded, rejected, response_rate, median_days_to_response, funnel:[{stage,count}], by_source:[…], by_lane:[…]}`, each breakdown row `{key, applied, responded, response_rate, median_days_to_response}`. A response is the first move to screen, onsite, offer or rejected. |
-| `GET`    | `/api/apps/{name}/history` | The application's status timeline, oldest first: `[{kind:"status", from_status, to_status, at}]` (`from_status` is `null` on the row it was created with). |
+| `GET`    | `/api/apps/{name}/history` | The application's timeline, oldest first: `[{kind, from_status, to_status, at, note}]`. `kind` is `status` for a status it entered (`from_status` is `null` on the row it was created with), `interview` for a scheduled interview (with its `note`) and `followup` for its follow-up date (midnight UTC of that day); the last two carry an empty `to_status`. |
+| `GET`    | `/api/apps/{name}/interviews` | The application's interviews, soonest first: `[{id, at, note}]`. |
+| `POST`   | `/api/apps/{name}/interviews` | Schedule one: `{at, note}` — `at` an ISO 8601 instant (no offset means UTC), `note` optional free text. **201** with the interview. |
+| `DELETE` | `/api/apps/{name}/interviews/{id}` | Remove one. **204**, or **404**. |
+| `GET`    | `/api/due?today=YYYY-MM-DD` | What needs you: `{today, followups:[{id, name, company, role, status, followup, overdue}], interviews:[{id, name, company, role, at, note}]}` — follow-ups dated on or before `today` (the caller's date; UTC when absent) on applications that are applied, screen, onsite or offer, and interviews from twelve hours ago to a week ahead. |
 | `GET`    | `/api/apps/{name}` | One application: `{filename, raw, fields, version, material, agent_verdict, packet}`. |
 | `POST`   | `/api/apps` | Create from structured fields → `201 {filename}`. |
 | `PUT`    | `/api/apps/{name}?expected_version=…` | Update structured fields (409 on version mismatch). |
@@ -359,13 +363,17 @@ killing the process:
 | `POST`   | `/api/ready/actions` | The Ready lane in bulk: `{action: "prepare" \| "submit" \| "pass", names: [...]}` queues (or passes) the batch server-side in one rate-limited request → `{action, dry_run, done[], skipped[{name, reason}]}` (**202** for the queued actions, **200** for pass). `{action: "submit", all_clean: true}` queues the real click for every Ready packet whose latest dry run was clean; **400** while *Dry run only* is still on. |
 | `GET`    | `/api/pipeline` | The submit queue as the worker will drain it (oldest request first), each row labelled with what the worker will do when it claims it — `phase` (`queued` / `running` / `awaiting_code` / `stale`), `will` (`submit` / `dry_run` / `prepare` / `drop`) with its `reason`, `then_submit` for a dry run that queues the real click when clean — plus `ready[]`, the Ready packets not queued and what is `holding` each (`promotable` when a dry-run flip or *Submit all clean* would queue it), the agent's switches and a `summary`. The strip's **Pipeline** button opens it. |
 | `DELETE` | `/api/apps/{name}/packet` | Discard the packet → `204`. |
-| `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`; `email_enabled`, `email_available` (an SMTP host is configured), `email_address` (the account's own); the per-event toggles `notify_packet_ready`, `notify_security_code`, `notify_submit_failed`; the daily digest's `digest_enabled`, `digest_insults`, `digest_hour` (UTC, 0–23, default 12). |
-| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears), `email_enabled`, `notify_packet_ready`, `notify_security_code`, `notify_submit_failed`, `digest_enabled`, `digest_insults`, `digest_hour` (each omitted field is left alone; an hour outside 0–23 is **400**). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from. |
+| `GET`    | `/api/notifications` | `telegram_enabled`, `has_bot_token` (the token is write-only), `telegram_chat_id`, `secrets_available`; `email_enabled`, `email_available` (an SMTP host is configured), `email_address` (the account's own); the per-event toggles `notify_packet_ready`, `notify_security_code`, `notify_submit_failed`, `notify_followup_due`; the daily reminder's `reminder_hour` (UTC, 0–23, default 12); the daily digest's `digest_enabled`, `digest_insults`, `digest_hour` (UTC, 0–23, default 12); `calendar_feed_enabled`, `calendar_feed_created_at`, `calendar_feed_last_used_at`. |
+| `PUT`    | `/api/notifications` | Any of `telegram_enabled`, `telegram_chat_id`, `telegram_bot_token` (omit to keep; blank clears), `email_enabled`, `notify_packet_ready`, `notify_security_code`, `notify_submit_failed`, `notify_followup_due`, `reminder_hour`, `digest_enabled`, `digest_insults`, `digest_hour` (each omitted field is left alone; an hour outside 0–23 is **400**). **400** without `APPLYTRACK_SECRETS_KEY` when a token is sent. Also the mailbox half: `mailbox_enabled`, `mailbox_host`, `mailbox_port`, `mailbox_username`, `mailbox_password` (write-only; omit to keep, blank to clear) — the IMAP mailbox a parked run reads Greenhouse's security code from. |
 | `GET`    | `/api/answers` | The answer bank: every screening question the agent has met on a form (`key`, `label`, `help`, `type`, `options`), the `answer` it gave, whose it is (`source`: `agent` or `human`), how many forms asked it and when. |
 | `PUT`    | `/api/answers/{key}` | `{answer}` — make it your answer: the drafter uses it verbatim on every later form that asks this question (for a fixed list, it must name an option). Blank hands the question back to the drafter. **404** for a question never met. |
 | `POST`   | `/api/answers/{key}/apply` | Write your saved answer into every Ready packet that asks this question, no model → `{updated, packets[]}`. A packet whose fixed option list does not carry your answer is left for you to pick on. **400** unless the answer is yours (`source: human`). |
 | `DELETE` | `/api/answers/{key}` | Forget the question; it returns the next time a form asks it. |
 | `POST`   | `/api/notifications/test` | Send `🐮 moo — test message` to the saved chat (ignores the on/off switch) → `{ok}`; **502** when Telegram refuses. Rate-limited. |
+| `GET`    | `/api/calendar/feed` | `{enabled, created_at, last_used_at}` — whether a calendar feed link exists. |
+| `POST`   | `/api/calendar/feed` | Make the feed link, revoking any earlier one: `{enabled, path, url, created_at}`. `path` is `/api/calendar.ics?token=…`; `url` is it on `App__PublicBaseUrl` (null when unset). The token is in this answer only. Rate-limited. |
+| `DELETE` | `/api/calendar/feed` | Turn the link off. **204**. |
+| `GET`    | `/api/calendar.ics?token=…` | The ICS feed (`text/calendar`), read **without a session**: follow-up dates as all-day events and interviews (from 90 days back) as an hour each. **404** for an unknown, replaced or revoked token. Rate-limited per IP. |
 | `POST`   | `/api/notifications/email/test` | Mail a test message to the account's own address (ignores the on/off switch) → `{ok, to}`; **400** with no SMTP host, **502** when the relay refuses. Rate-limited. |
 | `POST`   | `/api/notifications/mailbox/test` | Opens the saved mailbox over IMAP and counts the inbox; **400** with the reason when it will not open. |
 | `POST`   | `/api/apps/{name}/submit` | Queue a browser run: `{dry_run}` (default true; a real submit also needs *Dry run only* off in Settings · Agent and nothing left to review) → **202** `{queued, dry_run}`; **200** `queued:false` while one is already queued; **400** without a browser or a packet. |
@@ -409,7 +417,9 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `agent_packets` | Prepared application packets: detected ATS provider, discovered questions, drafted answers, human review checklist, posting excerpt, and packet version. |
 | `submit_requests` | FIFO queue for browser execution jobs (`submit`, `dry_run`, `prepare`) claimed by worker containers with `FOR UPDATE SKIP LOCKED`. |
 | `agent_evidence` | Browser execution artifacts: screenshots, page confirmation text, validation issues, labels for questions needing human intervention (`needs_you`), and parked states (`awaiting_code`). |
-| `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, the daily digest's switches, hour and last day sent, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
+| `notification_settings` | Per-tenant notification settings: encrypted Telegram bot token and chat ID, the email switch, the per-event toggles, the daily digest's switches, hour and last day sent, the daily reminder's hour and last day sent, and encrypted IMAP mailbox credentials for automated security-code retrieval. |
+| `app_events` | Dated events on an application beyond its status — today its interviews (`kind = 'interview'`, `at`, `note`). |
+| `api_tokens` | Scoped secret tokens, stored by SHA-256 only. Today one scope, `calendar`: at most one per tenant, opening its ICS feed and nothing else. |
 | `agent_allowlist` | Operator-managed database table allowlisting tenant accounts permitted to use auto-apply automation. |
 | `agent_workers` | Dedicated heartbeat registry tracking active agent worker containers, browser capabilities, and heartbeat freshness (`seen_at`). |
 | `answer_bank` | Reusable repository of screening questions and answers across job forms, tracking `human` vs `agent` source, occurrence counts, and timestamps. |
@@ -650,6 +660,22 @@ the body lists each application marked applied the previous UTC day with its num
 company, role, posting link and a link that opens it here. Pick the UTC hour it goes
 out at; **Insult me** (also off by default) opens it with a fresh remark from the
 machine about its human. The api container sends it, at most once per day.
+
+**Follow-ups, interviews and the calendar feed.** An application's follow-up date
+(**Mark applied** sets it a week out) and the interviews you schedule on its sheet
+(date, time and a note) are acted on: a **Due** chip on the pipeline strip opens
+the follow-ups due today or overdue — flagged **Overdue** on their cards too — and
+the interviews in the coming week, and both join the sheet's timeline. Once a day,
+at the UTC hour you pick, a reminder lists the follow-ups due that day and the
+interviews in the next 24 hours on every channel you have on (Telegram, email),
+under its own toggle, **Follow-ups due today and interviews in the next day** (on by
+default, like the others). A day with nothing due today sends nothing; overdue
+follow-ups ride along on a day that does. The api container sends it, at most once
+per day. **Settings · Notifications · Calendar feed** makes a private link to an
+ICS feed of the same dates for any calendar app's "subscribe by URL": the follow-ups
+as all-day events, the interviews as an hour each. A calendar can't sign in, so the
+link carries a secret token that opens that feed and nothing else — stored only as
+a hash and shown once; making a new link revokes the old, and it can be turned off.
 
 **Step 4 — the browser fills it in; you click Apply.** With a browser container
 configured, a prepared packet gets a **dry run** automatically: the browser opens
@@ -985,11 +1011,11 @@ value.
 - **Export** — `GET /api/account/export` returns a single JSON snapshot of your
   whole account: every application (all fields + its slug, so apply links survive a
   move), your search criteria, your company blacklist, and every application's
-  dated status history. A real backup, and the door's never locked.
+  dated status history and interviews. A real backup, and the door's never locked.
 - **Import** — `POST /api/account/import` loads a snapshot back. Applications
   upsert by slug (an incoming app overwrites a matching local one, new slugs are
   added, untouched apps stay), so re-importing is idempotent. An imported app's
-  status history is replaced by the one in the file, when the file carries one. The whole load runs in
+  status history and interviews are replaced by the ones in the file, when the file carries them. The whole load runs in
   one transaction — a mid-import failure leaves your account untouched. Use it to
   migrate from one instance to another: export here, import there.
 - **Share** — `GET /api/account/export/shared` exports a peer-shareable

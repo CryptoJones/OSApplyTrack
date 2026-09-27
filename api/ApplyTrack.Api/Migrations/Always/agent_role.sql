@@ -5,7 +5,7 @@
 -- The role is optional: the migrating container creates it when AGENT_DB_PASSWORD
 -- is set (Migrator.EnsureRoles); when it does not exist this is a no-op. It gets
 -- SELECT on the tenant tables, INSERT/UPDATE only where the agent writes, no
--- DELETE anywhere, and NO access to sessions or magic_tokens — so a renderer
+-- DELETE anywhere, and NO access to sessions, magic_tokens or api_tokens — so a renderer
 -- escape in the browser container is "write rows the agent already writes", not
 -- "read every session token in the system". Re-applied every boot so a table
 -- added by a later migration is covered without a hand-run GRANT.
@@ -15,7 +15,7 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO applytrack_agent;
         GRANT SELECT ON ALL TABLES IN SCHEMA public TO applytrack_agent;
         GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO applytrack_agent;
-        REVOKE ALL ON sessions, magic_tokens FROM applytrack_agent;
+        REVOKE ALL ON sessions, magic_tokens, api_tokens FROM applytrack_agent;
         GRANT INSERT, UPDATE ON agent_events, agent_packets, agent_evidence,
             cover_letters, submit_requests, agent_workers, answer_bank TO applytrack_agent;
         -- Status flips (ready / applied) go through ApplicationRepo's structured update,

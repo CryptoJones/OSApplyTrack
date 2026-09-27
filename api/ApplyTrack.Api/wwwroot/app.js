@@ -78,12 +78,15 @@ const state = {
   sort: readStoredSort(),
   current: null,
   currentVersion: "",
-  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors | search | analytics
+  mode: "empty", // empty | view | edit | raw | new | settings | pipeline | status | errors | search | analytics | due
   // The Analytics view's range (#353): "" for all time, else the last N days.
   analyticsDays: "",
   // Ready applications whose last browser run failed (#284): their own chip and view,
   // and no longer counted or listed under Ready.
   errors: [],
+  // The interviews coming up (#354), for the Due chip and view; follow-ups come off the list.
+  dueInterviews: [],
+  dueLoadedAt: 0,
   settingsTab: "accessibility",
   coverLettersEnabled: true,
   // The agent (Settings · Agent) is opt-in; OFF hides the evaluate affordance.
@@ -352,6 +355,11 @@ function renderPipeline() {
   const errorCount = state.errors.length;
   const counts = { ...raw, ready: Math.max(0, (raw.ready || 0) - errorCount) };
   const parts = [];
+  // Due (#354): follow-ups due today or overdue, and interviews in the coming week.
+  const dueCount = dueFollowups().length + state.dueInterviews.length;
+  if (dueCount || state.mode === "due") parts.push(`<button type="button" class="pipe-stat" data-view="due"
+      aria-pressed="${state.mode === "due"}" aria-label="${dueCount} due — follow-ups and interviews">
+      <span class="n" aria-hidden="true">${dueCount}</span><span>due</span></button>`);
   const errorsChip = () => `<button type="button" class="pipe-stat" data-view="errors" data-status="errors"
       aria-pressed="${state.mode === "errors"}" aria-label="${errorCount} application${errorCount === 1 ? "" : "s"} with errors">
       <span class="n" aria-hidden="true">${errorCount}</span><span>error${errorCount === 1 ? "" : "s"}</span></button>`;
@@ -378,6 +386,11 @@ function renderPipeline() {
     ${parts.join("") || `<span class="pipeline-empty">No applications yet</span>`}`;
   pipelineEl.querySelector("#pipeline-btn").addEventListener("click", () => openPipeline());
   pipelineEl.querySelector("#analytics-btn").addEventListener("click", () => openAnalytics());
+  const dueBtn = pipelineEl.querySelector('.pipe-stat[data-view="due"]');
+  if (dueBtn) dueBtn.addEventListener("click", () => {
+    if (state.mode === "due") { renderEmpty(); renderPipeline(); }
+    else openDue();
+  });
   const errorsBtn = pipelineEl.querySelector('.pipe-stat[data-view="errors"]');
   if (errorsBtn) errorsBtn.addEventListener("click", () => {
     if (state.mode === "errors") { renderEmpty(); renderPipeline(); }
@@ -428,7 +441,7 @@ function renderStatusView() {
       <td>${lanePill(a.lane)}</td>
       <td class="mono">${a.score ? escapeHtml(a.score) : "—"}</td>
       <td>${escapeHtml(a.created || "—")}</td>
-      <td>${escapeHtml(a.applied || "—")}${a.followup ? `<div class="field-help">follow-up ${escapeHtml(a.followup)}</div>` : ""}</td>
+      <td>${escapeHtml(a.applied || "—")}${a.followup ? `<div class="field-help">follow-up ${escapeHtml(a.followup)}${followupOverdue(a) ? ` ${OVERDUE_BADGE}` : ""}</div>` : ""}</td>
     </tr>`).join("");
   contentEl.innerHTML = `
     <div class="settings-shell pipeline-view">
@@ -570,6 +583,103 @@ function goToWhere(where) {
   statusSel.value = where;
   renderPipeline();
   openStatusView();
+}
+
+// ---- Due view (#354) -----------------------------------------------------------
+// What needs the person: follow-ups whose date has come (this device's date; overdue ones
+// flagged) on applications still in play, and the interviews in the coming week.
+
+const FOLLOWUP_STATUSES = new Set(["applied", "screen", "onsite", "offer"]);
+const OVERDUE_BADGE = `<span class="badge" data-status="rejected">Overdue</span>`;
+const DUE_TTL_MS = 5 * 60 * 1000;
+
+// Only a real YYYY-MM-DD counts — the follow-up field is free text.
+const followupDue = (a, today = isoDate()) =>
+  FOLLOWUP_STATUSES.has(a.status) && /^\d{4}-\d{2}-\d{2}$/.test(a.followup || "") && a.followup <= today;
+const followupOverdue = (a, today = isoDate()) => followupDue(a, today) && a.followup < today;
+
+function dueFollowups() {
+  const today = isoDate();
+  return state.apps.filter((a) => followupDue(a, today))
+    .sort((x, y) => x.followup.localeCompare(y.followup) || String(x.company).localeCompare(String(y.company)));
+}
+
+async function loadDue() {
+  try {
+    const r = await api("GET", `/api/due?today=${isoDate()}`);
+    state.dueInterviews = Array.isArray(r && r.interviews) ? r.interviews : [];
+  } catch {
+    // Keep what was last known; the next refresh asks again.
+  }
+  state.dueLoadedAt = Date.now();
+}
+
+const interviewWhen = (at) => new Date(at).toLocaleString([], {
+  weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+});
+
+async function openDue({ focus = true } = {}) {
+  state.mode = "due";
+  state.current = null;
+  state.filterStatus = "";
+  statusSel.value = "";
+  showDetailPane();
+  await loadDue();
+  renderPipeline();
+  renderSidebar();
+  if (focus) focusView("h1");
+}
+
+function renderDueView() {
+  const today = isoDate();
+  const follow = dueFollowups();
+  const interviews = state.dueInterviews;
+  const overdue = follow.filter((a) => a.followup < today).length;
+  const iRows = interviews.map((i) => `
+    <tr>
+      <td><time datetime="${escapeHtml(i.at)}">${escapeHtml(interviewWhen(i.at))}</time></td>
+      <td><button type="button" class="link-button" data-open="${escapeHtml(i.name)}">${pipelineRowTitle(i)}</button></td>
+      <td>${escapeHtml(i.note || "—")}</td>
+    </tr>`).join("");
+  const fRows = follow.map((a) => `
+    <tr>
+      <td><button type="button" class="link-button" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</button>
+        ${a.id ? `<div class="field-help mono">${escapeHtml(appId(a))}</div>` : ""}</td>
+      <td>${statusBadge(a.status)}</td>
+      <td>${escapeHtml(a.followup)} ${a.followup < today ? OVERDUE_BADGE : `<span class="field-help">today</span>`}</td>
+    </tr>`).join("");
+  const bits = [];
+  if (interviews.length) bits.push(`${interviews.length} interview${interviews.length === 1 ? "" : "s"} in the coming week`);
+  if (follow.length) bits.push(`${follow.length} follow-up${follow.length === 1 ? "" : "s"} due${overdue ? `, ${overdue} overdue` : ""}`);
+  contentEl.innerHTML = `
+    <div class="settings-shell pipeline-view">
+      <header class="settings-header">
+        <div class="sheet-eyebrow">Reminders</div>
+        <h1>Due</h1>
+        <p aria-live="polite">${bits.length ? escapeHtml(bits.join("; ")) + "." : "Nothing is due. Follow-up dates and interviews you add show up here."}</p>
+      </header>
+      ${interviews.length ? `
+      <h2 class="mt-5 due-section-title">Interviews</h2>
+      <div class="table-scroll">
+        <table class="pipeline-table">
+          <caption class="sr-only">Interviews in the coming week</caption>
+          <thead><tr><th scope="col">When</th><th scope="col">Application</th><th scope="col">Note</th></tr></thead>
+          <tbody>${iRows}</tbody>
+        </table>
+      </div>` : ""}
+      ${follow.length ? `
+      <h2 class="mt-5 due-section-title">Follow-ups</h2>
+      <p class="field-help">Move a follow-up's date, or clear it, on the application's form once you have followed up.</p>
+      <div class="table-scroll">
+        <table class="pipeline-table">
+          <caption class="sr-only">Follow-ups due today or overdue</caption>
+          <thead><tr><th scope="col">Application</th><th scope="col">Status</th><th scope="col">Follow-up</th></tr></thead>
+          <tbody>${fRows}</tbody>
+        </table>
+      </div>` : ""}
+    </div>`;
+  document.title = "Due | ApplyTrack";
+  contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
 }
 
 // ---- Errors view -------------------------------------------------------------
@@ -1026,6 +1136,7 @@ async function runBulk(act) {
 function renderSidebar() {
   const apps = filteredApps();
   const stuck = errorNames();
+  const today = isoDate();
   listEl.innerHTML = "";
   if (apps.length === 0) {
     listEl.innerHTML = searching()
@@ -1066,7 +1177,7 @@ function renderSidebar() {
         ${a.role ? `<span class="ic-role">${escapeHtml(a.role)}</span>` : ""}
         <span class="ic-meta">${a.id ? `<span class="mono">${escapeHtml(appId(a))}</span>` : ""} ${lanePill(a.lane)} ${score} ${posted}
           ${a.applied ? `<span>Applied ${escapeHtml(a.applied)}</span>` : ""}
-          ${a.followup ? `<span>Follow-up ${escapeHtml(a.followup)}</span>` : ""}</span>
+          ${a.followup ? `<span>Follow-up ${escapeHtml(a.followup)}${followupOverdue(a, today) ? ` ${OVERDUE_BADGE}` : ""}</span>` : ""}</span>
         ${contactLine}
       </span>
       <span class="card-chevron" aria-hidden="true">›</span>
@@ -1090,6 +1201,7 @@ function renderSidebar() {
     if (state.filterStatus) renderStatusView();
     else renderEmpty();
   }
+  else if (state.mode === "due") renderDueView();
   // A refresh that changed the list changes the results too.
   else if (state.mode === "search" && searching() && !contentEl.contains(document.activeElement)) renderSearchView();
 }
@@ -1191,6 +1303,25 @@ function renderView(data) {
         </div>
         <div class="prose-omi">${renderUntrustedMarkdown(f.notes || "_No notes yet._", { gfm: true, breaks: false })}</div>
       </section>
+      <section class="detail-section" aria-labelledby="interviews-heading">
+        <div class="section-heading">
+          <span class="section-kicker">Schedule</span>
+          <h3 id="interviews-heading">Interviews</h3>
+        </div>
+        <ul id="interview-list" class="timeline" aria-busy="true"><li class="field-help">Loading…</li></ul>
+        <form id="interview-form" class="interview-form mt-3" novalidate>
+          <div>
+            <label class="field-label" for="iv-at">Date and time</label>
+            <input id="iv-at" type="datetime-local" class="field-input" aria-describedby="iv-help" />
+          </div>
+          <div>
+            <label class="field-label" for="iv-note">Note (optional)</label>
+            <input id="iv-note" class="field-input" maxlength="2000" autocomplete="off" placeholder="Who, where, the call link" />
+          </div>
+          <button type="submit" class="btn btn-ghost">Add interview</button>
+        </form>
+        <p class="field-help" id="iv-help">In this device's time zone. Interviews show under Due, in the daily reminder and in the calendar feed.</p>
+      </section>
       <section class="detail-section" aria-labelledby="history-heading">
         <div class="section-heading">
           <span class="section-kicker">Timeline</span>
@@ -1235,7 +1366,78 @@ function renderView(data) {
   const verdictEl = contentEl.querySelector('[data-act="verdict"]');
   if (verdictEl) verdictEl.onclick = () => evaluateFit(data.filename, verdictEl);
   wirePacket(data);
+  wireInterviews(data.filename);
+  loadInterviews(data.filename);
   loadHistory(data.filename);
+}
+
+// The application's interviews (#354), soonest first, with a Remove button each.
+async function loadInterviews(name) {
+  const list = document.getElementById("interview-list");
+  let items;
+  try {
+    items = await api("GET", `/api/apps/${encodeURIComponent(name)}/interviews`);
+  } catch {
+    items = null;
+  }
+  if (!list || !list.isConnected || document.getElementById("interview-list") !== list
+    || state.current !== name || state.mode !== "view") return;
+  list.removeAttribute("aria-busy");
+  if (!Array.isArray(items)) { list.innerHTML = `<li class="field-help">Interviews are unavailable right now.</li>`; return; }
+  if (!items.length) { list.innerHTML = `<li class="field-help">No interviews scheduled.</li>`; return; }
+  list.innerHTML = items.map((i) => `
+    <li><time datetime="${escapeHtml(i.at)}">${escapeHtml(interviewWhen(i.at))}</time>
+      <span>${escapeHtml(i.note || "Interview")}</span>
+      <button type="button" class="btn btn-xs" data-iv-remove="${escapeHtml(String(i.id))}"
+        aria-label="Remove the interview on ${escapeHtml(interviewWhen(i.at))}">Remove</button></li>`).join("");
+  list.querySelectorAll("[data-iv-remove]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await api("DELETE", `/api/apps/${encodeURIComponent(name)}/interviews/${encodeURIComponent(b.dataset.ivRemove)}`);
+      toast("Interview removed.");
+      await afterInterviewChange(name);
+      document.getElementById("iv-at")?.focus();
+    } catch (e) {
+      b.disabled = false;
+      toast(e.message);
+    }
+  }));
+}
+
+async function afterInterviewChange(name) {
+  await Promise.all([loadInterviews(name), loadHistory(name), loadDue()]);
+  renderPipeline();
+}
+
+function wireInterviews(name) {
+  const form = document.getElementById("interview-form");
+  if (!form) return;
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const atEl = document.getElementById("iv-at");
+    const noteEl = document.getElementById("iv-note");
+    const when = atEl.value ? new Date(atEl.value) : null;
+    if (!when || Number.isNaN(when.getTime())) {
+      atEl.setAttribute("aria-invalid", "true");
+      toast("Choose the interview's date and time.");
+      atEl.focus();
+      return;
+    }
+    atEl.removeAttribute("aria-invalid");
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await api("POST", `/api/apps/${encodeURIComponent(name)}/interviews`, { at: when.toISOString(), note: noteEl.value.trim() });
+      atEl.value = "";
+      noteEl.value = "";
+      toast("Interview added.");
+      await afterInterviewChange(name);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 // The application's timeline (#353), oldest first, filled in once the sheet is up.
@@ -1255,9 +1457,15 @@ async function loadHistory(name) {
   if (!Array.isArray(entries)) { list.innerHTML = `<li class="field-help">History is unavailable right now.</li>`; return; }
   if (!entries.length) { list.innerHTML = `<li class="field-help">No status changes recorded.</li>`; return; }
   const label = (st) => escapeHtml((STATUS_LABEL[st] || st).replace(/^./, (c) => c.toUpperCase()));
+  // Interviews and the follow-up date (#354) sit among the statuses; a follow-up is a day.
+  const what = (e) => e.kind === "interview" ? `Interview${e.note ? ` — ${escapeHtml(e.note)}` : ""}`
+    : e.kind === "followup" ? "Follow-up due"
+    : e.from_status ? `${label(e.from_status)} <span aria-hidden="true">→</span><span class="sr-only">to</span> ${label(e.to_status)}`
+    : `Added as ${label(e.to_status)}`;
+  const when = (e) => e.kind === "followup" ? String(e.at).slice(0, 10) : new Date(e.at).toLocaleString();
   list.innerHTML = entries.map((e) => `
-    <li><time datetime="${escapeHtml(e.at)}">${escapeHtml(new Date(e.at).toLocaleString())}</time>
-      <span>${e.from_status ? `${label(e.from_status)} <span aria-hidden="true">→</span><span class="sr-only">to</span> ${label(e.to_status)}` : `Added as ${label(e.to_status)}`}</span></li>`).join("");
+    <li><time datetime="${escapeHtml(e.kind === "followup" ? String(e.at).slice(0, 10) : e.at)}">${escapeHtml(when(e))}</time>
+      <span>${what(e)}</span></li>`).join("");
 }
 
 // ---- The packet (Ready-to-submit queue) ---------------------------------------
@@ -2979,6 +3187,14 @@ function digestHourOptions(current) {
   }).join("");
 }
 
+// Whether a calendar feed link exists (#354), and when it was made and last read.
+function calendarStatus(s) {
+  if (!s.calendar_feed_enabled) return "No calendar link yet.";
+  const made = s.calendar_feed_created_at ? new Date(s.calendar_feed_created_at).toLocaleDateString() : "";
+  const used = s.calendar_feed_last_used_at ? `, last read by a calendar ${new Date(s.calendar_feed_last_used_at).toLocaleString()}` : ", not read by a calendar yet";
+  return `A calendar link is active${made ? ` (made ${escapeHtml(made)})` : ""}${escapeHtml(used)}.`;
+}
+
 function notificationsMarkup(s) {
   const secretsOff = !s.secrets_available;
   const emailOff = !s.email_available;
@@ -3006,6 +3222,12 @@ function notificationsMarkup(s) {
         ${eventBox("n-ev-ready", s.notify_packet_ready, "A packet is ready for you to submit (or the agent submitted it)")}
         ${eventBox("n-ev-code", s.notify_security_code, "A board sent a security code or sign-in check that the agent is waiting on")}
         ${eventBox("n-ev-failed", s.notify_submit_failed, "A submission did not go through")}
+        ${eventBox("n-ev-due", s.notify_followup_due, "Follow-ups due today and interviews in the next day — one reminder a day")}
+      </div>
+      <div class="mt-3">
+        <label class="field-label" for="n-reminder-hour">Send the daily reminder at</label>
+        <select id="n-reminder-hour" class="field-input" aria-describedby="n-reminder-help">${digestHourOptions(s.reminder_hour)}</select>
+        <p class="field-help" id="n-reminder-help">Only on a day with a follow-up due or an interview coming; overdue follow-ups ride along.</p>
       </div>
 
       <h3 class="mt-8">Email</h3>
@@ -3041,6 +3263,24 @@ function notificationsMarkup(s) {
           <label class="field-label" for="d-hour">Send it at</label>
           <select id="d-hour" class="field-input"${emailOff ? " disabled" : ""}>${digestHourOptions(s.digest_hour)}</select>
         </div>
+      </div>
+
+      <h3 class="mt-8" id="cal-heading">Calendar feed</h3>
+      <p class="field-help" id="cal-help">
+        Subscribe to your follow-up dates and interviews from any calendar app (Google Calendar,
+        Apple Calendar, Outlook) with a private link. It works without signing in, so treat it
+        like a password: anyone who has it can read those dates, and nothing else. Making a new
+        link turns the old one off.
+      </p>
+      <p id="cal-status" class="mt-3" role="status">${calendarStatus(s)}</p>
+      <div id="cal-link-wrap" class="mt-3" hidden>
+        <label class="field-label" for="cal-url">Your calendar link — copy it now, it is shown only once</label>
+        <input id="cal-url" class="field-input mono" readonly aria-describedby="cal-help" />
+      </div>
+      <div class="mt-3 flex items-center gap-2" role="group" aria-labelledby="cal-heading">
+        <button type="button" class="btn btn-ghost" data-act="cal-copy" hidden>Copy link</button>
+        <button type="button" class="btn btn-ghost" data-act="cal-new">${s.calendar_feed_enabled ? "Make a new link" : "Make a link"}</button>
+        <button type="button" class="btn btn-ghost" data-act="cal-off"${s.calendar_feed_enabled ? "" : " disabled"}>Turn the link off</button>
       </div>
 
       <h3 class="mt-8">Telegram</h3>
@@ -3132,6 +3372,8 @@ function wireNotifications() {
       notify_packet_ready: $("#n-ev-ready").checked,
       notify_security_code: $("#n-ev-code").checked,
       notify_submit_failed: $("#n-ev-failed").checked,
+      notify_followup_due: $("#n-ev-due").checked,
+      reminder_hour: Number($("#n-reminder-hour").value),
     };
     // A disabled switch (no mail server here) is left as it is on the server.
     const emailEl = $("#e-enabled");
@@ -3162,6 +3404,7 @@ function wireNotifications() {
       toast(e.message);
     }
   };
+  wireCalendarFeed();
   const mailboxTestEl = contentEl.querySelector('[data-act="mailbox-test"]');
   mailboxTestEl.onclick = async () => {
     mailboxTestEl.disabled = true;
@@ -3327,6 +3570,60 @@ async function loadNotificationsTab(body, gen = settingsGen) {
   wireNotifications();
 }
 
+// The calendar feed's link (#354): made, replaced or turned off at once, not on Save. The
+// link is in the answer to "make" only — the server keeps a hash — so it is shown then.
+function wireCalendarFeed() {
+  const newBtn = contentEl.querySelector('[data-act="cal-new"]');
+  const offBtn = contentEl.querySelector('[data-act="cal-off"]');
+  const copyBtn = contentEl.querySelector('[data-act="cal-copy"]');
+  const statusEl = $("#cal-status");
+  const urlEl = $("#cal-url");
+  if (!newBtn || !offBtn || !copyBtn || !statusEl || !urlEl) return;
+  copyBtn.onclick = () => copyText(urlEl.value, "Calendar link copied.");
+  newBtn.onclick = async () => {
+    if (!offBtn.disabled && !await confirmAction({
+      title: "Make a new calendar link?",
+      message: "The current link stops working at once; every calendar subscribed to it needs the new one.",
+      confirmLabel: "Make a new link",
+    })) return;
+    newBtn.disabled = true;
+    try {
+      const r = await api("POST", "/api/calendar/feed");
+      urlEl.value = r.url || `${location.origin}${r.path}`;
+      $("#cal-link-wrap").hidden = false;
+      copyBtn.hidden = false;
+      statusEl.textContent = "A new calendar link is active. Copy it into your calendar app's “subscribe by URL”.";
+      newBtn.textContent = "Make a new link";
+      offBtn.disabled = false;
+      urlEl.focus();
+      urlEl.select();
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      newBtn.disabled = false;
+    }
+  };
+  offBtn.onclick = async () => {
+    if (!await confirmAction({
+      title: "Turn the calendar link off?",
+      message: "Calendars subscribed to it stop getting your follow-ups and interviews.",
+      confirmLabel: "Turn it off",
+    })) return;
+    try {
+      await api("DELETE", "/api/calendar/feed");
+      urlEl.value = "";
+      $("#cal-link-wrap").hidden = true;
+      copyBtn.hidden = true;
+      statusEl.textContent = "The calendar link is off.";
+      newBtn.textContent = "Make a link";
+      offBtn.disabled = true;
+      newBtn.focus();
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+}
+
 // ---- Boot + refresh -------------------------------------------------------
 
 async function refresh() {
@@ -3336,7 +3633,11 @@ async function refresh() {
     // evidence, not the application — and the "In Errors" tag must follow it (#322).
     const before = [...errorNames()].sort().join("\n");
     await loadErrors();
-    if ([...errorNames()].sort().join("\n") !== before) { renderPipeline(); renderSidebar(); }
+    // The coming interviews move with the clock, not the list: re-asked every few minutes.
+    const dueBefore = state.dueInterviews.map((i) => i.id).join(",");
+    if (Date.now() - state.dueLoadedAt > DUE_TTL_MS) await loadDue();
+    const dueChanged = state.dueInterviews.map((i) => i.id).join(",") !== dueBefore;
+    if (dueChanged || [...errorNames()].sort().join("\n") !== before) { renderPipeline(); renderSidebar(); }
     return false;
   }
 
@@ -3344,6 +3645,7 @@ async function refresh() {
   // list means they are unchanged too. Fetch them only after an ETag miss.
   const stats = await api("GET", "/api/stats");
   await loadErrors();
+  await loadDue();
   state.apps = list.data;
   state.stats = stats;
   state.appsEtag = list.etag;

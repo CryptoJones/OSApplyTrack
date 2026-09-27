@@ -55,7 +55,7 @@ public sealed class PacketReadyNotifier
     }
 
     /// <summary>The per-event toggle a moment answers to (Settings · Notifications).</summary>
-    public enum Kind { PacketReady, SecurityCode, SubmitFailed }
+    public enum Kind { PacketReady, SecurityCode, SubmitFailed, FollowupDue }
 
     public static Kind KindOf(Moment moment) => moment switch
     {
@@ -68,6 +68,7 @@ public sealed class PacketReadyNotifier
     {
         Kind.SecurityCode => events.SecurityCode,
         Kind.SubmitFailed => events.SubmitFailed,
+        Kind.FollowupDue => events.FollowupDue,
         _ => events.PacketReady,
     };
 
