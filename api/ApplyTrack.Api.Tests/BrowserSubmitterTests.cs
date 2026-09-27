@@ -3252,7 +3252,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var packet = Packet();
         packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3");
         // In the page's order — City first — so the first try at City finds an empty list.
-        packet.Questions.Add(new("single-select-3|input", "City", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        // Optional as the packet has it, required as the page draws it: retried all the same.
+        packet.Questions.Add(new("single-select-3|input", "City", false, PacketQuestion.Text, [], PacketQuestion.Standard));
         packet.Questions.Add(new("single-select-4|input", "State", true, PacketQuestion.Text, [], PacketQuestion.Standard));
         packet.Questions.Add(new("single-select-2|input", "Country", true, PacketQuestion.Text, [], PacketQuestion.Standard));
         packet.Answers["single-select-3|input"] = "Minden";

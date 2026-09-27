@@ -739,7 +739,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             foreach (var (key, label) in await RequiredEmptyAsync(form))
             {
                 var q = FindQuestion(packet, key, label);
-                if (q is null || q.Type == PacketQuestion.File || (!mapped.Contains(q.Id) && !unmapped.Contains(q.Id))
+                // Judged by the page, not the packet: a question the packet calls optional that
+                // the form requires was never marked unmapped when its fill failed.
+                if (q is null || q.Type == PacketQuestion.File
                     || !packet.Answers.TryGetValue(q.Id, out var again) || string.IsNullOrWhiteSpace(again))
                     continue;
                 if (!await FillAsync(form, q, again)) continue;
