@@ -3731,6 +3731,46 @@ async function runPoll() {
 }
 $("#poll-btn").addEventListener("click", runPoll);
 
+// ---- Poller status (#359) ---------------------------------------------------
+// "Last polled 12 min ago · 2 sources failing", from the poller's own record of its
+// latest passes. The failing sources sit in a disclosure, so the line stays short and
+// the reasons are one keypress away. Any failure leaves the line as it was.
+
+function agoText(iso) {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+async function showPollStatus() {
+  const el = $("#poll-status");
+  if (!el) return;
+  let s;
+  try {
+    s = await api("GET", "/api/poll/status");
+  } catch (_) {
+    return;
+  }
+  const failing = Array.isArray(s.failing) ? s.failing : [];
+  const when = s.last_polled_at
+    ? `Last polled <time datetime="${escapeHtml(s.last_polled_at)}">${escapeHtml(agoText(s.last_polled_at))}</time>`
+    : "Not polled yet";
+  // Keep an open disclosure open across the minute's re-render.
+  const wasOpen = el.querySelector("details")?.open === true;
+  const n = failing.length;
+  el.innerHTML = `<span>${when}</span>${n ? ` · <details class="poll-failing"${wasOpen ? " open" : ""}>
+      <summary>${n} source${n === 1 ? "" : "s"} failing</summary>
+      <ul>${failing.map((f) => `<li><span class="mono">${escapeHtml(f.source)}</span>: ${escapeHtml(f.error)}</li>`).join("")}</ul>
+    </details>` : ""}`;
+  el.hidden = false;
+}
+
+const POLL_STATUS_MS = 60000;
+setInterval(() => { if (!document.hidden && !$("#poll-status")?.hidden) showPollStatus(); }, POLL_STATUS_MS);
+
 // ---- Data export / import (account portability) ---------------------------
 
 // Download one of the two export flavours as a JSON file: the full private snapshot
@@ -4319,6 +4359,7 @@ async function showBetaTerms() {
     state.longTail = agent.value.long_tail === true;
     state.linkedinEasy = agent.value.linkedin_easy === true;
   }
+  showPollStatus();
   try {
     await refresh();
     // A notification's deep link (/#app=<name>) opens that application on load; the

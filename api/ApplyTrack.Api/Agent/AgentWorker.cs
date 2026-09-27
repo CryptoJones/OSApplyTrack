@@ -8,6 +8,7 @@ using ApplyTrack.Api.Crypto;
 using ApplyTrack.Api.Data;
 using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Notifications;
+using ApplyTrack.Api.Observability;
 using Dapper;
 using Npgsql;
 
@@ -263,6 +264,11 @@ public sealed class AgentWorker : BackgroundService
         {
             await using var conn = await _db.OpenConnectionAsync(ct);
             await AgentWorkerRegistry.HeartbeatAsync(conn, _workerId, _browser.IsConfigured);
+            // The queue-depth gauge (#359), counted only when a metrics reader collects it.
+            // An instance-wide count, like the claim itself: a number, never whose rows.
+            if (AppMetrics.SubmitQueueObserved)
+                AppMetrics.SetSubmitQueueDepth(await conn.ExecuteScalarAsync<long>(
+                    "SELECT count(*) FROM submit_requests WHERE done_at IS NULL"));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -731,6 +737,7 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "browser: " + reason, rec.Fields.Company, rec.Fields.Role });
             _log.LogWarning(ex, "{Name}: browser submission failed", rec.Name);
+            AppMetrics.RecordAgentRun(detected, "crashed", dryRun);
             await ReleaseLinkedInAsync();
             // A real run that died is news the person needs: the application was meant to be
             // sent and was not (#355). A dry run's failure is the reconciler's to retry.
@@ -750,6 +757,7 @@ public sealed class AgentWorker : BackgroundService
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = "posting closed before submission — lead marked passed", rec.Fields.Company, rec.Fields.Role });
             _log.LogInformation("{Name}: posting closed, marked passed", rec.Name);
+            AppMetrics.RecordAgentRun(detected, "closed", dryRun);
             return false;
         }
 
@@ -766,6 +774,7 @@ public sealed class AgentWorker : BackgroundService
                 captcha = true, rec.Fields.Company, rec.Fields.Role,
             });
             _log.LogInformation("{Name}: captcha on the form, left for the human", rec.Name);
+            AppMetrics.RecordAgentRun(detected, "captcha", dryRun);
             if (!dryRun)
                 await _notifier.NotifyAsync(notifications, packets, events, rec.Name, rec.Fields.Company, rec.Fields.Role, ct,
                     PacketReadyNotifier.Moment.SubmitFailed, "a captcha on the form — it is yours to submit by hand");
@@ -775,6 +784,7 @@ public sealed class AgentWorker : BackgroundService
         var kind = outcome.Submitted ? AgentEvidenceRepo.Kinds.Submitted
             : outcome.Filled && dryRun && outcome.Error.Length == 0 ? AgentEvidenceRepo.Kinds.DryRun
             : AgentEvidenceRepo.Kinds.Failed;
+        AppMetrics.RecordAgentRun(detected, kind, dryRun);
         // What still needs the person after this fill: the required questions nobody could
         // answer, and the required fields no answer could be typed into — by label, since
         // that is what the person will be looking for on the form (#190).

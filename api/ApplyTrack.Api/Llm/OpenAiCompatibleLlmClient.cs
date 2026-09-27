@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Aaron K. Clark
 
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -8,6 +9,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using ApplyTrack.Api.Data;
+using ApplyTrack.Api.Observability;
 using ApplyTrack.Api.Scrape;
 
 namespace ApplyTrack.Api.Llm;
@@ -54,6 +56,25 @@ public sealed class OpenAiCompatibleLlmClient : ILlmClient
             throw new LlmUnavailableException(
                 "no LLM endpoint is configured — set one in AI settings or ask the operator to set Llm__BaseUrl/Llm__Model");
 
+        // Latency and errors per call (#359), by whose endpoint it was — never its URL.
+        var endpoint = cfg.TenantBaseUrl ? "tenant" : "operator";
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            var content = await CompleteConfiguredAsync(systemPrompt, userPrompt, cfg, ct);
+            AppMetrics.RecordLlmCall(endpoint, Stopwatch.GetElapsedTime(started), null);
+            return content;
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            AppMetrics.RecordLlmCall(endpoint, Stopwatch.GetElapsedTime(started), ex);
+            throw;
+        }
+    }
+
+    private async Task<string> CompleteConfiguredAsync(
+        string systemPrompt, string userPrompt, EffectiveLlmConfig cfg, CancellationToken ct)
+    {
         var url = cfg.BaseUrl.TrimEnd('/') + "/chat/completions";
         var payload = new
         {

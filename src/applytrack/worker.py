@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from functools import partial
 from typing import Protocol
 
@@ -95,7 +96,11 @@ def _release_tenant_poll_lock(conn: psycopg.Connection, tenant_id: int) -> None:
 
 
 def _gather_by_source(
-    profiles: Iterable[Criteria], limit: int, *, ats_only: bool = False
+    profiles: Iterable[Criteria],
+    limit: int,
+    *,
+    ats_only: bool = False,
+    failures: dict[str, str] | None = None,
 ) -> dict[str, list[Listing]]:
     """Fetch every source enabled by *any* profile once, keyed by source id.
 
@@ -112,6 +117,9 @@ def _gather_by_source(
     freshness fast lane: ATS boards close fastest, and hitting only the per-employer
     board APIs on a short cadence does not touch the shared aggregators' rate limits,
     so this can run far more often than the full hourly poll.
+
+    ``failures``, when given, collects ``{source key: what went wrong}`` for each source
+    that raised, so each tenant's ``poll_runs`` row can name its failing sources (#359).
     """
     builtin: set[str] = set()
     boards: dict[str, AtsBoard] = {}
@@ -155,6 +163,8 @@ def _gather_by_source(
             # One bad source must not abort the gather.
             gathered[key] = []
             logger.warning("poll source %s failed", key, exc_info=outcome)
+            if failures is not None:
+                failures[key] = _describe(outcome)
         else:
             gathered[key] = outcome
     return gathered
@@ -163,6 +173,50 @@ def _gather_by_source(
 def _fetch_feed(url: str, clients: ThreadClients, limit: int) -> list[Listing]:
     """One custom feed, on this pool thread's own SSRF-safe client."""
     return make_rss_fetcher(url)(clients.get(), limit)
+
+
+# How much of a failure's message a poll_runs row keeps: enough to tell a 403 from a
+# timeout, not a stack trace.
+_MAX_ERROR_CHARS = 300
+
+
+def _describe(exc: BaseException) -> str:
+    """One line for a failed source: the exception type and its message, capped."""
+    text = f"{type(exc).__name__}: {exc}".strip().rstrip(":")
+    return text[:_MAX_ERROR_CHARS]
+
+
+def _source_keys(profile: Criteria, *, ats_only: bool) -> list[str]:
+    """The shared-gather keys this tenant's profile draws on — the same keys
+    :func:`_gather_by_source` fetches and :func:`_select_for_profile` routes by."""
+    keys: list[str] = []
+    if not ats_only:
+        keys += [n for n, on in profile.sources.items() if on and n in SOURCE_FETCHERS]
+    keys += [f"{b.provider}:{b.slug}" for b in profile.ats_boards]
+    if not ats_only:
+        keys += [f"rss:{url}" for url in profile.rss_feeds]
+    return keys
+
+
+def _record_run(
+    repo: TenantRepo,
+    tenant_id: int,
+    started_at: datetime,
+    *,
+    ats_only: bool,
+    leads_added: int,
+    errors: list[dict[str, str]],
+) -> None:
+    """Write this tenant's ``poll_runs`` row (#359). Best effort, like :func:`_mark_polled`:
+    a database the api has not migrated yet must not fail a poll, and the offline fakes
+    may have no such method."""
+    record = getattr(repo, "record_run", None)
+    if record is None:
+        return
+    try:
+        record(started_at, ats_only=ats_only, leads_added=leads_added, errors=errors)
+    except Exception:  # noqa: BLE001 - the leads are in; the run row is bookkeeping
+        logger.warning("could not record the poll run for tenant %s", tenant_id, exc_info=True)
 
 
 def _mark_polled(repo: TenantRepo, tenant_id: int) -> None:
@@ -210,6 +264,7 @@ def run_all_tenants(
     freshness fast lane (see :func:`_gather_by_source`). It is ignored when a
     ready-made ``gathered`` is supplied.
     """
+    started_at = datetime.now(timezone.utc)
     if repo_for is None:
         if conn is None:
             raise ValueError("run_all_tenants needs either conn or repo_for")
@@ -249,21 +304,32 @@ def run_all_tenants(
     # setup raises is isolated here so the shared gather still runs for the rest.
     repos: dict[int, TenantRepo] = {}
     profiles: dict[int, Criteria] = {}
+    # What failed, for each tenant's poll_runs row (#359): the shared sources once, the
+    # signed-in ones per tenant.
+    shared_failures: dict[str, str] = {}
     results: dict[int, list[str]] = {
         tid: [] for tid in tenant_ids if tid not in pollable_tenant_ids
     }
     try:
         for tid in pollable_tenant_ids:
+            repo = None
             try:
                 repo = repo_for(tid)
                 profiles[tid] = repo.load_profile()
                 repos[tid] = repo
-            except Exception:  # noqa: BLE001 - isolate one tenant's failure
+            except Exception as exc:  # noqa: BLE001 - isolate one tenant's failure
                 results[tid] = []
                 logger.warning("poll setup failed for tenant %s", tid, exc_info=True)
+                if repo is not None:
+                    _record_run(
+                        repo, tid, started_at, ats_only=ats_only, leads_added=0,
+                        errors=[{"source": "poll", "error": _describe(exc)}],
+                    )
 
         if gathered is None:
-            gathered = _gather_by_source(profiles.values(), limit_per_source, ats_only=ats_only)
+            gathered = _gather_by_source(
+                profiles.values(), limit_per_source, ats_only=ats_only, failures=shared_failures
+            )
         # Every tenant stages from the same shared listings: what one tenant's link
         # checks learned about a URL holds for the rest of the run (#347).
         link_cache = LinkCache()
@@ -271,6 +337,7 @@ def run_all_tenants(
         for tid in pollable_tenant_ids:
             if tid not in repos:
                 continue  # setup failed above; its empty result is already recorded
+            own_failures: dict[str, str] = {}
             try:
                 listings = _select_for_profile(gathered, profiles[tid])
                 # A signed-in source is the tenant's own, never shared: gathered here,
@@ -278,20 +345,22 @@ def run_all_tenants(
                 if profiles[tid].sources.get(mygreenhouse.SOURCE) and not ats_only:
                     key = f"{mygreenhouse.SOURCE}:{tid}"
                     if key not in gathered:
-                        gathered[key] = _gather_portal(repos[tid], profiles[tid], limit_per_source)
+                        gathered[key] = _gather_portal(
+                            repos[tid], profiles[tid], limit_per_source, own_failures
+                        )
                     listings = [*listings, *gathered[key]]
                 if profiles[tid].sources.get(linkedin.SOURCE) and not ats_only:
                     key = f"{linkedin.SOURCE}:{tid}"
                     if key not in gathered:
                         gathered[key] = _gather_linkedin(
-                            repos[tid], profiles[tid], limit_per_source
+                            repos[tid], profiles[tid], limit_per_source, own_failures
                         )
                     listings = [*listings, *gathered[key]]
                 if profiles[tid].sources.get(handshake.SOURCE) and not ats_only:
                     key = f"{handshake.SOURCE}:{tid}"
                     if key not in gathered:
                         gathered[key] = _gather_handshake(
-                            repos[tid], profiles[tid], limit_per_source
+                            repos[tid], profiles[tid], limit_per_source, own_failures
                         )
                     listings = [*listings, *gathered[key]]
                 results[tid] = score_and_stage(
@@ -301,11 +370,20 @@ def run_all_tenants(
                     verify_links=verify_links,
                     link_cache=link_cache,
                 )
-            except Exception:  # noqa: BLE001 - isolate one tenant's failure
+            except Exception as exc:  # noqa: BLE001 - isolate one tenant's failure
                 results[tid] = []
                 logger.warning("poll failed for tenant %s", tid, exc_info=True)
+                own_failures["poll"] = _describe(exc)
+                _record_run(
+                    repos[tid], tid, started_at, ats_only=ats_only, leads_added=0,
+                    errors=_run_errors(profiles[tid], ats_only, shared_failures, own_failures),
+                )
                 continue
             _mark_polled(repos[tid], tid)
+            _record_run(
+                repos[tid], tid, started_at, ats_only=ats_only, leads_added=len(results[tid]),
+                errors=_run_errors(profiles[tid], ats_only, shared_failures, own_failures),
+            )
         return results
     finally:
         if conn is not None:
@@ -316,7 +394,26 @@ def run_all_tenants(
                     logger.warning("poll lock release failed for tenant %s", tid, exc_info=True)
 
 
-def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+def _run_errors(
+    profile: Criteria,
+    ats_only: bool,
+    shared_failures: dict[str, str],
+    own_failures: dict[str, str],
+) -> list[dict[str, str]]:
+    """This tenant's failing sources for its ``poll_runs`` row: the shared ones it draws
+    on, then its own signed-in ones and the pass itself. Never another tenant's source."""
+    errors = [
+        {"source": key, "error": shared_failures[key]}
+        for key in _source_keys(profile, ats_only=ats_only)
+        if key in shared_failures
+    ]
+    errors += [{"source": key, "error": err} for key, err in own_failures.items()]
+    return errors
+
+
+def _gather_portal(
+    repo: TenantRepo, profile: Criteria, limit: int, failures: dict[str, str] | None = None
+) -> list[Listing]:
     """One tenant's MyGreenhouse listings (#218), searched with the session the agent's
     browser keeps on the board-account row (#221). The poller never signs in itself: the
     portal answers a plain client's request for a security code with a redirect and no
@@ -356,12 +453,16 @@ def _gather_portal(repo: TenantRepo, profile: Criteria, limit: int) -> list[List
                 if keep is not None:
                     keep("", None)
                 return []
-    except Exception:  # noqa: BLE001 - one tenant's portal must not abort the poll
+    except Exception as exc:  # noqa: BLE001 - one tenant's portal must not abort the poll
         logger.warning("poll source mygreenhouse failed", exc_info=True)
+        if failures is not None:
+            failures[mygreenhouse.SOURCE] = _describe(exc)
         return []
 
 
-def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+def _gather_linkedin(
+    repo: TenantRepo, profile: Criteria, limit: int, failures: dict[str, str] | None = None
+) -> list[Listing]:
     """One tenant's LinkedIn listings (#233): the offsite-apply postings behind the
     keyword searches, with the employer's link. Signed in with the session the agent's
     browser keeps on the board-account row when there is a live one; LinkedIn's guest
@@ -408,12 +509,16 @@ def _gather_linkedin(repo: TenantRepo, profile: Criteria, limit: int) -> list[Li
                 if keep is not None and account is not None:
                     keep("", None)
                 return []
-    except Exception:  # noqa: BLE001 - one tenant's LinkedIn must not abort the poll
+    except Exception as exc:  # noqa: BLE001 - one tenant's LinkedIn must not abort the poll
         logger.warning("poll source linkedin failed", exc_info=True)
+        if failures is not None:
+            failures[linkedin.SOURCE] = _describe(exc)
         return []
 
 
-def _gather_handshake(repo: TenantRepo, profile: Criteria, limit: int) -> list[Listing]:
+def _gather_handshake(
+    repo: TenantRepo, profile: Criteria, limit: int, failures: dict[str, str] | None = None
+) -> list[Listing]:
     """One tenant's Handshake listings (#267): the externally-applied postings behind the
     keyword searches, with the employer's own link. Unlike LinkedIn there is no guest
     path — Handshake's public pages expose a fraction of the board and hide the employer's
@@ -449,6 +554,8 @@ def _gather_handshake(repo: TenantRepo, profile: Criteria, limit: int) -> list[L
                 # Loud on purpose: a schema break otherwise looks exactly like a board
                 # with no jobs, and the source would return nothing indefinitely.
                 logger.error("handshake: %s", exc)
+                if failures is not None:
+                    failures[handshake.SOURCE] = _describe(exc)
                 return []
             except handshake.NeedsSignIn:
                 logger.info(
@@ -459,8 +566,10 @@ def _gather_handshake(repo: TenantRepo, profile: Criteria, limit: int) -> list[L
                 if keep is not None:
                     keep("", None)
                 return []
-    except Exception:  # noqa: BLE001 - one tenant's Handshake must not abort the poll
+    except Exception as exc:  # noqa: BLE001 - one tenant's Handshake must not abort the poll
         logger.warning("poll source handshake failed", exc_info=True)
+        if failures is not None:
+            failures[handshake.SOURCE] = _describe(exc)
         return []
 
 

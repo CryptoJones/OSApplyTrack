@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ApplyTrack.Api</RootNamespace>
-    <Version>1.63.0</Version>
+    <Version>1.64.0</Version>
     <Authors>Aaron K. Clark</Authors>
     <Copyright>Copyright 2026 Aaron K. Clark</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
@@ -17,6 +17,12 @@
     <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="Microsoft.Playwright" Version="1.61.0" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.19.1-beta.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
     <PackageReference Include="PdfPig" Version="0.1.15" />
   </ItemGroup>
 

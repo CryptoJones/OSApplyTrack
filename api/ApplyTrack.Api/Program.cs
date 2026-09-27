@@ -17,6 +17,7 @@ using ApplyTrack.Api.Llm;
 using ApplyTrack.Api.Materials;
 using ApplyTrack.Api.Middleware;
 using ApplyTrack.Api.Notifications;
+using ApplyTrack.Api.Observability;
 using ApplyTrack.Api.Agent.Greenhouse;
 using ApplyTrack.Api.Scrape;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -80,6 +81,8 @@ builder.Services.AddScoped(sp => new CriteriaRepo(
 builder.Services.AddScoped(sp => new BlacklistRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 builder.Services.AddScoped(sp => new PollRequestRepo(
+    sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
+builder.Services.AddScoped(sp => new PollRunRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId));
 // Magic-link delivery. With an SMTP host configured (Email:Host), mail goes out
 // over SMTP via MailKit — point it at any submission relay (local, your provider,
@@ -223,6 +226,11 @@ if (agentOptions.Enabled)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentWorker>());
 }
 
+// Opt-in OpenTelemetry and /metrics (#359): nothing is registered, and nothing leaves the
+// process, unless OTEL_EXPORTER_OTLP_ENDPOINT or Metrics__Port is set.
+builder.AddApplyTrackTelemetry(TelemetryOptions.From(builder.Configuration),
+    agentOptions.Enabled ? "applytrack-agent" : "applytrack-api");
+
 // The daily retention sweep (#350): old screenshots' bytes, dead sessions and magic-link
 // tokens, stale audit events, and — only when opted in — old dedup keys. The migrating
 // (owner) container runs it; a Migrations:Mode=wait worker's role cannot delete.
@@ -347,6 +355,9 @@ else
     // résumés, and the sweep is idempotent so one runner is enough.
     await AtRestEncryptor.SweepAsync(connectionString, app.Services.GetRequiredService<SecretProtector>(), app.Logger);
 }
+
+// The Prometheus scrape (#359), on its own port only, ahead of the session gate.
+app.UseApplyTrackMetricsEndpoint();
 
 // Honor forwarded client/protocol data only from a known reverse proxy. ASP.NET
 // Core's loopback defaults cover same-host Caddy/nginx/`tailscale serve`; container

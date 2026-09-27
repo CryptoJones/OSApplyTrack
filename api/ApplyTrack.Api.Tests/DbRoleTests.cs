@@ -75,8 +75,16 @@ public class DbRoleTests(PostgresFixture pg)
             new { t, h = new[] { "linkedin.com" } });
         await poller.ExecuteAsync("INSERT INTO poll_requests (tenant_id) VALUES (@t)", new { t });
         Assert.NotEmpty(await poller.QueryAsync<long>("DELETE FROM poll_requests RETURNING tenant_id"));
+        // Each finished pass (#358, #359).
+        await poller.ExecuteAsync("UPDATE users SET last_polled_at = now() WHERE id = @t", new { t });
+        await poller.ExecuteAsync(
+            "INSERT INTO poll_runs (tenant_id, started_at, ats_only, leads_added, errors) VALUES (@t, now(), false, 1, '[]'::jsonb)",
+            new { t });
 
         // And what it must not.
+        await AssertDeniedAsync(poller, "SELECT * FROM poll_runs");
+        await AssertDeniedAsync(poller, "UPDATE poll_runs SET leads_added = 9 WHERE tenant_id = @t", new { t });
+        await AssertDeniedAsync(poller, "DELETE FROM poll_runs WHERE tenant_id = @t", new { t });
         await AssertDeniedAsync(poller, "SELECT * FROM sessions");
         await AssertDeniedAsync(poller, "SELECT * FROM magic_tokens");
         await AssertDeniedAsync(poller, "SELECT email FROM users");
