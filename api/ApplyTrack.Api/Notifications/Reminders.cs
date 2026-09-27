@@ -15,14 +15,20 @@ namespace ApplyTrack.Api.Notifications;
 /// The daily reminder (#354): once a day, at the tenant's reminder hour (UTC), the
 /// follow-ups due that UTC day and the interviews in the next 24 hours, sent through the
 /// same channels as every other moo (Telegram and email, #355) and gated by its own
-/// per-event toggle. A day with nothing due today sends nothing; overdue follow-ups ride
-/// along on a day that does, so a stale date nudges without nagging every morning. The
-/// day is claimed before the send, so it goes at most once however many times this runs.
+/// per-event toggle. A day with nothing due today sends nothing (and stays unclaimed, so
+/// something dated today later still goes); overdue follow-ups ride along on a day that
+/// does, so a stale date nudges without nagging every morning. The day is claimed before
+/// the send, so it goes at most once however many times this runs.
 /// </summary>
 public static class Reminders
 {
     /// <summary>How many of each list one message names; the rest are counted.</summary>
     public const int MaxListed = 10;
+
+    /// <summary>A note quoted in the message is cut to this; the whole message to <see cref="MaxChars"/>
+    /// (Telegram refuses a message over 4096 characters).</summary>
+    public const int MaxNoteChars = 120;
+    public const int MaxChars = 4000;
 
     /// <summary>The window of interviews a reminder covers, from the moment it goes.</summary>
     public static readonly TimeSpan Window = TimeSpan.FromHours(24);
@@ -64,14 +70,19 @@ public static class Reminders
         }
         Section("Interviews in the next 24 hours:", due.Interviews,
             i => $"{i.At.ToUniversalTime().ToString("ddd d MMM, HH:mm", CultureInfo.InvariantCulture)} UTC — {Who(i.Company, i.Role)}"
-                + (i.Note.Trim().Length > 0 ? $" ({i.Note.Trim().ReplaceLineEndings(" ")})" : ""),
+                + (Clip(i.Note.Trim().ReplaceLineEndings(" "), MaxNoteChars) is { Length: > 0 } note ? $" ({note})" : ""),
             i => i.Name);
         Section("Follow-ups due today:", today, f => $"#{f.Id} {Who(f.Company, f.Role)}", f => f.Name);
         Section($"Overdue follow-ups ({overdue.Count}):", overdue,
             f => $"#{f.Id} {Who(f.Company, f.Role)} — was due {f.Followup}", f => f.Name);
-        text.Append("\nMove a follow-up's date, or clear it, to stop hearing about it.");
-        return (subject, text.ToString());
+        const string footer = "\nMove a follow-up's date, or clear it, to stop hearing about it.";
+        var body = text.ToString();
+        if (body.Length + footer.Length > MaxChars)
+            body = body[..(MaxChars - footer.Length - 2)] + "…\n";
+        return (subject, body + footer);
     }
+
+    private static string Clip(string s, int max) => s.Length > max ? s[..(max - 1)] + "…" : s;
 
     /// <summary>
     /// Remind every tenant whose reminder is due at <paramref name="now"/>: the event on, a
@@ -129,9 +140,15 @@ public static class Reminders
                 new { t, day = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) }, tx);
             if (claimed == 0) return false;
             due = await new AppEventRepo(conn, t).DueAsync(day, now, now + Window, tx);
+            // Nothing to say yet: leave the day unclaimed, so a follow-up dated today or an
+            // interview added later in the day still gets its reminder on a later sweep.
+            if (!Worth(due))
+            {
+                tx.Rollback();
+                return false;
+            }
             tx.Commit();
         }
-        if (!Worth(due)) return false;
         var (subject, text) = Message(due, publicBaseUrl);
         var settings = new NotificationSettingsRepo(conn, t, protector, logs.CreateLogger<NotificationSettingsRepo>());
         return await notifier.SendAsync(settings, text, ct, PacketReadyNotifier.Kind.FollowupDue, subject);

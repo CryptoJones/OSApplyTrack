@@ -378,6 +378,33 @@ public class RemindersTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_day_with_nothing_due_stays_unclaimed_so_a_follow_up_added_later_still_goes()
+    {
+        var (conn, t, address) = await ReminderTenantAsync(_pg, telegram: false);
+        await using var c = conn;
+        var mail = new CapturingEmailSender();
+        await RemindAsync(conn, new CapturingNotifier(), mail, Morning);
+        Assert.DoesNotContain(mail.Messages, m => m.To == address);
+
+        await AppAsync(conn, t, "added.md", "applied", "2026-09-26");
+        await RemindAsync(conn, new CapturingNotifier(), mail, Morning.AddHours(4));
+        var sent = Assert.Single(mail.Messages, m => m.To == address);
+        Assert.Contains("added.md", sent.TextBody);
+    }
+
+    [Fact]
+    public void The_message_stays_under_telegrams_limit_whatever_the_notes()
+    {
+        var interviews = Enumerable.Range(1, 40)
+            .Select(i => new DueInterview(i, $"a{i}.md", new string('C', 250), new string('R', 250),
+                new DateTime(2026, 9, 26, 15, 0, 0, DateTimeKind.Utc), new string('n', 2000))).ToList();
+        var (_, text) = Reminders.Message(new DueList("2026-09-26", [], interviews), "https://apply.example");
+        Assert.True(text.Length <= Reminders.MaxChars, $"{text.Length} chars");
+        Assert.DoesNotContain(new string('n', Reminders.MaxNoteChars + 1), text);
+        Assert.EndsWith("to stop hearing about it.", text);
+    }
+
+    [Fact]
     public void The_message_counts_what_it_does_not_list()
     {
         var many = Enumerable.Range(1, Reminders.MaxListed + 3)

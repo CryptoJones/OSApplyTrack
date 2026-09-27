@@ -331,7 +331,7 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist + `status_events` (the dated status history). |
+| `GET`    | `/api/account/export` | One JSON snapshot: every application + criteria + blacklist + `status_events` (the dated status history) + `interviews`. |
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
 | `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
