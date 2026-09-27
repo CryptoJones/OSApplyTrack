@@ -339,6 +339,44 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
               };
             </script></body></html>
             """, "text/html"));
+        // Oracle Recruiting's dropdowns are Oracle JET <oj-select-single>, drawn as the live widget
+        // draws itself (rendered from Oracle's own CX bundle, 2026-09-27, #318): the visible
+        // input is a role=combobox whose aria-controls names the lovDropdown; a click hides it and
+        // focuses a second, filter input where the typing goes; the choices are <li role=row> of
+        // <div role=gridcell> in an oj-list-view appended to <body> — never role=option — and a
+        // choice is committed only by clicking one. The address's geography is dependent: State
+        // offers nothing until Country is set, City nothing until State is, and changing a parent
+        // empties its children. Hidden mirrors carry the values into the post.
+        _fixture.MapGet("/jobs/oracle-jet", () => Results.Content(OracleJetHtml, "text/html"));
+        // Oracle's Education block: "You need to add at least 1 Education item." with an Add
+        // button and no item yet (the profile-item-inline template, #318).
+        _fixture.MapGet("/jobs/oracle-education", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <label for="last_name">Last Name</label><input id="last_name" name="last_name">
+              <label for="email">Email</label><input id="email" name="email" type="email">
+              <label for="resume">Resume</label><input id="resume" name="resume" type="file">
+              <div class="apply-flow-block">
+                <div class="apply-flow-block__header"><h3 class="apply-flow-block__title apply-flow-block__title--required">Education</h3></div>
+                <div class="profile-item-container">
+                  <p class="input-row__validation input-row__validation--top profile-inline-validation" role="alert">You need to add at least 1 Education item.</p>
+                  <div class="standard-apply-flow-profile-item">
+                    <div class="profile-add-item">
+                      <button type="button" class="button apply-flow-profile-item-tile__new-tile" data-profile-item-invalid="true"><span class="button__label">Add Education</span></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="apply-flow-block">
+                <div class="apply-flow-block__header"><h3 class="apply-flow-block__title">Licenses and Certificates</h3></div>
+                <div class="profile-item-container"><div class="standard-apply-flow-profile-item"><div class="profile-add-item">
+                  <button type="button" class="button apply-flow-profile-item-tile__new-tile"><span class="button__label">Add License</span></button>
+                </div></div></div>
+              </div>
+              <button type="submit">Submit</button>
+            </form></body></html>
+            """, "text/html"));
         // Oracle's easy-apply, signed in: a résumé import (or a resumed draft) with "manually" as
         // the way to the standard flow (#318).
         _fixture.MapGet("/oracle/job/1/easy-apply", () => Results.Content(
@@ -1343,6 +1381,78 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
           <button type="submit">Submit application</button>
         </form>
         </body></html>
+        """;
+
+    private const string OracleJetHtml = """
+        <html><head><style>
+          .oj-searchselect-filter-input { visibility: hidden; }
+          .oj-listbox-drop-layer { position: absolute; top: 0; left: 0; background: #fff; }
+        </style></head><body><form method="post" action="/apply" enctype="multipart/form-data">
+          <label for="first_name">First Name</label><input id="first_name" name="first_name">
+          <label for="last_name">Last Name</label><input id="last_name" name="last_name">
+          <label for="email">Email</label><input id="email" name="email" type="email">
+          <label for="resume">Resume</label><input id="resume" name="resume" type="file">
+          <div id="rows"></div>
+          <button type="submit">Submit</button>
+        </form>
+        <script>
+          const geo = {
+            country: () => ['United States', 'Canada'],
+            state: () => ({ 'United States': ['Nebraska', 'Iowa', 'Kansas'], 'Canada': ['Ontario'] })[val.country] || [],
+            city: () => ({ 'Nebraska': ['Omaha', 'Lincoln', 'Minden'], 'Iowa': ['Des Moines'] })[val.state] || [],
+          };
+          const children = { country: ['state', 'city'], state: ['city'], city: [] };
+          const labels = { city: 'City', state: 'State', country: 'Country' };
+          const val = {}, mains = {};
+          // Oracle draws City above State, and State's list is Country's to give.
+          for (const [n, key] of [['single-select-3', 'city'], ['single-select-4', 'state'], ['single-select-2', 'country']]) {
+            const row = document.createElement('div');
+            row.className = 'input-row input-row--has-picker geo-hierarchy-form-element';
+            row.innerHTML = `<label class="input-row__label input-row__label--required" for="${n}"><span class="input-row__label-text">${labels[key]}<span class="cx-select__label--required" aria-hidden="true">*</span></span></label>
+              <div class="input-row__control-container"><oj-select-single id="${n}" class="oj-searchselect">
+                <div class="oj-text-field-container"><div class="oj-text-field-middle"><input id="${n}|input" class="oj-searchselect-input oj-text-field-input" aria-autocomplete="list" role="combobox" aria-expanded="false" aria-controls="lovDropdown_${n}" type="text" aria-required="true" tabindex="0" aria-label="${labels[key]}" autocomplete="off"></div></div>
+                <oj-input-text id="oj-searchselect-filter-${n}"><div class="oj-text-field-middle"><input aria-label="${labels[key]}" autocomplete="off" type="text" class="oj-inputtext-input oj-text-field-input oj-searchselect-filter-input" id="oj-searchselect-filter-${n}|input"></div></oj-input-text>
+                <input type="text" aria-hidden="true" style="display: none;" aria-label="${labels[key]}">
+              </oj-select-single></div><input type="hidden" name="${key}" id="mirror-${key}">`;
+            document.getElementById('rows').appendChild(row);
+            const main = row.querySelector('.oj-searchselect-input'), filter = row.querySelector('.oj-searchselect-filter-input');
+            mains[key] = main;
+            let layer = null;
+            const close = () => { if (layer) layer.style.display = 'none'; main.style.visibility = ''; filter.style.visibility = ''; main.tabIndex = 0; main.setAttribute('aria-expanded', 'false'); };
+            const render = () => {
+              const text = filter.value.trim().toLowerCase();
+              const ul = layer.querySelector('ul');
+              ul.innerHTML = '';
+              for (const o of geo[key]().filter(o => o.toLowerCase().includes(text))) {
+                const li = document.createElement('li');
+                li.setAttribute('role', 'row'); li.className = 'oj-listview-item';
+                li.innerHTML = `<div role="gridcell" class="oj-listview-cell-element" aria-selected="false"><oj-highlight-text><span>${o}</span></oj-highlight-text></div>`;
+                li.onclick = () => {
+                  const was = val[key]; val[key] = o; main.value = o;
+                  document.getElementById('mirror-' + key).value = o;
+                  if (was !== o) for (const c of children[key]) { val[c] = undefined; document.getElementById('mirror-' + c).value = ''; mains[c].value = ''; }
+                  close();
+                };
+                ul.appendChild(li);
+              }
+            };
+            main.addEventListener('mousedown', () => {
+              if (!layer) {
+                layer = document.createElement('div');
+                layer.id = `lovDropdown_${n}_layer`; layer.className = 'oj-listbox-drop-layer'; layer.setAttribute('role', 'presentation');
+                layer.innerHTML = `<div id="lovDropdown_${n}" class="oj-listbox-drop" role="presentation"><oj-list-view><ul role="grid" class="oj-listview-element" aria-label="${labels[key]}"></ul></oj-list-view></div>`;
+                document.body.appendChild(layer);
+              }
+              layer.style.display = 'block'; filter.value = '';
+              main.style.visibility = 'hidden'; main.tabIndex = -1; main.setAttribute('aria-expanded', 'true');
+              filter.style.visibility = 'visible';
+              render();
+              setTimeout(() => filter.focus(), 0);
+            });
+            filter.addEventListener('input', () => layer && render());
+            filter.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+          }
+        </script></body></html>
         """;
 
     private const string OracleEmailHtml = """
@@ -3115,6 +3225,65 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         var post = Assert.Single(_posts);
         Assert.Equal("729", post["300000469539525-22"]);
         Assert.Equal("Career site", post["hear"]);
+    }
+
+    [SkippableFact]
+    public async Task Oracles_jet_dropdowns_are_discovered_by_their_label_and_not_twice()
+    {
+        // The filter input JET keeps beside each dropdown is out of sight until it opens: one
+        // question per dropdown, named as the page names it, and required (#318).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/oracle-jet");
+        Assert.NotNull(questions);
+        foreach (var name in new[] { "City", "State", "Country" })
+            Assert.True(Assert.Single(questions!, q => q.Label == name).Required, name);
+        Assert.DoesNotContain(questions!, q => q.Id.StartsWith("oj-searchselect-filter-", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task Oracles_jet_dropdowns_are_chosen_from_their_rows_parents_first()
+    {
+        // Oracle's JET dropdown lists its choices as grid rows, not options, and takes typing only
+        // in the filter box it focuses on opening: the run typed into a box it had just hidden,
+        // found no role=option to click and committed nothing. And the address is dependent —
+        // City has nothing to offer until State is chosen, State nothing until Country (#318).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3");
+        // In the page's order — City first — so the first try at City finds an empty list.
+        packet.Questions.Add(new("single-select-3|input", "City", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Questions.Add(new("single-select-4|input", "State", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Questions.Add(new("single-select-2|input", "Country", true, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Answers["single-select-3|input"] = "Minden";
+        packet.Answers["single-select-4|input"] = "Nebraska";
+        packet.Answers["single-select-2|input"] = "United States";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-jet", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("United States", post["country"]);
+        Assert.Equal("Nebraska", post["state"]);
+        Assert.Equal("Minden", post["city"]);
+    }
+
+    [SkippableFact]
+    public async Task Oracles_required_education_block_with_no_item_is_not_clicked_through()
+    {
+        // "You need to add at least 1 Education item": a block with an Add button and no field
+        // for the sweep to see, so the run judged the page complete and clicked Submit (#318).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var packet = Packet();
+        packet.Questions.RemoveAll(q => q.Id is "question_2" or "question_3");
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/oracle-education", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.False(outcome.Submitted);
+        Assert.Empty(_posts);
+        // Named by the block's title; an optional block (Licenses) is not.
+        Assert.Contains("Education", outcome.Unmapped);
+        Assert.DoesNotContain(outcome.Unmapped, u => u.Contains("License", StringComparison.Ordinal));
     }
 
     [SkippableFact]

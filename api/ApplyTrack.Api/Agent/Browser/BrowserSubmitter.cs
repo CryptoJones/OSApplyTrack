@@ -375,14 +375,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (resumePdf is { } buttonPdf && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
                 && await UploadResumeByButtonAsync(form, buttonPdf))
                 mapped.Add("resume");
-            foreach (var (key, label) in await RequiredEmptyAsync(form))
-            {
-                var q = FindQuestion(packet, key, label);
-                if (q is null || !mapped.Contains(q.Id) || q.Type == PacketQuestion.File
-                    || !packet.Answers.TryGetValue(q.Id, out var again) || string.IsNullOrWhiteSpace(again))
-                    continue;
-                await FillAsync(form, q, again);
-            }
+            await RefillEmptiedAsync(form, packet, mapped, unmapped);
             // A form in pages — ClearCompany's "Page 1 · Page 2 · Page 3", evlo's five-step wizard
             // from "Upload Resume" to "Voluntary Self-Identification" — shows one page at a time
             // and its Submit only on the last. Discovery read page one, the fill above filled it,
@@ -731,6 +724,33 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             ? packet.Questions.FirstOrDefault(x => PacketQuestion.CleanLabel(x.Label).Equals(clean, StringComparison.OrdinalIgnoreCase))
             : null);
 
+    /// <summary>
+    /// Another go at what the page still marks required and empty and the packet can answer:
+    /// a field the page emptied behind our back, and a dependent list that had nothing to offer
+    /// when its turn came. Oracle's address lists City under State and State under Country, and
+    /// draws City first — its list is empty until State is chosen, so its fill failed (#318).
+    /// Repeated while a pass fills something, since each parent unlocks the next child.
+    /// </summary>
+    private static async Task RefillEmptiedAsync(IFrame form, AgentPacket packet, List<string> mapped, List<string> unmapped)
+    {
+        for (var pass = 0; pass < 3; pass++)
+        {
+            var progress = false;
+            foreach (var (key, label) in await RequiredEmptyAsync(form))
+            {
+                var q = FindQuestion(packet, key, label);
+                if (q is null || q.Type == PacketQuestion.File || (!mapped.Contains(q.Id) && !unmapped.Contains(q.Id))
+                    || !packet.Answers.TryGetValue(q.Id, out var again) || string.IsNullOrWhiteSpace(again))
+                    continue;
+                if (!await FillAsync(form, q, again)) continue;
+                unmapped.Remove(q.Id);
+                if (!mapped.Contains(q.Id)) mapped.Add(q.Id);
+                progress = true;
+            }
+            if (!progress) return;
+        }
+    }
+
     /// <summary>Find the control for a question — by accessible name first, then by the
     /// ATS field name — and set it. False when nothing visible matched.</summary>
     private static async Task<bool> FillAsync(IFrame page, PacketQuestion q, string answer)
@@ -803,12 +823,24 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // An open autocomplete (a geocoded city picker) may find nothing for the full text
         // and everything for a shorter one: "Minden, Nebraska (Remote)" → "Minden, Nebraska"
         // → "Minden". Fixed option sets get one try with the answer as given.
+        var elsewhere = false;
         foreach (var query in fixedSet ? [answer] : AutocompleteQueries(answer))
         {
             typed = query;
-            await control.ClickAsync();
-            try { await control.FillAsync(query); }
-            catch (PlaywrightException) { await page.Page.Keyboard.TypeAsync(query); } // a div-based widget: type at it
+            // Oracle JET's dropdown hides the box that was clicked and takes typing in a filter
+            // box it focuses instead (#318): typed at through the box that has the focus. Filling
+            // the hidden one can wait out its timeout — Playwright's TimeoutException, which the
+            // PlaywrightException catch never took — and end the whole run. Opened once; a later
+            // query types into the same filter box.
+            if (!elsewhere)
+            {
+                try { await control.ClickAsync(new() { Timeout = 5_000 }); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+                elsewhere = await TypesElsewhereAsync(page, control);
+            }
+            var box = elsewhere ? page.Locator("input:focus, textarea:focus").First : control;
+            try { await box.FillAsync(query, new() { Timeout = 3_000 }); }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { await page.Page.Keyboard.TypeAsync(query); } // a div-based widget: type at it
             if (!combobox) break;
             for (var i = 0; i < 12 && pick is null; i++)
             {
@@ -818,13 +850,42 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (pick is not null) break;
         }
         // No menu ever showed: commit whatever is under the caret. Only on a combobox —
-        // Enter in a plain text input submits the form it sits in.
-        if (pick is null && combobox)
+        // Enter in a plain text input submits the form it sits in — and never in a JET filter
+        // box, which commits nothing but a chosen row and is a plain input to its form.
+        if (pick is null && combobox && !elsewhere)
             await page.Page.Keyboard.PressAsync("Enter");
         if (pick is not null)
-            await pick.ClickAsync();
+        {
+            try { await pick.ClickAsync(new() { Timeout = 5_000 }); }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { pick = null; }
+        }
+        // A JET dropdown left open with nothing chosen (a dependent list whose parent is still
+        // empty) is closed, or its popup sits over the next field and its own box stays hidden.
+        if (pick is null && elsewhere && !await control.IsVisibleAsync())
+            await page.Page.Keyboard.PressAsync("Escape");
         await page.WaitForTimeoutAsync(300);
         return await CommittedAsync(control, typed);
+    }
+
+    /// <summary>Did opening the control hide it and hand the focus to another box — Oracle JET's
+    /// oj-select-single, whose filter input takes the typing (#318)? Waits briefly: the focus
+    /// moves after the click, not with it.</summary>
+    private static async Task<bool> TypesElsewhereAsync(IFrame page, ILocator control)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            try
+            {
+                if (await control.EvaluateAsync<bool>("""
+                        el => getComputedStyle(el).visibility === 'hidden' && !!document.activeElement
+                              && document.activeElement !== el && document.activeElement.matches('input, textarea')
+                        """))
+                    return true;
+            }
+            catch (PlaywrightException) { return false; }
+            await page.WaitForTimeoutAsync(100);
+        }
+        return false;
     }
 
     /// <summary>The answer, then the answer without its aside, then each comma-separated head of it.</summary>
@@ -851,8 +912,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // By attribute, never by "#id": SuccessFactors numbers its widgets ("298:_listSelect")
         // and an id selector cannot start with a digit, so the escaped form threw and the
         // menu was never read — the pinned answer was typed and never chosen (#222).
+        // Oracle JET's dropdown owns an oj-list-view whose choices are grid cells, not options (#318).
         var options = !string.IsNullOrWhiteSpace(owned)
-            ? page.Locator($"[id={Quote(owned)}] [role=option]:visible")
+            ? page.Locator($"[id={Quote(owned)}] [role=option]:visible, [id={Quote(owned)}] [role=gridcell]:visible")
             : page.Locator("[role=option]:visible");
         IReadOnlyList<string> texts;
         try { texts = await options.AllInnerTextsAsync(); }
@@ -862,7 +924,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         var norm = texts.Select(t => t.Replace('\n', ' ').Trim()).ToList();
         // The menu's own "No Selection" / "Select…" row is a placeholder, not a choice: never
         // the first suggestion, and never a match for an answer it merely contains.
-        var real = norm.Select((t, n) => (t, n)).Where(x => !Placeholder().IsMatch(x.t)).ToList();
+        // JET's list for an optional field opens on a blank row, which is no choice either.
+        var real = norm.Select((t, n) => (t, n)).Where(x => x.t.Length > 0 && !Placeholder().IsMatch(x.t)).ToList();
         var i = norm.FindIndex(t => t.Equals(want, StringComparison.OrdinalIgnoreCase));
         if (i < 0)
         {
@@ -1104,6 +1167,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // The same rule discovery uses, so a question it calls required is never let through.
             if (g.getAttribute('aria-required') !== 'true' && !g.closest('.input-row')?.querySelector('.input-row__label--required') && !/\*\s*$/.test(title.trim())) continue;
             add('', title);
+          }
+          // Oracle's repeatable blocks — Education, Work History, Licenses — are an Add button and
+          // the items already added, with no control to be empty until Add is pressed. A required
+          // one with no item ("You need to add at least 1 Education item") is named by its title,
+          // or the page reads as complete and is clicked into Oracle's refusal (#318).
+          for (const addButton of document.querySelectorAll('button.apply-flow-profile-item-tile__new-tile')) {
+            const block = addButton.closest('.apply-flow-block') || addButton.closest('.profile-item-container');
+            if (!block || !visible(addButton) || block.querySelector('.apply-flow-profile-item-tile')) continue;
+            const title = block.querySelector('.apply-flow-block__title');
+            if (!title?.classList.contains('apply-flow-block__title--required') && addButton.getAttribute('data-profile-item-invalid') !== 'true') continue;
+            add('', (title?.innerText || addButton.innerText || '').trim());
           }
           return out;
         }
@@ -1537,6 +1611,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     unmapped.Add(q.Id);
             }
             await FillFullNameAsync(form, packet, mapped, unmapped);
+            await RefillEmptiedAsync(form, packet, mapped, unmapped);
             // A later page's "Upload Resume/CV" button, as on the first (#330).
             if (resumePdf is { } buttonPdf && !mapped.Contains("resume")
                 && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))

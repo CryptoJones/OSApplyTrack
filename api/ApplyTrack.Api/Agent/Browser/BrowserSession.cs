@@ -56,7 +56,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
           const own = [a(el, 'name'), a(el, 'id'), a(el, 'placeholder'), a(el, 'aria-label'), a(el, 'class')].join(' ');
           // "search" as its own word or suffix (keywordsearch, locationsearch, columnized-search),
           // never inside another word (research_area); the alert box by its own field names.
-          if (/(?:^|[^a-z])(?:search|keyword)|(?:location|job|keyword)search|createnewalert|(?:^|[^a-z])frequency(?:$|[^a-z])|job.?alert|subscribe/.test(own)) return true;
+          // Nor Oracle JET's dropdown, whose input is class="oj-searchselect-input": read as a
+          // search box, every dropdown on Oracle Recruiting's form went unseen (#318).
+          if (/(?:^|[^a-z])(?:search(?!select)|keyword)|(?:location|job|keyword)search|createnewalert|(?:^|[^a-z])frequency(?:$|[^a-z])|job.?alert|subscribe/.test(own)) return true;
           return !!el.closest('[role=search], form[action*="search" i], form[class*="search" i], form[id*="search" i], form[name*="search" i], '
             + 'form[action*="subscribe" i], form[class*="subscribe" i], form[id*="subscribe" i], form[name*="subscribe" i], '
             + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i]');
