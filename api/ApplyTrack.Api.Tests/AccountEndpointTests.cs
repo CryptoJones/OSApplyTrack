@@ -64,7 +64,7 @@ public class AccountEndpointTests : IAsyncLifetime
 
         var doc = await ReadJsonAsync(res);
         Assert.Equal("applytrack-export", doc.GetProperty("format").GetString());
-        Assert.Equal(1, doc.GetProperty("version").GetInt32());
+        Assert.Equal(2, doc.GetProperty("version").GetInt32());
 
         // Each application is a flat record carrying its slug name + structured fields.
         var apps = doc.GetProperty("applications");

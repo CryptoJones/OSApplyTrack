@@ -158,7 +158,7 @@ public sealed class NotificationSettingsRepo
     /// </summary>
     public async Task UpsertPreferencesAsync(
         bool? emailEnabled, bool? packetReady = null, bool? securityCode = null, bool? submitFailed = null,
-        bool? followupDue = null) =>
+        bool? followupDue = null, IDbTransaction? tx = null) =>
         await _conn.ExecuteAsync(
             """
             INSERT INTO notification_settings (
@@ -174,7 +174,7 @@ public sealed class NotificationSettingsRepo
                 notify_followup_due  = coalesce(@due, notification_settings.notify_followup_due),
                 updated_at           = now()
             """,
-            new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed, due = followupDue });
+            new { t = _t, emailEnabled, ready = packetReady, code = securityCode, failed = submitFailed, due = followupDue }, tx);
 
     /// <summary>The UTC hour the daily reminder (#354) goes out at; noon by default.</summary>
     public async Task<int> GetReminderHourAsync() =>
@@ -183,7 +183,7 @@ public sealed class NotificationSettingsRepo
         ?? DigestSettings.DefaultHour;
 
     /// <summary>Save the reminder's UTC hour (0–23).</summary>
-    public async Task UpsertReminderHourAsync(int hour)
+    public async Task UpsertReminderHourAsync(int hour, IDbTransaction? tx = null)
     {
         if (hour is < 0 or > 23)
             throw new AppValidationException("the reminder hour is a number from 0 to 23 (UTC)");
@@ -192,7 +192,7 @@ public sealed class NotificationSettingsRepo
             INSERT INTO notification_settings (tenant_id, reminder_hour, updated_at) VALUES (@t, @hour, now())
             ON CONFLICT (tenant_id) DO UPDATE SET reminder_hour = @hour, updated_at = now()
             """,
-            new { t = _t, hour = (short)hour });
+            new { t = _t, hour = (short)hour }, tx);
     }
 
     public async Task<DigestSettings> GetDigestAsync() =>
@@ -202,7 +202,7 @@ public sealed class NotificationSettingsRepo
             new { t = _t }) ?? new DigestSettings();
 
     /// <summary>Save the digest's switches and hour (0–23, UTC). Null leaves a value alone.</summary>
-    public async Task UpsertDigestAsync(bool? enabled, bool? insults, int? hour)
+    public async Task UpsertDigestAsync(bool? enabled, bool? insults, int? hour, IDbTransaction? tx = null)
     {
         if (hour is < 0 or > 23)
             throw new AppValidationException("the digest hour is a number from 0 to 23 (UTC)");
@@ -216,7 +216,7 @@ public sealed class NotificationSettingsRepo
                 digest_hour    = coalesce(@hour, notification_settings.digest_hour),
                 updated_at     = now()
             """,
-            new { t = _t, enabled, insults, hour = (short?)hour, defaultHour = (short)DigestSettings.DefaultHour });
+            new { t = _t, enabled, insults, hour = (short?)hour, defaultHour = (short)DigestSettings.DefaultHour }, tx);
     }
 
     private Task<Row?> ReadRowAsync() =>

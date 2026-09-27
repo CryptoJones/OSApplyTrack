@@ -6,6 +6,9 @@ using Dapper;
 
 namespace ApplyTrack.Api.Data;
 
+/// <summary>One drafted letter in the account export (#357): the app's slug, the text, the model that wrote it.</summary>
+public sealed record CoverLetterExport(string Application, string Body, string Model);
+
 /// <summary>
 /// Tenant-scoped read/write of the generated cover letter for an application, keyed
 /// on the app's slug <c>name</c> (the same public key the SPA uses). One letter per
@@ -51,6 +54,26 @@ public sealed class CoverLetterRepo
             """,
             new { t = _t, n, body = _protector.Protect(body), model },
             tx);
+    }
+
+    /// <summary>Every letter, opened, for the account export (#357). One sealed under a key this
+    /// instance no longer has can't be read, so it is left out rather than failing the export.</summary>
+    public async Task<IReadOnlyList<CoverLetterExport>> ExportAllAsync()
+    {
+        var rows = await _conn.QueryAsync<(string Name, string Body, string Model)>(
+            "SELECT application_name, body, model FROM cover_letters WHERE tenant_id = @t ORDER BY application_name",
+            new { t = _t });
+        var letters = new List<CoverLetterExport>();
+        foreach (var (name, body, model) in rows)
+        {
+            try
+            {
+                letters.Add(new CoverLetterExport(name,
+                    Crypto.SecretProtector.IsProtected(body) ? _protector.Unprotect(body) : body, model));
+            }
+            catch (System.Security.Cryptography.CryptographicException) { }
+        }
+        return letters;
     }
 
     /// <summary>Discard the letter; returns false when there was nothing to delete.</summary>
