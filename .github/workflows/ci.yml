@@ -70,6 +70,28 @@ jobs:
             echo "::error::Vulnerable NuGet packages found"; exit 1
           fi
 
+  # The agent runs from the api image as uid 1654 under the production hardening
+  # (read-only root, noexec /tmp, no capabilities, no-new-privileges). Nothing ran
+  # the image that way, so a Playwright driver only root could execute shipped and
+  # broke every packet build (#392). Start the driver exactly as the agent would.
+  image:
+    name: Image — agent starts Playwright as uid 1654
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the api image
+        run: docker build -t osapplytrack-api:ci -f api/ApplyTrack.Api/Dockerfile api
+      - name: Run the Playwright driver under the agent's hardening
+        run: |
+          node=$(docker run --rm --entrypoint sh osapplytrack-api:ci -c 'ls /app/.playwright/node/*/node')
+          hardened() {
+            docker run --rm --user 1654:1654 --read-only --tmpfs /tmp:rw,noexec,nosuid \
+              --cap-drop ALL --security-opt no-new-privileges --entrypoint "$node" \
+              osapplytrack-api:ci "$@"
+          }
+          hardened --version
+          hardened /app/.playwright/package/cli.js --version
+
   python:
     name: Python — lint + test + audit
     runs-on: ubuntu-latest
@@ -118,7 +140,7 @@ jobs:
   # Monday. Pull requests are excluded — their author already sees the failing check.
   notify:
     name: File an issue when main is broken
-    needs: [web, dotnet, python]
+    needs: [web, dotnet, image, python]
     if: failure() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -137,6 +159,7 @@ jobs:
           SHA: ${{ github.sha }}
           WEB: ${{ needs.web.result }}
           DOTNET: ${{ needs.dotnet.result }}
+          IMAGE: ${{ needs.image.result }}
           PYTHON: ${{ needs.python.result }}
         run: |
           {
@@ -145,6 +168,7 @@ jobs:
             echo "**Failed jobs**"
             if [ "$WEB" = failure ]; then echo "- Web — WCAG checks"; fi
             if [ "$DOTNET" = failure ]; then echo "- .NET — test + audit"; fi
+            if [ "$IMAGE" = failure ]; then echo "- Image — agent starts Playwright as uid 1654"; fi
             if [ "$PYTHON" = failure ]; then echo "- Python — lint + test + audit"; fi
             echo
             echo "| | |"
