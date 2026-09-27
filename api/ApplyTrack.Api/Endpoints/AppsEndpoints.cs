@@ -137,6 +137,10 @@ public static class AppsEndpoints
             return Results.Ok(new { count = 0 });
         }).RequireRateLimiting("poll");
 
+        // The header's "last polled 12 min ago · 2 sources failing" (#359): the poller's
+        // own record of its latest passes for this tenant.
+        app.MapGet("/api/poll/status", async (PollRunRepo runs) => Results.Ok(await runs.StatusAsync()));
+
         // Draft a tailored cover letter for the application through the configured
         // (instance-default or per-tenant) LLM, then persist it — overwrite-by-app, so
         // re-drafting replaces. The body also surfaces as `material` on the next

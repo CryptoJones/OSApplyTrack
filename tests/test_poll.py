@@ -1515,3 +1515,115 @@ def test_poll_repo_seen_url_reads_the_ledger_once() -> None:
     repo.mark_seen_many([("globex.co/2", "")])
     assert repo.seen_url("https://www.globex.co/2/")
     assert len(conn.executed) == 2  # the one read, the one write
+
+
+class _RunRepo(FakeRepo):
+    """A FakeRepo that keeps the poll_runs rows the worker writes (#359)."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.runs: list[dict[str, object]] = []
+
+    def record_run(
+        self,
+        started_at: object,
+        *,
+        ats_only: bool,
+        leads_added: int,
+        errors: list[dict[str, str]],
+    ) -> None:
+        self.runs.append(
+            {"started_at": started_at, "ats_only": ats_only, "leads_added": leads_added,
+             "errors": errors}
+        )
+
+
+def test_run_all_tenants_records_each_pass_with_only_the_tenants_own_failing_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One run row per tenant (#359): what it staged, and the failing sources it draws on —
+    # never a source only another tenant follows.
+    def ok(client: object, limit: int) -> list[Listing]:
+        return [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]
+
+    def down(client: object, limit: int) -> list[Listing]:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setitem(SOURCE_FETCHERS, "remotive", ok)
+    monkeypatch.setitem(SOURCE_FETCHERS, "remoteok", down)
+    a = _RunRepo(profile=Criteria(keywords=["engineer"], sources={"remotive": True}))
+    b = _RunRepo(
+        profile=Criteria(keywords=["engineer"], sources={"remotive": True, "remoteok": True})
+    )
+    repos: dict[int, _RunRepo] = {1: a, 2: b}
+    run_all_tenants(tenant_ids=[1, 2], repo_for=lambda tid: repos[tid], verify_links=False)
+
+    [run_a] = a.runs
+    [run_b] = b.runs
+    assert run_a["leads_added"] == 1 and run_a["errors"] == [] and run_a["ats_only"] is False
+    assert run_b["leads_added"] == 1
+    assert run_b["errors"] == [{"source": "remoteok", "error": "ConnectError: connection refused"}]
+
+
+def test_run_all_tenants_records_a_failed_pass_and_a_broken_record_never_fails_the_poll() -> None:
+    class BoomRepo(_RunRepo):
+        def add_lead(self, fields: AppFields) -> str:
+            raise RuntimeError("boom")
+
+    class BrokenRecordRepo(FakeRepo):
+        def record_run(self, *_: object, **__: object) -> None:
+            raise RuntimeError('relation "poll_runs" does not exist')
+
+    profile = Criteria(keywords=["engineer"], sources={"remotive": True})
+    boom, broken = BoomRepo(profile=profile), BrokenRecordRepo(profile=profile)
+    repos: dict[int, FakeRepo] = {1: boom, 2: broken}
+    results = run_all_tenants(
+        tenant_ids=[1, 2],
+        repo_for=lambda tid: repos[tid],
+        gathered={"remotive": [_lead("Acme", "Backend Engineer", link="https://acme.co/1")]},
+        verify_links=False,
+        ats_only=True,
+    )
+    [run] = boom.runs
+    assert run["leads_added"] == 0 and run["ats_only"] is True
+    assert run["errors"] == [{"source": "poll", "error": "RuntimeError: boom"}]
+    assert len(results[2]) == 1
+
+
+def test_ats_only_runs_do_not_blame_the_aggregators() -> None:
+    from applytrack.worker import _run_errors
+
+    profile = Criteria(
+        sources={"remotive": True},
+        ats_boards=[AtsBoard(provider="greenhouse", slug="acme")],
+        rss_feeds=["https://feed.example/rss"],
+    )
+    failing = {"remotive": "x", "greenhouse:acme": "y", "rss:https://feed.example/rss": "z"}
+    assert [e["source"] for e in _run_errors(profile, True, failing, {})] == ["greenhouse:acme"]
+    assert [e["source"] for e in _run_errors(profile, False, failing, {"linkedin": "w"})] == [
+        "remotive", "greenhouse:acme", "rss:https://feed.example/rss", "linkedin",
+    ]
+
+
+def test_describe_caps_a_long_error() -> None:
+    from applytrack.worker import _describe
+
+    assert _describe(ValueError("")) == "ValueError"
+    assert len(_describe(ValueError("x" * 5000))) == 300
+
+
+def test_poll_repo_record_run_inserts_one_scoped_row() -> None:
+    from datetime import datetime, timezone
+
+    from psycopg.types.json import Jsonb
+
+    from applytrack.db import PollRepo
+
+    conn = _LedgerConn([])
+    repo = PollRepo(conn, 7)  # type: ignore[arg-type]
+    when = datetime(2026, 9, 27, tzinfo=timezone.utc)
+    repo.record_run(when, ats_only=False, leads_added=3, errors=[{"source": "a", "error": "b"}])
+    [(sql, params)] = conn.executed
+    assert sql.startswith("INSERT INTO poll_runs (tenant_id,")
+    assert isinstance(params, tuple) and params[:4] == (7, when, False, 3)
+    assert isinstance(params[4], Jsonb) and params[4].obj == [{"source": "a", "error": "b"}]

@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Iterable, Iterator
+from datetime import datetime
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from applytrack import handshake, linkedin, secrets
 from applytrack.criteria import Criteria
@@ -190,6 +192,24 @@ class PollRepo:
         operator's ``admin usage`` reads it; nothing in the app depends on it."""
         with self._conn.cursor() as cur:
             cur.execute("UPDATE users SET last_polled_at = now() WHERE id = %s", (self._t,))
+
+    def record_run(
+        self,
+        started_at: datetime,
+        *,
+        ats_only: bool,
+        leads_added: int,
+        errors: list[dict[str, str]],
+    ) -> None:
+        """Record this tenant's finished pass in ``poll_runs`` (#359): when it ran, what it
+        staged, and which of the tenant's sources failed — what the SPA's "last polled ·
+        sources failing" line reads. INSERT only; the retention sweep prunes old rows."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO poll_runs (tenant_id, started_at, ats_only, leads_added, errors) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (self._t, started_at, ats_only, leads_added, Jsonb(errors)),
+            )
 
     def seen_url(self, url: str) -> bool:
         """Is this listing URL already in the tenant's ledger? A source that pays a

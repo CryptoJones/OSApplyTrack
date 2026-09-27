@@ -60,6 +60,7 @@ telemetry, no SaaS.
 - [Security & hardening](#security--hardening)
 - [Your data](#your-data)
 - [Operating an instance](#operating-an-instance)
+  - [Observability](#observability)
 - [Accessibility](#accessibility)
 - [First-run import](#first-run-import-optional)
 - [Local development](#local-development)
@@ -265,7 +266,10 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `Retention__ExpiredGraceDays` | `1` | Sessions and magic-link tokens are deleted this many days after they expire. |
 | `Retention__AgentEventDays` | `180` | Agent audit events older than this are deleted — never a verdict, a packet build or an account created in your name, and never one about an application still a lead or in Ready. `0` = keep all. |
 | `Retention__SeenDays` | `0` (off) | Forget poller dedup keys older than this. Off by default: a forgotten key lets the poller stage that listing again if you deleted its application. |
+| `Retention__PollRunDays` | `30` | The poller's per-pass records (`poll_runs`) older than this are deleted — never an account's newest full pass or newest fast-lane pass, which the list's "last polled" line reads. `0` = keep all. |
 | `Retention__Enabled` / `Retention__IntervalHours` / `Retention__InitialDelaySeconds` | `true` / `24` / `300` | The sweep runs in the migrating (api) container only, first five minutes after boot. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | _(empty — off)_ | Opt-in [OpenTelemetry](#observability): set it on the api and/or agent container to push ASP.NET Core, HttpClient and Npgsql traces and the app's metrics to your collector over OTLP. Unset, the SDK is not even registered and nothing leaves the process. The standard `OTEL_EXPORTER_OTLP_PROTOCOL` / `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_SERVICE_NAME` apply. |
+| `Metrics__Port` | _(empty — off)_ | Serve a Prometheus [`/metrics`](#observability) on this extra port — and only on it; the app's own port answers 404 for `/metrics`. Publish it to your scraper's network only (e.g. `127.0.0.1:9464:9464`), never through the reverse proxy. |
 | `Email__Host` / `Email__Port` / `Email__Username` / `Email__Password` / `Email__From` / `Email__FromName` | `Host` empty, `Port` `587`, `FromName` `OSApplyTrack` | SMTP relay for magic-link login emails and, per account, email notifications (Settings · Notifications). Set the same values on the `agent` container, which sends the notifications. Leave `Email__Host` unset to log links to the console instead of sending (zero email config). Set it to relay through any SMTP provider — a local relay, your mail provider, or a transactional service (Resend/SendGrid/Mailgun/SES). Port 465 = implicit TLS, else STARTTLS; blank username = unauthenticated. Deliverability to Gmail/Outlook needs a relay whose IP has PTR + SPF/DKIM/DMARC. |
 
 ## API reference
@@ -316,6 +320,7 @@ killing the process:
 | `POST`   | `/api/apps/{name}/draft` | Draft a tailored cover letter via the configured LLM; saves it and returns `{ok, material}`. Rate-limited. |
 | `GET`    | `/api/apps/{name}/cover-letter.pdf` | Download the saved cover letter as a PDF. |
 | `POST`   | `/api/poll` | Enqueue an on-demand poll → `{count:0}`. Rate-limited; the worker drains it. |
+| `GET`    | `/api/poll/status` | The poller's latest passes for this account: `{last_polled_at, last_leads_added, failing:[{source, error}]}` — `last_polled_at` is `null` before the first pass. `failing` is the newest full pass's failed sources, with the ATS boards taken from a newer fast-lane pass. |
 | `POST`   | `/api/scrape` | Body `{url}`. Fetch a posting page server-side (SSRF-guarded) and extract `{company, role, location, salary, source, description}` for the editor's Autofill. Rate-limited; 502 when the page can't be read. |
 
 ### Criteria & blacklist
@@ -439,6 +444,7 @@ The schema is migrated by **DbUp** from idempotent `.sql` scripts under
 | `llm_usage` | Per-tenant daily count of model requests on the operator's LLM key (`Llm__DailyCapPerTenant`). |
 | `seen` | The dedupe ledger — listings already surfaced, so leads don't repeat. |
 | `poll_requests` | The on-demand "Poll now" queue the worker drains. |
+| `poll_runs` | One row per finished poller pass per account: `started_at`, `finished_at`, `ats_only` (the fast lane), `leads_added`, and `errors` — `[{source, error}]` for each of the account's sources that failed. Written by the poller (insert only); read by `GET /api/poll/status`; pruned after `Retention__PollRunDays`. |
 | `resume_profiles` | Per-tenant résumé brief — the facts the cover-letter drafter feeds the LLM. |
 | `llm_settings` | Per-tenant LLM endpoint, model, cover-letter toggle, and multi-line signature; a tenant's own API key is stored **AES-256-GCM-encrypted** at rest. |
 | `cover_letters` | Generated cover letters, one per application (`FK → applications ON DELETE CASCADE`). |
@@ -1108,6 +1114,40 @@ For operators running an instance for other people. The full runbook is
   compose and quadlet, a restore that lets the api recreate the agent and poller roles,
   the retention sweep on an old dump, and a restore drill. Per-account export (above)
   is each user's own backup; this is the instance's.
+
+### Observability
+
+Off by default, and each piece is opt-in on its own — an instance that sets nothing sends
+nothing anywhere.
+
+- **In the app.** Under the Applications heading every account sees when the poller last
+  ran for it and which of its sources failed ("Last polled 12 min ago · 2 sources
+  failing", the reasons behind a disclosure), from the poller's `poll_runs` rows.
+  Operators get the same per account from `admin usage` (last poll).
+- **OpenTelemetry** — set `OTEL_EXPORTER_OTLP_ENDPOINT` on the api and/or agent container.
+  Traces: incoming requests (by route template — `/api/apps/{name}`, never the slug or the
+  query string), outgoing HTTP calls (scheme and host only; Telegram, whose bot token is in
+  the URL, is not traced) and Npgsql commands. Metrics: the ones below, plus ASP.NET Core's,
+  HttpClient's and Npgsql's.
+- **Prometheus** — set `Metrics__Port` (e.g. `9464`) and scrape `http://<container>:9464/metrics`.
+  The endpoint exists on that port only: it is not reachable through the app's port or its
+  reverse proxy, a forged `Host` header does not open it, and the port serves nothing else
+  (every other path there is a 404). Publish the port to your
+  scraper's network, not the internet.
+
+The app's own metrics (meter `ApplyTrack`) are tagged only with fixed vocabularies — never
+an account, email, company, host or URL:
+
+| Metric | Tags | What |
+| --- | --- | --- |
+| `applytrack.llm.duration` (s) | `endpoint` (`operator`/`tenant`), `outcome` | Each completion call to the OpenAI-compatible endpoint. |
+| `applytrack.llm.errors` | `endpoint`, `error.type` (`unavailable`/`timeout`/`refused`/`other`) | Failed completion calls. |
+| `applytrack.agent.runs` | `provider` (the ATS), `outcome` (`submitted`/`dry_run`/`failed`/`closed`/`captcha`/`crashed`), `dry_run` | Browser runs the agent finished. |
+| `applytrack.submit_requests.pending` | — | Submit requests not yet done, instance-wide (agent container). |
+
+HttpClient's metrics keep only method, status and error type (the host a posting or a
+tenant's LLM lives on is dropped), and Npgsql's only the connection state (the pool name is
+the connection string). The Python poller exports no telemetry; its record is `poll_runs`.
 
 ## Accessibility
 

@@ -47,16 +47,20 @@ public sealed class RetentionOptions
     /// <summary>Dedup keys older than this are forgotten. Off (0) by default: a forgotten
     /// key lets the poller stage that listing again if its application was deleted.</summary>
     public int SeenDays { get; set; }
+
+    /// <summary>The poller's per-pass records (#359) older than this are deleted. The SPA
+    /// reads only the newest, so a month is history enough to look back on a bad week.</summary>
+    public int PollRunDays { get; set; } = 30;
 }
 
 /// <summary>What one sweep removed.</summary>
-public sealed record RetentionResult(int Screenshots, int Sessions, int MagicTokens, int AgentEvents, int Seen)
+public sealed record RetentionResult(int Screenshots, int Sessions, int MagicTokens, int AgentEvents, int Seen, int PollRuns = 0)
 {
-    public int Total => Screenshots + Sessions + MagicTokens + AgentEvents + Seen;
+    public int Total => Screenshots + Sessions + MagicTokens + AgentEvents + Seen + PollRuns;
 
     public static RetentionResult operator +(RetentionResult a, RetentionResult b) =>
         new(a.Screenshots + b.Screenshots, a.Sessions + b.Sessions, a.MagicTokens + b.MagicTokens,
-            a.AgentEvents + b.AgentEvents, a.Seen + b.Seen);
+            a.AgentEvents + b.AgentEvents, a.Seen + b.Seen, a.PollRuns + b.PollRuns);
 }
 
 /// <summary>The sweep itself: idempotent, one tenant at a time, every statement scoped by it.</summary>
@@ -130,7 +134,19 @@ public static class Retention
             "DELETE FROM seen WHERE tenant_id = @t AND created_at < now() - make_interval(days => @days)",
             new { t, days = o.SeenDays });
 
-        return new RetentionResult(screenshots, sessions, tokens, events, seen);
+        // Never the tenant's newest pass of either kind: that is what the SPA shows, however old.
+        var pollRuns = o.PollRunDays <= 0 ? 0 : await BatchedAsync(conn,
+            """
+            DELETE FROM poll_runs WHERE id IN (
+                SELECT r.id FROM poll_runs r
+                WHERE r.tenant_id = @t AND r.finished_at < now() - make_interval(days => @days)
+                  AND r.id NOT IN (SELECT DISTINCT ON (ats_only) id FROM poll_runs
+                                   WHERE tenant_id = @t ORDER BY ats_only, finished_at DESC)
+                LIMIT @batch)
+            """,
+            new { t, days = o.PollRunDays, batch = Batch });
+
+        return new RetentionResult(screenshots, sessions, tokens, events, seen, pollRuns);
     }
 
     /// <summary>Rows per statement for the two steps that can have a backlog.</summary>
@@ -167,8 +183,8 @@ public sealed class RetentionWorker(NpgsqlDataSource db, RetentionOptions option
                     var r = await Retention.SweepAsync(conn, options, ct);
                     if (r.Total > 0)
                         log.LogInformation(
-                            "retention: cleared {Screenshots} screenshots, deleted {Sessions} sessions, {Tokens} magic tokens, {Events} agent events, {Seen} seen keys",
-                            r.Screenshots, r.Sessions, r.MagicTokens, r.AgentEvents, r.Seen);
+                            "retention: cleared {Screenshots} screenshots, deleted {Sessions} sessions, {Tokens} magic tokens, {Events} agent events, {Seen} seen keys, {PollRuns} poll runs",
+                            r.Screenshots, r.Sessions, r.MagicTokens, r.AgentEvents, r.Seen, r.PollRuns);
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {

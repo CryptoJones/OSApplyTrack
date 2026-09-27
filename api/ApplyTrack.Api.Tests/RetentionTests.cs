@@ -184,6 +184,31 @@ public class RetentionTests(PostgresFixture pg)
             new { other }));
     }
 
+    [Fact]
+    public async Task Old_poll_runs_go_but_the_newest_of_each_kind_stays_however_old()
+    {
+        var (conn, t) = await TenantAsync();
+        await using var _ = conn;
+        await conn.ExecuteAsync(
+            """
+            INSERT INTO poll_runs (tenant_id, started_at, finished_at, ats_only) VALUES
+                (@t, now() - interval '90 days', now() - interval '90 days', false),
+                (@t, now() - interval '60 days', now() - interval '60 days', false),
+                (@t, now() - interval '50 days', now() - interval '50 days', true),
+                (@t, now() - interval '45 days', now() - interval '45 days', true),
+                (@t, now() - interval '1 day', now() - interval '1 day', true)
+            """, new { t });
+
+        var r = await Retention.SweepTenantAsync(conn, t, Defaults);
+
+        // The 60-day full pass is the newest full one, so it stays; the 1-day one covers ATS.
+        Assert.Equal(3, r.PollRuns);
+        Assert.Equal(new[] { 1, 60 }, (await conn.QueryAsync<int>(
+            "SELECT extract(day FROM now() - finished_at)::int FROM poll_runs WHERE tenant_id = @t ORDER BY finished_at DESC",
+            new { t })).ToArray());
+        Assert.Equal(0, (await Retention.SweepTenantAsync(conn, t, new RetentionOptions { PollRunDays = 0 })).PollRuns);
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("wait", false)]

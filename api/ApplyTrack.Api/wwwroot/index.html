@@ -67,6 +67,10 @@
             <h1 id="application-list-heading">Applications</h1>
             <span id="app-count" class="result-count" aria-live="polite">0 applications</span>
           </div>
+          <!-- Filled from /api/poll/status (#359): when the poller last ran for this account and
+               which of its sources failed. Hidden until the first read succeeds. Not a live
+               region: it refreshes every minute, and would talk over whatever is being read. -->
+          <div id="poll-status" class="poll-status" hidden></div>
           <label class="search-field" for="search">
             <span class="field-label">Search applications</span>
             <span class="search-control">

@@ -117,6 +117,17 @@ const history = [
   { kind: "status", from_status: "lead", to_status: "applied", at: "2026-09-03T12:00:00Z" },
 ];
 
+// GET /api/poll/status (#359): the poller last ran 12 minutes ago, and two of the
+// account's sources failed on it.
+const pollStatus = () => ({
+  last_polled_at: new Date(Date.now() - 12 * 60000).toISOString(),
+  last_leads_added: 3,
+  failing: [
+    { source: "remoteok", error: "ConnectError: connection refused" },
+    { source: "greenhouse:acme", error: "HTTPStatusError: Client error '404 Not Found'" },
+  ],
+});
+
 async function mockApi(page) {
   // The header's version badge reads /health, which is outside the /api/ prefix.
   await page.route("**/health", async (route) => {
@@ -198,6 +209,7 @@ async function mockApi(page) {
     };
     else if (path.endsWith("/check-link")) body = { ok: true, summary: "Link is available." };
     else if (method === "POST" && path === "/api/poll") body = { count: 0 };
+    else if (path === "/api/poll/status") body = pollStatus();
     else body = { ok: true, filename: application.filename, cover_letters_enabled: true, cover_letter_signature: "" };
     const headers = path === "/api/apps" && method === "GET"
       ? { ETag: '"apps-1"', "Cache-Control": "private, no-cache" }
@@ -493,7 +505,10 @@ test("a populated mobile list scrolls to its last card inside the shell", async 
   });
   const last = page.locator("#app-list .application-card").last();
   // A gesture, not scrollIntoView: script can scroll an overflow-hidden box, a finger cannot.
-  const box = await page.locator("#app-list").boundingBox();
+  // On a phone the workspace is the scroller, list tools and all, and the list's first row
+  // starts near the fold, under the fixed action bar — so the swipe starts on the list
+  // tools, where a thumb would, not on a row the bar covers.
+  const box = await page.locator(".list-tools").boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + 10);
   await page.mouse.wheel(0, 4000);
   await expect(last).toBeInViewport();
@@ -1269,4 +1284,19 @@ test("notifications carry the reminder toggle and hour, and make a calendar link
   await expect.poll(() => saved).not.toBeNull();
   expect(saved.notify_followup_due).toBe(false);
   expect(saved.reminder_hour).toBe(7);
+});
+
+test("the list says when the poller last ran and which sources failed (#359)", async ({ page }) => {
+  const status = page.locator("#poll-status");
+  await expect(status).toContainText("Last polled 12 min ago");
+  const failing = status.getByText("2 sources failing");
+  await expect(failing).toBeVisible();
+  await expect(status.getByText("remoteok")).toBeHidden();
+  // A disclosure: reachable and opened from the keyboard, and the reasons are then read out.
+  await failing.focus();
+  await expect(failing).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(status.getByText("remoteok")).toBeVisible();
+  await expect(status).toContainText("HTTPStatusError: Client error '404 Not Found'");
+  await expectNoSeriousViolations(page);
 });

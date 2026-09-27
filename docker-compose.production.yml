@@ -48,10 +48,16 @@ services:
       Retention__InitialDelaySeconds: ${Retention__InitialDelaySeconds:-300}
       Retention__ScreenshotsKeptPerApplication: ${Retention__ScreenshotsKeptPerApplication:-3}
       Retention__ExpiredGraceDays: ${Retention__ExpiredGraceDays:-1}
+      Retention__PollRunDays: ${Retention__PollRunDays:-30}
       # Encryption at rest for résumés, letters, packets, screenshots and tenant secrets.
       # Required here: the hardened containers are read-only, so the app cannot generate
       # and keep a key file itself — the operator manages the key (and backs it up).
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:?Set APPLYTRACK_SECRETS_KEY to a long random value (openssl rand -base64 48) and back it up}
+      # Opt-in observability (#359), empty = off: an OTLP collector, and/or a port for a
+      # Prometheus /metrics served on that port only (publish it to the scraper, not the
+      # internet). See README · Observability.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      Metrics__Port: ${METRICS_PORT:-}
       Email__Host: ${Email__Host:-}
       Email__Port: ${Email__Port:-587}
       Email__Username: ${Email__Username:-}
@@ -102,6 +108,11 @@ services:
       Email__From: ${Email__From:-}
       Email__FromName: ${Email__FromName:-OSApplyTrack}
       APPLYTRACK_SECRETS_KEY: ${APPLYTRACK_SECRETS_KEY:?Set APPLYTRACK_SECRETS_KEY to a long random value (openssl rand -base64 48) and back it up}
+      # Opt-in observability (#359), empty = off: an OTLP collector, and/or a port for a
+      # Prometheus /metrics served on that port only (publish it to the scraper, not the
+      # internet). See README · Observability.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      Metrics__Port: ${METRICS_PORT:-}
       App__PublicBaseUrl: ${APP_PUBLIC_BASE_URL:?Set APP_PUBLIC_BASE_URL to the public HTTPS origin}
       Browser__Endpoint: ws://browser:3000/
       Browser__Proxy: http://proxy:3128

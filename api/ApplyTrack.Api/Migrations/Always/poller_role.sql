@@ -5,10 +5,11 @@
 -- creates the role when POLLER_DB_PASSWORD is set; without it this is a no-op and the
 -- poller keeps connecting as the owner. Exactly what src/applytrack/db.py and
 -- worker.py run: read the tenant's profile, blacklist and dedup ledger, stage leads,
--- keep the board sessions it signs in with, claim the poll queue. Nothing else — no
--- sessions, magic tokens, résumés, letters, board passwords or DDL — so a bug in the
--- feed-parsing surface is "insert leads", not "the whole database". Revoked first so
--- the role holds this list and only this list, whatever an earlier boot granted.
+-- keep the board sessions it signs in with, claim the poll queue, record each pass.
+-- Nothing else — no sessions, magic tokens, résumés, letters, board passwords or DDL —
+-- so a bug in the feed-parsing surface is "insert leads", not "the whole database".
+-- Revoked first so the role holds this list and only this list, whatever an earlier
+-- boot granted.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'applytrack_poller') THEN
@@ -30,5 +31,7 @@ BEGIN
             ON board_accounts TO applytrack_poller;
         -- Claimed with DELETE ... RETURNING tenant_id; re-queued with INSERT.
         GRANT SELECT, INSERT, DELETE ON poll_requests TO applytrack_poller;
+        -- One row per finished pass (#359): written, never read back or changed.
+        GRANT INSERT ON poll_runs TO applytrack_poller;
     END IF;
 END $$;
