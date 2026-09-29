@@ -25,6 +25,10 @@ const cookie = {
   sameSite: "Lax",
 };
 
+// Phone shots render the text a step smaller (87.5% root size) so more of the sheet fits
+// in 390x844 without looking cramped. Capture-only: the app itself is unchanged.
+const MOBILE_FONT_SCALE = "87.5%";
+
 async function capture({ viewport, deviceScaleFactor, mobile, company, output }) {
   const context = await browser.newContext({
     viewport,
@@ -34,8 +38,14 @@ async function capture({ viewport, deviceScaleFactor, mobile, company, output })
     colorScheme: "light",
   });
   await context.addCookies([cookie]);
+  // The public-beta terms dialog opens once per session and is modal; acknowledge it
+  // up front (the same sessionStorage key the SPA writes) so it never covers the shot.
+  await context.addInitScript(() => {
+    try { sessionStorage.setItem("applytrack.beta-ack", "1"); } catch (_) {}
+  });
   const page = await context.newPage();
   await page.goto(baseUrl, { waitUntil: "networkidle" });
+  if (mobile) await page.addStyleTag({ content: `html { font-size: ${MOBILE_FONT_SCALE}; }` });
   await page.getByRole("button", { name: new RegExp(company) }).click();
   await page.getByRole("heading", { name: company, exact: true }).waitFor();
   // Opening an application moves focus to its heading, which leaves a scroll

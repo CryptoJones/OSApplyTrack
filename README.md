@@ -42,6 +42,22 @@ telemetry, no SaaS.
   <em>The responsive list and detail view support touch, keyboard, and screen readers.</em>
 </p>
 
+<details>
+<summary><strong>More screenshots</strong> — desktop and phone, from a running instance</summary>
+
+| View | Desktop | Phone |
+| --- | --- | --- |
+| Due — interviews this week and follow-ups, with <em>Follow up on all</em> | <img src="docs/screenshots/due.png" alt="Due — interviews this week and follow-ups, with Follow up on all" width="560"> | <img src="docs/screenshots/due-mobile.png" alt="Due — interviews this week and follow-ups, with Follow up on all on a phone" width="180"> |
+| Errors — what is stuck, what happens next, and <em>Retry all</em> | <img src="docs/screenshots/errors.png" alt="Errors — what is stuck, what happens next, and Retry all" width="560"> | <img src="docs/screenshots/errors-mobile.png" alt="Errors — what is stuck, what happens next, and Retry all on a phone" width="180"> |
+| Search results — number, where it is, and the posting link | <img src="docs/screenshots/search-results.png" alt="Search results — number, where it is, and the posting link" width="560"> | <img src="docs/screenshots/search-results-mobile.png" alt="Search results — number, where it is, and the posting link on a phone" width="180"> |
+| Analytics — response rate, time to response, and the funnel | <img src="docs/screenshots/analytics.png" alt="Analytics — response rate, time to response, and the funnel" width="560"> | <img src="docs/screenshots/analytics-mobile.png" alt="Analytics — response rate, time to response, and the funnel on a phone" width="180"> |
+| An application's status history, notes, follow-up and interview | <img src="docs/screenshots/application-timeline.png" alt="An application's status history, notes, follow-up and interview" width="560"> | <img src="docs/screenshots/application-timeline-mobile.png" alt="An application's status history, notes, follow-up and interview on a phone" width="180"> |
+| Interviews and the people on an application | <img src="docs/screenshots/application-contacts.png" alt="Interviews and the people on an application" width="560"> | <img src="docs/screenshots/application-contacts-mobile.png" alt="Interviews and the people on an application on a phone" width="180"> |
+| An application sheet | <img src="docs/screenshots/application-sheet.png" alt="An application sheet" width="560"> | <img src="docs/screenshots/application-sheet-mobile.png" alt="An application sheet on a phone" width="180"> |
+| Settings · Notifications — Telegram, email and the daily digest | <img src="docs/screenshots/settings-notifications.png" alt="Settings · Notifications — Telegram, email and the daily digest" width="560"> | <img src="docs/screenshots/settings-notifications-mobile.png" alt="Settings · Notifications — Telegram, email and the daily digest on a phone" width="180"> |
+
+</details>
+
 ---
 
 ## Table of contents
@@ -1387,6 +1403,12 @@ curl -X POST http://localhost:5049/api/account/import \
 APPLYTRACK_SESSION_NAME=applytrack_session APPLYTRACK_SESSION_VALUE="$SID" \
   npm run screenshots
 ```
+
+`npm run screenshots` retakes the two README images (the phone shot renders text at
+87.5% so more of the sheet fits, and the public-beta terms dialog is pre-acknowledged).
+The gallery under *More screenshots* lives in `docs/screenshots/` as `<view>.png`
+(1440×900) and `<view>-mobile.png` (390×844 at 2×, same 87.5% text), shot from the same
+kind of seeded account.
 
 The import is slug-preserving, so re-running it updates the same five entries rather
 than piling up duplicates. Retake the shots whenever a change lands that is visible
