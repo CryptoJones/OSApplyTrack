@@ -119,6 +119,8 @@ builder.Services.AddHttpClient("llm", c => c.Timeout = Timeout.InfiniteTimeSpan)
 builder.Services.AddSingleton<ILlmClient, OpenAiCompatibleLlmClient>();
 builder.Services.AddScopedResponseCompression();
 builder.Services.AddSingleton<CoverLetterDrafter>();
+builder.Services.AddSingleton<FollowUpDrafter>();
+builder.Services.AddSingleton<IFollowUpMail, MailKitFollowUpMail>();
 builder.Services.AddScoped(sp => new ResumeRepo(
     sp.GetRequiredService<IDbConnection>(), sp.GetRequiredService<TenantContext>().TenantId,
     sp.GetRequiredService<SecretProtector>()));
@@ -479,6 +481,7 @@ app.MapPipelineEndpoints();
 app.MapErrorsEndpoints();
 app.MapRemindersEndpoints();
 app.MapContactsEndpoints();
+app.MapFollowUpEndpoints();
 
 app.Run();
 

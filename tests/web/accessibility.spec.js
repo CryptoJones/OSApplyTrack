@@ -1204,8 +1204,111 @@ test("the Due chip opens follow-ups due or overdue and the coming interviews (#3
   await expect(page.getByRole("button", { name: "2 due — follow-ups and interviews" })).toHaveAttribute("aria-pressed", "true");
   await expectNoSeriousViolations(page);
 
-  await row.getByRole("button", { name: /Aurora Systems/ }).click();
+  await row.getByRole("button", { name: /^Aurora Systems/ }).click();
   await expect(page.getByRole("heading", { name: "Aurora Systems", level: 2 })).toBeVisible();
+});
+
+test("Due drafts a follow-up with the model, sends it after review, and logs one made elsewhere (#394)", async ({ page }) => {
+  // Aurora has a contact to mail; Meridian has none, so its follow-up goes out another way.
+  const due = applications.map((a) =>
+    a === appliedApp ? { ...a, followup: "2026-03-08", contact_email: "recruiter@aurora.example" }
+      : a.company === "Meridian Labs" ? { ...a, status: "applied", followup: "2026-03-09" } : a);
+  await page.route("**/api/apps", (route) => route.fulfill({
+    status: 200, contentType: "application/json", headers: { ETag: '"apps-fu"' }, body: JSON.stringify(due),
+  }));
+  await page.route("**/api/due*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ today: "2026-09-26", followups: [], interviews: [] }),
+  }));
+  const drafted = [];
+  let sent = null;
+  let done = null;
+  await page.route("**/followup/**", async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    let body = {};
+    if (path.endsWith("/followup/draft")) {
+      const aurora = path.includes(appliedApp.filename);
+      drafted.push(path);
+      body = {
+        subject: aurora ? "Re: Platform role at Aurora" : "Following up: Platform Engineer application",
+        body: "Hello Dana,\n\nI applied on March 1 and wanted to ask where things stand.\n\nAda Byte",
+        to: aurora ? "recruiter@aurora.example" : "", contact: aurora ? "Dana" : "",
+        can_send: true, thread_messages: aurora ? 2 : 0,
+      };
+    } else if (path.endsWith("/followup/send")) {
+      sent = req.postDataJSON();
+      body = { sent: true, to: sent.to, followup: "" };
+    } else if (path.endsWith("/followup/done")) {
+      done = req.postDataJSON();
+      body = { done: true, followup: done.next_followup };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+
+  await page.getByRole("button", { name: /due — follow-ups and interviews/ }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Due" })).toBeFocused();
+  const followups = page.getByRole("table", { name: "Follow-ups due today or overdue" });
+  await expect(followups.getByRole("row").filter({ hasText: "Meridian Labs" })).toContainText("No contact email on file");
+  await expect(followups.getByRole("button", { name: "Follow up with Aurora Systems: draft the email" })).toBeVisible();
+  await expectNoSeriousViolations(page);
+
+  // One at a time, oldest first; nothing goes anywhere until Send.
+  await page.getByRole("button", { name: "Follow up on all 2, one at a time" }).click();
+  const dialog = page.getByRole("dialog", { name: /Follow up · Aurora Systems/ });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("status")).toHaveText("Draft ready, written with 2 messages from your mailbox. Review it before it goes anywhere.");
+  await expect(dialog.getByLabel("To")).toHaveValue("recruiter@aurora.example");
+  await expect(dialog.getByLabel("Subject")).toHaveValue("Re: Platform role at Aurora");
+  await expect(dialog.getByLabel("Message")).toBeFocused();
+  await expect(dialog).toContainText("1 of 2");
+  expect(sent).toBeNull();
+  await expectNoSeriousViolations(page);
+
+  await dialog.getByLabel("Message").fill("Hello Dana,\n\nChecking in on the Platform role.\n\nAda Byte");
+  await dialog.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => sent).toEqual({
+    subject: "Re: Platform role at Aurora",
+    body: "Hello Dana,\n\nChecking in on the Platform role.\n\nAda Byte",
+    next_followup: "",
+    to: "recruiter@aurora.example",
+  });
+
+  // No contact: Send waits for an address; marking it followed up logs it and moves the date.
+  const second = page.getByRole("dialog", { name: /Follow up · Meridian Labs/ });
+  await expect(second.getByRole("status")).toContainText("Draft ready");
+  await expect(second).toContainText("No contact email on file");
+  await expect(second.getByRole("button", { name: "Send" })).toBeDisabled();
+  await second.getByLabel("Next follow-up").fill("2026-10-05");
+  await second.getByRole("button", { name: "Mark followed up" }).click();
+  await expect.poll(() => done).toEqual({
+    body: "Hello Dana,\n\nI applied on March 1 and wanted to ask where things stand.\n\nAda Byte",
+    next_followup: "2026-10-05",
+  });
+  await expect(second).toBeHidden();
+  await expect(page.getByRole("heading", { level: 1, name: "Due" })).toBeFocused();
+  expect(drafted).toHaveLength(2);
+});
+
+test("Due has no follow-up drafting when drafting is off (#394)", async ({ page }) => {
+  const due = applications.map((a) => a === appliedApp ? { ...a, followup: "2026-03-08" } : a);
+  await page.route("**/api/apps", (route) => route.fulfill({
+    status: 200, contentType: "application/json", headers: { ETag: '"apps-fu-off"' }, body: JSON.stringify(due),
+  }));
+  await page.route("**/api/llm-settings", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({ cover_letters_enabled: false }),
+  }));
+  let drafts = 0;
+  await page.route("**/followup/**", (route) => { drafts++; return route.fulfill({ status: 500 }); });
+  const settingsRead = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/llm-settings");
+  await page.reload();
+  await settingsRead;
+  await page.getByRole("button", { name: /due — follow-ups and interviews/ }).click();
+  const followups = page.getByRole("table", { name: "Follow-ups due today or overdue" });
+  await expect(followups.getByRole("row").filter({ hasText: "Aurora Systems" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Follow up/ })).toHaveCount(0);
+  expect(drafts).toBe(0);
 });
 
 test("an application's sheet schedules and removes interviews, and the timeline shows them (#354)", async ({ page }) => {

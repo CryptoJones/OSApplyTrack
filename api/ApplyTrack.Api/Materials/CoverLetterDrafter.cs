@@ -67,7 +67,7 @@ public sealed class CoverLetterDrafter
     /// letter clean for Copy/Download as well. Repeats until nothing changes: keeping
     /// the alt text of <c>![a ![b](u1)](u2)</c> would otherwise reassemble an image.
     /// </summary>
-    private static string StripImages(string text)
+    internal static string StripImages(string text)
     {
         string previous;
         do
