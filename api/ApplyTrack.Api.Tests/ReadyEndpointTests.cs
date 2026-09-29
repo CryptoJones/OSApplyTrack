@@ -176,6 +176,25 @@ public class ReadyEndpointTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Submit_with_dry_run_true_queues_dry_runs_even_with_dry_run_mode_off()
+    {
+        // The Errors view's Retry all (#393): a retry of what failed is a dry run, whatever
+        // the tenant's Dry run only setting says — never a real click.
+        var (client, tenant) = await ClientAsync();
+        var a = await PreparedLeadAsync(client, "Acme");
+        var b = await PreparedLeadAsync(client, "Globex");
+        await SettleQueueAsync(tenant);
+        await client.PutAsync("/api/agent-settings", Json("""{"dry_run":false}"""));
+
+        var res = await client.PostAsync("/api/ready/actions", Json($$"""{"action":"submit","names":["{{a}}","{{b}}"],"dry_run":true}"""));
+        Assert.Equal(HttpStatusCode.Accepted, res.StatusCode);
+        var body = await ReadJson(res);
+        Assert.True(body.GetProperty("dry_run").GetBoolean());
+        Assert.Equal(2, body.GetProperty("done").GetArrayLength());
+        Assert.Equal([(a, true, false), (b, true, false)], await PendingAsync(tenant));
+    }
+
+    [Fact]
     public async Task Queueing_actions_need_a_browser_and_a_known_action()
     {
         await using (var conn = await OpenAsync())

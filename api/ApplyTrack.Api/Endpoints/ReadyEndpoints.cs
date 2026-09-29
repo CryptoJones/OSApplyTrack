@@ -17,7 +17,9 @@ namespace ApplyTrack.Api.Endpoints;
 /// button per packet and the <c>draft</c> limit trips after ten. <b>prepare</b> queues a
 /// rebuild-then-dry-run for each (#183); <b>submit</b> queues the click (a dry run while
 /// <i>Dry run only</i> is on), or with <c>all_clean</c> every Ready packet whose latest
-/// dry run was clean (#185); <b>pass</b> retires them. Each name that could not be
+/// dry run was clean (#185); <b>pass</b> retires them. <c>dry_run: true</c> makes a
+/// submit a dry run whatever the setting says — the Errors view's Retry All (#393),
+/// which re-tries what failed without risking a real click. Each name that could not be
 /// queued comes back with its reason rather than failing the batch.
 /// </summary>
 public static class ReadyEndpoints
@@ -35,6 +37,7 @@ public static class ReadyEndpoints
                 ? (a.GetString() ?? "").Trim().ToLowerInvariant() : "";
             if (action is not ("prepare" or "submit" or "pass"))
                 throw new AppValidationException("action must be prepare, submit or pass");
+            var forceDry = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("dry_run", out var fd) && fd.ValueKind == JsonValueKind.True;
             var allClean = payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("all_clean", out var ac) && ac.ValueKind == JsonValueKind.True;
             var names = new List<string>();
             if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("names", out var ns) && ns.ValueKind == JsonValueKind.Array)
@@ -87,7 +90,7 @@ public static class ReadyEndpoints
             }
 
             // submit
-            var dryRun = settings.DryRun;
+            var dryRun = settings.DryRun || forceDry;
             if (allClean)
             {
                 if (dryRun)
