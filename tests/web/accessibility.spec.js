@@ -970,6 +970,8 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
     else if (path === "/api/agent-settings") body = { enabled: true, worker_running: true, browser_available: true, dry_run: false };
     else if (path === "/api/llm-settings") body = { cover_letters_enabled: true };
     else if (path.endsWith("/submit") && method === "POST") body = { queued: true, dry_run: true };
+    else if (path === "/api/ready/actions" && method === "POST")
+      body = { action: "submit", dry_run: true, done: [application.filename], skipped: [] };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.goto("/");
@@ -990,6 +992,18 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
     new URL(request.url()).pathname.endsWith("/submit") && request.method() === "POST");
   await row.getByRole("button", { name: /^Retry / }).click();
   expect((await sent).postDataJSON()).toEqual({ dry_run: true });
+
+  // Retry all (#393): one request for every row, always a dry run, through the bulk route
+  // so the submit rate limit counts the batch once; focus lands back on the heading.
+  const retryAll = page.getByRole("button", { name: "Retry all 1 with a dry run" });
+  await expect(retryAll).toBeVisible();
+  const bulk = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/ready/actions" && request.method() === "POST");
+  await retryAll.click();
+  expect((await bulk).postDataJSON()).toEqual({ action: "submit", names: [application.filename], dry_run: true });
+  await expect(page.locator("#toast")).toContainText("1 queued for a dry run.");
+  await expect(page.getByRole("heading", { level: 1, name: "Errors" })).toBeFocused();
+  await expectNoSeriousViolations(page);
 
   // Ready lists only what is still to try.
   await page.getByRole("button", { name: "ready, 1 applications" }).click();

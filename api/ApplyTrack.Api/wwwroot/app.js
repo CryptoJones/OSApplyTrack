@@ -740,7 +740,11 @@ function renderErrorsView() {
     <div class="settings-shell pipeline-view">
       <header class="settings-header">
         <div class="sheet-eyebrow">Stuck</div>
-        <h1>Errors</h1>
+        <div class="settings-header-row">
+          <h1>Errors</h1>
+          ${errors.length ? `<button type="button" class="btn btn-primary btn-xs" data-retry-all
+            aria-label="Retry all ${errors.length} with a dry run">Retry all</button>` : ""}
+        </div>
         <p aria-live="polite">${errors.length
           ? `${errors.length} application${errors.length === 1 ? "" : "s"} whose last run failed — ${retrying} will be retried automatically, ${errors.length - retrying} need${errors.length - retrying === 1 ? "s" : ""} you.`
           : "Nothing is stuck. Every Ready application is either untried or ran clean."}</p>
@@ -762,6 +766,29 @@ function renderErrorsView() {
     // its button are gone with the repaint, so focus goes to the heading, not the body.
     if (state.mode === "errors") await openErrors();
   }));
+  const all = contentEl.querySelector("[data-retry-all]");
+  if (all) all.addEventListener("click", () => retryAllErrors(all));
+}
+
+// Retry all (#393): every row's dry-run retry in one request, through the Ready lane's bulk
+// route (#186) — one button per row trips the submit rate limit after ten.
+async function retryAllErrors(btn) {
+  const names = state.errors.map((e) => e.name);
+  if (!names.length) return;
+  btn.disabled = true;
+  btn.textContent = "Queuing…";
+  try {
+    const r = await api("POST", "/api/ready/actions", { action: "submit", names, dry_run: true });
+    const done = (r.done || []).length;
+    const skipped = r.skipped || [];
+    toast(`${done} queued for a dry run${skipped.length ? ` · ${skipped.length} not queued: ${skipped.slice(0, 3).map((s) => `${stem(s.name)} (${s.reason})`).join("; ")}${skipped.length > 3 ? "…" : ""}` : "."}`);
+  } catch (e) {
+    toast(e.message);
+  }
+  // Queued rows leave Errors for the Pipeline; the button goes with the repaint, so focus
+  // goes to the heading.
+  if (state.mode === "errors") await openErrors();
+  else { btn.disabled = false; btn.textContent = "Retry all"; }
 }
 
 // ---- Pipeline view ----------------------------------------------------------

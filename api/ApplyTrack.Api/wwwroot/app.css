@@ -1214,6 +1214,8 @@ html[data-color-mode="dark"] .pipe-stat[data-status] .n {
 .settings-shell { width: min(100%, 76rem); margin: 0 auto; }
 .settings-header { margin-bottom: 1.4rem; }
 .settings-header h1 { margin-bottom: 0.35rem; }
+.settings-header-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.settings-header-row h1 { margin-right: auto; }
 .settings-header p { margin: 0; color: var(--text-muted); }
 .settings-layout {
   display: grid;
