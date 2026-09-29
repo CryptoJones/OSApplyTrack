@@ -61,6 +61,10 @@ public static partial class NotificationsEndpoints
                 mailbox_port = m.Port,
                 mailbox_username = m.Username,
                 has_mailbox_password = m.HasPassword,
+                // Outgoing mail for follow-ups (#394): the same account's SMTP host.
+                mailbox_smtp_host = m.SmtpHost,
+                mailbox_smtp_port = m.SmtpPort,
+                mailbox_can_send = m.CanSend,
             });
         });
 
@@ -87,8 +91,19 @@ public static partial class NotificationsEndpoints
                     throw new AppValidationException("the mailbox port is a number from 1 to 65535");
                 if (mUser is { Length: > 0 }) InputLimits.Text("mailbox_username", mUser, 320);
                 if (password is { Length: > 0 }) InputLimits.Text("mailbox_password", password, 512);
-                if (mEnabled is not null || mHost is not null || mPort is not null || mUser is not null || changePassword)
-                    await mailbox.UpsertAsync(mEnabled, mHost, mPort, mUser, changePassword, password);
+                string? sHost = payload.TryGetProperty("mailbox_smtp_host", out var sh) && sh.ValueKind == JsonValueKind.String ? (sh.GetString() ?? "").Trim() : null;
+                int? sPort = payload.TryGetProperty("mailbox_smtp_port", out var sp) && sp.ValueKind == JsonValueKind.Number && sp.TryGetInt32(out var spn) ? spn : null;
+                if (sHost is { Length: > 0 })
+                {
+                    InputLimits.Text("mailbox_smtp_host", sHost, 253);
+                    if (!Regex.IsMatch(sHost, @"^[A-Za-z0-9.-]+$"))
+                        throw new AppValidationException("that doesn't look like a mail server host name");
+                }
+                if (sPort is < 1 or > 65535)
+                    throw new AppValidationException("the SMTP port is a number from 1 to 65535");
+                if (mEnabled is not null || mHost is not null || mPort is not null || mUser is not null || changePassword
+                    || sHost is not null || sPort is not null)
+                    await mailbox.UpsertAsync(mEnabled, mHost, mPort, mUser, changePassword, password, sHost, sPort);
             }
             // The email switch and the per-event toggles (#355): each present boolean updates
             // its own column, an absent one is left alone.

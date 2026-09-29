@@ -373,6 +373,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 /* The beta terms run longer than a confirm prompt, so this one is wider and its body
    scrolls rather than pushing the accept button off a short screen. */
 .beta-dialog { width: min(40rem, calc(100% - 2rem)); }
+.followup-dialog { width: min(40rem, calc(100% - 2rem)); }
+.followup-actions { flex-wrap: wrap; }
+.settings-header-row .due-section-title { margin: 0; }
 .beta-body { max-height: min(60vh, 30rem); overflow-y: auto; }
 .beta-body p, .beta-body li { line-height: 1.5; }
 .beta-body ul { margin: 0.75rem 0 0; padding-left: 1.25rem; }

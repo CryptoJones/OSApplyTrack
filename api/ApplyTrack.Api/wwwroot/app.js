@@ -641,12 +641,18 @@ function renderDueView() {
       <td><button type="button" class="link-button" data-open="${escapeHtml(i.name)}">${pipelineRowTitle(i)}</button></td>
       <td>${escapeHtml(i.note || "—")}</td>
     </tr>`).join("");
+  // Following up agentically (#394): the model drafts, the person reviews and sends. Off
+  // with drafting — then there is no button and no model call.
+  const drafting = state.coverLettersEnabled !== false;
   const fRows = follow.map((a) => `
     <tr>
       <td><button type="button" class="link-button" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</button>
         ${a.id ? `<div class="field-help mono">${escapeHtml(appId(a))}</div>` : ""}</td>
       <td>${statusBadge(a.status)}</td>
       <td>${escapeHtml(a.followup)} ${a.followup < today ? OVERDUE_BADGE : `<span class="field-help">today</span>`}</td>
+      ${drafting ? `<td><button type="button" class="btn btn-xs" data-followup="${escapeHtml(a.filename)}"
+          aria-label="Follow up with ${escapeHtml(a.company)}: draft the email">Follow up</button>
+        ${a.contact_email ? "" : `<div class="field-help">No contact email on file</div>`}</td>` : ""}
     </tr>`).join("");
   const bits = [];
   if (interviews.length) bits.push(`${interviews.length} interview${interviews.length === 1 ? "" : "s"} in the coming week`);
@@ -668,18 +674,190 @@ function renderDueView() {
         </table>
       </div>` : ""}
       ${follow.length ? `
-      <h2 class="mt-5 due-section-title">Follow-ups</h2>
-      <p class="field-help">Move a follow-up's date, or clear it, on the application's form once you have followed up.</p>
+      <div class="settings-header-row mt-5">
+        <h2 class="due-section-title">Follow-ups</h2>
+        ${drafting && follow.length > 1 ? `<button type="button" class="btn btn-primary btn-xs" data-followup-all
+          aria-label="Follow up on all ${follow.length}, one at a time">Follow up on all</button>` : ""}
+      </div>
+      <p class="field-help">${drafting
+        ? "Follow up has your model draft the email from the posting, your letter, your notes and the mail you have exchanged; you review it, then send it or copy it. Sending logs it on the application and moves the date."
+        : "Move a follow-up's date, or clear it, on the application's form once you have followed up."}</p>
       <div class="table-scroll">
         <table class="pipeline-table">
           <caption class="sr-only">Follow-ups due today or overdue</caption>
-          <thead><tr><th scope="col">Application</th><th scope="col">Status</th><th scope="col">Follow-up</th></tr></thead>
+          <thead><tr><th scope="col">Application</th><th scope="col">Status</th><th scope="col">Follow-up</th>${drafting ? `<th scope="col"><span class="sr-only">Actions</span></th>` : ""}</tr></thead>
           <tbody>${fRows}</tbody>
         </table>
       </div>` : ""}
     </div>`;
   document.title = "Due | ApplyTrack";
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
+  contentEl.querySelectorAll("[data-followup]").forEach((b) => b.addEventListener("click", () => followUpOn([b.dataset.followup])));
+  const all = contentEl.querySelector("[data-followup-all]");
+  if (all) all.addEventListener("click", () => followUpOn(follow.map((a) => a.filename)));
+}
+
+// ---- Agentic follow-up (#394) ------------------------------------------------------
+// One dialog walks the chosen follow-ups in turn: the model drafts, the person edits, then
+// sends it from their own mailbox, marks it done (sent some other way), skips, or stops.
+// Nothing is sent without Send. Each follow-up done is logged on its application and its
+// date moved (blank clears it), so it leaves Due.
+
+let followupDialogEl = null;
+
+function followupDialog() {
+  if (followupDialogEl) return followupDialogEl;
+  const d = document.createElement("dialog");
+  d.id = "followup-dialog";
+  d.className = "dialog followup-dialog";
+  d.setAttribute("aria-labelledby", "fu-title");
+  d.innerHTML = `
+    <form method="dialog" id="fu-form" novalidate>
+      <h2 id="fu-title">Follow up</h2>
+      <p id="fu-progress" class="field-help"></p>
+      <p id="fu-status" class="field-help" role="status" aria-live="polite"></p>
+      <div class="mt-3">
+        <label class="field-label" for="fu-to">To</label>
+        <input id="fu-to" class="field-input mono" type="email" autocomplete="off" aria-describedby="fu-to-help" />
+        <p id="fu-to-help" class="field-help"></p>
+      </div>
+      <div class="mt-3">
+        <label class="field-label" for="fu-subject">Subject</label>
+        <input id="fu-subject" class="field-input" maxlength="200" autocomplete="off" />
+      </div>
+      <div class="mt-3">
+        <label class="field-label" for="fu-body">Message</label>
+        <textarea id="fu-body" class="field-textarea" rows="10"></textarea>
+      </div>
+      <div class="mt-3">
+        <label class="field-label" for="fu-next">Next follow-up</label>
+        <input id="fu-next" class="field-input mono" type="date" aria-describedby="fu-next-help" />
+        <p id="fu-next-help" class="field-help">Leave blank to clear the date once this is done.</p>
+      </div>
+      <div class="dialog-actions followup-actions">
+        <button type="button" class="btn btn-ghost" data-fu="stop">Close</button>
+        <button type="button" class="btn btn-ghost" data-fu="skip">Skip</button>
+        <button type="button" class="btn btn-ghost" data-fu="copy">Copy</button>
+        <button type="button" class="btn btn-ghost" data-fu="done">Mark followed up</button>
+        <button type="button" class="btn btn-primary" data-fu="send">Send</button>
+      </div>
+    </form>`;
+  document.body.appendChild(d);
+  followupDialogEl = d;
+  return d;
+}
+
+async function followUpOn(names) {
+  const d = followupDialog();
+  let changed = 0;
+  for (let i = 0; i < names.length; i++) {
+    const app = state.apps.find((a) => a.filename === names[i]);
+    if (!app) continue;
+    const outcome = await followUpOne(d, app, i, names.length);
+    if (outcome === "sent" || outcome === "done") changed++;
+    if (outcome === "stop") break;
+  }
+  if (d.open) d.close();
+  if (changed) await refresh();
+  if (state.mode === "due") await openDue();
+}
+
+// One follow-up in the dialog. Resolves "sent", "done", "skip" or "stop".
+function followUpOne(d, app, index, count) {
+  const $d = (sel) => d.querySelector(sel);
+  const status = $d("#fu-status");
+  const buttons = [...d.querySelectorAll("[data-fu]")];
+  const act = (name) => $d(`[data-fu="${name}"]`);
+  $d("#fu-title").textContent = `Follow up · ${app.company}${app.role ? ` · ${app.role}` : ""}`;
+  $d("#fu-progress").textContent = count > 1 ? `${index + 1} of ${count}` : "";
+  act("skip").hidden = count < 2 || index === count - 1;
+  $d("#fu-to").value = app.contact_email || "";
+  $d("#fu-subject").value = "";
+  $d("#fu-body").value = "";
+  $d("#fu-next").value = "";
+  $d("#fu-to-help").textContent = "";
+  let canSend = false;
+  const busy = (on) => buttons.forEach((b) => { if (b.dataset.fu !== "stop") b.disabled = on; });
+  const syncSend = () => { act("send").disabled = !canSend || !$d("#fu-to").value.trim(); };
+  busy(true);
+  status.textContent = "Drafting the follow-up…";
+  if (!d.open) d.showModal();
+  $d("#fu-to").oninput = syncSend;
+
+  api("POST", `/api/apps/${encodeURIComponent(app.filename)}/followup/draft`).then((r) => {
+    if (!d.open) return;
+    $d("#fu-to").value = r.to || "";
+    $d("#fu-subject").value = r.subject || "";
+    $d("#fu-body").value = r.body || "";
+    canSend = !!r.can_send;
+    $d("#fu-to-help").textContent = !r.to
+      ? "No contact email on file. Send this another way — LinkedIn, or the recruiter named on the posting — then mark it followed up. Or type an address."
+      : canSend ? "" : "To send from here, add your outgoing mail server under Settings · Notifications · Mailbox. Or copy the draft.";
+    busy(false);
+    syncSend();
+    status.textContent = `Draft ready${r.thread_messages ? `, written with ${r.thread_messages} message${r.thread_messages === 1 ? "" : "s"} from your mailbox` : ""}. Review it before it goes anywhere.`;
+    $d("#fu-body").focus();
+  }).catch((e) => {
+    if (!d.open) return;
+    busy(false);
+    act("send").disabled = true;
+    status.textContent = `Could not draft: ${e.message}`;
+  });
+
+  return new Promise((resolve) => {
+    const finish = (outcome) => {
+      buttons.forEach((b) => { b.onclick = null; });
+      d.removeEventListener("cancel", onCancel);
+      resolve(outcome);
+    };
+    const onCancel = () => finish("stop");
+    d.addEventListener("cancel", onCancel);
+    const payload = () => ({
+      subject: $d("#fu-subject").value.trim(),
+      body: $d("#fu-body").value.trim(),
+      next_followup: $d("#fu-next").value,
+    });
+    act("stop").onclick = () => { d.close(); finish("stop"); };
+    act("skip").onclick = () => finish("skip");
+    act("copy").onclick = async () => {
+      const p = payload();
+      try {
+        await navigator.clipboard.writeText(`Subject: ${p.subject}\n\n${p.body}`);
+        status.textContent = "Copied. Mark it followed up once you have sent it.";
+      } catch {
+        status.textContent = "Could not copy — select the message and copy it yourself.";
+      }
+    };
+    act("done").onclick = async () => {
+      busy(true);
+      try {
+        const p = payload();
+        await api("POST", `/api/apps/${encodeURIComponent(app.filename)}/followup/done`,
+          { body: p.body, next_followup: p.next_followup });
+        toast(`Follow-up with ${app.company} logged.`);
+        finish("done");
+      } catch (e) {
+        status.textContent = e.message;
+        busy(false);
+        syncSend();
+      }
+    };
+    act("send").onclick = async () => {
+      busy(true);
+      status.textContent = "Sending…";
+      try {
+        const p = payload();
+        const r = await api("POST", `/api/apps/${encodeURIComponent(app.filename)}/followup/send`,
+          { ...p, to: $d("#fu-to").value.trim() });
+        toast(`Follow-up sent to ${r.to} and logged on ${app.company}.`);
+        finish("sent");
+      } catch (e) {
+        status.textContent = `Not sent: ${e.message}`;
+        busy(false);
+        syncSend();
+      }
+    };
+  });
 }
 
 // ---- Errors view -------------------------------------------------------------
@@ -3658,6 +3836,22 @@ function notificationsMarkup(s) {
           </label>
         </div>
       </div>
+      <p class="field-help mt-4" id="m-smtp-help">
+        <strong>Sending follow-ups</strong> (Due view): add the same account's outgoing server and
+        a follow-up you approve goes out from your own address, with the username and app password
+        above. For Gmail: <span class="mono">smtp.gmail.com</span>, port <span class="mono">587</span>.
+        Leave the host blank to copy drafts and send them yourself.
+      </p>
+      <div class="mt-3 grid grid-cols-2 gap-4">
+        <div>
+          <label class="field-label" for="m-smtp-host">SMTP host</label>
+          <input id="m-smtp-host" class="field-input mono" value="${escapeHtml(s.mailbox_smtp_host || "")}" placeholder="smtp.gmail.com" autocomplete="off" aria-describedby="m-smtp-help" />
+        </div>
+        <div>
+          <label class="field-label" for="m-smtp-port">SMTP port</label>
+          <input id="m-smtp-port" class="field-input mono" type="number" min="1" max="65535" value="${escapeHtml(String(s.mailbox_smtp_port || 587))}" />
+        </div>
+      </div>
 
       <div class="mt-7 flex items-center justify-end gap-2 border-t border-rule pt-4">
         <button class="btn btn-ghost" data-act="cancel">Cancel</button>
@@ -3699,6 +3893,8 @@ function wireNotifications() {
     body.mailbox_host = $("#m-host").value.trim();
     body.mailbox_port = Number($("#m-port").value) || 993;
     body.mailbox_username = $("#m-user").value.trim();
+    body.mailbox_smtp_host = $("#m-smtp-host").value.trim();
+    body.mailbox_smtp_port = Number($("#m-smtp-port").value) || 587;
     const passEl = $("#m-pass");
     const passClear = $("#m-clear");
     if (passEl && passEl.value) body.mailbox_password = passEl.value.trim();

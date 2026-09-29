@@ -351,6 +351,21 @@ public sealed partial class ApplicationRepo
         return DoUpdateAsync(name, MarkdownCodec.Parse(content).Normalized(), expectedVersion);
     }
 
+    /// <summary>Move or clear (blank) one application's follow-up date, as a follow-up that
+    /// was just sent or made does (#394). Throws <see cref="AppNotFoundException"/> for an
+    /// unknown app.</summary>
+    public async Task SetFollowupAsync(string name, string followup)
+    {
+        var affected = await _conn.ExecuteAsync(
+            """
+            UPDATE applications SET followup = @followup, version = version + 1, updated_at = now()
+            WHERE tenant_id = @t AND name = @n
+            """,
+            new { t = _t, n = Slug.Normalize(name), followup });
+        if (affected == 0)
+            throw new AppNotFoundException($"application not found: '{name}'");
+    }
+
     public async Task DeleteAsync(string name)
     {
         var n = Slug.Normalize(name);

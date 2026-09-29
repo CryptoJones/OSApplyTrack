@@ -206,7 +206,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         return count;
     }
 
-    private static async Task<ImapClient> OpenAsync(MailboxTarget target, CancellationToken ct)
+    internal static async Task<ImapClient> OpenAsync(MailboxTarget target, CancellationToken ct)
     {
         // Resolve the host once, dial a public address pinned from that resolution, then hand
         // MailKit the already-connected socket (the host is still passed so TLS validates the
@@ -235,7 +235,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
 
     /// <summary>Resolve the host once and return a connected socket to one of its public
     /// addresses, or throw the validation exception when it resolves to nothing public.</summary>
-    private static async Task<Socket> DialPublicAsync(string host, int port, CancellationToken ct)
+    internal static async Task<Socket> DialPublicAsync(string host, int port, CancellationToken ct)
     {
         IPAddress[] addresses;
         try { addresses = await Dns.GetHostAddressesAsync(host, ct); }
@@ -269,7 +269,7 @@ public sealed partial class ImapSecurityCodeSource : ISecurityCodeSource
         return publicAddresses;
     }
 
-    private static string StripHtml(string html)
+    internal static string StripHtml(string html)
     {
         var text = Regex.Replace(html, @"<br\s*/?>|</p>|</div>|</tr>|</h\d>", "\n", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, "<[^>]+>", " ");
