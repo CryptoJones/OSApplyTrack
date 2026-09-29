@@ -216,13 +216,55 @@ overwrite-confirm flow — two tabs can't silently clobber each other.
 
 **Discovery.** The poller fetches sources once per pass, scores each listing
 against the tenant's criteria, drops blacklisted companies, dedupes against the
-`seen` ledger, and inserts the rest as `lead`-status applications.
+`seen` ledger, and inserts the rest as `lead`-status applications. An opportunity
+lives in exactly one stage — Lead, Ready or Pipeline — keyed by its normalized URL
+(or company + role): the ledger records both a listing's own URL and the employer URL
+it resolved to, so the same job reached through two boards is staged once. When a
+LinkedIn listing's employer site refuses a bot (401/403/429/503 and the like), the
+employer's link is still kept, since that is a refusal, not a retired posting.
+Listings on the dead-end aggregator network (`sundayy.com`, `thebigjobsite.com`,
+`fetchjobs.co`, `bestjobtool.com`, which ends at a Cloudflare bot check and never a
+form), or whose Apply leads there, are skipped, and the agent passes any lead or
+Ready row already on it without spending a verdict, packet or letter.
 
 **Sorting.** The sidebar defaults to pipeline order (still-open roles first, passed
 ones last) and can reorder by **fit score**, **date posted**, or **company name**
 from the *Sort by* control. Sorting is a client-side view over the same list
 payload — it composes with the search box and the lane/status filters, and your
 choice is remembered per browser (never sent to the server).
+
+**Search and application numbers.** Every application carries a number (its row
+id, shown as `#15339` on its card, at the top of its sheet, in Errors and in
+search results; `id` on `GET /api/apps`). Whenever the search box has text it
+searches **every** application — all statuses, lanes and the Errors view, and the
+file name — whatever filters are on, and the count reads *N matches in all M
+applications*. Searching `15339` or `#15339` finds that one first. **Enter** opens
+the **search results page** (on a wide screen it follows the box as you type; on a
+phone it replaces the list): each match shows its number, the application (also an
+`#app=` link that opens it in a new tab), **where it is** — its status, or *In
+Errors* — which opens that list, and **Posting ↗**. Filter results by where (with a
+count per place) and by lane, twenty per page. Ready's bulk checkboxes hide while
+searching, because bulk actions apply to Ready alone.
+
+**The Errors view.** A failed browser run drops its application back into Ready,
+where it would look like a packet nobody has tried, so the status strip has an
+**N errors** chip (after lead and ready) that lists them instead: Ready, nothing
+queued, and the newest evidence `failed` (`GET /api/errors`). Each row says what went
+wrong, when, after how many runs, and **what happens next** — *retrying at …* when
+the Ready reconciler will retry it on its own, or *needs you* and why (a captcha, a
+Submit that may already have landed, a board the browser cannot drive, a failure that
+will only repeat, the retry cap reached). The reconciler retries a transient dry-run
+failure at most three times in seven days, six hours apart, and never retries a
+captcha, a sign-in wall, an unmapped required field or a real run. **Retry** queues a
+dry run for one row; **Retry all** queues a dry run for every row in one request, so
+the batch counts once against the rate limit, and announces what was queued and what
+was not. A retry of a failure is never a real
+click. Ready, Pipeline and Errors are mutually exclusive: an application is in
+exactly one, the Ready count leaves out errored ones, and one re-prepared after its
+last failure (say LinkedIn's Apply led to a Workday site and the lead moved) leaves
+Errors. A LinkedIn Easy Apply run that stood down at the ten-a-day cap is not an
+error: it shows as *Waiting — LinkedIn's daily limit* and is re-queued as a dry run
+once the cap allows.
 
 **Autofill.** When entering a lead by hand, paste the posting link and hit
 **⤓ Autofill**: the server fetches the page (`POST /api/scrape` — SSRF-guarded,
@@ -235,7 +277,8 @@ strip at any time to open the **Pipeline view**. It inspects the live submit que
 the exact FIFO claim order the worker uses, previews what the worker will do
 (`submit`, `dry_run`, `prepare`, or `drop`) and why, highlights Ready packets
 that are ready for auto-promotion, and offers an immediate **Submit all clean**
-action. It live-refreshes every 15 seconds while open.
+action. The *Submit queue* and *Ready, not queued* headings carry their counts, e.g.
+`Submit queue: (2)`. It live-refreshes every 15 seconds while open.
 
 ## Configuration
 
@@ -304,8 +347,9 @@ killing the process:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/apps` | List the tenant's applications. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
-| `GET`    | `/api/stats` | Counts by `{status, lane}`. |
+| `GET`    | `/api/apps` | List the tenant's applications; each carries its number as `id`. Returns a tenant-scoped `ETag`; send it as `If-None-Match` for a cheap `304` when unchanged. Clients without validators still receive the original bare JSON array. |
+| `GET`    | `/api/stats` | Counts by `{status, lane}`, plus `errors` — how many are in the Errors view. |
+| `GET`    | `/api/errors` | The Errors view: `{count, retrying, needs_you, errors:[…]}` — each row the application, its `error`, when, how many runs, and `next` (`retry` with `retry_at` when the reconciler will try again by itself, or `you` with `why`). Sends an `ETag`; the SPA polls it every 5 s and gets a `304` when nothing changed. |
 | `GET`    | `/api/analytics?since=…` | Funnel analytics over the status history, for applications first applied for on or after `since` (a `YYYY-MM-DD` date or ISO timestamp, UTC; all time when absent): `{since, applied, responded, rejected, response_rate, median_days_to_response, funnel:[{stage,count}], by_source:[…], by_lane:[…]}`, each breakdown row `{key, applied, responded, response_rate, median_days_to_response}`. A response is the first move to screen, onsite, offer or rejected. |
 | `GET`    | `/api/apps/{name}/history` | The application's timeline, oldest first: `[{kind, from_status, to_status, at, note}]`. `kind` is `status` for a status it entered (`from_status` is `null` on the row it was created with), `interview` for a scheduled interview (with its `note`) and `followup` for its follow-up date (midnight UTC of that day) and `note` for an entry of its notes log (the text in `note`); all but `status` carry an empty `to_status`. |
 | `GET`    | `/api/apps/{name}/interviews` | The application's interviews, soonest first: `[{id, at, note}]`. |
@@ -360,7 +404,7 @@ killing the process:
 | `GET`    | `/api/account/export` | One JSON snapshot (`version: 2`): every application + criteria + blacklist + `status_events` (the dated status history) + `interviews` + `resume` (with its PDF, base64) + `cover_letters` + `answer_bank` (your own answers) + `agent_settings` + `llm_settings` + `notification_settings` + `contacts` + `application_contacts` + `notes` (the notes log). No secrets. |
 | `GET`    | `/api/account/export.csv` | The applications alone as RFC 4180 CSV for a spreadsheet; formula-like cells (`= + - @`) are prefixed with `'`. |
 | `GET`    | `/api/account/export/shared` | Anonymized opportunity list for a peer (`format: applytrack-shared`): slug, company, role, link, location, source — **no personal state**. |
-| `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. |
+| `POST`   | `/api/account/import` | Load a snapshot (upsert by slug, one transaction) — or a shared list: every entry lands as a fresh `lead`, slugs you already track are skipped. Body-capped (**413** over it, chunked or not) and rate-limited with résumé upload. |
 | `DELETE` | `/api/account` | Delete the account; every owned row cascades away. |
 | `GET`    | `/api/account/sessions` | Where you're signed in: `id`, `created_at`, `last_seen_at`, `expires_at`, `user_agent`, and `current` for this browser. |
 | `DELETE` | `/api/account/sessions` | Sign out everywhere else: `{revoked}` — every session but this browser's. |
@@ -399,7 +443,7 @@ curl -H "Authorization: Bearer $TOKEN" https://apply.example/api/apps
 | --- | --- | --- |
 | `GET`    | `/api/resume` | The tenant's résumé brief — the only facts the drafter may assert. |
 | `PUT`    | `/api/resume` | Compatibility endpoint for structured résumé JSON. |
-| `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB) and store the extracted text as the model brief. |
+| `POST`   | `/api/resume/upload` | Upload a text-based PDF résumé (`multipart/form-data`, `resume` file, max 5 MB, enforced on the body as read, chunked or not → **413**) and store the extracted text as the model brief. The parse reads at most 20 pages within 10 s; an unreadable PDF is a **400**. Rate-limited (`upload`: 10 per 5 min per IP and per account, shared with import). |
 | `GET`    | `/api/llm-settings` | The tenant's endpoint override, model, reusable `cover_letter_signature`, and the instance default. The API key is **write-only** — never returned, only a `has_api_key` flag. |
 | `PUT`    | `/api/llm-settings` | Set `base_url` / `model` / `api_key` / `cover_letter_signature` (omit `api_key` or the signature to leave it untouched; blank clears either) and `cover_letters_enabled` (omit to keep; `false` disables all drafting for the tenant). |
 | `DELETE` | `/api/apps/{name}/cover-letter` | Discard a generated letter → `204`. |
@@ -408,9 +452,9 @@ curl -H "Authorization: Bearer $TOKEN" https://apply.example/api/apps
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `allowed` (whether the operator has put this account on the auto-apply allowlist — see [The agent](#the-agent)), `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation` with `salary_period` (`annual` / `monthly` / `hourly`, or blank) and `salary_currency` (`USD`, `EUR`, …) — with both stated the drafter converts a form's *per month* / *per hour* ask within the same currency and still refuses across currencies; `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). `worker_running` says whether a worker runs on this instance (in this process, or an agent container whose heartbeat is fresh), `worker_last_seen` when one last checked in (fresh or stale, so a wedged worker is visible), and `browser_available` whether a browser can fill forms (here, or on that worker). |
+| `GET`    | `/api/agent-settings` | What the agent may do for this tenant: `allowed` (whether the operator has put this account on the auto-apply allowlist — see [The agent](#the-agent)), `enabled` (default **false**), `dry_run`, `min_fit_score` (default 70), `max_per_run`, `max_per_day`, and the standing answers (`work_authorization`, `needs_sponsorship`, `clearance_ok`, `salary_expectation` with `salary_period` (`annual` / `monthly` / `hourly`, or blank) and `salary_currency` (`USD`, `EUR`, …) — with both stated the drafter converts a form's *per month* / *per hour* ask within the same currency and still refuses across currencies; `phone`, `country` — the country a form's picker should get; blank infers it from the résumé's location). The opt-in switches, all **false** by default: `long_tail` (fill forms on ATSs the browser doesn't know), `linkedin_easy` (LinkedIn Easy Apply), `jev_classify` (score new listings with Jev) and `create_accounts` (create a candidate account when an application needs one). `worker_running` says whether a worker runs on this instance (in this process, or an agent container whose heartbeat is fresh), `worker_last_seen` when one last checked in (fresh or stale, so a wedged worker is visible), and `browser_available` whether a browser can fill forms (here, or on that worker). |
 | `PUT`    | `/api/agent-settings` | Save the same shape; numbers are clamped, unknown keys ignored. Turning `dry_run` **off** queues the real click for every Ready packet whose latest dry run was clean (nothing unmapped, nothing errored, nothing left to review) and lists them in `requeued`. |
-| `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`. |
+| `GET`    | `/api/agent-events?limit=50` | The audit trail, newest first: `verdict` and `error` rows with their `detail`, and `account_created` / `account_not_created` for each candidate account the agent tried to make. |
 | `GET`    | `/api/apps/{name}/packet` | The prepared packet: `provider`, `questions[]` (`id`, `label`, `required`, `type`, `options`, `kind`), `answers{}`, `needs_review[]` (`id`, `reason`), `posting_excerpt`, `verdict`, `version`. Also rides along as `packet` on `GET /api/apps/{name}`. |
 | `PUT`    | `/api/apps/{name}/packet?expected_version=…` | Save edited `answers{}`; **409** on a version mismatch (the packet's own version). Unknown ids are dropped; the review list is recomputed. |
 | `POST`   | `/api/apps/{name}/packet/prepare?force=` | Judge (reusing a recorded verdict unless `force=true`), and on `proceed` build the packet, draft the letter, park the application in `ready`, and moo → `{ok, packet}`. **400** on a `skip` verdict (with the rationale) or with no LLM endpoint. When the browser is on a worker rather than in this process, the whole build is handed to that worker instead — **202** `{queued, pending, prepare: true}` — so form discovery and drafting happen where the browser is and the dry run follows in the same claim. |
@@ -667,6 +711,10 @@ packet, and the application moves to **ready** — the queue of things waiting f
   and the agent uses your words on every later form that asks the same question — no
   model call, and a wrong answer is corrected once instead of per application. New
   questions land there as packets are built, blank when the agent had no answer.
+  The drafting model also sees your own past answers (question → answer), so a
+  question that asks the same thing in other words ("how did you hear about us?")
+  gets the answer you already gave, fitted to the form's options. Only the same fact
+  counts: years with Blazor is not years with .NET.
   - **Editable first/last names:** Name splitting keeps middle initials out of the
     last name ("Aaron K. Clark" → First: "Aaron", Last: "Clark"). First Name and Last
     Name are first-class rows in the Answer Bank, seeded from your résumé, pinnable
@@ -785,8 +833,16 @@ application **applied**, and moos ✅.
   (`prepare: true` in `submit_requests`) when the browser is on the agent container,
   running form discovery, drafting, and dry run in a single claim.
 - **Consent banner dismissal:** Cookie-consent overlays (OneTrust, Cookiebot, Zoho,
-  Workable, and generic "Accept all" boxes) are clicked away before Apply, on new
-  tabs opened by Apply, and before filling the form.
+  Workable, Radancy/TalentBrew, Didomi, Usercentrics, Quantcast, CookieYes,
+  Complianz, Iubenda, Termly, Klaro, Civic, Cookie Script, and generic "Accept all" /
+  "Accept and continue" buttons or links) are clicked away before Apply, on new tabs
+  opened by Apply, and before filling the form. So is any dialog or pinned box whose
+  text is about cookies — unless it holds fillable fields, so an "I agree" that sits
+  in a real application form is answered, never dismissed.
+- **Résumé through an upload button:** When a form has no file input (Flexhire's
+  *Upload Resume/CV* creates one only on click), the agent presses the button that
+  says résumé or CV, hands the PDF to the file picker it opens, and confirms the page
+  shows the file.
 - **Attach verification & error recovery:** With a PDF on hand, a failed attach
   always marks the field unmapped and refuses the click. The submitter monitors for
   2.5 seconds after attach to catch asynchronous uploader errors (e.g. Greenhouse
@@ -957,7 +1013,10 @@ what the packet knows, hands back the required ones it met for the first time, t
 takes them on and the drafter answers them, and it goes round again. A dry run stops at the
 Submit step and **discards**; a run that needs you **saves**, which keeps LinkedIn's own
 draft so you can finish by hand from where it stopped. It never ticks *Follow the company*
-for you, sends at most ten a day, and stops dead at a sign-in or a security check.
+for you, sends at most ten a day, and stops dead at a sign-in or a security check. A dialog
+with no questions (LinkedIn pre-fills your contact details) counts as clean once the run
+reached LinkedIn's own Submit step, so it is promoted like any other clean dry run. A run
+that stands down at the daily cap is re-queued as a dry run, not left as an error.
 
 Anything else is the **long tail**:
 a generic adapter that fills by field label and refuses to click if any required
@@ -972,11 +1031,51 @@ username, a write-only password sealed with the secrets key) and the browser
 signs in with it when Apply now leads to `career*.successfactors.com`, opens the
 folded sections of the application, counts the résumé already on your account as
 attached, fills what is still empty, presses **Apply** and answers the "are you
-sure" once. Without a saved account the run says which host wants one. The browser
-never creates accounts. A SuccessFactors career site on the employer's own domain
+sure" once. Without a saved account the run says which host wants one. A SuccessFactors career site on the employer's own domain
 (Kiewit's, say) is not knowable from the link: the browser learns it at the Apply
 click. The careers site's own job-search and job-alert boxes are never mistaken
-for the form. A form in **pages** — ClearCompany's "Page 1 · Page 2 · Page 3",
+for the form.
+
+**Creating a candidate account** is its own switch — *Create a candidate account
+when an application needs one* in Settings · Agent, **off by default**, because it
+**registers a real account in your name**. Some systems (Workday, Oracle Taleo,
+UKG, haystack.cv) only take applications from a signed-in candidate. With it on,
+when a run stops at one of their sign-ins and no saved account covers that host, the
+agent registers with your application email and a 24-character generated password,
+confirms the account from your mailbox (following a link only if it is on the
+board's own site, or typing the code), **proves it by signing in with it in a fresh
+browser**, and only then saves it under Board accounts for that exact host — then
+runs again, signed in. Each attempt is logged (`account_created` /
+`account_not_created`). It cannot loop: a failed attempt triggers no re-run. If the
+address already has an account it says so and never resets it, and a captcha ends
+the attempt. Recipes exist for Workday, Taleo, UKG and haystack.cv; iCIMS puts an
+hCaptcha before it takes an email, so the run names iCIMS and stops. Any other host
+is reported by name. On Workday, Taleo and iCIMS an account belongs to one employer
+(sharing the ATS's domain doesn't count as cover), so one employer's account is never
+offered to another.
+
+**UKG (UltiPro)** has one shared sign-in (`signin-us.ultipro.com`) for every board it
+hosts, so one candidate account, saved as the `ultipro.com` board account, serves
+every UKG employer. After sign-in the browser completes the employer's own profile
+step (name, phone, the privacy consent, *Create account*), fills UKG's repeating
+**Work Experience** and **Education** panels from the structured résumé (the three
+most recent jobs and every school; a month the résumé doesn't state is left blank
+for you, never guessed), and presses the shadow-root Submit. A UKG posting that
+reads *This opportunity is currently not available* is retired as closed.
+**Education** is read from an uploaded résumé's EDUCATION section (school, degree,
+dates) and is part of the model's brief and the résumé preview.
+
+**Oracle Recruiting Cloud** (`oraclecloud.com`) and **Oracle Taleo** sign in by an
+emailed PIN: the browser types the code into Oracle's six per-character boxes (and
+never mistakes them for the form), leaves Oracle's *easy-apply* résumé-import step
+for the standard flow, and walks it: drawn radios and pill-button radio groups,
+Oracle JET searchable dropdowns, and address lists that depend on each other
+(Country → State → City) are filled, and a required repeatable block such as *add at
+least 1 Education item* is reported as needing you rather than clicked past. Every
+Oracle and Taleo tenant mails from one shared sender, so on those boards the sign-in
+email has to name the employer before its code is used.
+
+A form in **pages** — ClearCompany's "Page 1 · Page 2 · Page 3",
 evlo's five-step wizard — is walked: the browser presses Next, reads each page the
 way discovery reads a form, fills what the packet knows, and hands back any question
 it has never heard of for the drafter, then runs again; it never turns a page whose
