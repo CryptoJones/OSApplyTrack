@@ -748,6 +748,25 @@ h3 { font-size: 1.15rem; letter-spacing: -0.02em; }
 .pipeline-table th, .pipeline-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 .pipeline-table th { font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .pipe-phase { font-weight: 650; }
+/* Stacked tables (#401): on a phone the Errors and Due tables would squeeze every column to
+   a word per line and push the row's button off-screen, so each row becomes a card. The
+   rows keep explicit table roles (display changes drop them in some engines), the header
+   row stays for screen readers, and each cell's visible label has empty alt text so it
+   is not read on top of the column header. */
+@media (max-width: 640px) {
+  .stack-table { display: block; }
+  .stack-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .stack-table tbody { display: block; }
+  .stack-table tbody tr { display: grid; grid-template-columns: 1fr; gap: 0.35rem; padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
+  .stack-table tbody td { display: block; padding: 0; border: 0; }
+  .stack-table td[data-label]::before {
+    content: attr(data-label);
+    content: attr(data-label) / "";
+    display: block; font-size: 0.72rem; font-weight: 650; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .stack-table td.stack-action .btn { width: 100%; min-height: 2.75rem; }
+}
 /* Analytics (#353): the tables carry the numbers; the bars beside them are decoration. */
 .analytics-table tbody th { font-size: 0.92rem; color: var(--text); text-transform: none; letter-spacing: normal; font-weight: 650; }
 .stat-bar { display: block; width: 100%; max-width: 16rem; height: 0.5rem; margin-top: 0.35rem; }
