@@ -630,6 +630,18 @@ async function openDue({ focus = true } = {}) {
   if (focus) focusView("h1");
 }
 
+// Stacked tables (#401) turn into cards on a phone through CSS display changes, which drop a
+// table's semantics in some engines; stating the roles keeps rows and headers announced.
+function keepTableRoles(root) {
+  root.querySelectorAll(".stack-table").forEach((t) => {
+    t.setAttribute("role", "table");
+    t.querySelectorAll("thead, tbody").forEach((g) => g.setAttribute("role", "rowgroup"));
+    t.querySelectorAll("tr").forEach((r) => r.setAttribute("role", "row"));
+    t.querySelectorAll("th").forEach((h) => h.setAttribute("role", h.getAttribute("scope") === "row" ? "rowheader" : "columnheader"));
+    t.querySelectorAll("td").forEach((d) => d.setAttribute("role", "cell"));
+  });
+}
+
 function renderDueView() {
   const today = isoDate();
   const follow = dueFollowups();
@@ -637,20 +649,20 @@ function renderDueView() {
   const overdue = follow.filter((a) => a.followup < today).length;
   const iRows = interviews.map((i) => `
     <tr>
-      <td><time datetime="${escapeHtml(i.at)}">${escapeHtml(interviewWhen(i.at))}</time></td>
-      <td><button type="button" class="link-button" data-open="${escapeHtml(i.name)}">${pipelineRowTitle(i)}</button></td>
-      <td>${escapeHtml(i.note || "—")}</td>
+      <td data-label="When"><time datetime="${escapeHtml(i.at)}">${escapeHtml(interviewWhen(i.at))}</time></td>
+      <td class="stack-lead"><button type="button" class="link-button" data-open="${escapeHtml(i.name)}">${pipelineRowTitle(i)}</button></td>
+      <td data-label="Note">${escapeHtml(i.note || "—")}</td>
     </tr>`).join("");
   // Following up agentically (#394): the model drafts, the person reviews and sends. Off
   // with drafting — then there is no button and no model call.
   const drafting = state.coverLettersEnabled !== false;
   const fRows = follow.map((a) => `
     <tr>
-      <td><button type="button" class="link-button" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</button>
+      <td class="stack-lead"><button type="button" class="link-button" data-open="${escapeHtml(a.filename)}">${pipelineRowTitle(a)}</button>
         ${a.id ? `<div class="field-help mono">${escapeHtml(appId(a))}</div>` : ""}</td>
-      <td>${statusBadge(a.status)}</td>
-      <td>${escapeHtml(a.followup)} ${a.followup < today ? OVERDUE_BADGE : `<span class="field-help">today</span>`}</td>
-      ${drafting ? `<td><button type="button" class="btn btn-xs" data-followup="${escapeHtml(a.filename)}"
+      <td data-label="Status">${statusBadge(a.status)}</td>
+      <td data-label="Follow-up">${escapeHtml(a.followup)} ${a.followup < today ? OVERDUE_BADGE : `<span class="field-help">today</span>`}</td>
+      ${drafting ? `<td class="stack-action"><button type="button" class="btn btn-xs" data-followup="${escapeHtml(a.filename)}"
           aria-label="Follow up with ${escapeHtml(a.company)}: draft the email">Follow up</button>
         ${a.contact_email ? "" : `<div class="field-help">No contact email on file</div>`}</td>` : ""}
     </tr>`).join("");
@@ -667,7 +679,7 @@ function renderDueView() {
       ${interviews.length ? `
       <h2 class="mt-5 due-section-title">Interviews</h2>
       <div class="table-scroll">
-        <table class="pipeline-table">
+        <table class="pipeline-table stack-table">
           <caption class="sr-only">Interviews in the coming week</caption>
           <thead><tr><th scope="col">When</th><th scope="col">Application</th><th scope="col">Note</th></tr></thead>
           <tbody>${iRows}</tbody>
@@ -683,7 +695,7 @@ function renderDueView() {
         ? "Follow up has your model draft the email from the posting, your letter, your notes and the mail you have exchanged; you review it, then send it or copy it. Sending logs it on the application and moves the date."
         : "Move a follow-up's date, or clear it, on the application's form once you have followed up."}</p>
       <div class="table-scroll">
-        <table class="pipeline-table">
+        <table class="pipeline-table stack-table">
           <caption class="sr-only">Follow-ups due today or overdue</caption>
           <thead><tr><th scope="col">Application</th><th scope="col">Status</th><th scope="col">Follow-up</th>${drafting ? `<th scope="col"><span class="sr-only">Actions</span></th>` : ""}</tr></thead>
           <tbody>${fRows}</tbody>
@@ -691,6 +703,7 @@ function renderDueView() {
       </div>` : ""}
     </div>`;
   document.title = "Due | ApplyTrack";
+  keepTableRoles(contentEl);
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
   contentEl.querySelectorAll("[data-followup]").forEach((b) => b.addEventListener("click", () => followUpOn([b.dataset.followup])));
   const all = contentEl.querySelector("[data-followup-all]");
@@ -905,12 +918,12 @@ function renderErrorsView() {
       : `<span class="link-status bad">Needs you</span><div class="field-help">${escapeHtml(e.why)}</div>`;
     return `
     <tr>
-      <td><button type="button" class="link-button" data-open="${escapeHtml(e.name)}">${pipelineRowTitle(e)}</button>
+      <td class="stack-lead"><button type="button" class="link-button" data-open="${escapeHtml(e.name)}">${pipelineRowTitle(e)}</button>
         <div class="field-help">${(() => { const id = appId(state.apps.find((a) => a.filename === e.name)); return id ? `<span class="mono">${escapeHtml(id)}</span> · ` : ""; })()}${escapeHtml(e.provider || "")}${link ? ` · <a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">posting<span class="sr-only"> (opens in a new tab)</span></a>` : ""}</div></td>
-      <td>${escapeHtml(e.error || "the run failed")}</td>
-      <td>${escapeHtml(new Date(e.at).toLocaleString())}<div class="field-help">${e.runs} run${e.runs === 1 ? "" : "s"}</div></td>
-      <td>${next}</td>
-      <td><button type="button" class="btn btn-xs" data-retry="${escapeHtml(e.name)}"
+      <td data-label="What went wrong">${escapeHtml(e.error || "the run failed")}</td>
+      <td data-label="Last run">${escapeHtml(new Date(e.at).toLocaleString())}<div class="field-help">${e.runs} run${e.runs === 1 ? "" : "s"}</div></td>
+      <td data-label="What happens next">${next}</td>
+      <td class="stack-action"><button type="button" class="btn btn-xs" data-retry="${escapeHtml(e.name)}"
         aria-label="Retry ${escapeHtml(e.company)} with a dry run">Retry</button></td>
     </tr>`;
   }).join("");
@@ -929,7 +942,7 @@ function renderErrorsView() {
       </header>
       ${errors.length ? `
       <div class="table-scroll">
-        <table class="pipeline-table">
+        <table class="pipeline-table stack-table">
           <caption class="sr-only">Applications whose last run failed, oldest failure first</caption>
           <thead><tr><th scope="col">Application</th><th scope="col">What went wrong</th><th scope="col">Last run</th><th scope="col">What happens next</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
           <tbody>${rows}</tbody>
@@ -937,6 +950,7 @@ function renderErrorsView() {
       </div>` : ""}
     </div>`;
   document.title = "Errors | ApplyTrack";
+  keepTableRoles(contentEl);
   contentEl.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openApp(b.dataset.open)));
   contentEl.querySelectorAll("[data-retry]").forEach((b) => b.addEventListener("click", async () => {
     await queueSubmit(b.dataset.retry, b, true);

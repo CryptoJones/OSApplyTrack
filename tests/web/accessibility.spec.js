@@ -943,6 +943,19 @@ test("a status chip opens that status's applications as a list in the main pane"
   await expect(page.getByRole("heading", { name: "Example Co" })).toBeVisible();
 });
 
+// A row's button is reachable without scrolling sideways, and the table never forces the
+// page wider than the screen (#401: on a phone Retry used to sit clipped past the edge).
+async function expectInsideViewport(page, locator) {
+  const box = await locator.boundingBox();
+  const width = page.viewportSize().width;
+  expect(box).not.toBeNull();
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(width);
+  const overflow = await page.locator("#content .table-scroll").evaluateAll((els) =>
+    els.map((el) => el.scrollWidth - el.clientWidth));
+  for (const extra of overflow) expect(extra).toBeLessThanOrEqual(1);
+}
+
 test("the errors chip sits between ready and applied and lists what is stuck, and why", async ({ page }, testInfo) => {
   // A failed run used to drop its application back into Ready, where it looked like a
   // packet nobody had tried (#284).
@@ -986,6 +999,10 @@ test("the errors chip sits between ready and applied and lists what is stuck, an
   await expect(row).toContainText("the Apply button did not respond within 5 s");
   await expect(row).toContainText("Needs you");
   await expect(row).toContainText("gave up after 3 failed runs in 7 days");
+  await expectInsideViewport(page, row.getByRole("button", { name: /^Retry / }));
+  // Stacked into a card on a phone, it is still a table to assistive tech: the column
+  // headers are there to be announced.
+  await expect(page.getByRole("columnheader", { name: "What went wrong" })).toHaveCount(1);
   await expectNoSeriousViolations(page);
 
   const sent = page.waitForRequest((request) =>
@@ -1252,6 +1269,7 @@ test("Due drafts a follow-up with the model, sends it after review, and logs one
   const followups = page.getByRole("table", { name: "Follow-ups due today or overdue" });
   await expect(followups.getByRole("row").filter({ hasText: "Meridian Labs" })).toContainText("No contact email on file");
   await expect(followups.getByRole("button", { name: "Follow up with Aurora Systems: draft the email" })).toBeVisible();
+  await expectInsideViewport(page, followups.getByRole("button", { name: "Follow up with Aurora Systems: draft the email" }));
   await expectNoSeriousViolations(page);
 
   // One at a time, oldest first; nothing goes anywhere until Send.
