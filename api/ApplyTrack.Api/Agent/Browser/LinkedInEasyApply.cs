@@ -50,11 +50,17 @@ internal static partial class LinkedInEasyApply
         + "a[aria-label^='Easy Apply to' i], button[aria-label^='Easy Apply to' i], "
         + "a[aria-label^='Continue applying' i], button[aria-label^='Continue applying' i], "
         + "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button]";
-    private const string Modal = ".jobs-easy-apply-modal";
-    private const string Next = Modal + " button[data-easy-apply-next-button], " + Modal + " button[data-live-test-easy-apply-review-button]";
-    private const string Submit = Modal + " button[data-live-test-easy-apply-submit-button]";
-    private const string Close = Modal + " [data-test-modal-close-btn]";
-    private const string Follow = Modal + " #follow-company-checkbox";
+    // Two dialogs, one flow. The first is the artdeco modal mapped on 2026-09-20. The second
+    // shipped around 2026-09-30 with LinkedIn's SDUI front end (#403): a native <dialog> around
+    // the EasyApply screen, every class name generated and none of the data-* hooks left, so its
+    // buttons are known only by what they say. Every run from then on timed out waiting for a
+    // .jobs-easy-apply-modal that was no longer there, with the dialog already open on screen.
+    private const string Modal = ":is(.jobs-easy-apply-modal, dialog[open]:has([data-sdui-screen*='easyapply']))";
+    private const string Next = Modal + " button[data-easy-apply-next-button], " + Modal + " button[data-live-test-easy-apply-review-button], "
+        + Modal + " footer button:has-text('Next'), " + Modal + " footer button:has-text('Review')";
+    private const string Submit = Modal + " button[data-live-test-easy-apply-submit-button], " + Modal + " button:has-text('Submit application')";
+    private const string Close = Modal + " [data-test-modal-close-btn], " + Modal + " button[aria-label='Dismiss']";
+    private const string Follow = Modal + " #follow-company-checkbox, " + Modal + " input[type=checkbox][aria-label^='Follow ']";
     /// <summary>More steps than any real dialog has; a loop that will not end is a bug, not a form.</summary>
     private const int MaxSteps = 12;
 
@@ -309,7 +315,7 @@ internal static partial class LinkedInEasyApply
             while (DateTime.UtcNow < deadline)
             {
                 await page.WaitForTimeoutAsync(1_000);
-                var said = await page.Locator("[role=dialog], .artdeco-modal").AllInnerTextsAsync();
+                var said = await page.Locator("[role=dialog], .artdeco-modal, dialog[open]").AllInnerTextsAsync();
                 var sent = said.Select(t => Sent().Match(t)).FirstOrDefault(m => m.Success);
                 if (sent is not null || accepted.Task.IsCompletedSuccessfully)
                 {
@@ -349,7 +355,8 @@ internal static partial class LinkedInEasyApply
         try
         {
             await page.Locator(Close).First.ClickAsync(new() { Timeout = 5_000 });
-            var choice = page.Locator("[data-test-dialog-primary-btn], [data-test-dialog-secondary-btn], [role=alertdialog] button, .artdeco-modal button")
+            // The SDUI dialog asks "Save this application?" in a second <dialog> of its own.
+            var choice = page.Locator("[data-test-dialog-primary-btn], [data-test-dialog-secondary-btn], [role=alertdialog] button, .artdeco-modal button, dialog[open] button")
                 .Filter(new() { HasTextRegex = save ? new Regex(@"^\s*Save\s*$", RegexOptions.IgnoreCase) : new Regex(@"^\s*Discard\s*$", RegexOptions.IgnoreCase) }).First;
             await choice.ClickAsync(new() { Timeout = 5_000 });
             // Let it land. The run ends here and its context closes with it, which would cut off
@@ -372,6 +379,10 @@ internal static partial class LinkedInEasyApply
         // for want of what the résumé already says. The typeahead takes the first match for it.
         // Only a location that names a city ("Minden, Nebraska"): a bare "United States" would
         // let the typeahead's first suggestion stand in for a city the résumé never gave.
+        // The SDUI dialog (#403) leaves the mobile number blank where the old one filled it from
+        // the profile; the packet's standard phone is the same number.
+        if (PhoneLabel().IsMatch(label) && packet.Answers.TryGetValue("std:phone", out var phone) && phone.Trim().Length > 0)
+            return phone.Trim();
         if (CityLabel().IsMatch(label) && packet.Resume is { Location.Length: > 0 } resume
             && AnswerDrafter.StripLocationSuffix(resume.Location) is { } place && place.Contains(','))
             return place;
@@ -380,6 +391,9 @@ internal static partial class LinkedInEasyApply
 
     [GeneratedRegex(@"^\s*(?:city|location|current location|location \(city\))\s*\*?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex CityLabel();
+
+    [GeneratedRegex(@"^\s*(?:mobile\s+)?phone(?:\s+number)?\s*\*?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex PhoneLabel();
 
     private static bool SameLabel(string a, string b) =>
         string.Equals(Squash(a), Squash(b), StringComparison.OrdinalIgnoreCase);
@@ -415,9 +429,15 @@ internal static partial class LinkedInEasyApply
                         """
                         (first, want) => {
                           const group = first.closest('fieldset') || first.closest('[data-test-form-element]') || first.parentElement;
-                          for (const r of group.querySelectorAll('input[type=radio]')) {
+                          // The same scope ReadStepAsync read the options from: every same-name radio.
+                          const scope = first.closest('fieldset') || first.closest('[data-test-form-element]') || first.getRootNode();
+                          const radios = first.name ? [...scope.querySelectorAll(`input[type=radio][name="${CSS.escape(first.name)}"]`)] : [...group.querySelectorAll('input[type=radio]')];
+                          const line = t => (t || '').split('\n').map(x => x.trim()).filter(Boolean)[0] || '';
+                          for (const r of radios) {
                             const label = first.getRootNode().querySelector(`label[for="${CSS.escape(r.id)}"]`);
-                            if (((label?.innerText || r.value || '').trim().toLowerCase()) === want.toLowerCase()) { (label || r).click(); return r.checked; }
+                            // The SDUI dialog's label is empty; the option's words sit beside it (#403).
+                            const text = line(label?.innerText) || line(r.parentElement?.parentElement?.innerText) || r.value || '';
+                            if (text.toLowerCase() === want.toLowerCase()) { (label || r).click(); return r.checked; }
                           }
                           return false;
                         }
@@ -531,6 +551,43 @@ internal static partial class LinkedInEasyApply
                 const required = c.required || c.getAttribute('aria-required') === 'true' || radios.some(r => r.required || r.getAttribute('aria-required') === 'true')
                   || !!g.querySelector('[data-test-form-builder-radio-button-form-component__required], .fb-dash-form-element__label--is-required, [class*=is-required]');
                 out.push({ Label: text, Kind: kind, Required: required, Filled: filled, Options: options, ControlId: c.id || '', Invalid: !!g.querySelector('.artdeco-inline-feedback--error') });
+              }
+              if (groups.length) return JSON.stringify(out);
+
+              // The SDUI dialog (#403): no group wrappers, just controls. A label[for] names a
+              // contact field; a question's control carries the question as its aria-label, and a
+              // radio group's options say themselves in a <p> beside each empty label. "*" marks
+              // required. Errors arrive only after a refused Next: the helper text's own first <p>
+              // ("Invalid input", "Please enter a valid phone number"), or a <p> after the fieldset.
+              const column = modal.querySelector('[data-component-type=LazyColumn]') || modal;
+              const optionText = r => clean(said(root.querySelector(`label[for="${CSS.escape(r.id)}"]`)) || r.parentElement?.parentElement?.innerText) || r.value;
+              const errorish = /invalid|required|please (enter|select|make|provide|choose)|must be|enter a (valid|whole|decimal|number)|larger than|less than|between/i;
+              for (const c of column.querySelectorAll('input:not([type=hidden]):not([type=file]), select, textarea')) {
+                if (seen.has(c) || !shown(c)) continue;
+                const kind = c.tagName === 'SELECT' ? 'select' : c.tagName === 'TEXTAREA' ? 'textarea' : c.type === 'radio' ? 'radio' : c.type === 'checkbox' ? 'checkbox' : 'text';
+                const aria = clean(c.getAttribute('aria-label'));
+                if (kind === 'checkbox' && (/top choice/i.test(aria) || /^follow /i.test(aria))) continue;
+                const fieldset = c.closest('fieldset');
+                const radios = kind === 'radio' ? [...(fieldset || column).querySelectorAll(`input[type=radio][name="${CSS.escape(c.name)}"]`)] : [];
+                radios.forEach(r => seen.add(r)); seen.add(c);
+                // The résumé cards are a radio group too, each named for its file.
+                if (kind === 'radio' && (fieldset?.querySelector('[componentkey=easyApplyUploadedResumeRef]') || /\.(pdf|docx?|rtf|txt)$/i.test(aria))) continue;
+                const box = c.closest('[componentkey^=easyApplyFieldFocus]') || fieldset?.parentElement || c.parentElement?.parentElement || c;
+                // The question's own <p>: inside a radio group's box, or just before a text box's.
+                const lead = box.querySelector(':scope > p') || box.parentElement?.querySelector(':scope > p');
+                let text = (kind === 'radio' ? '' : said(root.querySelector(`label[for="${CSS.escape(c.id)}"]`))) || aria || clean(lead?.innerText);
+                const starred = /\*\s*$/.test(text) || /\*\s*$/.test(clean(lead?.innerText));
+                text = text.replace(/\s*\*\s*$/, '').trim();
+                if (!text) continue;
+                const options = kind === 'select' ? [...c.options].map(o => o.text.trim()).filter(t => t && !/^select an option$/i.test(t))
+                  : radios.map(optionText);
+                const filled = kind === 'select' ? !!c.value && !/^select an option$/i.test(c.options[c.selectedIndex]?.text.trim() || '')
+                  : kind === 'radio' ? radios.some(r => r.checked) : kind === 'checkbox' ? c.checked : (c.value || '').trim().length > 0;
+                const required = starred || c.required || c.getAttribute('aria-required') === 'true' || radios.some(r => r.required || r.getAttribute('aria-required') === 'true');
+                const helper = box.querySelector('[data-testid=text-input-helper-text] > p');
+                const after = fieldset?.nextElementSibling?.tagName === 'P' ? fieldset.nextElementSibling : null;
+                const invalid = c.getAttribute('aria-invalid') === 'true' || [helper, after].some(p => p && errorish.test(p.innerText || ''));
+                out.push({ Label: text, Kind: kind, Required: required, Filled: filled, Options: options, ControlId: c.id || '', Invalid: invalid });
               }
               return JSON.stringify(out);
             }

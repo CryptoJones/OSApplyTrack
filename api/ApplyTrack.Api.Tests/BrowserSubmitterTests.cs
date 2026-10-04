@@ -74,6 +74,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/li/jobs/view/7/", () => Results.Content(EasyApplyHtml.Replace(
             """<a href="#" id="entry" class="f7a37dee _1d1ba039" aria-label="Easy Apply to Senior .NET Engineer at Acme">Easy Apply</a>""",
             """<a href="/li/jobs/view/7/apply/?openSDUIApplyFlow=true" id="entry" class="f7a37dee _1d1ba039">Continue</a><p>You last modified this application now</p>"""), "text/html"));
+        // The same flow in LinkedIn's SDUI dialog, as it shipped around 2026-09-30 (#403).
+        _fixture.MapGet("/li/jobs/view/sdui", () => Results.Content(EasyApplySduiHtml, "text/html"));
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
@@ -109,6 +111,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             using var sr = new StreamReader(req.Body);
             var body = await sr.ReadToEndAsync();
             lock (_posts) _posts.Add(new() { ["json"] = body });
+            return Results.Json(new { ok = true });
+        });
+        // The SDUI dialog's submit call: the fixture reports "sent" only once this has answered 2xx.
+        _fixture.MapPost("/li/flagship-web/rsc-action/actions/submit", () =>
+        {
+            lock (_posts) _posts.Add(new() { ["sdui_submit"] = "1" });
             return Results.Json(new { ok = true });
         });
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
@@ -1904,11 +1912,96 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    // The SDUI dialog, copied from the live one on 2026-10-03 (#403): a native <dialog> around the
+    // EasyApply screen, generated class names, no data-* hooks; label[for] on contact fields, the
+    // question as each control's aria-label, radio options in a <p> beside an empty label, a
+    // required "*", errors only after a refused Next, Follow ticked on Review, and a second
+    // <dialog> that asks Save or Discard.
+    private const string EasyApplySduiHtml = """
+        <html><body>
+        <h1>Senior .NET Engineer</h1>
+        <button type="button" aria-label="Easy Apply filter." onclick="document.title='WRONG BUTTON'">Easy Apply</button>
+        <button type="button" class="ckymnz ckymny" componentkey="ae6dd0bf" aria-label="Easy Apply to this job" id="entry">Easy Apply</button>
+        <button type="button" data-testid="carousel-inline-right-button" aria-label="Next">&gt;</button>
+        <dialog class="ckymxw ckymxv" data-testid="dialog" aria-labelledby="dialog-header" id="dlg">
+          <button type="button" aria-label="Dismiss" onclick="ask()"><span></span></button>
+          <div><header id="dialog-header"><h2>Apply to Acme</h2></header>
+          <div data-testid="dialog-content"><div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+            <div><p id="pages"></p></div>
+            <div data-testid="lazy-column" data-component-type="LazyColumn" id="col"></div>
+            <div><hr role="presentation"><footer id="foot"></footer></div>
+          </div></div></div>
+        </dialog>
+        <dialog id="ask"><p>Save this application?</p>
+          <button type="button" onclick="leave('discard')"><span><span>Discard</span></span></button>
+          <button type="button" onclick="leave('save')"><span><span>Save</span></span></button></dialog>
+        <script>
+        const steps = [
+          `<div><p>Contact info</p>
+             <div><label for="_r_p_"><div>Email address*</div></label><div><select id="_r_p_" required><option>Select an option</option><option selected>ada@example.com</option></select></div></div>
+             <div componentkey="easyApplyFieldFocus_ea.q::1::PHONE_MOBILE::phoneNumber.validation"><label for="_r_t_"><div>Mobile phone number*</div></label>
+               <div><input required id="_r_t_" aria-describedby="_r_t_-info" type="tel" value=""></div><div data-testid="text-input-helper-text" id="_r_t_-info"></div></div></div>`,
+          `<div><p>Resume*</p><fieldset role="radiogroup"><div id="easyApplyUploadedResumeRef" componentkey="easyApplyUploadedResumeRef"></div>
+             <div><div aria-label="resume.pdf"><input id="_r_v_" aria-label="resume.pdf" type="radio" checked name="radio-group-_r_u_"><label for="_r_v_"></label></div></div>
+             <div><div aria-label="resume.pdf"><input id="_r_10_" aria-label="resume.pdf" type="radio" name="radio-group-_r_u_"><label for="_r_10_"></label></div></div></fieldset></div>`,
+          `<div><h3>Mark this job as a top choice (Optional)</h3><div><input id="_r_1p_" aria-label="Mark job as a top choice" type="checkbox"><label for="_r_1p_"></label></div><p>Mark job as a top choice</p></div>`,
+          `<div><p>Additional Questions</p>
+             <div><p>Are you legally authorized to work in the United States?*</p><div componentkey="easyApplyFieldFocus_ea_validation_p3_0_1">
+               <select id="q-auth" required aria-label="Are you legally authorized to work in the United States?"><option>Select an option</option><option>Yes</option><option>No</option></select>
+               <div data-testid="text-input-helper-text"></div></div></div>
+             <div><p>How many years of experience do you have with C#?*</p><div componentkey="easyApplyFieldFocus_ea_validation_p3_0_2">
+               <div><input required id="q-years" aria-label="How many years of experience do you have with C#?" type="text" value=""></div>
+               <div data-testid="text-input-helper-text"><div><p aria-live="polite"><span aria-hidden="true">0/20</span><span>0 of 20 characters</span></p></div></div></div></div>
+             <div componentkey="easyApplyFieldFocus_ea_validation_p3_0_3"><p>Will you require visa sponsorship?*</p>
+               <fieldset role="radiogroup" id="visa"><div>
+                 <div><div><div><input id="q-visa-y" aria-label="Will you require visa sponsorship?" type="radio" name="radio-group-visa" style="position:absolute;opacity:0;width:0;height:0"><label for="q-visa-y"></label></div><div><p>Yes</p></div></div></div>
+                 <div><div><div><input id="q-visa-n" aria-label="Will you require visa sponsorship?" type="radio" name="radio-group-visa" style="position:absolute;opacity:0;width:0;height:0"><label for="q-visa-n"></label></div><div><p>No</p></div></div></div>
+               </div></fieldset></div></div>`,
+          `<div><p>Review your application</p><p>The employer will also receive a copy of your profile</p>
+             <div><input id="_r_26_" aria-label="Follow Acme to stay up to date with their page" type="checkbox" checked><label for="_r_26_"></label></div></div>`,
+        ];
+        const dlg = document.getElementById('dlg'), col = document.getElementById('col'), foot = document.getElementById('foot');
+        let at = 0; const answers = {};
+        const send = o => fetch('/li/event', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o) });
+        const btn = (t, f) => `<button type="button" componentkey="k" onclick="${f}()"><span><span>${t}</span></span></button>`;
+        function capture() { for (const e of col.querySelectorAll('select, input[type=text], input[type=tel]')) answers[e.id] = e.value;
+          const v = col.querySelector('input[name=radio-group-visa]:checked'); if (v) answers.visa = v.id === 'q-visa-y' ? 'Yes' : 'No';
+          const f = document.getElementById('_r_26_'); if (f) answers.follow = f.checked; }
+        function valid() { let ok = true;
+          col.querySelectorAll('.err').forEach(e => e.remove());
+          for (const c of col.querySelectorAll('select[required], input[required]')) {
+            const bad = c.tagName === 'SELECT' ? /^select an option$/i.test(c.options[c.selectedIndex].text)
+              : !c.value.trim() || (c.id === 'q-years' && !/^\d+(\.\d+)?$/.test(c.value.trim()));
+            if (bad) { ok = false; c.closest('[componentkey]').querySelector('[data-testid=text-input-helper-text]').insertAdjacentHTML('afterbegin', '<p class="err">Invalid input</p>'); } }
+          const visa = document.getElementById('visa');
+          if (visa && !visa.querySelector('input:checked')) { ok = false; visa.insertAdjacentHTML('afterend', '<p class="err">This field is required</p>'); }
+          return ok; }
+        function render() {
+          const last = at === steps.length - 1;
+          document.getElementById('pages').textContent = `${at + 1}/${steps.length} pages`;
+          col.innerHTML = steps[at];
+          foot.innerHTML = (at ? btn('Back', 'back') : '') + (last ? btn('Submit application', 'submitIt') : btn(at === steps.length - 2 ? 'Review' : 'Next', 'go'));
+          if (!dlg.open) dlg.show(); }
+        function go() { if (!valid()) return; capture(); at++; render(); }
+        function back() { at--; render(); }
+        function ask() { capture(); document.getElementById('ask').show(); }
+        function leave(how) { send({ left: how, step: at }); document.getElementById('ask').close(); dlg.close(); }
+        async function submitIt() { capture(); const r = await fetch('/li/flagship-web/rsc-action/actions/submit', { method: 'POST' }).catch(() => null);
+          if (!r || !r.ok) return;
+          await send({ submitted: true, answers }); col.innerHTML = '<h2>Application sent</h2><p>Your application was sent to Acme.</p>'; foot.innerHTML = btn('Done', 'close'); }
+        document.getElementById('entry').onclick = () => { at = 0; render(); };
+        </script>
+        </body></html>
+        """;
+
     private static AgentPacket EasyApplyPacket(bool answered)
     {
         var packet = new AgentPacket { ApplicationName = "acme-senior-.net-engineer.md", Provider = ApplyTrack.Api.Agent.AtsProvider.LinkedInEasy };
         packet.Questions.Add(new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard));
         packet.Answers["first_name"] = "Ada";
+        // The SDUI dialog leaves the mobile number blank (#403); the old one arrives filled.
+        packet.Questions.Add(new("std:phone", "Phone", false, PacketQuestion.Text, [], PacketQuestion.Standard));
+        packet.Answers["std:phone"] = "4025550100";
         if (!answered) return packet;
         // Keyed by label, as the driver hands a discovered question back.
         foreach (var (label, answer) in new[]
@@ -2965,6 +3058,59 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("No", sent.GetProperty("visa").GetString());
         // "Follow Acme" arrives ticked. Applying is not following.
         Assert.False(sent.GetProperty("follow").GetBoolean());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_sdui_dialog_hands_back_new_questions_and_saves_the_draft()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // LinkedIn's SDUI dialog (#403): same flow, none of the old hooks. Every run timed out
+        // waiting for .jobs-easy-apply-modal while this dialog sat open on screen.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui", EasyApplyPacket(answered: false), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(
+            ["Are you legally authorized to work in the United States?", "How many years of experience do you have with C#?", "Will you require visa sponsorship?"],
+            outcome.Unmapped);
+        var found = Assert.IsType<List<PacketQuestion>>(outcome.Discovered);
+        Assert.Equal(["Yes", "No"], found[0].Options);
+        Assert.Equal(PacketQuestion.Text, found[1].Type);
+        Assert.Equal(["Yes", "No"], found[2].Options);
+        Assert.All(found, q => Assert.True(q.Required));
+        var left = Assert.Single(EasyApplyEvents());
+        Assert.Equal("save", left.GetProperty("left").GetString());
+        Assert.Equal(3, left.GetProperty("step").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_sdui_dialog_dry_run_reaches_submit_and_discards()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.False(outcome.Submitted);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal(4, outcome.Mapped.Count);   // the phone, and the three questions
+        Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_sdui_dialog_submits_without_following_the_company()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Application sent", outcome.Confirmation);
+        var sent = Assert.Single(EasyApplyEvents()).GetProperty("answers");
+        Assert.Equal("Yes", sent.GetProperty("q-auth").GetString());
+        Assert.Equal("12", sent.GetProperty("q-years").GetString());
+        Assert.Equal("No", sent.GetProperty("visa").GetString());
+        Assert.Equal("4025550100", sent.GetProperty("_r_t_").GetString());
+        Assert.False(sent.GetProperty("follow").GetBoolean());
+        lock (_posts) Assert.Single(_posts, p => p.ContainsKey("sdui_submit"));
     }
 
     [SkippableFact]
