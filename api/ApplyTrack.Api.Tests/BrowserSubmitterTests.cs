@@ -113,6 +113,12 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             lock (_posts) _posts.Add(new() { ["json"] = body });
             return Results.Json(new { ok = true });
         });
+        // The SDUI dialog's submit call: the fixture reports "sent" only once this has answered 2xx.
+        _fixture.MapPost("/li/flagship-web/rsc-action/actions/submit", () =>
+        {
+            lock (_posts) _posts.Add(new() { ["sdui_submit"] = "1" });
+            return Results.Json(new { ok = true });
+        });
         _fixture.MapGet("/jobs/1", () => Results.Content(FormHtml, "text/html"));
         // Ashby draws its own checkbox and hides the real input: no id, no size, tabindex -1 (#280).
         _fixture.MapGet("/jobs/styled-checkbox", () => Results.Content(FormHtml.Replace(
@@ -1980,7 +1986,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         function back() { at--; render(); }
         function ask() { capture(); document.getElementById('ask').show(); }
         function leave(how) { send({ left: how, step: at }); document.getElementById('ask').close(); dlg.close(); }
-        async function submitIt() { capture(); await fetch('/li/flagship-web/rsc-action/actions/submit', { method: 'POST' }).catch(() => {});
+        async function submitIt() { capture(); const r = await fetch('/li/flagship-web/rsc-action/actions/submit', { method: 'POST' }).catch(() => null);
+          if (!r || !r.ok) return;
           await send({ submitted: true, answers }); col.innerHTML = '<h2>Application sent</h2><p>Your application was sent to Acme.</p>'; foot.innerHTML = btn('Done', 'close'); }
         document.getElementById('entry').onclick = () => { at = 0; render(); };
         </script>
@@ -3103,6 +3110,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("No", sent.GetProperty("visa").GetString());
         Assert.Equal("4025550100", sent.GetProperty("_r_t_").GetString());
         Assert.False(sent.GetProperty("follow").GetBoolean());
+        lock (_posts) Assert.Single(_posts, p => p.ContainsKey("sdui_submit"));
     }
 
     [SkippableFact]

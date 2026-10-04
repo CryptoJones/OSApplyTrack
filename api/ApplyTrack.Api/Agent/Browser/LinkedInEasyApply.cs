@@ -429,11 +429,15 @@ internal static partial class LinkedInEasyApply
                         """
                         (first, want) => {
                           const group = first.closest('fieldset') || first.closest('[data-test-form-element]') || first.parentElement;
-                          for (const r of group.querySelectorAll('input[type=radio]')) {
+                          // The same scope ReadStepAsync read the options from: every same-name radio.
+                          const scope = first.closest('fieldset') || first.closest('[data-test-form-element]') || first.getRootNode();
+                          const radios = first.name ? [...scope.querySelectorAll(`input[type=radio][name="${CSS.escape(first.name)}"]`)] : [...group.querySelectorAll('input[type=radio]')];
+                          const line = t => (t || '').split('\n').map(x => x.trim()).filter(Boolean)[0] || '';
+                          for (const r of radios) {
                             const label = first.getRootNode().querySelector(`label[for="${CSS.escape(r.id)}"]`);
                             // The SDUI dialog's label is empty; the option's words sit beside it (#403).
-                            const text = (label?.innerText || '').trim() || (r.parentElement?.parentElement?.innerText || '').trim() || r.value || '';
-                            if (text.trim().toLowerCase() === want.toLowerCase()) { (label || r).click(); return r.checked; }
+                            const text = line(label?.innerText) || line(r.parentElement?.parentElement?.innerText) || r.value || '';
+                            if (text.toLowerCase() === want.toLowerCase()) { (label || r).click(); return r.checked; }
                           }
                           return false;
                         }
