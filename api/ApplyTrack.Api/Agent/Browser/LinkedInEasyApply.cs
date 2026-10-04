@@ -49,7 +49,10 @@ internal static partial class LinkedInEasyApply
     public const string Entry = "a[href*='/jobs/view/'][href*='/apply/'], "
         + "a[aria-label^='Easy Apply to' i], button[aria-label^='Easy Apply to' i], "
         + "a[aria-label^='Continue applying' i], button[aria-label^='Continue applying' i], "
-        + "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button]";
+        + "button#jobs-apply-button-id, button.jobs-apply-button[data-live-test-job-apply-button], "
+        // The SDUI page (#403): a saved draft's way back in is a bare "Continue" link to the posting
+        // itself, no label and no /apply/; the first run after 1.66.2 saved drafts it could not reopen.
+        + "a[href*='/jobs/view/']:text-is('Continue'), a[href*='/jobs/view/']:has(:text-is('Continue'))";
     // Two dialogs, one flow. The first is the artdeco modal mapped on 2026-09-20. The second
     // shipped around 2026-09-30 with LinkedIn's SDUI front end (#403): a native <dialog> around
     // the EasyApply screen, every class name generated and none of the data-* hooks left, so its

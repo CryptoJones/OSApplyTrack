@@ -76,6 +76,11 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             """<a href="/li/jobs/view/7/apply/?openSDUIApplyFlow=true" id="entry" class="f7a37dee _1d1ba039">Continue</a><p>You last modified this application now</p>"""), "text/html"));
         // The same flow in LinkedIn's SDUI dialog, as it shipped around 2026-09-30 (#403).
         _fixture.MapGet("/li/jobs/view/sdui", () => Results.Content(EasyApplySduiHtml, "text/html"));
+        // ...and that posting with a draft already saved: a bare "Continue" link to the posting itself.
+        _fixture.MapGet("/li/jobs/view/sdui-draft/", () => Results.Content(EasyApplySduiHtml.Replace(
+            """<button type="button" class="ckymnz ckymny" componentkey="ae6dd0bf" aria-label="Easy Apply to this job" id="entry">Easy Apply</button>""",
+            """<a href="/li/jobs/view/sdui-draft/?trackingId=x" id="entry" class="ckymnz"><span><span>Continue</span></span></a>""")
+            .Replace("document.getElementById('entry').onclick = () => {", "document.getElementById('entry').onclick = e => { e.preventDefault();"), "text/html"));
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
@@ -3093,6 +3098,19 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.False(outcome.Submitted);
         Assert.Empty(outcome.Unmapped);
         Assert.Equal(4, outcome.Mapped.Count);   // the phone, and the three questions
+        Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_sdui_dialog_reopens_a_saved_draft_from_its_continue_link()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Live 2026-10-03: the run after a draft was saved found "no Easy Apply button" — the SDUI
+        // page's way back in is a bare "Continue" link (#403).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-draft/", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
         Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
     }
 
