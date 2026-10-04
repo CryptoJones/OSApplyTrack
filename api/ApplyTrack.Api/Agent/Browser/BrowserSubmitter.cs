@@ -34,7 +34,10 @@ public sealed record SubmitOutcome(
     bool Filled, bool Submitted, string Url, string Confirmation, byte[]? Screenshot,
     List<string> Unmapped, List<string> Mapped, string Error, bool Closed = false, bool Captcha = false,
     List<PacketQuestion>? Discovered = null, bool BehindSignIn = false, string NeedsAccountAt = "",
-    bool ReachedSubmit = false, string OffsiteLink = "");
+    bool ReachedSubmit = false, string OffsiteLink = "",
+    // The browser itself gave out mid-run (the page or context closed under it), as
+    // opposed to a refusal the run reasoned its way to: worth another try (#406).
+    bool Crashed = false);
 
 /// <summary>
 /// What a parked run is waiting for the person to relay. <see cref="Recipient"/> is the
@@ -649,7 +652,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             screenshot ??= await session.ScreenshotAsync();
             var refused = session.Refused;
             var why = refused.Count > 0 ? $"navigation to {refused[0]} was refused" : ex.Message.Split('\n')[0];
-            return new SubmitOutcome(mapped.Count > 0, false, page.Url, "", screenshot, unmapped, mapped, why);
+            // A refused navigation is the guard's doing and will recur; anything else here is
+            // the browser failing under the run, which a second run usually does not meet.
+            return new SubmitOutcome(mapped.Count > 0, false, page.Url, "", screenshot, unmapped, mapped, why, Crashed: refused.Count == 0);
         }
     }
 

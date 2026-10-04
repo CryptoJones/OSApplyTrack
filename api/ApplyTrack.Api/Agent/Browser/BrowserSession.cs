@@ -360,14 +360,28 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
         var uri = JobPageFetcher.ValidateUrl(link);
         IPAddress[] addresses;
-        try { addresses = await Dns.GetHostAddressesAsync(uri.Host, ct); }
+        try { addresses = await ResolveAsync(uri.Host, ct); }
         catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ArgumentException)
         {
-            throw new AppValidationException("the posting's host could not be resolved");
+            // Not a refusal: the container's resolver blinks (four Ready rows died on this in
+            // one hour on 2026-10-02, stamped non-transient, and sat there — #406).
+            throw new TransientRunException("the posting's host could not be resolved");
         }
         if (addresses.Length == 0 || addresses.Any(JobPageFetcher.IsBlockedAddress))
             throw new AppValidationException("refusing to drive the browser at a private address");
         return uri;
+    }
+
+    /// <summary>One lookup, and one more after a pause when the first fails on the resolver
+    /// rather than the name: a blink in the container's DNS is over in a second.</summary>
+    private static async Task<IPAddress[]> ResolveAsync(string host, CancellationToken ct)
+    {
+        try { return await Dns.GetHostAddressesAsync(host, ct); }
+        catch (System.Net.Sockets.SocketException ex) when (ex.SocketErrorCode == System.Net.Sockets.SocketError.TryAgain)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            return await Dns.GetHostAddressesAsync(host, ct);
+        }
     }
 
     private static Dictionary<string, string> LaunchHeaders(BrowserOptions options)

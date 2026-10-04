@@ -248,7 +248,10 @@ public static partial class ReadyReconciler
             return false;
         return ExceptionLed().IsMatch(why.TrimStart())
             || why.Contains("did not respond within", StringComparison.Ordinal)
-            || why.Contains("no form appeared within", StringComparison.Ordinal);
+            || why.Contains("no form appeared within", StringComparison.Ordinal)
+            // Playwright's own words for the browser dying under a run, from before the
+            // submitter flagged it (#406).
+            || why.Contains("has been closed", StringComparison.Ordinal);
     }
 
     private static string Text(JsonElement detail, string name) =>

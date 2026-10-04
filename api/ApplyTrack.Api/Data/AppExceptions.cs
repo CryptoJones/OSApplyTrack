@@ -6,6 +6,11 @@ namespace ApplyTrack.Api.Data;
 /// <summary>Bad input the store rejects — maps to HTTP 400 (heir to AppError).</summary>
 public sealed class AppValidationException(string message) : Exception(message);
 
+/// <summary>A browser run that could not start for a reason that will pass — the posting's
+/// host did not resolve, the browser was not there. Not a refusal: the run is worth another
+/// try, and the worker records it as transient (#406). The message is safe to surface.</summary>
+public sealed class TransientRunException(string message) : Exception(message);
+
 /// <summary>Requested application does not exist — maps to HTTP 404.</summary>
 public sealed class AppNotFoundException(string message) : Exception(message);
 

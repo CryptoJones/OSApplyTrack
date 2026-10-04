@@ -48,7 +48,7 @@ public sealed class LeadEvaluator
             _log.LogInformation("{Name}: {Decision} ({Confidence}%)", rec.Name, verdict.Decision, verdict.Confidence);
             return verdict;
         }
-        catch (Exception ex) when (ex is LlmUnavailableException or AppValidationException)
+        catch (AppValidationException ex)
         {
             // The model could not produce a verdict: record it and move on. This must
             // never fall through to "proceed".
@@ -56,6 +56,16 @@ public sealed class LeadEvaluator
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
                 new { reason = ex.Message, rec.Fields.Company, rec.Fields.Role });
             return null;
+        }
+        catch (LlmUnavailableException ex)
+        {
+            // Recorded the same way, then thrown on: an endpoint that is down or throttling
+            // is down for every lead in the pass, and the caller stops asking (#406) — swallowed
+            // here, twelve leads were asked again every five minutes for five hours of 429s.
+            _log.LogWarning("{Name}: no verdict: {Reason}", rec.Name, ex.Message);
+            await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
+                new { reason = ex.Message, rec.Fields.Company, rec.Fields.Role });
+            throw;
         }
     }
 

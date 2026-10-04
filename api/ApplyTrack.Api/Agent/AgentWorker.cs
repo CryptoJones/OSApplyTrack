@@ -73,6 +73,13 @@ public sealed class AgentWorker : BackgroundService
     // When each tenant's MyGreenhouse renewal was last tried: a failed try emailed a code,
     // and the next one waits (#221).
     private readonly Dictionary<long, DateTime> _portalAttempts = [];
+    // Until when each tenant's judging pass stands down after the LLM endpoint answered
+    // that it could not (#406): a 429 or a 5xx holds for every lead, and asking twelve
+    // more every five minutes only kept poolside throttling for five hours.
+    private readonly Dictionary<long, DateTime> _llmHoldOff = [];
+
+    /// <summary>After the LLM endpoint fails a pass, the tenant's next judging pass waits this long.</summary>
+    public static readonly TimeSpan LlmHoldOff = TimeSpan.FromMinutes(15);
 
     /// <summary>A MyGreenhouse session is renewed this long before it runs out.</summary>
     public static readonly TimeSpan PortalRenewAhead = TimeSpan.FromDays(2);
@@ -434,8 +441,17 @@ public sealed class AgentWorker : BackgroundService
             return null;
         }
         var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
-        var verdict = RecordedVerdict(await events.LatestVerdictAsync(rec.Name))
-            ?? await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
+        Verdict? verdict;
+        try
+        {
+            verdict = RecordedVerdict(await events.LatestVerdictAsync(rec.Name))
+                ?? await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
+        }
+        catch (LlmUnavailableException)
+        {
+            // Recorded against the application by the evaluator; the prepare stops here (#406).
+            return null;
+        }
         if (verdict is null)
         {
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
@@ -728,10 +744,11 @@ public sealed class AgentWorker : BackgroundService
         // infrastructure crash is still tellable from a validation refusal.
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            var reason = ex is AppValidationException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
+            var reason = ex is AppValidationException or TransientRunException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}";
             // A crash is worth another try; a refusal the submitter reasoned its way to is
             // not. Said here, where the difference is known, so ReadyReconciler need not
-            // guess it from the wording (#274).
+            // guess it from the wording (#274). A run that could not start — the host did not
+            // resolve — is a crash in plain words, not a refusal (#406).
             await evidence.RecordAsync(rec.Name, AgentEvidenceRepo.Kinds.Failed, rec.Fields.Link, "",
                 new { reason, dry_run = dryRun, transient = ex is not AppValidationException }, null);
             await events.RecordAsync(AgentEventRepo.Kinds.Error, rec.Name,
@@ -796,8 +813,10 @@ public sealed class AgentWorker : BackgroundService
         // timestamps) and logged so it is visible live. A best-effort read: a null age never
         // blocks the submission.
         var latency = await DiscoveryAgeSecondsAsync(conn, t, rec.Name);
+        // A run the browser died under says so (#406); every other failure is read by its
+        // wording, as before, so the flag is absent rather than false.
         await evidence.RecordAsync(rec.Name, kind, outcome.Url, outcome.Confirmation,
-            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou, reached_submit = outcome.ReachedSubmit }, outcome.Screenshot);
+            new { dry_run = dryRun, outcome.Mapped, outcome.Unmapped, error = outcome.Error, needs_you = needsYou, reached_submit = outcome.ReachedSubmit, transient = outcome.Crashed ? true : (bool?)null }, outcome.Screenshot);
         await events.RecordAsync(kind, rec.Name, new
         {
             dry_run = dryRun, mapped = outcome.Mapped.Count, unmapped = outcome.Unmapped,
@@ -1199,6 +1218,12 @@ public sealed class AgentWorker : BackgroundService
             var apps = work.Scope.Apps;
             var criteria = await new CriteriaRepo(conn, tenantId).GetAsync();
 
+            if (_llmHoldOff.TryGetValue(tenantId, out var holdUntil) && DateTime.UtcNow < holdUntil)
+            {
+                _log.LogInformation("tenant {TenantId}: the LLM endpoint failed the last pass; judging waits until {Until:u}", tenantId, holdUntil);
+                return 0;
+            }
+
             var today = await events.VerdictsSinceAsync(DailyWindow);
             var budget = Math.Min(settings.MaxPerRun, settings.MaxPerDay - today);
             if (budget <= 0)
@@ -1211,7 +1236,20 @@ public sealed class AgentWorker : BackgroundService
             foreach (var rec in await apps.ListAgentCandidatesAsync(settings.MinFitScore, budget))
             {
                 ct.ThrowIfCancellationRequested();
-                var verdict = await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
+                Verdict? verdict;
+                try
+                {
+                    verdict = await _evaluator.EvaluateAsync(rec, work.Resume, criteria, settings, work.Cfg, events, ct);
+                }
+                catch (LlmUnavailableException ex)
+                {
+                    // Recorded against the lead by the evaluator. The endpoint is down or
+                    // throttling for every lead that follows: stop the pass here, and hold the
+                    // next ones off, instead of asking it again for each (#406).
+                    _llmHoldOff[tenantId] = DateTime.UtcNow + LlmHoldOff;
+                    _log.LogWarning("tenant {TenantId}: the LLM endpoint failed ({Reason}); judging stands down for {HoldOff}", tenantId, ex.Message, LlmHoldOff);
+                    break;
+                }
                 judged++;
                 if (verdict is { IsProceed: true })
                 {
