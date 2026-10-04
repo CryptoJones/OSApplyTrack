@@ -1095,8 +1095,67 @@ public class AgentWorkerTests(PostgresFixture pg)
     [InlineData("""{"captcha":true,"error":"TimeoutException: x","dry_run":true}""", false)]
     [InlineData("""{"reason":"TimeoutException: Timeout 20000ms exceeded.","dry_run":false,"transient":true}""", false)]
     [InlineData("""{"dry_run":true,"error":"Submit was clicked but no confirmation text was recognised"}""", false)]
+    // The browser died under the run (#406): flagged by the submitter now, read by Playwright's words before.
+    [InlineData("""{"dry_run":true,"error":"Target page, context or browser has been closed","transient":true}""", true)]
+    [InlineData("""{"dry_run":true,"error":"Target page, context or browser has been closed"}""", true)]
+    [InlineData("""{"dry_run":true,"error":"nothing on this form could be filled","transient":null}""", false)]
+    [InlineData("""{"reason":"the posting's host could not be resolved","dry_run":true,"transient":true}""", true)]
     public void Only_a_failed_dry_run_that_died_on_something_transient_is_worth_another_try(string detail, bool expected) =>
         Assert.Equal(expected, ReadyReconciler.IsTransientFailure("failed", JsonDocument.Parse(detail).RootElement));
+
+    [Fact]
+    public async Task A_run_the_browser_died_under_is_recorded_as_transient_and_retried()
+    {
+        // launchdarkly's dry run ended in "Target page, context or browser has been closed" on
+        // 2026-10-01 and sat in Ready: the crash came back as the outcome's error with nothing to
+        // tell it from a refusal, so the reconciler never queued it again (#406).
+        var (conn, t, _) = await ReadyTenantAsync(dryRun: true);
+        await using var _ = conn;
+        await conn.ExecuteAsync("UPDATE submit_requests SET done_at = now() WHERE done_at IS NULL AND tenant_id <> @t", new { t });
+        await new SubmitRequestRepo(conn, t).EnqueueAsync("high-engineer.md", dryRun: true);
+        var fake = new FakeSubmitter((link, _, _, _, _) => Task.FromResult(
+            new SubmitOutcome(false, false, link, "", null, [], [], "Target page, context or browser has been closed", Crashed: true)));
+        using var worker = NewWorker(new StubLlmClient(Responders.Agent()), pg.ConnectionString, new CapturingNotifier(),
+            browser: FakeBrowser, submitter: fake);
+
+        Assert.Equal(1, await worker.DrainSubmitsAsync(CancellationToken.None));
+
+        var last = (await EvidenceAsync(conn, t, "high-engineer.md")).Last();
+        Assert.Equal("failed", last.Kind);
+        var detail = JsonDocument.Parse(last.Detail).RootElement;
+        Assert.True(detail.GetProperty("transient").GetBoolean());
+        Assert.True(ReadyReconciler.IsTransientFailure("failed", detail));
+        // And the Errors view says so: retried, not "needs you".
+        var errored = Assert.Single(await new AgentEvidenceRepo(conn, t, Protector).ErroredAsync(ReadyReconciler.Window),
+            e => e.ApplicationName == "high-engineer.md");
+        Assert.Equal(ErrorsEndpoints.Next.Retry, ErrorsEndpoints.Describe(errored, longTail: true).Next);
+    }
+
+    [Fact]
+    public async Task A_pass_stops_judging_at_the_first_llm_failure_and_stands_down_for_a_while()
+    {
+        // poolside answered 429 from 19:00 to 01:00 UTC on 2026-10-02/03. The evaluator swallowed
+        // it per lead, the loop asked for the next, and the next pass picked the same unjudged
+        // leads again: 450 error rows, twelve leads asked up to 62 times each (#406).
+        var stub = new StubLlmClient((_, _, _) => throw new LlmUnavailableException("the LLM endpoint returned HTTP 429"));
+        var (conn, t) = await SeedTenantAsync(enabled: true);
+        await using var _ = conn;
+        using var worker = NewWorker(stub, pg.ConnectionString, new CapturingNotifier());
+
+        await worker.RunOnceAsync(CancellationToken.None);
+
+        // MaxPerRun = 2 covers High + Mid; only High was asked, and the failure is on the record.
+        Assert.Equal(1, stub.Calls);
+        var events = await EventsAsync(conn, t);
+        Assert.Equal([("high-engineer.md", "error")], events.Where(e => e.Kind is "error" or "verdict").ToArray());
+        Assert.Equal(["lead"], (await conn.QueryAsync<string>(
+            "SELECT DISTINCT status FROM applications WHERE tenant_id = @t AND company IN ('High','Mid')", new { t })).ToArray());
+
+        // The next pass, inside the hold-off, does not ask at all.
+        await worker.RunOnceAsync(CancellationToken.None);
+        Assert.Equal(1, stub.Calls);
+        Assert.Single(await EventsAsync(conn, t), e => e.Kind == "error");
+    }
 
     [Fact]
     public async Task A_run_that_meets_new_questions_gets_them_answered_and_goes_round_again_once()

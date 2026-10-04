@@ -161,7 +161,7 @@ public sealed partial class PacketBuilder
                             : AnswerDrafter.Deterministic(q, gateCtx).Answer,
                     text => rendered = text);
             }
-            catch (Exception ex) when (ex is AppValidationException or Microsoft.Playwright.PlaywrightException or TimeoutException)
+            catch (Exception ex) when (ex is AppValidationException or TransientRunException or Microsoft.Playwright.PlaywrightException or TimeoutException)
             {
                 _log.LogInformation("{Name}: form discovery failed: {Reason}", rec.Name, ex.Message.Split('\n')[0]);
             }
