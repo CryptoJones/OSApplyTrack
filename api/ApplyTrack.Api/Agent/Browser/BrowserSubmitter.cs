@@ -2257,6 +2257,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             try { count = Math.Min(await c.CountAsync(), 6); }
             catch (PlaywrightException) { continue; }
             ILocator? usable = null;
+            // Two controls under one label: OneStream's address "Country" and the phone
+            // number's country picker are both "Country*". A react-select keeps its input
+            // empty after a choice, so both read as empty and the first — the phone's — took
+            // the answer while the address Country stayed blank (#416). The one that IS this
+            // question, by its own id or name, wins.
+            if (count > 1 && await OwnControlAsync(c, count, id) is { } own)
+                return own;
             for (var i = 0; i < count; i++)
             {
                 var nth = c.Nth(i);
@@ -2272,6 +2279,24 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 catch (PlaywrightException) { /* not a control; the next match */ }
             }
             if (usable is not null) return usable;
+        }
+        return null;
+    }
+
+    /// <summary>Among several matches, the visible, editable one whose id or name is the
+    /// question's own id, or null when none is (#416).</summary>
+    private static async Task<ILocator?> OwnControlAsync(ILocator matches, int count, string id)
+    {
+        if (id.Length == 0) return null;
+        for (var i = 0; i < count; i++)
+        {
+            var nth = matches.Nth(i);
+            try
+            {
+                var own = await nth.EvaluateAsync<bool>("(el, id) => el.id === id || el.getAttribute('name') === id", id);
+                if (own && await nth.IsVisibleAsync() && await nth.IsEditableAsync()) return nth;
+            }
+            catch (PlaywrightException) { /* not a control; the next match */ }
         }
         return null;
     }
