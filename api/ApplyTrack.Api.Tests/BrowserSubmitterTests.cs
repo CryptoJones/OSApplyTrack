@@ -470,6 +470,7 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // Greenhouse's current form: react-select comboboxes for country, city (an async
         // autocomplete) and the custom questions, each with a hidden required input.
         _fixture.MapGet("/jobs/react-select", () => Results.Content(ReactSelectHtml, "text/html"));
+        _fixture.MapGet("/jobs/react-select-two-countries", () => Results.Content(ReactSelectTwoCountriesHtml, "text/html"));
         // A form whose own validation blocks Submit on a field the DOM never marks required.
         _fixture.MapGet("/jobs/validating", () => Results.Content(ValidatingFormHtml, "text/html"));
         // A form that re-mounts itself on Submit instead of posting.
@@ -1133,6 +1134,27 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </script>
         </body></html>
         """;
+
+    // OneStream's form (#416): the phone number's country picker and the address block's
+    // Country are both labelled "Country*", the address one further down the page.
+    private static readonly string ReactSelectTwoCountriesHtml = ReactSelectHtml.Replace(
+        "<button id=\"submit_app\"",
+        """
+          <label id="question_12-label">Country*</label>
+          <div class="select-shell" data-select="question_12">
+            <div class="select__control"><div class="select__value-container">
+              <div class="select__placeholder">Select...</div>
+              <div class="select__input-container"><input id="question_12" role="combobox" aria-autocomplete="list" aria-required="true" aria-labelledby="question_12-label" aria-controls="question_12-listbox" /></div>
+            </div></div>
+            <input required tabindex="-1" class="requiredInput" />
+            <div id="question_12-listbox" role="listbox" hidden>
+              <div role="option" data-value="United Kingdom">United Kingdom</div>
+              <div role="option" data-value="United States">United States</div>
+            </div>
+            <input type="hidden" name="question_12_value" />
+          </div>
+          <button id="submit_app"
+        """.TrimEnd());
 
     // The DOM says nothing about email being required; only the form's own submit handler does.
     private const string ValidatingFormHtml = """
@@ -3857,6 +3879,25 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("US", post["country_value"]);
         Assert.Equal("Omaha, Nebraska, United States", post["location_value"]);
         Assert.Equal("1", post["question_9_value"]);
+    }
+
+    [SkippableFact]
+    public async Task Two_controls_under_one_label_each_take_their_own_answer()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Both pickers read "Country*" and a react-select keeps its input empty after a choice,
+        // so the address Country used to land on the phone's picker and stay blank (#416).
+        var packet = ReactSelectPacket();
+        packet.Questions.Add(new("question_12", "Country", true, PacketQuestion.Select, ["United Kingdom", "United States"], PacketQuestion.Custom));
+        packet.Answers["question_12"] = "United States";
+
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/react-select-two-countries", packet, (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("question_12", outcome.Mapped);
+        var post = Assert.Single(_posts);
+        Assert.Equal("US", post["country_value"]);
+        Assert.Equal("United States", post["question_12_value"]);
     }
 
     [SkippableFact]
