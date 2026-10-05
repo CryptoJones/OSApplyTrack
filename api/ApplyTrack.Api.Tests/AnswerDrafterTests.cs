@@ -545,4 +545,23 @@ public class AnswerDrafterTests
         var free = new PacketQuestion("q", "Why", true, PacketQuestion.Textarea, [], PacketQuestion.Custom);
         Assert.Equal(("because", null), AnswerDrafter.FitToOptions(free, "because"));
     }
+
+    [Theory]
+    [InlineData("By selecting YES, I consent to receive recruiting SMS messages from Prenuvo at the phone number provided on my job application.")]
+    [InlineData("Do you opt-in to receive WhatsApp messages at your mobile number?")]
+    [InlineData("I agree to receive updates by email")]
+    public void A_consent_question_naming_a_phone_or_email_is_not_that_field(string label)
+    {
+        var (answer, _) = AnswerDrafter.Deterministic(
+            new("question_1", label, true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom), Ctx());
+        Assert.NotEqual("555-0100", answer);
+        Assert.False(answer is { } a && a.Contains('@'));
+    }
+
+    [Theory]
+    [InlineData("Phone")]
+    [InlineData("Mobile phone number")]
+    public void A_plain_phone_label_still_takes_the_number(string label) =>
+        Assert.Equal(("555-0100", null), AnswerDrafter.Deterministic(
+            new("question_2", label, true, PacketQuestion.Text, [], PacketQuestion.Custom), Ctx()));
 }

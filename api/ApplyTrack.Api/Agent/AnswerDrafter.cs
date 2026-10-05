@@ -55,6 +55,11 @@ public sealed partial class AnswerDrafter
     private static partial Regex Phone();
     [GeneratedRegex(@"\be-?mail\b", RegexOptions.IgnoreCase)]
     private static partial Regex EmailRe();
+    // A question that asks permission to use the number or address ("By selecting YES, I
+    // consent to receive recruiting SMS messages … at the phone number provided") is a
+    // yes/no, not the contact field it names. Prenuvo's got the phone number typed in (#414).
+    [GeneratedRegex(@"\bconsent|\bopt[- ]?in\b|\bagree\b|\bsubscribe|\bsms\b|text messages|whatsapp", RegexOptions.IgnoreCase)]
+    private static partial Regex Consent();
     [GeneratedRegex(@"first name|given name", RegexOptions.IgnoreCase)]
     private static partial Regex FirstName();
     [GeneratedRegex(@"last name|surname|family name", RegexOptions.IgnoreCase)]
@@ -211,9 +216,10 @@ public sealed partial class AnswerDrafter
         }
         if (FullName().IsMatch(label))
             return ctx.Resume.FullName.Length > 0 ? (ctx.Resume.FullName, null) : (null, "add your name in Résumé settings");
-        if (id is "email" || EmailRe().IsMatch(label))
+        var consent = Consent().IsMatch(label);
+        if (id is "email" || (EmailRe().IsMatch(label) && !consent))
             return ctx.Email.Length > 0 ? (ctx.Email, null) : (null, "no email on the account");
-        if (id is "phone" || Phone().IsMatch(label))
+        if (id is "phone" || (Phone().IsMatch(label) && !consent))
             return ctx.Settings.Phone.Length > 0 ? (ctx.Settings.Phone, null) : (null, "add a phone number in Settings · Agent");
         if (id is "cover_letter")
             return ctx.CoverLetter.Length > 0 ? (ctx.CoverLetter, null) : (null, "no cover letter drafted");
