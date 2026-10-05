@@ -72,6 +72,11 @@ public class GreenhouseEducationTests
     [InlineData("3-5", "3")]
     [InlineData("07", "7")]
     [InlineData("none", null)]
+    [InlineData("Less than 1 year", "0")]
+    [InlineData("less than 3 years", "2")]
+    [InlineData("under 2", "1")]
+    [InlineData("0 — I've worked with the OpenAI API directly, not Azure OpenAI.", "0")]
+    [InlineData("10+ years — .NET application development from 2012 to 2024", "10")]
     public void A_linkedin_number_box_gets_the_whole_number_an_answer_states(string answer, string? number) =>
         Assert.Equal(number, ApplyTrack.Api.Agent.AnswerDrafter.WholeNumber(answer));
 
@@ -88,4 +93,13 @@ public class GreenhouseEducationTests
     [Fact]
     public void A_number_too_long_for_an_int_is_still_its_digits() =>
         Assert.Equal("123456789012345678901234567890", ApplyTrack.Api.Agent.AnswerDrafter.WholeNumber("123456789012345678901234567890+"));
+
+    [Theory]
+    [InlineData("How many years of work experience do you have with C#?", true)]
+    [InlineData("How many years of work experience do you have with .NET Framework?*", true)]
+    [InlineData("  how many total years of experience do you have?", true)]
+    [InlineData("Are you comfortable working in a remote setting?", false)]
+    [InlineData("Do you have 6+ years of hands-on experience?", false)]
+    public void A_years_question_wants_a_whole_number_whatever_its_box(string label, bool wants) =>
+        Assert.Equal(wants, ApplyTrack.Api.Agent.AnswerDrafter.WantsWholeNumber(label));
 }

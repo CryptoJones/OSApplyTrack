@@ -533,14 +533,24 @@ public sealed partial class AnswerDrafter
     /// question against (the bank's key is the question, lower-cased). Name fields are left out:
     /// they are answered from the résumé, not asked. Public for tests.</summary>
     /// <summary>The whole number an answer states — "5+" → 5, "10+ years" → 10, "3-5" → 3 (the
-    /// least it claims) — or null when it states none. For a form's number box (#332).</summary>
+    /// least it claims) — or null when it states none. For a form's number box (#332).
+    /// "Less than 1 year" is 0, not 1: below N is N-1 (#412).</summary>
     public static string? WholeNumber(string answer)
     {
+        var below = System.Text.RegularExpressions.Regex.Match(answer, @"^\s*(?:less|fewer) than\s+(\d{1,9})\b|^\s*(?:under|<)\s*(\d{1,9})\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (below.Success)
+            return Math.Max(0, int.Parse(below.Groups[1].Success ? below.Groups[1].Value : below.Groups[2].Value) - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         var m = System.Text.RegularExpressions.Regex.Match(answer, @"\d+");
         if (!m.Success) return null;
         var digits = m.Value.TrimStart('0');
         return digits.Length == 0 ? "0" : digits;
     }
+
+    /// <summary>True when a question's label asks for a count of years ("How many years of work
+    /// experience do you have with C#?"), whatever control the form draws it with (#412).</summary>
+    public static bool WantsWholeNumber(string label) =>
+        Regex.IsMatch(label, @"^\s*how many (?:total )?years\b", RegexOptions.IgnoreCase);
 
     public static string PastAnswers(IReadOnlyDictionary<string, string>? pinned)
     {

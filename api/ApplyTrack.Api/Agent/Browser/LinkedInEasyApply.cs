@@ -457,7 +457,10 @@ internal static partial class LinkedInEasyApply
                     var box = page.Locator($"{Modal} [id=\"{Css(f.ControlId)}\"]").First;
                     // A number box takes a whole number: Insight Global's "How many years … with SQL,
                     // T-SQL, or PL/SQL?" refused the banked "5+" (#332). "5+" is 5, "10+ years" 10.
+                    // The SDUI dialog draws that question as a plain 20-character text box, so the
+                    // label is the only sign it wants a number (#412).
                     if (f.ControlId.Contains("numeric", StringComparison.OrdinalIgnoreCase)
+                        || AnswerDrafter.WantsWholeNumber(f.Label)
                         || await box.GetAttributeAsync("type") == "number")
                         answer = AnswerDrafter.WholeNumber(answer) ?? answer;
                     await box.FillAsync(answer, new() { Timeout = 5_000 });
