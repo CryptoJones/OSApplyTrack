@@ -404,6 +404,12 @@ public sealed partial class AnswerDrafter
     public static string Country(AnswerContext ctx) =>
         ctx.Settings.Country.Length > 0 ? ctx.Settings.Country : CountryFromLocation(ctx.Resume.Location);
 
+    /// <summary>The country an alias stands for ("USA", "United States of America" → "United
+    /// States"), or the text as given when it is no known alias — the form
+    /// <see cref="PickCountryOption"/> reads its aliases from (#432).</summary>
+    public static string CanonicalCountry(string text) =>
+        CountryNames.TryGetValue(text.Trim(), out var canonical) ? canonical : text.Trim();
+
     /// <summary>The option in a fixed country list that means <paramref name="country"/>: the
     /// same name, a known alias ("USA", "United States of America"), or a comma-joined option
     /// one of whose parts is either. Public for tests.</summary>

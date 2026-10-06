@@ -66,6 +66,27 @@ public sealed partial class BrowserSession : IAsyncDisposable
         """;
 
     /// <summary>
+    /// A JavaScript function, <c>(selector) =&gt; Element[]</c>: <c>querySelectorAll</c> over the
+    /// document <b>and every open shadow root in it</b>. Manatal's careers pages (careers-page.com)
+    /// draw the whole application inside a web component's shadow root, so every page script that
+    /// read <c>document.querySelectorAll('input, …')</c> saw a page with no form: discovery found no
+    /// questions, the packet fell back to the standard set, and the résumé that did attach was
+    /// never seen to have taken — "required fields could not be mapped (std:resume)" (yo-ai-labs, #436).
+    /// Playwright's own locators already pierce shadow roots; the page scripts now agree with them.
+    /// </summary>
+    public const string DeepJs = """
+        (sel) => {
+          const out = [];
+          const walk = root => {
+            out.push(...root.querySelectorAll(sel));
+            for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot);
+          };
+          walk(document);
+          return out;
+        }
+        """;
+
+    /// <summary>
     /// The name of an applicant-tracking system that only takes applications from a
     /// signed-in candidate account (email + password), for a host Apply led to — or null.
     /// The browser never creates accounts, so such a posting is the person's by Copy answers
@@ -336,6 +357,83 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// For a link that names an Ashby job on an employer's own page (<c>?ashby_jid=</c>) where no
+    /// application form shows: open Ashby's hosted copy of the form and hand that session back
+    /// instead, disposing <paramref name="opened"/> — but only if a form renders there; otherwise
+    /// <paramref name="opened"/> is returned as it was. Hercules' careers page takes the parameter
+    /// and lists its jobs without opening the one named, and the run reported "nothing on this
+    /// form could be filled" against the site's filters (#434).
+    /// </summary>
+    public static async Task<BrowserSession> AshbyHostedInsteadAsync(BrowserOptions options, BrowserSession opened, string link,
+        CancellationToken ct, IReadOnlyList<BoardAccount>? accounts = null)
+    {
+        if (!AtsProvider.HasAshbyJobId(link) || await WaitForApplicationFormAsync(opened.Page, 5_000))
+            return opened;
+        string html;
+        try { html = await opened.Page.ContentAsync(); }
+        catch (PlaywrightException) { html = ""; }
+        if (AtsProvider.AshbyHostedForm(link, html) is not { } hosted)
+            return opened;
+        BrowserSession? alt = null;
+        try
+        {
+            alt = await OpenAsync(options, hosted, ct, accounts);
+            if (await WaitForApplicationFormAsync(alt.Page, 10_000))
+            {
+                await opened.DisposeAsync();
+                return alt;
+            }
+        }
+        catch (PlaywrightException) { /* the hosted copy would not open; keep the employer's page */ }
+        catch (TimeoutException) { /* ditto */ }
+        if (alt is not null) await alt.DisposeAsync();
+        return opened;
+    }
+
+    // The one button of a notice that only wants to be read: OK, Got it, Understood, Close.
+    [GeneratedRegex(@"^\s*(?:ok(?:ay)?|got it|understood|dismiss|close)\s*[.!]?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex NoticeButton();
+
+    /// <summary>
+    /// Press the OK of a modal notice that sits over the form and asks for nothing: a dialog
+    /// with no field in it and one button, and that button an OK. Flexhire opens "Apply to Job —
+    /// this job accepts applicants located in … We couldn't detect your location" over its form
+    /// on Apply; the run filled the boxes under it by their ids, but the "Upload Resume/CV" click
+    /// landed on the dialog's backdrop, no résumé went up, and the board answered "Resume is
+    /// required" (#330, #437). A dialog that carries a field or any second button is a question,
+    /// and is left alone. True when one was pressed.
+    /// </summary>
+    public static async Task<bool> AcknowledgeNoticeAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                var dialogs = frame.Locator("[role=dialog]:visible, [role=alertdialog]:visible, [aria-modal=true]:visible");
+                var n = Math.Min(await dialogs.CountAsync(), 4);
+                for (var i = 0; i < n; i++)
+                {
+                    var d = dialogs.Nth(i);
+                    if (await d.Locator("input:not([type=hidden]):not([type=button]):not([type=submit]), select, textarea").CountAsync() > 0) continue;
+                    // Its buttons: the OK, and nothing else but links set in its sentences (Flexhire's
+                    // "and 21 more countries" is a button inside the notice's paragraph).
+                    var buttons = d.Locator("button:visible, [role=button]:visible, input[type=button]:visible, input[type=submit]:visible")
+                        .Filter(new() { HasNot = frame.Locator("xpath=ancestor::p | ancestor::li") });
+                    if (await buttons.CountAsync() != 1) continue;
+                    var name = (await buttons.First.InnerTextAsync(new() { Timeout = 1_000 })).Trim();
+                    if (!NoticeButton().IsMatch(name)) continue;
+                    await buttons.First.ClickAsync(new() { Timeout = 2_000 });
+                    await page.WaitForTimeoutAsync(400);
+                    return true;
+                }
+            }
+            catch (TimeoutException) { /* the notice went away on its own */ }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return false;
+    }
+
     /// <summary>The cookies the context holds for <paramref name="url"/> — how a signed-in
     /// portal session is read back off the browser (#221).</summary>
     public Task<IReadOnlyList<BrowserContextCookiesResult>> CookiesAsync(string url) => _context.CookiesAsync([url]);
@@ -437,10 +535,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
           const widget = __WIDGET__;
           const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-          return [...document.querySelectorAll('input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select')]
+          const deep = __DEEP__;
+          return deep('input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select')
             .some(el => !widget(el) && (el.getAttribute('type') === 'file' || shown(el)));
         }
-        """.Replace("__WIDGET__", WidgetJs);
+        """.Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     /// <summary>Is a form control on screen — in the page, or in any frame it embeds? A
     /// search or job-alert widget's controls never count (#214).</summary>
@@ -511,8 +610,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       const widget = __WIDGET__;
                       const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                         return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                      const deep = __DEEP__;
                       let texts = 0;
-                      for (const el of document.querySelectorAll('input, textarea, select')) {
+                      for (const el of deep('input, textarea, select')) {
                         if (widget(el)) continue;
                         // A code entered a character per box is a verification step, not the form:
                         // Oracle's six pin-code boxes read as "the form" the moment they appeared (#318).
@@ -530,11 +630,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
 
     private static readonly string ApplicationFormScript = ApplicationFormScriptTemplate
         .Replace("__FILE_RULE__", "if (type === 'file') return true;")
-        .Replace("__WIDGET__", WidgetJs);
+        .Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     private static readonly string RevealedFormScript = ApplicationFormScriptTemplate
         .Replace("__FILE_RULE__", "if (type === 'file' && shown(el)) return true;")
-        .Replace("__WIDGET__", WidgetJs);
+        .Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     /// <summary>
     /// Oracle Recruiting's "easy apply" is not the form: signed in, it opens on "Let's make this

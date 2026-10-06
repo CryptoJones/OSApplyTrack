@@ -24,7 +24,7 @@ namespace ApplyTrack.Api.Tests;
 /// here resolves to loopback</b> and the fixture asserts it, so a stray real URL
 /// fails loudly instead of applying to someone's job.
 /// </summary>
-public sealed class BrowserSubmitterTests : IAsyncLifetime
+public sealed partial class BrowserSubmitterTests : IAsyncLifetime
 {
     private static readonly string RepoRoot = FindRepoRoot();
     private static readonly string Cli = Path.Combine(RepoRoot, "node_modules", "playwright-core", "cli.js");
@@ -754,6 +754,9 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
+        // Greenhouse's checkbox groups and react-select menus, Manatal's shadow root, Flexhire's
+        // notice and picker, an international phone box (#431–#439).
+        MapFormShapeFixtures(_fixture);
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -3874,7 +3877,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Empty(outcome.Unmapped);
-        Assert.Equal(["first_name", "country", "location", "resume", "question_9"], outcome.Mapped);
+        // Files go first, so a board's résumé parse cannot overwrite the answers (#438).
+        Assert.Equal(["resume", "first_name", "country", "location", "question_9"], outcome.Mapped);
         var post = Assert.Single(_posts);
         Assert.Equal("US", post["country_value"]);
         Assert.Equal("Omaha, Nebraska, United States", post["location_value"]);
