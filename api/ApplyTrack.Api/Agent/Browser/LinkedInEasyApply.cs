@@ -64,11 +64,20 @@ internal static partial class LinkedInEasyApply
     private const string Submit = Modal + " button[data-live-test-easy-apply-submit-button], " + Modal + " button:has-text('Submit application')";
     private const string Close = Modal + " [data-test-modal-close-btn], " + Modal + " button[aria-label='Dismiss']";
     private const string Follow = Modal + " #follow-company-checkbox, " + Modal + " input[type=checkbox][aria-label^='Follow ']";
-    /// <summary>More steps than any real dialog has; a loop that will not end is a bug, not a form.</summary>
-    private const int MaxSteps = 12;
+    /// <summary>More steps than any real dialog has; a loop that will not end is a bug, not a form.
+    /// Twelve was not: Trility's dialog is fourteen pages, one question each, and every run of it
+    /// ended on page 13 (#409). A work-history step also takes one Next per row it opens for
+    /// editing (#408). A dialog that is really stuck is caught sooner, by a Next that changes nothing.</summary>
+    private const int MaxSteps = 40;
 
-    /// <summary>One control group in the dialog, as the page describes it.</summary>
-    public sealed record Field(string Label, string Kind, bool Required, bool Filled, List<string> Options, string ControlId, bool Invalid);
+    /// <summary>LinkedIn's interstitial before some postings' dialog (KRON Development, 2026-10-05):
+    /// "Job search safety reminder", whose "Continue applying" link opens the real dialog (#430).</summary>
+    private const string SafetyTips = "dialog[open]:has([data-sdui-screen*='SafetyTips' i])";
+
+    /// <summary>One control group in the dialog, as the page describes it. <paramref name="Pending"/>:
+    /// a blank on a work-history row the step lists but has not opened for editing — no control
+    /// yet, only a question to have ready for when it opens (#408).</summary>
+    public sealed record Field(string Label, string Kind, bool Required, bool Filled, List<string> Options, string ControlId, bool Invalid, bool Pending = false);
 
     [GeneratedRegex(@"/(login|authwall|checkpoint|uas)(/|\?|$)", RegexOptions.IgnoreCase)]
     private static partial Regex SignedOut();
@@ -212,27 +221,40 @@ internal static partial class LinkedInEasyApply
                 return Fail("no Easy Apply button on the posting, and no Apply of any kind: " + Seen(body));
             }
             await entry.ClickAsync(new() { Timeout = 10_000 });
-            await page.Locator(Modal).First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 15_000 });
+            if (await OpenDialogAsync(page) is { Length: > 0 } instead)
+            {
+                shot = await session.ScreenshotAsync();
+                return Fail("the Easy Apply dialog did not open — " + instead);
+            }
 
+            var stuck = 0;
             for (var step = 1; step <= MaxSteps; step++)
             {
                 ct.ThrowIfCancellationRequested();
                 await page.WaitForTimeoutAsync(900);
                 await UntickFollowAsync(page);
 
+                var tried = new List<string>();
                 foreach (var f in await ReadStepAsync(page))
                 {
                     if (f.Filled && !f.Invalid) continue;
                     var answer = AnswerFor(packet, f.Label);
+                    // A row the step lists but will only open for editing after Next (#408): what
+                    // it is missing is handed back now, so one run learns every row's question
+                    // rather than one per run, and nothing is filled until its editor opens.
+                    if (f.Pending)
+                    {
+                        if (answer.Length == 0 && Unknown(packet, discovered, f.Label)) discovered.Add(AsQuestion(f));
+                        continue;
+                    }
                     if (answer.Length == 0)
                     {
                         if (!f.Required) continue;
                         unmapped.Add(f.Label);
-                        if (packet.Questions.All(q => !SameLabel(q.Id, f.Label) && !SameLabel(q.Label, f.Label)))
-                            discovered.Add(AsQuestion(f));
+                        if (Unknown(packet, discovered, f.Label)) discovered.Add(AsQuestion(f));
                         continue;
                     }
-                    if (await FillAsync(page, f, answer)) mapped.Add(f.Label);
+                    if (await FillAsync(page, f, answer)) { mapped.Add(f.Label); tried.Add(f.Label); }
                     else if (f.Required) unmapped.Add(f.Label);
                 }
 
@@ -270,24 +292,37 @@ internal static partial class LinkedInEasyApply
                     await LeaveAsync(page, save: true);
                     return Fail($"the Easy Apply dialog offered no way forward at step {step}");
                 }
+                var before = await DialogTextAsync(page);
                 await next.ClickAsync(new() { Timeout = 10_000 });
                 await page.WaitForTimeoutAsync(1_500);
 
                 // The dialog's own verdict on what was just entered: a field it still flags is one
-                // the answer did not satisfy (a number wanted, an option not offered).
+                // the answer did not satisfy (a number wanted, an option not offered). Only an
+                // answer this step gave counts: a field Next itself brought up — the work-history
+                // editor that opens on a row LinkedIn holds no city for (#408) — is a new question,
+                // read and answered on the next pass round the loop like any other.
                 var flagged = (await ReadStepAsync(page)).Where(f => f.Invalid).Select(f => f.Label).ToList();
-                if (flagged.Count > 0)
+                var rejected = flagged.Where(tried.Contains).ToList();
+                if (rejected.Count > 0)
                 {
-                    foreach (var label in flagged) { mapped.Remove(label); if (!unmapped.Contains(label)) unmapped.Add(label); }
+                    foreach (var label in rejected) { mapped.Remove(label); if (!unmapped.Contains(label)) unmapped.Add(label); }
                     shot = await session.ScreenshotAsync();
                     await LeaveAsync(page, save: true);
                     return new SubmitOutcome(true, false, page.Url, "", shot, unmapped, mapped,
                         dryRun ? "" : "refused to submit: the dialog rejected an answer", Discovered: discovered);
                 }
+                // A Next that changed nothing, twice over, is a dialog going nowhere; say where.
+                stuck = await DialogTextAsync(page) == before ? stuck + 1 : 0;
+                if (stuck >= 2)
+                {
+                    shot = await session.ScreenshotAsync();
+                    await LeaveAsync(page, save: true);
+                    return Fail($"the Easy Apply dialog would not move past {await PageOfAsync(page)}" + (flagged.Count > 0 ? $" (it flags: {string.Join(", ", flagged)})" : ""));
+                }
             }
             shot = await session.ScreenshotAsync();
             await LeaveAsync(page, save: true);
-            return Fail($"the Easy Apply dialog did not reach its Submit step within {MaxSteps} steps");
+            return Fail($"the Easy Apply dialog did not reach its Submit step within {MaxSteps} steps (it stopped at {await PageOfAsync(page)})");
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
         {
@@ -334,6 +369,57 @@ internal static partial class LinkedInEasyApply
         finally { page.Response -= OnResponse; }
     }
 
+    /// <summary>
+    /// Wait for the dialog Easy Apply opens, through LinkedIn's safety reminder when it puts one
+    /// first. Empty once the dialog is up; otherwise what showed instead. Both KRON postings
+    /// failed on a bare "Timeout 15000ms exceeded." while the reminder sat on screen waiting for
+    /// "Continue applying" — it is LinkedIn's own, says nothing about the employer, and pressing
+    /// it is what the person would do (#430).
+    /// </summary>
+    private static async Task<string> OpenDialogAsync(IPage page)
+    {
+        var visible = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 15_000 };
+        try { await page.Locator($"{Modal}, {SafetyTips}").First.WaitForAsync(visible); }
+        catch (TimeoutException) { return await WhatShowsAsync(page); }
+        if (await page.Locator(Modal).First.IsVisibleAsync()) return "";
+        await page.Locator($"{SafetyTips} :is(a, button):has-text('Continue applying')").First.ClickAsync(new() { Timeout = 10_000 });
+        try { await page.Locator(Modal).First.WaitForAsync(visible); return ""; }
+        catch (TimeoutException) { return "past LinkedIn's safety reminder, " + await WhatShowsAsync(page); }
+    }
+
+    private static async Task<string> WhatShowsAsync(IPage page)
+    {
+        try
+        {
+            var said = (await page.Locator("dialog[open], [role=dialog], [role=alertdialog]").AllInnerTextsAsync())
+                .Select(t => t.Trim()).FirstOrDefault(t => t.Length > 0);
+            return said is null ? "nothing opened when Easy Apply was pressed" : Seen(said).Replace("the page reads", "a dialog reads");
+        }
+        catch (PlaywrightException) { return "nothing opened when Easy Apply was pressed"; }
+    }
+
+    private static async Task<string> DialogTextAsync(IPage page)
+    {
+        try { return await page.Locator(Modal).First.InnerTextAsync(new() { Timeout = 3_000 }); }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return ""; }
+    }
+
+    /// <summary>"page 13 of 14", from the dialog's own counter, for a failure to say where it was.</summary>
+    private static async Task<string> PageOfAsync(IPage page)
+    {
+        var text = await DialogTextAsync(page);
+        return PagesRe().Match(text) is { Success: true } m ? $"page {m.Groups[1].Value} of {m.Groups[2].Value}"
+            : Seen(text).Replace("the page reads", "the step that reads");
+    }
+
+    [GeneratedRegex(@"(\d+)\s*/\s*(\d+)\s+pages", RegexOptions.IgnoreCase)]
+    private static partial Regex PagesRe();
+
+    /// <summary>A label neither the packet nor this run has met yet.</summary>
+    private static bool Unknown(AgentPacket packet, List<PacketQuestion> discovered, string label) =>
+        packet.Questions.All(q => !SameLabel(q.Id, label) && !SameLabel(q.Label, label))
+        && discovered.All(q => !SameLabel(q.Id, label));
+
     /// <summary>"Follow &lt;company&gt;" arrives ticked. Applying is not following. True when the
     /// box is absent or verifiably unticked; false when it could not be shown to be.</summary>
     private static async Task<bool> UntickFollowAsync(IPage page)
@@ -359,8 +445,14 @@ internal static partial class LinkedInEasyApply
         {
             await page.Locator(Close).First.ClickAsync(new() { Timeout = 5_000 });
             // The SDUI dialog asks "Save this application?" in a second <dialog> of its own.
-            var choice = page.Locator("[data-test-dialog-primary-btn], [data-test-dialog-secondary-btn], [role=alertdialog] button, .artdeco-modal button, dialog[open] button")
-                .Filter(new() { HasTextRegex = save ? new Regex(@"^\s*Save\s*$", RegexOptions.IgnoreCase) : new Regex(@"^\s*Discard\s*$", RegexOptions.IgnoreCase) }).First;
+            var choices = page.Locator("[data-test-dialog-primary-btn], [data-test-dialog-secondary-btn], [role=alertdialog] button, .artdeco-modal button, dialog[open] button")
+                .Filter(new() { HasTextRegex = save ? new Regex(@"^\s*Save\s*$", RegexOptions.IgnoreCase) : new Regex(@"^\s*Discard\s*$", RegexOptions.IgnoreCase), Visible = true });
+            // A work-history row open for editing has a "Save" of its own (#408), earlier in the
+            // page than the question's; it is not the answer to "Save this application?".
+            var choice = choices.First;
+            for (var i = 0; i < await choices.CountAsync(); i++)
+                if (!await choices.Nth(i).EvaluateAsync<bool>("b => /^\\s*Edit\\b/i.test(b.parentElement?.querySelector(':scope > p')?.innerText || '')"))
+                { choice = choices.Nth(i); break; }
             await choice.ClickAsync(new() { Timeout = 5_000 });
             // Let it land. The run ends here and its context closes with it, which would cut off
             // the very request that discards or saves the draft.
@@ -378,14 +470,25 @@ internal static partial class LinkedInEasyApply
             if ((SameLabel(q.Id, label) || SameLabel(q.Label, label)) && packet.Answers.TryGetValue(q.Id, out var a) && a.Trim().Length > 0)
                 return a.Trim();
         // The contact step's City / Location typeahead is not in the standard set, and a question
-        // only reaches the drafter once a run hands it back; SMX's run did not, and sat on "City"
-        // for want of what the résumé already says. The typeahead takes the first match for it.
+        // only reaches the drafter once a run hands it back. The typeahead takes the first match
+        // for what the résumé already says. (SMX's "City", which this was first written for, was
+        // not this one but a work-history row's — #408, below.)
         // Only a location that names a city ("Minden, Nebraska"): a bare "United States" would
         // let the typeahead's first suggestion stand in for a city the résumé never gave.
         // The SDUI dialog (#403) leaves the mobile number blank where the old one filled it from
         // the profile; the packet's standard phone is the same number.
         if (PhoneLabel().IsMatch(label) && packet.Answers.TryGetValue("std:phone", out var phone) && phone.Trim().Length > 0)
             return phone.Trim();
+        // A work-history row's Description is that role's own lines on the résumé (#408). Its
+        // City is not: the résumé keeps one location, today's, and a past job's city is a
+        // question for the drafter or the person, never today's address passed off as then's.
+        if (HistoryLabel().Match(label) is { Success: true } row && row.Groups["field"].Value.Equals("Description", StringComparison.OrdinalIgnoreCase)
+            && RoleOf(packet.Resume, row.Groups["company"].Value, row.Groups["title"].Value) is { Highlights.Count: > 0 } role)
+        {
+            var lines = string.Join(" ", role.Highlights.Select(h => h.Trim()).Where(h => h.Length > 0));
+            return lines.Length > 2_000 ? lines[..2_000].TrimEnd() : lines;
+        }
+        if (HistoryLabel().IsMatch(label)) return "";
         if (CityLabel().IsMatch(label) && packet.Resume is { Location.Length: > 0 } resume
             && AnswerDrafter.StripLocationSuffix(resume.Location) is { } place && place.Contains(','))
             return place;
@@ -394,6 +497,23 @@ internal static partial class LinkedInEasyApply
 
     [GeneratedRegex(@"^\s*(?:city|location|current location|location \(city\))\s*\*?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex CityLabel();
+
+    /// <summary>The label <see cref="ReadStepAsync"/> gives a work-history row's field:
+    /// "Work experience — &lt;title&gt; — &lt;company&gt; — &lt;field&gt;" (#408).</summary>
+    [GeneratedRegex(@"^\s*(?<section>Work experience|Education) — (?<title>.+) — (?<company>.+?) — (?<field>[^—]+?)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex HistoryLabel();
+
+    /// <summary>The résumé's role for a row LinkedIn lists: by company, either name holding the
+    /// other ("Black Hills Information Security" is "… / Active Countermeasures" on the résumé),
+    /// and by title too when the company had more than one.</summary>
+    private static ResumeExperience? RoleOf(Resume? resume, string company, string title)
+    {
+        if (resume is null || Squash(company).Length < 2) return null;
+        bool Holds(string a, string b) => Squash(a).Contains(Squash(b), StringComparison.OrdinalIgnoreCase);
+        var at = resume.Experience.Where(e => e.Company.Length > 1 && (Holds(e.Company, company) || Holds(company, e.Company))).ToList();
+        return at.Count <= 1 ? at.FirstOrDefault()
+            : at.FirstOrDefault(e => Holds(e.Title, title) || Holds(title, e.Title)) ?? at[0];
+    }
 
     [GeneratedRegex(@"^\s*(?:mobile\s+)?phone(?:\s+number)?\s*\*?\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex PhoneLabel();
@@ -585,17 +705,54 @@ internal static partial class LinkedInEasyApply
                 const starred = /\*\s*$/.test(text) || /\*\s*$/.test(clean(lead?.innerText));
                 text = text.replace(/\s*\*\s*$/, '').trim();
                 if (!text) continue;
+                // A work-history row open for editing (#408): its "City" is that job's, not the
+                // person's, so the label says whose — "Work experience — <title> — <company> — City".
+                const editor = editorOf(c);
+                if (editor) text = `${editor.section} — ${editor.title} — ${editor.company} — ${text}`;
                 const options = kind === 'select' ? [...c.options].map(o => o.text.trim()).filter(t => t && !/^select an option$/i.test(t))
                   : radios.map(optionText);
                 const filled = kind === 'select' ? !!c.value && !/^select an option$/i.test(c.options[c.selectedIndex]?.text.trim() || '')
                   : kind === 'radio' ? radios.some(r => r.checked) : kind === 'checkbox' ? c.checked : (c.value || '').trim().length > 0;
                 const required = starred || c.required || c.getAttribute('aria-required') === 'true' || radios.some(r => r.required || r.getAttribute('aria-required') === 'true');
                 const helper = box.querySelector('[data-testid=text-input-helper-text] > p');
+                // A textarea carries the focus key itself, so its helper is not inside "box"; the
+                // control names it in aria-describedby either way (#408's Description went unflagged).
+                const described = c.getAttribute('aria-describedby') ? root.getElementById?.(c.getAttribute('aria-describedby'))?.querySelector(':scope > p') : null;
                 const after = fieldset?.nextElementSibling?.tagName === 'P' ? fieldset.nextElementSibling : null;
-                const invalid = c.getAttribute('aria-invalid') === 'true' || [helper, after].some(p => p && errorish.test(p.innerText || ''));
+                const invalid = c.getAttribute('aria-invalid') === 'true' || [helper, described, after].some(p => p && errorish.test(p.innerText || ''));
                 out.push({ Label: text, Kind: kind, Required: required, Filled: filled, Options: options, ControlId: c.id || '', Invalid: invalid });
               }
+
+              // Work history the employer's form asks for (SMX via JobDiva, #408): LinkedIn lists
+              // the profile's roles as cards, "N/A" where the profile holds nothing, and opens one
+              // for editing — City*, Description* — each time Next finds it short. Every blank
+              // card is a question now, so one run hands all of them back.
+              for (const edit of column.querySelectorAll("button[aria-label^='Edit, ']")) {
+                const card = edit.parentElement;
+                const pairs = [...card.querySelectorAll('p')].filter(p => p.nextElementSibling?.tagName === 'P' && !p.previousElementSibling)
+                  .map(p => [clean(p.innerText), clean(p.nextElementSibling.innerText)]);
+                if (pairs.length < 2) continue;
+                const section = sectionOf(edit.getAttribute('aria-label'));
+                for (const [name, value] of pairs.slice(2))
+                  if (!value || /^n\/a$/i.test(value))
+                    out.push({ Label: `${section} — ${pairs[0][1]} — ${pairs[1][1]} — ${name}`, Kind: /description/i.test(name) ? 'textarea' : 'text',
+                      Required: true, Filled: false, Options: [], ControlId: '', Invalid: false, Pending: true });
+              }
               return JSON.stringify(out);
+
+              function sectionOf(s) { return /experience/i.test(s || '') ? 'Work experience' : /education/i.test(s || '') ? 'Education' : clean(s).replace(/^edit,?\s*/i, ''); }
+              // The row editor: a block whose header line reads "Edit experience" / "Edit education",
+              // its first two text boxes the row's title and company (school and degree).
+              function editorOf(c) {
+                for (let a = c.parentElement, depth = 0; a && a !== modal && depth < 12; a = a.parentElement, depth++) {
+                  const head = a.firstElementChild?.querySelector(':scope > p');
+                  if (!head || !/^edit (experience|education)\b/i.test(clean(head.innerText))) continue;
+                  const boxes = [...a.querySelectorAll('input[type=text]')];
+                  if (boxes.length < 2) return null;
+                  return { section: sectionOf(head.innerText), title: (boxes[0].value || '').trim(), company: (boxes[1].value || '').trim() };
+                }
+                return null;
+              }
             }
             """);
         return JsonSerializer.Deserialize<List<Field>>(json) ?? [];

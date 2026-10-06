@@ -27,9 +27,19 @@ public sealed partial class BrowserSession : IAsyncDisposable
     ];
 
     // Localised too: join.com renders its posting in the employer's language, so the
-    // real Apply on a French posting is "Postuler maintenant" (#210).
-    [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested|postuler\b|(?:jetzt )?bewerben|aplicar\b|solicitar\b|candidat)", RegexOptions.IgnoreCase)]
+    // real Apply on a French posting is "Postuler maintenant" (#210). Spanish boards say
+    // "Postular" (laborum.news). "candidat" is the verb or noun of the Romance languages —
+    // candidater, candidatar, candidatura — never the English word: Ford's careers page has
+    // a "Candidate FEEDBACK" tab, the reveal pressed it as Apply, and a survey opened where
+    // the form should have (#423).
+    // "Easy Apply" and its kin as well: N-iX folds its whole form behind an "Easy Apply"
+    // button, which "begins with apply" never matched, so the form stayed hidden and only its
+    // file input was filled (#418).
+    [GeneratedRegex(@"^\s*(?:(?:easy|quick|one[- ]click)\s+apply\b|apply\b|i['’]?m interested|postuler\b|postular\b|(?:jetzt )?bewerben|aplicar\b|solicitar\b|candidat(?!es?\b))", RegexOptions.IgnoreCase)]
     private static partial Regex ApplyTrigger();
+
+    /// <summary>Does a control's name read as the way into an application? Public for tests.</summary>
+    public static bool IsApplyTrigger(string name) => ApplyTrigger().IsMatch(name) && !LaterWords().IsMatch(name);
 
     /// <summary>
     /// A control that only LOOKS like the way in: "Apply later", "Send me the link",
@@ -61,7 +71,50 @@ public sealed partial class BrowserSession : IAsyncDisposable
           if (/(?:^|[^a-z])(?:search(?!select)|keyword)|(?:location|job|keyword)search|createnewalert|(?:^|[^a-z])frequency(?:$|[^a-z])|job.?alert|subscribe/.test(own)) return true;
           return !!el.closest('[role=search], form[action*="search" i], form[class*="search" i], form[id*="search" i], form[name*="search" i], '
             + 'form[action*="subscribe" i], form[class*="subscribe" i], form[id*="subscribe" i], form[name*="subscribe" i], '
-            + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i]');
+            + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i], '
+            // A newsletter signup in the footer: Tecbrains' Mailchimp for WordPress box
+            // (<form class="mc4wp-form"><input type=email name=email>) was discovered as the
+            // application's "email" and left unmapped on every dry run (#419). Mailchimp's own
+            // embed too, and any form that calls itself a newsletter.
+            + 'form.mc4wp-form, #mc_embed_signup, form[action*="list-manage.com" i], '
+            + 'form[class*="newsletter" i], form[id*="newsletter" i], form[action*="newsletter" i], [class*="newsletter-form" i], [class*="newsletter_form" i]');
+        }
+        """;
+
+    /// <summary>
+    /// A JavaScript predicate, <c>(text) => bool</c>: is this text a file dropzone's instructions
+    /// — "Click or drag &amp; drop PDF", "Drop files here", "Browse files" — and nothing that names
+    /// the document? Ethos wraps its résumé input in such a label, beside the field's real title
+    /// "CV / Resume", and the question was discovered as "Click or drag &amp; drop PDF" (#417).
+    /// </summary>
+    public const string DropzoneJs = """
+        (t) => /\b(?:drag\s*(?:&|and|'?n'?|or)?\s*drop|drop\s+(?:your\s+|a\s+|the\s+)?files?\s+here|click\s+(?:here\s+)?to\s+(?:upload|browse|attach|select)|browse\s+(?:for\s+)?(?:a\s+)?files?)/i.test(t)
+          && !/resume|résumé|\bcv\b|cover|letter|portfolio|transcript|photo|certificat/i.test(t)
+        """;
+
+    /// <summary>The same test as <see cref="DropzoneJs"/>, for a packet question's label (#417).</summary>
+    public static bool IsDropzoneText(string text) =>
+        Regex.IsMatch(text, @"\b(?:drag\s*(?:&|and|'?n'?|or)?\s*drop|drop\s+(?:your\s+|a\s+|the\s+)?files?\s+here|click\s+(?:here\s+)?to\s+(?:upload|browse|attach|select)|browse\s+(?:for\s+)?(?:a\s+)?files?)", RegexOptions.IgnoreCase)
+        && !Regex.IsMatch(text, @"resume|résumé|\bcv\b|cover|letter|portfolio|transcript|photo|certificat", RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// A JavaScript function, <c>(selector) =&gt; Element[]</c>: <c>querySelectorAll</c> over the
+    /// document <b>and every open shadow root in it</b>. Manatal's careers pages (careers-page.com)
+    /// draw the whole application inside a web component's shadow root, so every page script that
+    /// read <c>document.querySelectorAll('input, …')</c> saw a page with no form: discovery found no
+    /// questions, the packet fell back to the standard set, and the résumé that did attach was
+    /// never seen to have taken — "required fields could not be mapped (std:resume)" (yo-ai-labs, #436).
+    /// Playwright's own locators already pierce shadow roots; the page scripts now agree with them.
+    /// </summary>
+    public const string DeepJs = """
+        (sel) => {
+          const out = [];
+          const walk = root => {
+            out.push(...root.querySelectorAll(sel));
+            for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot);
+          };
+          walk(document);
+          return out;
         }
         """;
 
@@ -209,6 +262,15 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 await route.AbortAsync();
                 return;
             }
+            // Display advertising is never part of an application, and Google's AdSense "vignette"
+            // is worse than noise: a full-screen ad that 7seventy's job aggregator raises over the
+            // page when its Apply link is clicked (#google_vignette), so the click opened an ad,
+            // not the posting, and the run reported "no form appeared" (#426).
+            if (IsAdNetwork(u.Host))
+            {
+                await route.AbortAsync();
+                return;
+            }
             // The live-form verification harness: nothing that could create an application
             // leaves. The one exception is the board's résumé uploader, which stages the file
             // straight to object storage with a multipart POST — an application is always
@@ -222,7 +284,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             // that hosts its form are fine); sub-resources are left alone so the form
             // can load its scripts and styles. Any top-level frame in the context — the
             // tab an Apply link opens is held to the same rule as the first page.
-            if (req.IsNavigationRequest && req.Frame.ParentFrame is null && !HostAllowed(u.Host, allowedHost)
+            if (req.IsNavigationRequest && IsTopLevel(req) && !HostAllowed(u.Host, allowedHost)
                 && BoardAccount.For(session._accounts, u.Host) is null)
             {
                 lock (session._refused) { session._refused.Add(u.Host); session._refusedUrls.Add(u.AbsoluteUri); }
@@ -336,6 +398,83 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// For a link that names an Ashby job on an employer's own page (<c>?ashby_jid=</c>) where no
+    /// application form shows: open Ashby's hosted copy of the form and hand that session back
+    /// instead, disposing <paramref name="opened"/> — but only if a form renders there; otherwise
+    /// <paramref name="opened"/> is returned as it was. Hercules' careers page takes the parameter
+    /// and lists its jobs without opening the one named, and the run reported "nothing on this
+    /// form could be filled" against the site's filters (#434).
+    /// </summary>
+    public static async Task<BrowserSession> AshbyHostedInsteadAsync(BrowserOptions options, BrowserSession opened, string link,
+        CancellationToken ct, IReadOnlyList<BoardAccount>? accounts = null)
+    {
+        if (!AtsProvider.HasAshbyJobId(link) || await WaitForApplicationFormAsync(opened.Page, 5_000))
+            return opened;
+        string html;
+        try { html = await opened.Page.ContentAsync(); }
+        catch (PlaywrightException) { html = ""; }
+        if (AtsProvider.AshbyHostedForm(link, html) is not { } hosted)
+            return opened;
+        BrowserSession? alt = null;
+        try
+        {
+            alt = await OpenAsync(options, hosted, ct, accounts);
+            if (await WaitForApplicationFormAsync(alt.Page, 10_000))
+            {
+                await opened.DisposeAsync();
+                return alt;
+            }
+        }
+        catch (PlaywrightException) { /* the hosted copy would not open; keep the employer's page */ }
+        catch (TimeoutException) { /* ditto */ }
+        if (alt is not null) await alt.DisposeAsync();
+        return opened;
+    }
+
+    // The one button of a notice that only wants to be read: OK, Got it, Understood, Close.
+    [GeneratedRegex(@"^\s*(?:ok(?:ay)?|got it|understood|dismiss|close)\s*[.!]?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex NoticeButton();
+
+    /// <summary>
+    /// Press the OK of a modal notice that sits over the form and asks for nothing: a dialog
+    /// with no field in it and one button, and that button an OK. Flexhire opens "Apply to Job —
+    /// this job accepts applicants located in … We couldn't detect your location" over its form
+    /// on Apply; the run filled the boxes under it by their ids, but the "Upload Resume/CV" click
+    /// landed on the dialog's backdrop, no résumé went up, and the board answered "Resume is
+    /// required" (#330, #437). A dialog that carries a field or any second button is a question,
+    /// and is left alone. True when one was pressed.
+    /// </summary>
+    public static async Task<bool> AcknowledgeNoticeAsync(IPage page)
+    {
+        foreach (var frame in page.Frames)
+        {
+            try
+            {
+                var dialogs = frame.Locator("[role=dialog]:visible, [role=alertdialog]:visible, [aria-modal=true]:visible");
+                var n = Math.Min(await dialogs.CountAsync(), 4);
+                for (var i = 0; i < n; i++)
+                {
+                    var d = dialogs.Nth(i);
+                    if (await d.Locator("input:not([type=hidden]):not([type=button]):not([type=submit]), select, textarea").CountAsync() > 0) continue;
+                    // Its buttons: the OK, and nothing else but links set in its sentences (Flexhire's
+                    // "and 21 more countries" is a button inside the notice's paragraph).
+                    var buttons = d.Locator("button:visible, [role=button]:visible, input[type=button]:visible, input[type=submit]:visible")
+                        .Filter(new() { HasNot = frame.Locator("xpath=ancestor::p | ancestor::li") });
+                    if (await buttons.CountAsync() != 1) continue;
+                    var name = (await buttons.First.InnerTextAsync(new() { Timeout = 1_000 })).Trim();
+                    if (!NoticeButton().IsMatch(name)) continue;
+                    await buttons.First.ClickAsync(new() { Timeout = 2_000 });
+                    await page.WaitForTimeoutAsync(400);
+                    return true;
+                }
+            }
+            catch (TimeoutException) { /* the notice went away on its own */ }
+            catch (PlaywrightException) { /* a frame mid-navigation */ }
+        }
+        return false;
+    }
+
     /// <summary>The cookies the context holds for <paramref name="url"/> — how a signed-in
     /// portal session is read back off the browser (#221).</summary>
     public Task<IReadOnlyList<BrowserContextCookiesResult>> CookiesAsync(string url) => _context.CookiesAsync([url]);
@@ -421,6 +560,28 @@ public sealed partial class BrowserSession : IAsyncDisposable
         && req.Headers.TryGetValue("content-type", out var ct)
         && ct.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Is a navigation request a top-level page's? The first request of a new tab — the one a
+    /// target="_blank" Apply opens — is issued before its frame exists, and asking for that frame
+    /// throws ("Frame for this navigation request is not available"). It threw inside the route
+    /// handler, the request was never continued, and the tab hung on about:blank: 7seventy's
+    /// "Apply for This Job" (rel=noopener, to Ashby) opened nothing the run could see (#426). A
+    /// request with no frame yet is a new tab's, which is top-level.
+    /// </summary>
+    private static bool IsTopLevel(IRequest req)
+    {
+        try { return req.Frame.ParentFrame is null; }
+        catch (PlaywrightException) { return true; }
+    }
+
+    /// <summary>An ad network's host — Google's AdSense and DoubleClick (#426).</summary>
+    private static bool IsAdNetwork(string host)
+    {
+        host = host.ToLowerInvariant();
+        return host.EndsWith("googlesyndication.com") || host.EndsWith("doubleclick.net")
+            || host.EndsWith("googleadservices.com") || host.StartsWith("adservice.google.");
+    }
+
     public static bool HostAllowed(string host, string original)
     {
         host = host.ToLowerInvariant();
@@ -437,10 +598,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
           const widget = __WIDGET__;
           const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-          return [...document.querySelectorAll('input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select')]
+          const deep = __DEEP__;
+          return deep('input[type=file], input[type=text], input[type=email], input:not([type]), textarea, select')
             .some(el => !widget(el) && (el.getAttribute('type') === 'file' || shown(el)));
         }
-        """.Replace("__WIDGET__", WidgetJs);
+        """.Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     /// <summary>Is a form control on screen — in the page, or in any frame it embeds? A
     /// search or job-alert widget's controls never count (#214).</summary>
@@ -511,8 +673,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
                       const widget = __WIDGET__;
                       const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                         return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                      const deep = __DEEP__;
                       let texts = 0;
-                      for (const el of document.querySelectorAll('input, textarea, select')) {
+                      for (const el of deep('input, textarea, select')) {
                         if (widget(el)) continue;
                         // A code entered a character per box is a verification step, not the form:
                         // Oracle's six pin-code boxes read as "the form" the moment they appeared (#318).
@@ -530,11 +693,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
 
     private static readonly string ApplicationFormScript = ApplicationFormScriptTemplate
         .Replace("__FILE_RULE__", "if (type === 'file') return true;")
-        .Replace("__WIDGET__", WidgetJs);
+        .Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     private static readonly string RevealedFormScript = ApplicationFormScriptTemplate
         .Replace("__FILE_RULE__", "if (type === 'file' && shown(el)) return true;")
-        .Replace("__WIDGET__", WidgetJs);
+        .Replace("__WIDGET__", WidgetJs).Replace("__DEEP__", DeepJs);
 
     /// <summary>
     /// Oracle Recruiting's "easy apply" is not the form: signed in, it opens on "Let's make this
@@ -597,30 +760,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
             await KeepPostingTextAsync();
             return;
         }
-        // By accessible name first, then by what the control visibly says. Allstate labels its
-        // link aria-label="Lead .Net Software Engineer Apply Now open in new window": the name
-        // opens with the job title, so nothing "began with apply" and the run reported "no Apply
-        // button or link on the page" with "Apply now" in plain view (#280). And the first one
-        // that can be SEEN, not the first in the document — a collapsed panel's own "Apply"
-        // must not stand in for the posting's.
-        ILocator? apply = null;
-        foreach (var matches in new[]
-                 {
-                     Page.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
-                     Page.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
-                     Page.Locator("a[href], button, [role=button], input[type=submit], input[type=button]")
-                         .Filter(new() { HasTextRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
-                 })
-        {
-            try
-            {
-                var count = Math.Min(await matches.CountAsync(), 8);
-                for (var i = 0; i < count && apply is null; i++)
-                    if (await matches.Nth(i).IsVisibleAsync()) apply = matches.Nth(i);
-            }
-            catch (PlaywrightException) { /* next */ }
-            if (apply is not null) break;
-        }
+        var apply = await FindApplyAsync();
         if (apply is null)
         {
             // A page whose only controls are radio/checkbox questions and a Continue is a
@@ -633,6 +773,77 @@ public sealed partial class BrowserSession : IAsyncDisposable
             return;
         }
 
+        // The posting, while it is still on screen: Apply replaces it.
+        await KeepPostingTextAsync();
+        // Apply may lead to another posting page with its own Apply: an aggregator (7seventy)
+        // opens the employer's Ashby posting in a new tab, and that page's "Apply for this Job" is
+        // the way to the form. Nobody pressed it, and the run said "no form appeared" (#426).
+        // One more hop, only onto a page Apply actually led to — never the same page twice.
+        string applyHost = "";
+        for (var hop = 0; ; hop++)
+        {
+            var outcome = await PressApplyAsync(apply, canHop: hop == 0);
+            if (outcome.Done) return;
+            if (outcome.ApplyHost.Length > 0 && applyHost.Length == 0) applyHost = outcome.ApplyHost;
+            if (hop == 0 && outcome.Moved && await FindApplyAsync() is { } again)
+            {
+                apply = again;
+                continue;
+            }
+            break;
+        }
+        var landedAt = Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "";
+        RevealNote = NoFormNote(Refused, landedAt, applyHost);
+        if (AccountOnlyAts(landedAt) is not null) NeedsAccountAt = landedAt;
+        else if (Refused.Count > 0 && AccountOnlyAts(Refused[0]) is not null) NeedsAccountAt = Refused[0];
+        else if (AccountOnlyAts(applyHost) is not null) NeedsAccountAt = applyHost;
+    }
+
+    /// <summary>
+    /// The visible way into the application, or null. By accessible name first, then by what the
+    /// control visibly says. Allstate labels its link aria-label="Lead .Net Software Engineer Apply
+    /// Now open in new window": the name opens with the job title, so nothing "began with apply"
+    /// and the run reported "no Apply button or link on the page" with "Apply now" in plain view
+    /// (#280). And the first one that can be SEEN, not the first in the document — a collapsed
+    /// panel's own "Apply" must not stand in for the posting's. The top document first, then the
+    /// frames it embeds: Voleon's careers page embeds its Ashby posting in an iframe, and the
+    /// posting's "Apply for this Job" is in there, out of reach of a search of the page (#426).
+    /// </summary>
+    private async Task<ILocator?> FindApplyAsync()
+    {
+        foreach (var frame in new[] { Page.MainFrame }.Concat(Page.Frames.Where(f => f != Page.MainFrame)))
+        {
+            foreach (var matches in new[]
+                     {
+                         frame.GetByRole(AriaRole.Button, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
+                         frame.GetByRole(AriaRole.Link, new() { NameRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
+                         frame.Locator("a[href], button, [role=button], input[type=submit], input[type=button]")
+                             .Filter(new() { HasTextRegex = ApplyTrigger() }).Filter(new() { HasNotTextRegex = LaterWords() }),
+                     })
+            {
+                try
+                {
+                    var count = Math.Min(await matches.CountAsync(), 8);
+                    for (var i = 0; i < count; i++)
+                        if (await matches.Nth(i).IsVisibleAsync()) return matches.Nth(i);
+                }
+                catch (PlaywrightException) { /* next */ }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>What one press of Apply came to: <c>Done</c> when the reveal is settled (a form,
+    /// a sign-in, a wall, or a click that failed — <see cref="RevealNote"/> says which);
+    /// otherwise nothing appeared, and <c>Moved</c> says whether Apply led to another page or tab.</summary>
+    private readonly record struct ApplyPress(bool Done, bool Moved, string ApplyHost);
+
+    /// <summary>An address without its #fragment: "moved" means another tab or another address,
+    /// not a fragment an overlay or an in-page anchor set on the same page (#426).</summary>
+    private static string Unfragmented(string url) => url.Split('#')[0];
+
+    private async Task<ApplyPress> PressApplyAsync(ILocator apply, bool canHop)
+    {
         // Where Apply points, read before the click: Allstate's is a target="_blank" anchor to
         // Workday, and when the tab it opens never reaches this context the run had nothing to
         // go on and said "no form appeared" about a page it had never left (#280). The href
@@ -647,8 +858,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
         }
         catch (PlaywrightException) { /* a button, not a link */ }
 
-        // The posting, while it is still on screen: Apply replaces it.
-        await KeepPostingTextAsync();
+        var urlBefore = Page.Url;
+        // The tabs already open are not what this Apply opened (the posting Apply led away from,
+        // on a second hop).
+        var known = _context.Pages.ToHashSet();
         var popup = new TaskCompletionSource<IPage>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnPage(object? _, IPage p) => popup.TrySetResult(p);
         _context.Page += OnPage;
@@ -670,13 +883,13 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 if (attempt == 0 && await DismissConsentAsync(Page)) continue;
                 _context.Page -= OnPage;
                 RevealNote = "the Apply button did not respond within 5 s";
-                return;
+                return new(true, false, applyHost);
             }
             catch (PlaywrightException ex)
             {
                 _context.Page -= OnPage;
                 RevealNote = "clicking Apply failed: " + ex.Message.Split('\n')[0];
-                return;
+                return new(true, false, applyHost);
             }
         }
         // Gainwell's "Apply Now" only opens a menu — "Apply Now" / "Start applying with LinkedIn" —
@@ -696,6 +909,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
         // Apply opens its sign-in in a new tab only after a round trip, later than the moment
         // after the click, and a run that kept watching the posting saw nothing (#235).
         var deadline = DateTime.UtcNow.AddSeconds(10);
+        var settled = DateTime.UtcNow.AddSeconds(5);
         var adopted = false;
         try
         {
@@ -705,7 +919,7 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 // handler was attached — or one the event never fired for — is still in the
                 // context, so the context's own list is asked too.
                 if (!adopted && !popup.Task.IsCompletedSuccessfully
-                    && _context.Pages.FirstOrDefault(p => p != Page && !p.IsClosed) is { } stray)
+                    && _context.Pages.FirstOrDefault(p => !known.Contains(p) && !p.IsClosed) is { } stray)
                     popup.TrySetResult(stray);
                 if (!adopted && popup.Task.IsCompletedSuccessfully)
                 {
@@ -718,13 +932,14 @@ public sealed partial class BrowserSession : IAsyncDisposable
                     // A new tab is a whole app booting through the proxy: Alignerr's goes /signup →
                     // /signin behind a spinner and showed its wall well after ten seconds on pluto.
                     deadline = DateTime.UtcNow.AddSeconds(30);
+                    settled = DateTime.UtcNow.AddSeconds(5);
                 }
                 // A field on screen settles it — and only then is the sign-in question asked, so a
                 // page still mid-navigation cannot answer "no sign-in" a moment before it renders one.
                 if (await AnyFieldVisibleAsync(Page))
                 {
                     if (await SignInFormVisibleAsync(Page)) await TrySignInAsync();
-                    return;
+                    return new(true, true, applyHost);
                 }
                 // Alignerr and its kind: Apply opens an account sign-up that only offers "Continue
                 // with Google / LinkedIn" — no username box, no form, nothing the browser can fill or
@@ -734,18 +949,20 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 if (providers.Count > 0)
                 {
                     RevealNote = SocialWallNote(Page.Url, providers);
-                    return;
+                    return new(true, true, applyHost);
                 }
                 if (DateTime.UtcNow >= deadline) break;
+                // Landed on another posting page that has its own Apply and, after a few seconds to
+                // render, still no form: that Apply is the way on, and waiting out the thirty
+                // seconds a new tab is given only delays pressing it (#426).
+                if (canHop && DateTime.UtcNow >= settled && (adopted || Unfragmented(Page.Url) != Unfragmented(urlBefore))
+                    && await FindApplyAsync() is not null)
+                    break;
                 await Page.WaitForTimeoutAsync(500);
             }
         }
         finally { _context.Page -= OnPage; }
-        var landedAt = Uri.TryCreate(Page.Url, UriKind.Absolute, out var at) ? at.Host : "";
-        RevealNote = NoFormNote(Refused, landedAt, applyHost);
-        if (AccountOnlyAts(landedAt) is not null) NeedsAccountAt = landedAt;
-        else if (Refused.Count > 0 && AccountOnlyAts(Refused[0]) is not null) NeedsAccountAt = Refused[0];
-        else if (AccountOnlyAts(applyHost) is not null) NeedsAccountAt = applyHost;
+        return new(false, adopted || Unfragmented(Page.Url) != Unfragmented(urlBefore), applyHost);
     }
 
     /// <summary>

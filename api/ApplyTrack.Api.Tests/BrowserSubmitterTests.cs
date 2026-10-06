@@ -24,7 +24,7 @@ namespace ApplyTrack.Api.Tests;
 /// here resolves to loopback</b> and the fixture asserts it, so a stray real URL
 /// fails loudly instead of applying to someone's job.
 /// </summary>
-public sealed class BrowserSubmitterTests : IAsyncLifetime
+public sealed partial class BrowserSubmitterTests : IAsyncLifetime
 {
     private static readonly string RepoRoot = FindRepoRoot();
     private static readonly string Cli = Path.Combine(RepoRoot, "node_modules", "playwright-core", "cli.js");
@@ -81,6 +81,20 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             """<button type="button" class="ckymnz ckymny" componentkey="ae6dd0bf" aria-label="Easy Apply to this job" id="entry">Easy Apply</button>""",
             """<a href="/li/jobs/view/sdui-draft/?trackingId=x" id="entry" class="ckymnz"><span><span>Continue</span></span></a>""")
             .Replace("document.getElementById('entry').onclick = () => {", "document.getElementById('entry').onclick = e => { e.preventDefault();"), "text/html"));
+        // LinkedIn's "Job search safety reminder" in front of the dialog (KRON Development, 2026-10-05, #430).
+        _fixture.MapGet("/li/jobs/view/sdui-safety", () => Results.Content(EasyApplySduiHtml
+            .Replace("<script>", SafetyTipsDialog + "<script>")
+            .Replace("document.getElementById('entry').onclick = () => { at = 0; render(); };",
+                "document.getElementById('entry').onclick = () => document.getElementById('safety').show();"), "text/html"));
+        // A dialog of fifteen pages, one question each (Trility's is fourteen, #409).
+        _fixture.MapGet("/li/jobs/view/sdui-long", () => Results.Content(EasyApplySduiHtml
+            .Replace("const dlg = document.getElementById('dlg')", LongDialogSteps + "const dlg = document.getElementById('dlg')"), "text/html"));
+        // A work-history step whose blank rows open for editing one Next at a time (SMX via JobDiva, #408).
+        _fixture.MapGet("/li/jobs/view/sdui-history", () => Results.Content(EasyApplySduiHtml
+            .Replace("const dlg = document.getElementById('dlg')", WorkHistoryStep + "const dlg = document.getElementById('dlg')")
+            .Replace("col.innerHTML = steps[at];", "col.innerHTML = steps[at] === 'HISTORY' ? historyHtml() : steps[at];")
+            .Replace("function go() { if (!valid()) return;", "function go() { if (steps[at] === 'HISTORY' && !historyNext()) return; if (!valid()) return;")
+            .Replace("function capture() {", "function capture() { answers.history = rows.map(r => r.company + '|' + r.city + '|' + r.desc).join(';');"), "text/html"));
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
@@ -754,6 +768,160 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
+        // Ethos' résumé (#417): the field's title is a sibling <label>, and the hidden input sits in
+        // a second <label> that says only "Click or drag & drop PDF". No id, no name.
+        _fixture.MapGet("/jobs/dropzone", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="firstName">First name *</label><input id="firstName" name="first_name">
+              <label for="email">Email *</label><input id="email" name="email" type="email">
+              <div><label>CV / Resume <span>*</span></label>
+                <label class="dropzone"><span>Click or drag &amp; drop PDF</span><input accept=".pdf" type="file" style="display:none"></label>
+                <p id="picked"></p></div>
+              <input type="hidden" name="resume_name" id="resume_name">
+              <button type="submit">Submit application</button>
+            </form>
+            <script>
+              document.querySelector('input[type=file]').onchange = e => { const f = e.target.files[0];
+                document.getElementById('picked').textContent = f.name; document.getElementById('resume_name').value = f.name; };
+            </script></body></html>
+            """, "text/html"));
+        // N-iX (#418): the whole form folded in a sidebar until "Easy Apply" is pressed — its file
+        // input in the page, hidden, from the start.
+        _fixture.MapGet("/jobs/easy-apply-fold", () => Results.Content(
+            """
+            <html><body><h1>Lead .Net Engineer</h1><p>About the role.</p>
+            <div id="side" style="display:none"><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="fn">First name</label><input id="fn" name="first_name">
+              <label for="ln">Last name</label><input id="ln" name="last_name">
+              <label for="em">Email</label><input id="em" name="email" type="email">
+              <label for="cv">Click to attach CV</label><input id="cv" name="resume" type="file">
+              <input type="submit" value="Apply now">
+            </form></div>
+            <button class="form-toggler" onclick="document.getElementById('side').style.display='block';this.remove()"><span>Easy Apply</span></button>
+            </body></html>
+            """, "text/html"));
+        // Tecbrains (#419): the application form, and a Mailchimp for WordPress signup in the footer.
+        _fixture.MapGet("/jobs/newsletter-footer", () => Results.Content(FormHtml.Replace("</body>",
+            """
+            <footer><form class="mc4wp-form mc4wp-form-589" method="post"><div class="mc4wp-form-fields">
+              <input type="email" name="email" placeholder="Your email address" required><input type="submit" value="Subscribe">
+              <label style="display:none !important;">Leave this field empty if you're human: <input type="text" name="_mc4wp_honeypot" value="" tabindex="-1" autocomplete="off"></label>
+            </div></form></footer></body>
+            """), "text/html"));
+        // Lever (#420): Submit only asks an invisible hCaptcha for a token, which never comes, so
+        // nothing is ever posted.
+        _fixture.MapGet("/jobs/hcaptcha-held", () => Results.Content(
+            """
+            <html><body><form id="application-form" method="post" action="/apply" enctype="multipart/form-data">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <div id="h-captcha" class="h-captcha" data-sitekey="e33f87f8"></div>
+              <button id="btn-submit" type="button" onclick="window.executed = true">Submit application</button>
+              <button id="hcaptchaSubmitBtn" type="submit" style="display:none"></button>
+            </form></body></html>
+            """, "text/html"));
+        // Ashby (#421): the application goes up as a GraphQL mutation answered 200 either way, and
+        // the page here says nothing — the body is the verdict.
+        foreach (var path in new[] { "graphql-accepted", "graphql-refused" })
+        {
+            _fixture.MapGet($"/jobs/{path}", () => Results.Content(
+                $$"""
+                <html><body>
+                  <label for="first_name">First Name</label><input id="first_name" name="first_name">
+                  <button type="button" onclick="fetch('/api/non-user-graphql?op=ApiSubmitSingleApplicationFormAction&r={{path}}',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})">Submit Application</button>
+                </body></html>
+                """, "text/html"));
+        }
+        _fixture.MapPost("/api/non-user-graphql", (HttpRequest req) =>
+        {
+            lock (_posts) _posts.Add(new() { ["graphql"] = req.Query["op"].ToString() });
+            return Results.Content(req.Query["r"] == "graphql-accepted"
+                ? """{"data":{"submitSingleApplicationFormAction":{"applicationFormResult":{"__typename":"FormSubmitSuccess","_":null},"__typename":"SubmitSingleApplicationFormActionResult"}}}"""
+                : """{"errors":[{"message":"Missing required field: Location","extensions":{}}],"data":null}""", "application/json");
+        });
+        // Tential / JazzHR: the form's Submit is a script's anchor, not a button (#424).
+        _fixture.MapGet("/jobs/anchor-submit", () => Results.Content(
+            """
+            <html><body><h1>.NET Developer</h1>
+            <a href="#" onclick="return false">APPLY NOW</a>
+            <form id="ce_apply_form" method="post" action="/apply">
+              <label for="first_name">First Name<span>*</span></label><input id="first_name" name="job_application[first_name]" required>
+              <p><a href="/privacy">Privacy Policy</a></p>
+              <div class="ce_apply_submit_wrapper"><a href="#" id="ce_apply_submit" onclick="document.getElementById('ce_apply_form').submit();return false"><span>APPLY NOW</span></a></div>
+            </form>
+            </body></html>
+            """, "text/html"));
+        // HubSpot's rendering of its Greenhouse form: required only by the star in the label, a
+        // placeholder option that carries a value, and Submit disabled until all are answered (#425).
+        _fixture.MapGet("/jobs/starred-selects", () => Results.Content(
+            """
+            <html><body><h1>Principal Engineer</h1>
+            <form method="post" action="/apply">
+              <label for="first_name">First Name<span>*</span></label><input id="first_name" name="job_application[first_name]">
+              <label for="question_45">Do you currently have legal US work authorization? <span>*</span></label>
+              <select id="question_45" name="question_45"><option value="-- Select">-- Select</option><option>Yes</option><option>No</option></select>
+              <label for="question_54">Which time zone would you be working from in this role? <span>*</span></label>
+              <select id="question_54" name="question_54"><option value="-- Select">-- Select</option><option>Eastern</option><option>Central</option></select>
+              <label for="question_53">Have you worked here before?</label>
+              <select id="question_53" name="question_53"><option value="-- Select">-- Select</option><option>Yes</option><option>No</option></select>
+              <button type="submit" disabled>Submit Your Application</button>
+            </form>
+            <script>
+              const starred = ['question_45', 'question_54'].map(id => document.getElementById(id));
+              const settle = () => document.querySelector('button[type=submit]').disabled =
+                !document.getElementById('first_name').value || starred.some(s => s.value === '-- Select');
+              document.addEventListener('input', settle); document.addEventListener('change', settle);
+            </script>
+            </body></html>
+            """, "text/html"));
+        // Voleon: the posting (and its Apply) is an embedded ATS page in an iframe (#426).
+        _fixture.MapGet("/jobs/embedded-posting", () => Results.Content(
+            """<html><body><h1>Voleon - Job Listings</h1><iframe src="/jobs/embedded-posting-inner" style="width:900px;height:1200px"></iframe></body></html>""", "text/html"));
+        _fixture.MapGet("/jobs/embedded-posting-inner", () => Results.Content(
+            """<html><body><h2>Senior Software Engineer</h2><p>About the role.</p><a href="/jobs/1">Apply for this Job</a></body></html>""", "text/html"));
+        // 7seventy: an aggregator whose Apply opens the employer's posting in a new tab (target=_blank,
+        // rel=noopener), and that posting has its own Apply (#426).
+        _fixture.MapGet("/jobs/aggregator", () => Results.Content(
+            """<html><body><h1>Staff Backend Engineer</h1><p>Remote.</p><a href="/jobs/ats-posting" target="_blank" rel="nofollow noopener noreferrer" class="apply-btn">Apply for This Job</a></body></html>""", "text/html"));
+        _fixture.MapGet("/jobs/ats-posting", () => Results.Content(
+            """<html><body><h1>Staff Backend Engineer @ Astra</h1><p>Overview.</p><button onclick="location.href='/jobs/1'">Apply for this Job</button></body></html>""", "text/html"));
+        // Ford: a "Candidate FEEDBACK" tab before the real Apply Now; pressing it opens a survey (#423).
+        _fixture.MapGet("/jobs/candidate-tab", () => Results.Content(
+            """
+            <html><body>
+              <button style="position:fixed;right:0;top:300px" onclick="document.getElementById('survey').style.display='block'">Candidate FEEDBACK</button>
+              <div id="survey" role="dialog" style="display:none;position:fixed;inset:0;background:#fff"><h2>Candidate Experience Survey</h2><button>Start Survey</button><button>Not Now</button></div>
+              <h1>Enterprise AI Administrator</h1>
+              <a href="/jobs/1" class="job-apply">Apply Now</a>
+            </body></html>
+            """, "text/html"));
+        // Cloudflare's block page: HTTP 403 and more than 600 characters of explanation (#428).
+        _fixture.MapGet("/jobs/cloudflare-block", () => Results.Content(
+            "<html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1><h2>You are unable to access example.com</h2>"
+            + "<p>" + string.Join(" ", Enumerable.Repeat("This website is using a security service to protect itself from online attacks.", 10)) + "</p></body></html>",
+            "text/html", statusCode: 403));
+        // ClearCompany's returning applicant: page one of the wizard, Continue, and then an email
+        // sign-in — a plain text box and NEXT — in place of page two (#429).
+        _fixture.MapGet("/jobs/returning-applicant", () => Results.Content(
+            """
+            <html><body><h1>.NET Software Engineer Application</h1><div id="page">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <label for="email">Email</label><input id="email" name="email" type="email">
+              <button type="button" onclick="signIn()">Continue</button>
+            </div>
+            <script>
+              function signIn() {
+                document.getElementById('page').innerHTML =
+                  '<label>Email</label><input type="text" placeholder="Enter the email you used to apply">'
+                  + '<button type="button" onclick="document.getElementById(\'err\').textContent=\'Please enter your email address\'">NEXT</button>'
+                  + '<p id="err"></p><a href="#">Sign in with username and password instead</a>';
+              }
+            </script>
+            </body></html>
+            """, "text/html"));
+        // Greenhouse's checkbox groups and react-select menus, Manatal's shadow root, Flexhire's
+        // notice and picker, an international phone box (#431–#439).
+        MapFormShapeFixtures(_fixture);
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -2021,6 +2189,94 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    // Copied from the live one (KRON Development, 2026-10-05): a native <dialog> around the
+    // PreApplySafetyTipsModal screen whose "Continue applying" is a link back to the posting.
+    private const string SafetyTipsDialog = """
+        <dialog id="safety" data-testid="dialog" aria-labelledby="safety-header">
+          <button type="button" aria-label="Dismiss" onclick="this.parentElement.close()"><span></span></button>
+          <div><header id="safety-header"><h2>Job search safety reminder</h2></header>
+          <div data-testid="dialog-content"><div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.PreApplySafetyTipsModal">
+            <p>Research the company</p><p>Report suspicious jobs</p>
+            <footer><a href="/li/jobs/view/sdui-safety?trackingId=x" componentkey="k">Review job post</a>
+              <a href="/li/jobs/view/sdui-safety?trackingId=x" componentkey="k" onclick="event.preventDefault(); document.getElementById('safety').close(); at = 0; render();"><span><span>Continue applying</span></span></a></footer>
+          </div></div></div>
+        </dialog>
+        """;
+
+    private const string LongDialogSteps = """
+        steps.splice(3, 0, ...Array.from({ length: 10 }, (_, i) => `<div><p>Additional Questions</p>
+          <div><p>Question number ${i}?*</p><div componentkey="easyApplyFieldFocus_x${i}">
+            <div><input required id="x${i}" aria-label="Question number ${i}?" type="text" value=""></div>
+            <div data-testid="text-input-helper-text"></div></div></div></div>`));
+
+        """;
+
+    // The work-history step as SMX's JobDiva form has it (live, 2026-10-06): the profile's roles as
+    // cards, "N/A" where the profile holds nothing, and a Next that opens the first short row for
+    // editing — City* and Description* already flagged, a "Save" of the row's own — instead of
+    // moving on. The textarea carries the focus key itself, its helper beside it.
+    private const string WorkHistoryStep = """
+        const rows = [
+          { title: 'Principal Architect', company: 'Ronin 48', city: 'Omaha, NE', desc: 'Built things.' },
+          { title: 'Senior Technical Support Engineer', company: 'CrowdStrike', city: '', desc: '' },
+          { title: 'Cloud Operations Supervisor', company: 'CloudHesive', city: '', desc: '' },
+        ];
+        let editing = -1;
+        steps.splice(3, 0, 'HISTORY');
+        const card = r => `<div><div><div><div><div><p>Your title</p><p>${r.title}</p></div><div><p>Company</p><p>${r.company}</p></div>
+          <div><p>Dates of employment</p><div><p>8</p><p>/</p><p>2022</p><p> - </p><div><p>7</p><p>/</p><p>2023</p></div></div></div>
+          <div><p>City</p><p>${r.city || 'N/A'}</p></div><div><p>Description</p><p>${r.desc || 'N/A'}</p></div></div></div>
+          <button type="button" aria-label="Edit, Work Experience"><span></span></button></div></div>`;
+        const box = (label, id, value, n) => `<div><p>${label}*</p><div componentkey="easyApplyFieldFocus_ea_validation_p3_9_${n}">
+          <div><input required id="${id}" aria-describedby="${id}-info" aria-label="${label}" type="text" value="${value}"></div>
+          <div data-testid="text-input-helper-text" id="${id}-info">${value ? '' : '<p>This field is required</p>'}</div></div></div>`;
+        const editor = r => `<div data-display-contents="true"><div><div><p>Edit experience</p><button type="button"><span><span>Save</span></span></button></div><div>
+          ${box('Your title', 'e-title', r.title, 1)}${box('Company', 'e-company', r.company, 2)}
+          <div><p>Dates of employment</p><div><p>From</p><div><label for="e-from"><div></div></label><select id="e-from"><option value="">Month</option><option value="8" selected>August</option></select></div></div></div>
+          ${box('City', 'e-city', '', 3)}
+          <div><p>Description*</p><div><textarea id="e-desc" aria-describedby="e-desc-info" aria-label="Description" required rows="4" componentkey="easyApplyFieldFocus_ea_validation_p3_9_4"></textarea>
+            <div data-testid="text-input-helper-text" id="e-desc-info"><p>This field is required</p></div></div></div>
+          </div><button type="button"><span><span>Delete experience</span></span></button></div></div>`;
+        function historyHtml() { return `<div><p>Work experience</p>${rows.map((r, i) => i === editing ? editor(r) : card(r)).join('')}<div><p>You have reached the limit of 10 responses</p></div></div>`; }
+        function historyNext() {
+          if (editing >= 0) {
+            const city = col.querySelector('#e-city').value.trim(), desc = col.querySelector('#e-desc').value.trim();
+            if (!city || !desc) return false;
+            rows[editing].city = city; rows[editing].desc = desc;
+          }
+          editing = rows.findIndex(r => !r.city || !r.desc);
+          if (editing < 0) return true;
+          col.innerHTML = historyHtml();
+          return false;
+        }
+
+        """;
+
+    private static AgentPacket EasyApplyHistoryPacket(bool citiesKnown)
+    {
+        var packet = EasyApplyPacket(answered: true);
+        packet.Resume = new Resume
+        {
+            Location = "Minden, Nebraska (Remote)",
+            Experience =
+            [
+                new("CrowdStrike", "Senior Technical Support Engineer", "Aug 2022 - Mar 2024", ["SME for LogScale.", "Wrote tooling in Python."]),
+                new("CloudHesive", "Cloud Operations Supervisor / Cloud Support Engineer II", "Aug 2021 - May 2022", ["Led the Cloud Operations team."]),
+            ],
+        };
+        if (!citiesKnown) return packet;
+        foreach (var label in new[]
+                 {
+                     "Work experience — Senior Technical Support Engineer — CrowdStrike — City",
+                     "Work experience — Cloud Operations Supervisor — CloudHesive — City",
+                 })
+        {
+            packet.Questions.Add(new(label, label, true, PacketQuestion.Text, [], PacketQuestion.Custom));
+            packet.Answers[label] = "Remote";
+        }
+        return packet;
+    }
+
     private static AgentPacket EasyApplyPacket(bool answered)
     {
         var packet = new AgentPacket { ApplicationName = "acme-senior-.net-engineer.md", Provider = ApplyTrack.Api.Agent.AtsProvider.LinkedInEasy };
@@ -3154,6 +3410,74 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Easy_apply_continues_past_linkedins_safety_reminder()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Live 2026-10-05: both KRON postings failed on "Timeout 15000ms exceeded." with the
+        // "Job search safety reminder" sitting where the dialog should have been (#430).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-safety", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_walks_a_dialog_longer_than_twelve_pages()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Trility's dialog is fourteen pages, one question each; every run ended on page 13 with
+        // "did not reach its Submit step within 12 steps" (#409).
+        var packet = EasyApplyPacket(answered: true);
+        for (var i = 0; i < 10; i++)
+        {
+            var label = $"Question number {i}?";
+            packet.Questions.Add(new(label, label, true, PacketQuestion.Text, [], PacketQuestion.Custom));
+            packet.Answers[label] = $"answer {i}";
+        }
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-long", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal(14, outcome.Mapped.Count);   // the phone, three questions, and ten more
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_hands_back_every_short_work_history_row_and_saves_the_draft()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // SMX (#408): the "City" every run stopped on was not the person's — it was a past job's,
+        // in the work-history editor Next opened. Each blank row is that row's question; the
+        // résumé has each role's lines for its Description but no city for a job gone by.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-history", EasyApplyHistoryPacket(citiesKnown: false), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(["Work experience — Senior Technical Support Engineer — CrowdStrike — City"], outcome.Unmapped);
+        var found = Assert.IsType<List<PacketQuestion>>(outcome.Discovered).Select(q => q.Label).ToList();
+        Assert.Equal(
+            ["Work experience — Senior Technical Support Engineer — CrowdStrike — City", "Work experience — Cloud Operations Supervisor — CloudHesive — City"],
+            found);
+        Assert.Contains("Work experience — Senior Technical Support Engineer — CrowdStrike — Description", outcome.Mapped);
+        // Saved through the question's own "Save", not the open row's.
+        var left = Assert.Single(EasyApplyEvents());
+        Assert.Equal("save", left.GetProperty("left").GetString());
+        Assert.Equal(3, left.GetProperty("step").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_fills_each_work_history_row_as_it_opens_and_submits()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-history", EasyApplyHistoryPacket(citiesKnown: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var sent = Assert.Single(EasyApplyEvents()).GetProperty("answers");
+        Assert.Equal(
+            "Ronin 48|Omaha, NE|Built things.;CrowdStrike|Remote|SME for LogScale. Wrote tooling in Python.;CloudHesive|Remote|Led the Cloud Operations team.",
+            sent.GetProperty("history").GetString());
+    }
+
+    [SkippableFact]
     public async Task Easy_apply_says_so_when_linkedin_serves_the_signed_out_page()
     {
         Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
@@ -3874,7 +4198,8 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.True(outcome.Submitted, outcome.Error);
         Assert.Empty(outcome.Unmapped);
-        Assert.Equal(["first_name", "country", "location", "resume", "question_9"], outcome.Mapped);
+        // Files go first, so a board's résumé parse cannot overwrite the answers (#438).
+        Assert.Equal(["resume", "first_name", "country", "location", "question_9"], outcome.Mapped);
         var post = Assert.Single(_posts);
         Assert.Equal("US", post["country_value"]);
         Assert.Equal("Omaha, Nebraska, United States", post["location_value"]);
@@ -4497,6 +4822,239 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Closed);
         Assert.Contains("HTTP 410", outcome.Error);
         Assert.False(outcome.Filled);
+        Assert.Empty(_posts);
+    }
+
+    private FormDiscoverer Discoverer() =>
+        new(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+
+    [SkippableFact]
+    public async Task A_resume_dropzone_is_named_by_its_field_and_takes_the_resume()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Ethos: discovered as "Click or drag & drop PDF", never attached, unmapped on every run (#417).
+        var questions = await Discoverer().DiscoverAsync($"{_fixtureUrl}/jobs/dropzone");
+        var file = Assert.Single(questions!, q => q.Type == PacketQuestion.File);
+        Assert.Equal("CV / Resume", file.Label);
+        Assert.True(file.Required);
+
+        // A packet built before the fix still carries the dropzone's words; the one file input is
+        // the résumé all the same.
+        var stale = new AgentPacket
+        {
+            ApplicationName = "ethos-ai-engineer.md", Provider = "unknown",
+            Questions =
+            [
+                new("firstName", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("Click or drag & drop PDF", "Click or drag & drop PDF", true, PacketQuestion.File, [], PacketQuestion.Custom),
+            ],
+            Answers = new() { ["firstName"] = "Ada", ["email"] = "ada@example.com" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/dropzone", stale, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Click or drag & drop PDF", outcome.Mapped);
+        Assert.Equal("resume.pdf", Assert.Single(_posts)["resume_name"]);
+    }
+
+    [SkippableFact]
+    public async Task A_form_folded_behind_easy_apply_is_opened_and_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // N-iX: "Easy Apply" did not begin with "apply", so only the hidden file input was ever
+        // seen and first name, last name and email were unmapped (#418).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/easy-apply-fold", StandardPacket(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada", post["first_name"]);
+        Assert.Equal("ada@example.com", post["email"]);
+    }
+
+    [SkippableFact]
+    public async Task A_newsletter_signup_in_the_footer_is_not_a_question()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Tecbrains: the mc4wp box became the question "email", unmapped on every dry run (#419).
+        var questions = await Discoverer().DiscoverAsync($"{_fixtureUrl}/jobs/newsletter-footer");
+        Assert.NotNull(questions);
+        Assert.Contains(questions!, q => q.Id == "job_application[email]");
+        Assert.DoesNotContain(questions!, q => q.Id is "email" or "_mc4wp_honeypot");
+    }
+
+    [SkippableFact]
+    public async Task A_submit_held_by_an_invisible_captcha_is_a_captcha_handoff()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Lever: the click asks hCaptcha for a token that never comes; nothing is posted (#420).
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-engineer.md", Provider = "lever",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/hcaptcha-held", packet, null, dryRun: false);
+        Assert.False(outcome.Submitted);
+        Assert.True(outcome.Captcha, outcome.Error);
+        Assert.Contains("captcha held it", outcome.Error);
+    }
+
+    private static AgentPacket OnePacket(params (string Id, string Label, string Answer)[] fields) => new()
+    {
+        ApplicationName = "acme-engineer.md", Provider = "unknown",
+        Questions = [.. fields.Select(f => new PacketQuestion(f.Id, f.Label, true, PacketQuestion.Text, [], PacketQuestion.Standard))],
+        Answers = fields.ToDictionary(f => f.Id, f => f.Answer),
+    };
+
+    [SkippableFact]
+    public async Task A_submit_that_is_a_scripts_anchor_inside_the_form_is_clicked()
+    {
+        // Tential: <a href="#" id="ce_apply_submit">APPLY NOW</a> ends the form, and every run
+        // filled it and said "no Submit button found" (#424). The posting's own APPLY NOW, outside
+        // the form, is never the one clicked.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/anchor-submit",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_select_required_only_by_the_star_in_its_label_and_left_on_its_placeholder_is_handed_to_the_drafter()
+    {
+        // HubSpot: a dozen selects marked "… *" and nothing else, each on "-- Select" (a placeholder
+        // with a value). The sweep let them through, Submit stayed disabled, "no Submit button
+        // found" (#425). Now they are unmapped and go to the drafter, placeholder not an option.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: true);
+        Assert.Contains("question_45", dry.Unmapped);
+        Assert.Contains("question_54", dry.Unmapped);
+        Assert.DoesNotContain("question_53", dry.Unmapped);   // no star: not required
+        Assert.NotNull(dry.Discovered);
+        var auth = Assert.Single(dry.Discovered!, q => q.Id == "question_45");
+        Assert.True(auth.Required);
+        Assert.Equal(["Yes", "No"], auth.Options);
+
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: false);
+        Assert.False(real.Submitted);
+        Assert.StartsWith("refused to submit: required fields could not be mapped", real.Error);
+        Assert.Empty(_posts);
+
+        // Drafted, the next run fills them — a "-- Select" with a value is not taken for an
+        // answer the board already holds — and Submit, enabled by then, goes.
+        var drafted = OnePacket(("first_name", "First Name", "Ada"));
+        drafted.Questions.AddRange(dry.Discovered!);
+        drafted.Answers["question_45"] = "Yes";
+        drafted.Answers["question_54"] = "Central";
+        var done = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects", drafted, null, dryRun: false);
+        Assert.True(done.Submitted, done.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Yes", post["question_45"]);
+        Assert.Equal("Central", post["question_54"]);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_inside_an_embedded_posting_frame_is_found_and_pressed()
+    {
+        // Voleon embeds its Ashby posting in an iframe; the Apply in it was never looked for, and
+        // the run said "no Apply button or link on the page" (#426).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/embedded-posting", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task Ashby_graphql_submit_answer_is_the_verdict_when_the_page_says_nothing()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Nuclear Promise X: "no confirmation" with two 200s from non-user-graphql and nothing to
+        // tell sent from refused (#421).
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-engineer.md", Provider = "ashby",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var accepted = await Submitter().RunAsync($"{_fixtureUrl}/jobs/graphql-accepted", packet, null, dryRun: false);
+        Assert.True(accepted.Submitted, accepted.Error);
+        Assert.Contains("FormSubmitSuccess", accepted.Confirmation);
+
+        var refused = await Submitter().RunAsync($"{_fixtureUrl}/jobs/graphql-refused", packet, null, dryRun: false);
+        Assert.False(refused.Submitted);
+        Assert.Contains("(ApiSubmitSingleApplicationFormAction) → 200", refused.Error);
+        Assert.Contains("the board said \"Missing required field: Location\"", refused.Error);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_that_opens_another_posting_in_a_noopener_tab_is_followed_through_its_own_apply()
+    {
+        // 7seventy: Apply opens the employer's posting in a new tab (rel=noopener). The new tab's
+        // first request had no frame yet, asking for one threw in the route handler, and the tab
+        // hung; and once it loads, that posting's own Apply has to be pressed too (#426).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/aggregator", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+        Assert.EndsWith("/jobs/1", outcome.Url);
+        Assert.Empty(_posts);
+    }
+
+    [Theory]
+    [InlineData("Apply Now", true)]
+    [InlineData("Postuler maintenant", true)]
+    [InlineData("Postular", true)]
+    [InlineData("Candidater", true)]
+    [InlineData("Candidatar-se", true)]
+    [InlineData("Candidate FEEDBACK", false)]
+    [InlineData("Candidate Experience", false)]
+    [InlineData("Candidates", false)]
+    [InlineData("Apply later", false)]
+    public void The_apply_trigger_is_a_word_for_applying_not_the_english_word_candidate(string name, bool trigger) =>
+        // Ford's "Candidate FEEDBACK" tab was pressed as Apply and opened a survey (#423).
+        Assert.Equal(trigger, BrowserSession.IsApplyTrigger(name));
+
+    [SkippableFact]
+    public async Task A_candidate_feedback_tab_is_never_pressed_for_apply()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/candidate-tab", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+    }
+
+    [Theory]
+    [InlineData("Principal AI Engineer This job has expired Sorry, this job has expired SHARE THIS JOB")]   // SmartRecruiters
+    [InlineData("C# Developer | $65/hr Remote We are no longer accepting new profiles for this position.")]   // Ceipal
+    [InlineData("The employer has taken the job offline. The operation failed. Try again")]   // MeeBoss
+    public void Expired_and_offline_postings_read_as_closed(string text) =>
+        // Each read as "no Apply button or link on the page" (#427).
+        Assert.True(BrowserSubmitter.IsClosedPosting(text));
+
+    [SkippableFact]
+    public async Task A_bot_protection_block_page_is_the_site_refusing_this_server_at_any_length()
+    {
+        // remotehunter.com: Cloudflare's 403 page is over 600 characters, and read as "no Apply
+        // button or link on the page" (#428).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/cloudflare-block", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("refused this server (HTTP 403)", outcome.Error);
+        Assert.False(outcome.Closed);
+    }
+
+    [SkippableFact]
+    public async Task An_email_sign_in_met_mid_wizard_is_named_and_its_next_never_pressed()
+    {
+        // ClearCompany: after page one, a returning applicant gets "Enter the email you used to
+        // apply" (a plain text box) and NEXT. The walker took it for a form page, pressed NEXT on it
+        // empty, and the run ended "no Submit button found — NEXT, close" (#429).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/returning-applicant",
+            OnePacket(("first_name", "First Name", "Ada"), ("email", "Email", "ada@example.com")), null, dryRun: false);
+        Assert.False(outcome.Submitted);
+        Assert.StartsWith("this page is an email sign-in", outcome.Error);
         Assert.Empty(_posts);
     }
 

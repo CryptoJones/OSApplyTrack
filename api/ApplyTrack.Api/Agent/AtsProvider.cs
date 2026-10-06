@@ -283,6 +283,50 @@ public static partial class AtsProvider
         return $"https://{host}/embed/job_app?for={Uri.EscapeDataString(board)}&token={m.Groups[1].Value}";
     }
 
+    // Ashby's embed parameter on an employer's own careers page: ?ashby_jid=<job uuid>.
+    [GeneratedRegex(@"[?&]ashby_jid=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", RegexOptions.IgnoreCase)]
+    private static partial Regex AshbyEmbed();
+
+    // The organisation as a page that embeds Ashby names it: jobs.ashbyhq.com/<org>, or the
+    // embed script's api.ashbyhq.com/posting-api/job-board/<org>.
+    [GeneratedRegex(@"(?:jobs\.ashbyhq\.com|ashbyhq\.com/posting-api/job-board)/([A-Za-z0-9][A-Za-z0-9._-]*)", RegexOptions.IgnoreCase)]
+    private static partial Regex AshbyOrgRef();
+
+    /// <summary>Does the link name an Ashby job on a page that is not Ashby's own?</summary>
+    public static bool HasAshbyJobId(string link) =>
+        AshbyEmbed().IsMatch(link ?? "")
+        && Uri.TryCreate(link, UriKind.Absolute, out var u) && !u.Host.EndsWith("ashbyhq.com", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Ashby's hosted application for an employer page that names an Ashby job with
+    /// <c>?ashby_jid=</c> — <c>https://jobs.ashbyhq.com/{org}/{jid}/application</c> — or null when
+    /// the link names none. The organisation is read off the page's HTML when it names one, else
+    /// taken from the site's own name (<c>hercules.app</c> → <c>hercules</c>), which is how Ashby
+    /// boards are usually named; the caller keeps the hosted page only if a form renders there (#434).
+    /// </summary>
+    public static string? AshbyHostedForm(string link, string html = "")
+    {
+        if (!HasAshbyJobId(link) || !Uri.TryCreate(link, UriKind.Absolute, out var uri)) return null;
+        var jid = AshbyEmbed().Match(link).Groups[1].Value.ToLowerInvariant();
+        var org = "";
+        foreach (Match m in AshbyOrgRef().Matches(html ?? ""))
+        {
+            var candidate = m.Groups[1].Value;
+            // A link to the board's own api or embed script, not an organisation.
+            if (candidate.Equals("api", StringComparison.OrdinalIgnoreCase) || candidate.Equals("embed", StringComparison.OrdinalIgnoreCase)) continue;
+            org = candidate;
+            break;
+        }
+        if (org.Length == 0)
+        {
+            var labels = uri.Host.ToLowerInvariant().Split('.');
+            var i = 0;
+            while (i < labels.Length - 2 && labels[i] is "www" or "careers" or "career" or "jobs" or "job" or "apply" or "work") i++;
+            org = labels.Length >= 2 ? labels[i] : "";
+        }
+        return org.Length == 0 ? null : $"https://jobs.ashbyhq.com/{Uri.EscapeDataString(org)}/{jid}/application";
+    }
+
     /// <summary>Board token + job id for a Greenhouse posting, from the hosted URL or an
     /// embed's <c>gh_jid</c> plus the poller's <c>auto:greenhouse:{board}</c> source.</summary>
     public static bool TryParseGreenhouse(string link, string source, out string board, out string jobId)

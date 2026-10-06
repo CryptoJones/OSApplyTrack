@@ -79,8 +79,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     // prose ("no longer supported", etc.) never trips it.
     // "Page not found" is what Greenhouse serves for a posting that has been taken down
     // outright (Cresteo and Varicent on 2026-09-13): no gone-notice, no form, a 404 page.
-    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening|opportunity) is (?:no longer available|closed|not available anymore|currently not available)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
+    // And three that read as "no Apply button" until they were taught (#427): SmartRecruiters'
+    // "Sorry, this job has expired", Ceipal's "We are no longer accepting new profiles for this
+    // position", MeeBoss's "The employer has taken the job offline".
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting (?:new )?(?:applications|applicants|candidates|profiles|resumes))|this (?:job|posting|position|role) has expired|(?:taken|took) (?:the|this) (?:job|posting|position|role) offline|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening|opportunity) is (?:no longer available|closed|not available anymore|currently not available)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists|\bcouldn['’]t find (?:that|this|the) (?:page|job|posting)\b|\b(?:job|posting|position|page) you(?:['’]re| are) looking for (?:could not|cannot|can['’]t) be found", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
+
+    /// <summary>A bot-protection service's refusal page: Cloudflare, Akamai, Imperva, DataDome (#428).</summary>
+    [GeneratedRegex(@"you have been blocked|attention required!? \| cloudflare|access denied|request (?:was |has been )?blocked|pardon our interruption|verify you are (?:a )?human", RegexOptions.IgnoreCase)]
+    private static partial Regex BotBlock();
 
     [GeneratedRegex(@"/(?:home|careers?|jobs?|openings|positions|opportunities|search|job-?board)/?$", RegexOptions.IgnoreCase)]
     private static partial Regex JobListPath();
@@ -174,6 +181,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 opened = await BrowserSession.OpenAsync(_options, form, ct, accounts);
             }
         }
+        // An employer page that names an Ashby job (?ashby_jid=) and shows no form for it: Ashby's
+        // own hosted copy is the form (Hercules, #434).
+        opened = await BrowserSession.AshbyHostedInsteadAsync(_options, opened, link, ct, accounts);
         await using var session = opened;
         var outcome = await RunOnPageAsync(session, link, packet, resumePdf, dryRun, ct, resumeText, coverLetter, awaitSecurityCode, accounts);
         // The run stopped at a sign-in no saved account covers: say which host, so the worker
@@ -205,7 +215,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // The site will not talk to this server at all — McGraw Hill's careers site answers
             // pluto with a bare "403 Forbidden". That is not a page with no Apply button on it,
             // which is what the run used to report, and no retry will change it (#280).
-            if (session.Status is 401 or 403 or 429 or 451 && body.Length < 600)
+            // Cloudflare's own block page is longer than that, and remotehunter.com's read as "no
+            // Apply button or link on the page" (#428): a bot-protection block is the same verdict
+            // at any length.
+            if (session.Status is 401 or 403 or 429 or 451 && (body.Length < 600 || BotBlock().IsMatch(body)))
             {
                 screenshot = await session.ScreenshotAsync();
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
@@ -239,6 +252,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // A consent banner that arrived with the form, or after the page went idle, would
             // sit over every field and make the first fill time out (#202).
             await BrowserSession.DismissConsentAsync(page);
+            // So would a notice that only wants its OK pressed (Flexhire's location notice, #437).
+            await BrowserSession.AcknowledgeNoticeAsync(page);
             // UKG (UltiPro): the sign-in the session just did lands a first-time candidate on
             // the employer's own profile step — name, phone, a privacy consent and "Create
             // account" — before the application. Filled by the generic pass, but the button is
@@ -305,7 +320,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 behindSignIn = true;
             }
 
-            foreach (var q in packet.Questions)
+            // Files first. A board that reads the uploaded résumé writes what it found into the
+            // fields — Robert Half's (Phenom) rewrote the phone already typed as "(571) · 297 · 5406"
+            // and refused it as "Invalid phone number format" (#438). Attached before the typing,
+            // the parse lands first and the packet's answers are what stays.
+            foreach (var q in packet.Questions.OrderBy(q => q.Type == PacketQuestion.File ? 0 : 1))
             {
                 ct.ThrowIfCancellationRequested();
                 // Already answered on a pre-screening step the run advanced past (#239): its
@@ -322,21 +341,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 }
                 if (q.Type == PacketQuestion.File)
                 {
-                    if (IsResume(q) && await ResumeOnFileAsync(form))
+                    // A packet discovered before #417 named Ethos' résumé by its dropzone's
+                    // instructions ("Click or drag & drop PDF"). On a form with one file input,
+                    // a file field named by nothing but those instructions is that input: the résumé.
+                    var isResume = IsResume(q) || (!IsCoverLetter(q) && BrowserSession.IsDropzoneText(q.Label)
+                        && await OnlyFileInputAsync(form) is not null);
+                    if (isResume && await ResumeOnFileAsync(form))
                     {
                         // The candidate's account already holds a résumé and the form shows it
                         // (SuccessFactors: "Upload Resume · resume.pdf · Edit document", #216).
                         // Nothing to attach; the field is satisfied as it stands.
                         mapped.Add(q.Id);
                     }
-                    else if (IsResume(q) && resumePdf is { } pdf)
+                    else if (isResume && resumePdf is { } pdf)
                     {
                         // With a PDF on hand the résumé is required for the click whatever the
                         // API said: Greenhouse's Job Board API lists GitLab's résumé as optional
                         // while the rendered form marks it required, so an attach that failed
                         // on an "optional" résumé landed in neither list and the run clicked
                         // Submit into "Resume/CV is required" (#195). A failed attach refuses.
-                        if (await AttachResumeAsync(form, q, pdf, resumeText)) mapped.Add(q.Id);
+                        if (await AttachResumeAsync(form, q, pdf, resumeText))
+                        {
+                            mapped.Add(q.Id);
+                            // Let a résumé parse finish writing before anything is typed (#438).
+                            try { await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new() { Timeout = 5_000 }); }
+                            catch (TimeoutException) { /* judged by what the fill finds */ }
+                        }
                         else unmapped.Add(q.Id);
                     }
                     else if (IsCoverLetter(q) && coverLetter.Length > 0)
@@ -363,6 +393,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     continue;
                 }
                 if (await FillAsync(form, q, answer)) mapped.Add(q.Id);
+                // A notice that came up under the fill takes the clicks meant for the field —
+                // Flexhire's location notice opens once Location is typed (#437). Acknowledged,
+                // the field gets one more go.
+                else if (await BrowserSession.AcknowledgeNoticeAsync(page) && await FillAsync(form, q, answer)) mapped.Add(q.Id);
                 else if (q.Required) unmapped.Add(q.Id);
             }
 
@@ -371,13 +405,20 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // last: when both halves went unmapped and such a box exists, it gets "First Last".
             await FillFullNameAsync(form, packet, mapped, unmapped);
             // Greenhouse's Education block, which its API never mentions (#332): from the résumé.
+            // What it fills is answered, whatever the packet's own answer for it did: Stripe's
+            // school--0 failed on the packet's "University of Maryland University College", the
+            // résumé's school then filled it, and the run still listed it unmapped (#433).
             foreach (var id in await FillGreenhouseEducationAsync(form, packet.Resume))
+            {
                 if (!mapped.Contains(id)) mapped.Add(id);
+                unmapped.Remove(id);
+            }
             // A résumé taken only through an "Upload Resume/CV" button — no file input until it is
             // pressed, so discovery never saw a question (Flexhire: "Resume is required", #330).
             if (resumePdf is { } buttonPdf && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
                 && await UploadResumeByButtonAsync(form, buttonPdf))
                 mapped.Add("resume");
+            await BrowserSession.AcknowledgeNoticeAsync(page);
             await RefillEmptiedAsync(form, packet, mapped, unmapped);
             // A form in pages — ClearCompany's "Page 1 · Page 2 · Page 3", evlo's five-step wizard
             // from "Upload Resume" to "Voluntary Self-Identification" — shows one page at a time
@@ -476,6 +517,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     continue;
                 discovered.Add(live with { Required = true });
             }
+            // A posting whose page drew its gone-notice after the first look — Torentify's
+            // "Job Not Found" arrives once its script has asked for the job — is closed, not a
+            // form nothing matched (#435).
+            if (mapped.Count == 0 && IsClosedPosting(await BodyTextAsync(page.MainFrame)))
+                return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
+                    "posting is no longer open", Closed: true);
             if (mapped.Count == 0)
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
                     AlreadyApplied().IsMatch(await BodyTextAsync(page.MainFrame))
@@ -507,12 +554,30 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var posts = new List<string>();
             var captchaRefused = false;
             var boardSaid = "";
+            var boardAccepted = false;
             page.Response += (_, r) =>
             {
                 var req = r.Request;
                 if (req.Method is "GET" or "HEAD" || IsChatter(r.Url)) return;
                 if (Uri.TryCreate(r.Url, UriKind.Absolute, out var u))
-                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → {r.Status}");
+                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath}{GraphQlOp(u)} → {r.Status}");
+                // Ashby answers every GraphQL call 200 and says in the body whether the
+                // application was taken: applicationFormResult is FormSubmitSuccess, or the form
+                // again (FormRender) with errors. Two runs ended "no confirmation" with nothing
+                // to say which (#421). Read the body: success is the confirmation, an error
+                // message is the board's own words.
+                if (r.Status is >= 200 and < 300 && u is not null && u.AbsolutePath.Contains("graphql", StringComparison.OrdinalIgnoreCase))
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var body = await r.TextAsync();
+                            if (body.Contains("\"FormSubmitSuccess\"", StringComparison.Ordinal)) boardAccepted = true;
+                            var err = Regex.Match(body, "\"errors\"\\s*:\\s*\\[\\s*\\{[^\\]]*?\"message\"\\s*:\\s*\"([^\"]{1,200})\"");
+                            if (err.Success) boardSaid = err.Groups[1].Value;
+                        }
+                        catch (PlaywrightException) { /* body gone with the page */ }
+                    });
                 // The board's own verdict on the application. Greenhouse answers a submission
                 // its invisible reCAPTCHA Enterprise scored as a bot's with
                 // 428 {"code":"captcha-failed", "security_code_recipient": "<email>"} and asks
@@ -555,7 +620,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     await page.WaitForTimeoutAsync(1000);
                     text = await BodyTextAsync(form);
                     m = Confirmation().Match(text);
-                    if (m.Success) break;
+                    if (m.Success || boardAccepted) break;
                     // "Are you sure you want to apply?" — a board that asks once more before it
                     // sends. Answered once, and only inside a dialog the click opened (#216).
                     if (!confirmedDialog && i >= 1 && await ConfirmDialogAsync(page))
@@ -603,6 +668,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             {
                 lock (posts) return posts.Count == 0 ? " (no application request was sent)" : $" ({string.Join("; ", posts)})";
             }
+            // The page never said so, but the board's own answer did (#421).
+            if (!m.Success && boardAccepted)
+                return new SubmitOutcome(true, true, page.Url, "the board answered FormSubmitSuccess" + PostNote(), screenshot, unmapped, mapped, "");
             if (!m.Success)
             {
                 // A challenge thrown up BY the click is the common case, not the rare one: the
@@ -639,8 +707,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 if (await FormResetAsync(form, packet, mapped))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "Submit was clicked and the form reset itself with no confirmation" + PostNote() + " — check the screenshot");
+                // The click sent nothing at all, and the form carries a captcha — the invisible
+                // kind included. Lever's Submit only asks hCaptcha for a token and posts the form
+                // from its callback; from this browser hCaptcha never answers, so the click is
+                // swallowed and nothing leaves. Both Lever runs read "no confirmation" for an
+                // application that was never posted (#420). That is a captcha holding the form,
+                // the person's to finish, not a mystery to retry.
+                bool noneSent;
+                lock (posts) noneSent = posts.Count == 0;
+                if (noneSent && page.Url == urlBefore && (await HasCaptchaWidgetAsync(form) || await HasCaptchaWidgetAsync(page.MainFrame)))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "Submit sent nothing — the form's captcha held it (no application request was sent); finish it with Copy answers and open",
+                        Captcha: true);
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                    "Submit was clicked but no confirmation text was recognised" + PostNote() + " — check the screenshot");
+                    "Submit was clicked but no confirmation text was recognised" + PostNote()
+                    + (boardSaid.Length > 0 ? $" — the board said \"{boardSaid}\"" : "") + " — check the screenshot");
             }
             var start = Math.Max(0, m.Index - 80);
             var snippet = text.Substring(start, Math.Min(text.Length - start, 240)).Trim();
@@ -790,9 +871,60 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (DateInputValue(answer, inputType) is not { } iso) return false;
             answer = iso;
         }
+        if (inputType == "tel" || PhoneQuestion().IsMatch(Unprefixed(q.Id) + " " + q.Label))
+            return await FillPhoneAsync(page, control, answer);
         try { await control.FillAsync(answer); }
         catch (PlaywrightException) { return false; }
         return true;
+    }
+
+    [GeneratedRegex(@"\bphone\b|\bmobile\b|\bcell\b|\btelephone\b", RegexOptions.IgnoreCase)]
+    private static partial Regex PhoneQuestion();
+
+    /// <summary>
+    /// Type a phone number the way its box takes it. An international widget shows the country's
+    /// dial code in the box before anything is typed — Motion Recruitment's react-international-
+    /// phone holds "+1 " — and resets a fill() wholesale: the box kept "+1 ", read as filled, and
+    /// the board said "This phone is invalid or does not exist" (#438). There the national number
+    /// is typed after the code, a key at a time, as a person would. Anywhere else the answer is
+    /// filled as it is, and typed instead if the box did not keep its digits.
+    /// </summary>
+    private static async Task<bool> FillPhoneAsync(IFrame page, ILocator control, string answer)
+    {
+        try
+        {
+            var before = await control.InputValueAsync(new() { Timeout = 2_000 });
+            var prefix = DialCodePrefix(before);
+            var national = prefix is null ? Digits(answer) : NationalDigits(answer, prefix);
+            if (prefix is null)
+            {
+                await control.FillAsync(answer);
+                if (Digits(await control.InputValueAsync()).EndsWith(Digits(answer), StringComparison.Ordinal)) return true;
+                await control.FillAsync("");
+            }
+            await control.FocusAsync();
+            await page.Page.Keyboard.PressAsync("End");
+            await control.PressSequentiallyAsync(prefix is null ? answer : national, new() { Delay = 30 });
+            return Digits(await control.InputValueAsync()).EndsWith(national, StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    private static string Digits(string s) => new([.. s.Where(char.IsAsciiDigit)]);
+
+    /// <summary>The dial code a phone box shows before anything is typed ("+1 " → "1"), or null
+    /// when the box holds anything else. Public for tests.</summary>
+    public static string? DialCodePrefix(string value) =>
+        Regex.Match(value ?? "", @"^\s*\+\s*(\d{1,4})\s*$") is { Success: true } m ? m.Groups[1].Value : null;
+
+    /// <summary>The number to type after a widget's dial code: the answer's digits, without the
+    /// code when the answer carries it ("+1 571 297 5406" or "15712975406" after "+1" →
+    /// "5712975406"). Public for tests.</summary>
+    public static string NationalDigits(string answer, string dialCode)
+    {
+        var digits = Digits(answer);
+        var international = answer.TrimStart().StartsWith('+') || (dialCode == "1" && digits.Length == 11);
+        return international && digits.StartsWith(dialCode, StringComparison.Ordinal) ? digits[dialCode.Length..] : digits;
     }
 
     /// <summary>An answer in the form a native date, month or datetime-local input accepts, or
@@ -822,8 +954,78 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static async Task<bool> ChooseAsync(IFrame page, ILocator control, PacketQuestion q, string answer)
     {
         var fixedSet = q.Options.Count > 0;
-        if (fixedSet && !q.Options.Any(o => Same(o, answer)))
-            return false;
+        if (!fixedSet) return await ChooseOneAsync(page, control, q, answer, fixedSet: false);
+        // A fixed list takes only its own options — the answer as given, or the options it means
+        // ("United States of America" is the list's "US", a multi-select's "AWS, Azure" is two
+        // picks, #432). Each is chosen in turn; a multi widget keeps the earlier ones.
+        var multi = q.Type == PacketQuestion.MultiSelect || await IsMultiWidgetAsync(control);
+        var picks = q.Options.FirstOrDefault(o => Same(o, answer)) is { } exact ? [exact] : MenuChoices(q.Options, answer, multi, q.Label);
+        if (picks.Count == 0) return false;
+        foreach (var pick in picks)
+            if (!await ChooseOneAsync(page, control, q, pick, fixedSet: true)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// The options of a menu an answer means, when it is not one of them word for word — the
+    /// drafter wrote to a question it could not see the choices of (#432). In order: the options
+    /// a comma-separated answer lists; the country the answer names under any of its aliases;
+    /// on a Yes/No menu, the yes or no the answer opens with — or, for a short answer with no
+    /// negative in it ("US Citizen" to "Are you legally authorized…?"), Yes, never on a
+    /// sponsorship or visa question, whose yes is the negative one; else the options the answer
+    /// names outright ("…plus Rust…" on Ruby on Rails / Rust / Both / Neither), one for a single
+    /// choice and only when it is the only one named. Empty when nothing reads as meant. Public
+    /// for tests.
+    /// </summary>
+    public static List<string> MenuChoices(IReadOnlyList<string> options, string answer, bool multi, string label = "")
+    {
+        var real = options.Select(o => o.Trim()).Where(o => o.Length > 0 && !Placeholder().IsMatch(o)).ToList();
+        var a = answer.Trim();
+        if (real.Count == 0 || a.Length == 0) return [];
+        if (real.FirstOrDefault(o => Same(o, a)) is { } exact) return [exact];
+        var parts = a.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (multi && parts.Length > 1)
+        {
+            var listed = parts.Select(p => real.FirstOrDefault(o => Same(o, p))).ToList();
+            if (listed.All(o => o is not null)) return listed.Select(o => o!).Distinct().ToList();
+        }
+        if (AnswerDrafter.PickCountryOption(real, AnswerDrafter.CanonicalCountry(a)) is { } country) return [country];
+        var yes = real.FirstOrDefault(o => Regex.IsMatch(o, @"^\s*yes\b", RegexOptions.IgnoreCase));
+        var no = real.FirstOrDefault(o => Regex.IsMatch(o, @"^\s*no\b", RegexOptions.IgnoreCase));
+        if (yes is not null && no is not null && real.Count <= 3)
+        {
+            var lead = Regex.Match(a, @"^\W*(yes|no)\b", RegexOptions.IgnoreCase);
+            if (lead.Success) return [lead.Groups[1].Value.Equals("yes", StringComparison.OrdinalIgnoreCase) ? yes : no];
+            var shortAnswer = a.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 4;
+            if (shortAnswer && !Regex.IsMatch(label, @"sponsor|visa", RegexOptions.IgnoreCase)
+                && !Regex.IsMatch(a, @"\b(?:not|no|never|none|n['’]t|require[sd]?|need(?:s|ed)?)\b", RegexOptions.IgnoreCase))
+                return [yes];
+            return [];
+        }
+        // Named, and not denied: "No Ruby on Rails experience" names Ruby on Rails to say no to it.
+        var named = real.Where(o => o.Length >= 2 && Regex.Matches(a, @"(?<![A-Za-z0-9])" + Regex.Escape(o) + @"(?![A-Za-z0-9])", RegexOptions.IgnoreCase)
+            .Any(m => !Regex.IsMatch(a[Math.Max(0, m.Index - 24)..m.Index].Split('.', ';', ',', '—', '(').Last(),
+                @"\b(?:no|not|without|never|lack|nor|neither)\b", RegexOptions.IgnoreCase))).ToList();
+        return multi ? named : named.Count == 1 ? named : [];
+    }
+
+    /// <summary>A combobox that takes several values: react-select marks its value container
+    /// <c>--is-multi</c>.</summary>
+    private static async Task<bool> IsMultiWidgetAsync(ILocator control)
+    {
+        try
+        {
+            return await control.EvaluateAsync<bool>("""
+                el => { for (let a = el.parentElement, i = 0; a && i < 4; a = a.parentElement, i++)
+                          if (a.matches('[class*="is-multi"]')) return true;
+                        return false; }
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    private static async Task<bool> ChooseOneAsync(IFrame page, ILocator control, PacketQuestion q, string answer, bool fixedSet)
+    {
         var combobox = await IsComboboxAsync(control);
         ILocator? pick = null;
         var typed = answer;
@@ -856,6 +1058,36 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             if (pick is not null) break;
         }
+        // Typed, the answer filtered the menu down to nothing: it is prose written to a question
+        // whose choices the drafter never saw ("Yes. At Ronin 48 I…" to a Yes/No, #432). Empty the
+        // box, read the whole menu, and choose what the answer means — or nothing.
+        if (pick is null && combobox && !elsewhere && !fixedSet)
+        {
+            try
+            {
+                await control.FillAsync("", new() { Timeout = 3_000 });
+                var options = page.Locator("[role=option]:visible");
+                IReadOnlyList<string> texts = [];
+                for (var i = 0; i < 8 && texts.Count == 0; i++)
+                {
+                    await page.WaitForTimeoutAsync(250);
+                    texts = await options.AllInnerTextsAsync();
+                }
+                var meant = MenuChoices([.. texts.Select(t => t.Replace('\n', ' ').Trim())], answer,
+                    q.Type == PacketQuestion.MultiSelect || await IsMultiWidgetAsync(control), q.Label);
+                if (meant.Count > 0)
+                {
+                    await page.Page.Keyboard.PressAsync("Escape");
+                    foreach (var choice in meant)
+                        if (!await ChooseOneAsync(page, control, q, choice, fixedSet: true)) return false;
+                    return true;
+                }
+                // Nothing meant: put the answer back, or the Enter below would commit whichever
+                // option the emptied menu has first.
+                await control.FillAsync(typed, new() { Timeout = 3_000 });
+            }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* fall through to the old commit */ }
+        }
         // No menu ever showed: commit whatever is under the caret. Only on a combobox —
         // Enter in a plain text input submits the form it sits in — and never in a JET filter
         // box, which commits nothing but a chosen row and is a plain input to its form.
@@ -864,7 +1096,26 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (pick is not null)
         {
             try { await pick.ClickAsync(new() { Timeout = 5_000 }); }
-            catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { pick = null; }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+            {
+                pick = null;
+                // A notice the typing brought up took the click — Flexhire opens its location
+                // notice as Location is typed (#437). Acknowledged, the suggestion is sought again.
+                if (combobox && !elsewhere && await BrowserSession.AcknowledgeNoticeAsync(page.Page))
+                {
+                    try
+                    {
+                        await control.FillAsync(typed, new() { Timeout = 3_000 });
+                        for (var i = 0; i < 12 && pick is null; i++)
+                        {
+                            await page.WaitForTimeoutAsync(250);
+                            pick = await BestOptionAsync(page, control, answer, fixedSet);
+                        }
+                        if (pick is not null) await pick.ClickAsync(new() { Timeout = 5_000 });
+                    }
+                    catch (Exception again) when (again is PlaywrightException or TimeoutException) { pick = null; }
+                }
+            }
         }
         // A JET dropdown left open with nothing chosen (a dependent list whose parent is still
         // empty) is closed, or its popup sits over the next field and its own box stays hidden.
@@ -1010,14 +1261,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static readonly string RequiredEmptyScript = """
         () => {
           const widget = __WIDGET__;
+          // Shadow roots included, and a label looked up in its control's own root (#436).
+          const deep = __DEEP__;
+          const rootOf = el => { const r = el.getRootNode(); return r && r !== document && r.querySelector ? r : document; };
           const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
             return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
           const labelFor = el => {
             if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
             const by = el.getAttribute('aria-labelledby');
-            if (by) { const t = by.split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
-            if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
-            const wrap = el.closest('label'); if (wrap) return wrap.innerText;
+            if (by) { const t = by.split(/\s+/).map(i => (rootOf(el).getElementById ? rootOf(el).getElementById(i) : null)?.innerText || document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
+            if (el.id) { const l = rootOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
+            // A dropzone's instructions are not the field's name; the row's title is (#417).
+            const wrap = el.closest('label');
+            if (wrap && !(el.type === 'file' && (__DROPZONE__)(wrap.innerText || ''))) return wrap.innerText;
             const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
             // The row's own label when the page never tied it to the control — the same rule
             // discovery names the field by, so the sweep and the packet agree on it. SuccessFactors'
@@ -1054,7 +1310,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           // complained, when the field's own Enter manually box has text in it, or when the
           // widget is showing a file name. Judged over the whole field, not the input: an
           // uploader's error and its text twin both live beside the input, not on it.
-          const uploadError = /cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i;
+          const uploadError = /cannot read propert|uploadfile|upload failed|failed to upload|error uploading|unable to upload/i;
           const fileFilled = root => {
             const text = root.innerText || '';
             if (uploadError.test(text)) return false;
@@ -1111,11 +1367,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // the radios' name, whose first half is this page load's and no other's.
             if (empty) add(title.getAttribute('for') || choices[0]?.getAttribute('name') || '', title.innerText);
           }
-          for (const el of document.querySelectorAll('input, select, textarea')) {
+          for (const el of deep('input, select, textarea')) {
             if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
-            if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
+            // Required by the star in its label alone, the way discovery reads it: HubSpot's own
+            // rendering of its Greenhouse form marks a dozen selects "… *" and nothing else, the
+            // sweep let them all through blank, and Submit stayed disabled — "no Submit button
+            // found" (#425); Manatal marks every required box only that way too (#436). Boxes,
+            // selects and textareas only, on screen: a choice group's star is on its title, which
+            // discovery and the radio rule below already read.
+            const starred = !['radio', 'checkbox', 'file'].includes(type) && visible(el) && !el.readOnly
+              && (el.id || el.getAttribute('name')) && /^\s*\*|\*\s*$/.test((labelFor(el) || '').trim());
+            if (!(el.required || el.getAttribute('aria-required') === 'true' || starred)) continue;
             if (sideForm(el)) continue;
             if (type === 'file') {
               // Not gated on the input being visible: uploaders keep theirs off screen behind
@@ -1147,13 +1411,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
               // box by box, every unticked one read as a required field left empty, and Fieldwire's
               // fully answered form was refused the click (#280).
               const name = el.getAttribute('name') || '';
-              const group = name ? [...document.querySelectorAll(`input[type=checkbox][name="${CSS.escape(name)}"]`)] : [el];
+              const group = name ? [...rootOf(el).querySelectorAll(`input[type=checkbox][name="${CSS.escape(name)}"]`)] : [el];
               empty = !group.some(c => c.checked);
               if (empty && group.length > 1) { add(name, labelFor(el)); continue; }
             }
             else if (type === 'radio') {
               const name = el.getAttribute('name') || '';
-              empty = ![...document.querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)].some(r => r.checked);
+              empty = ![...rootOf(el).querySelectorAll(`input[type=radio][name="${CSS.escape(name)}"]`)].some(r => r.checked);
               // Once per group, by its name and the question over it — never by an option (#318).
               if (empty && drawnRadio) {
                 const g = el.closest('[role=radiogroup]');
@@ -1162,6 +1426,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 continue;
               }
             }
+            // A select still on its placeholder is empty even when the placeholder carries a value:
+            // HubSpot's are <option value="-- Select">-- Select</option> (#425).
+            else if (el.tagName === 'SELECT')
+              empty = (el.value || '').trim().length === 0
+                || (el.selectedIndex === 0 && /^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''));
             else empty = (el.value || '').trim().length === 0;
             if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
           }
@@ -1188,7 +1457,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           }
           return out;
         }
-        """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DROPZONE__", BrowserSession.DropzoneJs).Replace("__DEEP__", BrowserSession.DeepJs);
 
     /// <summary>Greenhouse's security-code prompt: one box per character, ids <c>security-input-N</c>,
     /// under "A verification code was sent to …".</summary>
@@ -1308,7 +1577,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (email.Length == 0)
             return Stop(SignInError + ", and the packet has no email address to sign in with");
 
-        var box = form.Locator("input[type=email]:visible").First;
+        var box = form.Locator(EmailBox).First;
         var textBefore = await BodyTextAsync(form);
         var urlBefore = page.Url;
         try
@@ -1394,10 +1663,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         }
     }
 
+    /// <summary>A sign-in's email box: type=email, or a text box that names itself one (#429).</summary>
+    private const string EmailBox =
+        "input[type=email]:visible, input[type=text][autocomplete=email]:visible, input[type=text][name*=email i]:visible, "
+        + "input[type=text][id*=email i]:visible, input[type=text][placeholder*=email i]:visible, input:not([type])[placeholder*=email i]:visible";
+
     /// <summary>Is the sign-in's own email box still on screen? False mid-navigation too.</summary>
     private static async Task<bool> EmailBoxShownAsync(IPage page)
     {
-        try { return await page.MainFrame.Locator("input[type=email]:visible").First.IsVisibleAsync(); }
+        try { return await page.MainFrame.Locator(EmailBox).First.IsVisibleAsync(); }
         catch (PlaywrightException) { return false; }
     }
 
@@ -1508,6 +1782,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                      page.Locator("#submit_app, [id$='_submitBtn']").Filter(notLater).First,
                      page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b|submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).First,
                      page.Locator("button[type=submit], input[type=submit]").Filter(new() { HasTextRegex = new Regex(@"^\s*(?:submit|apply)\b", RegexOptions.IgnoreCase) }).Filter(notLater).First,
+                     // A script's anchor that submits the form (#424).
+                     page.Locator("form").Locator(FormAnchorSubmit).Filter(new() { HasTextRegex = AnchorSubmitWords() }).Filter(notLater).First,
                  })
         {
             try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync()) return true; }
@@ -1539,6 +1815,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (next is null)
             {
                 await HandBackIfNextDisabledAsync();
+                return form;
+            }
+            // A page that is only an email box and a Next is the board's sign-in, not a page of the
+            // form: ClearCompany asks a returning applicant "Enter the email you used to apply"
+            // mid-wizard. Read as a form page, its box was taken for the Email already filled two
+            // pages back, NEXT was pressed on it empty, and the run ended "no Submit button found"
+            // (#429). Stop on it; the caller names the sign-in.
+            if (await OnlyEmailFieldsAsync(form))
+            {
+                _log.LogInformation("pages: page {Page} is an email sign-in, not a form page — not turning it", turned + 1);
                 return form;
             }
             // A required field this page still wants that nobody can fill: stop here, on it.
@@ -1748,14 +2034,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static readonly string HasFillableScript = """
                 () => {
                   const widget = __WIDGET__;
-                  return [...document.querySelectorAll('input, select, textarea')].some(el => {
+                  const deep = __DEEP__;
+                  return deep('input, select, textarea').some(el => {
                     const type = (el.getAttribute('type') || 'text').toLowerCase();
                     if (['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(type) || el.disabled || widget(el)) return false;
                     const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
                   });
                 }
-                """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+                """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DEEP__", BrowserSession.DeepJs);
 
     /// <summary>Every visible, enabled, fillable control on the page is an email box (and there is one).</summary>
     /// <summary>Tick every unticked checkbox on a sign-in step that reads as agreeing to the
@@ -1820,7 +2107,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   // ...unless the page offers to submit the application itself: then it is the form.
                   if (boxes.length !== live.length && [...document.querySelectorAll('button, input[type=submit], [role=button]')]
                         .some(b => shown(b) && /submit\s+(?:my |your |the )?application/i.test(b.innerText || b.value || ''))) return false;
-                  return boxes.length > 0 && boxes.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
+                  // An email box need not say type=email: ClearCompany's returning-applicant step is
+                  // a plain text box, "Enter the email you used to apply", and a NEXT (#429).
+                  const emailish = el => {
+                    const type = (el.getAttribute('type') || 'text').toLowerCase();
+                    if (type === 'email') return true;
+                    if (type !== 'text' || el.tagName !== 'INPUT') return false;
+                    const own = [el.getAttribute('autocomplete'), el.name, el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label'),
+                      ...[...(el.labels || [])].map(l => l.innerText)].join(' ');
+                    return /e-?mail/i.test(own);
+                  };
+                  return boxes.length > 0 && boxes.every(emailish);
                 }
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
@@ -2039,19 +2336,36 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
         if (await SetPillAsync(page, q, answer) is { } pill) return pill;
 
-        var boxSelector = $"input[type=checkbox][id={Quote(id)}], input[type=checkbox][name={Quote(id)}]";
+        // By id or name — and, for a group Ashby names "<form instance>_<field>", by its field half,
+        // the stable key discovery records for a checkbox group as for a radio group (#431).
+        var boxSelector = $"input[type=checkbox][id={Quote(id)}], input[type=checkbox][name={Quote(id)}]"
+            + (field != id || IsUuid(id) ? $", input[type=checkbox][name$={Quote("_" + field)}]" : "");
         var box = page.Locator(boxSelector).First;
         var want = Affirmative(answer);
         try
         {
             var boxes = await page.Locator(boxSelector).CountAsync();
-            if (boxes == 0) return null;
+            if (boxes == 0) return await SetLabelledBoxAsync(page, q, answer);
             // Several boxes under one name are a "select all that apply": the answer names the
             // ones to tick, comma-separated, by value or by label. Read as one yes/no, "AWS, Azure"
             // ticked the first box alone (#280).
             if (boxes > 1)
             {
                 var wanted = answer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                // A packet built before groups were read whole (#431) holds the group as one Yes/No
+                // per box, the group's own id labelled by its first option ("AWS" → Yes). An answer
+                // that names no box, on a question labelled as one of the boxes, is that box's own
+                // yes or no — and the rest of the group is left to their own questions.
+                var own = PacketQuestion.CleanLabel(q.Label);
+                var members = new List<(ILocator Box, string Value, string Text)>();
+                for (var i = 0; i < boxes; i++)
+                {
+                    var member = page.Locator(boxSelector).Nth(i);
+                    members.Add((member, await member.GetAttributeAsync("value") ?? "", await ChoiceLabelAsync(member)));
+                }
+                if (!wanted.Any(w => members.Any(m => Same(m.Value, w) || Same(m.Text, w) || Loosely(m.Text, w)))
+                    && members.FirstOrDefault(m => Same(PacketQuestion.CleanLabel(m.Text), own)) is { Box: not null } alone)
+                    return await SetBoxAsync(page, alone.Box, want);
                 var ticked = 0;
                 for (var i = 0; i < boxes; i++)
                 {
@@ -2125,6 +2439,52 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             catch (Exception inner) when (inner is PlaywrightException or TimeoutException) { return false; }
         }
+    }
+
+    private static bool IsUuid(string s) => s.Length == 36 && Guid.TryParse(s, out _);
+
+    /// <summary>
+    /// A yes/no question keyed by a checkbox's own label rather than an id or name — one box of
+    /// a group a packet read box by box ("GCP", "US", "Remote", #431), or a lone box with no name
+    /// at all (Flexhire's "I agree to the Terms of Service and Privacy Policy"). The one checkbox
+    /// whose label is exactly the question's is set to the answer's yes or no. Until now such a
+    /// box was found through its label as a combobox and clicked, whatever the answer — a "No"
+    /// ticked the box. Null when no single box carries the label, so the other paths still run.
+    /// </summary>
+    private static async Task<bool?> SetLabelledBoxAsync(IFrame page, PacketQuestion q, string answer)
+    {
+        var label = PacketQuestion.CleanLabel(q.Label);
+        if (label.Length == 0 || q.Options.Count > 0 && !q.Options.All(o => Regex.IsMatch(o, @"^\s*(?:yes|no)\b", RegexOptions.IgnoreCase))
+            || !Regex.IsMatch(answer, @"^\s*(?:yes|no|true|false)\b", RegexOptions.IgnoreCase))
+            return null;
+        try
+        {
+            var boxes = page.GetByRole(AriaRole.Checkbox, new()
+            {
+                NameRegex = new Regex(@"^\s*\*?\s*" + Regex.Escape(label).Replace(@"\ ", @"\s+") + @"\s*\*?\s*$", RegexOptions.IgnoreCase),
+            });
+            if (await boxes.CountAsync() != 1) return null;
+            return await SetBoxAsync(page, boxes.First, Affirmative(answer));
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return null; }
+    }
+
+    /// <summary>Tick or untick one checkbox and say whether it now reads as asked: checked
+    /// directly, else pressed through its label the way a person presses a drawn box.</summary>
+    private static async Task<bool> SetBoxAsync(IFrame page, ILocator box, bool want)
+    {
+        try
+        {
+            if (await box.IsCheckedAsync() == want) return true;
+            try { await box.SetCheckedAsync(want, new() { Timeout = 3_000 }); }
+            catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+            {
+                await box.EvaluateAsync("el => { const l = (el.id && el.getRootNode().querySelector(`label[for=\"${CSS.escape(el.id)}\"]`)) || el.closest('label'); (l || el).click(); }");
+                await page.WaitForTimeoutAsync(300);
+            }
+            return await box.IsCheckedAsync() == want;
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
     }
 
     // Oracle's pill group named for a question, in the page: [role=radiogroup] with no input in it.
@@ -2310,7 +2670,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (control is null || await IsEmptyAsync(control)) return false;
             var tag = (await control.EvaluateAsync<string>("el => el.tagName")).ToLowerInvariant();
             if (tag == "select")
-                return await control.EvaluateAsync<bool>("el => el.selectedIndex > 0 || (el.value || '').trim().length > 0");
+                // Still on a placeholder that carries a value — HubSpot's "-- Select" — is not
+                // prefilled: taken for the account's own choice, it was never filled (#425).
+                return await control.EvaluateAsync<bool>("""
+                    el => el.selectedIndex > 0 || ((el.value || '').trim().length > 0
+                      && !/^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''))
+                    """);
             return await IsComboboxAsync(control);
         }
         catch (PlaywrightException) { return false; }
@@ -2430,9 +2795,30 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             for (var i = 0; i < count && shown is null; i++)
                 if (await button.Nth(i).IsVisibleAsync()) shown = button.Nth(i);
             if (shown is null) return false;
-            var chooser = await page.Page.RunAndWaitForFileChooserAsync(
-                () => shown.ClickAsync(new() { Timeout = 5_000 }), new() { Timeout = 8_000 });
-            await chooser.SetFilesAsync(new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes });
+            var payload = new FilePayload { Name = pdf.Name, MimeType = "application/pdf", Buffer = pdf.Bytes };
+            // A notice over the form takes the click instead (Flexhire's location notice, #437).
+            await BrowserSession.AcknowledgeNoticeAsync(page.Page);
+            IFileChooser? chooser = null;
+            try
+            {
+                chooser = await page.Page.RunAndWaitForFileChooserAsync(
+                    () => shown.ClickAsync(new() { Timeout = 5_000 }), new() { Timeout = 8_000 });
+            }
+            catch (TimeoutException) { /* no native chooser: the button opened a picker of its own */ }
+            if (chooser is not null)
+                await chooser.SetFilesAsync(payload);
+            else
+            {
+                // Flexhire's button opens a Filestack picker: a file input appears and no chooser
+                // fires, and the file is only sent when the picker's own Upload is pressed (#437).
+                var input = page.Page.Locator("input[type=file]").First;
+                if (await input.CountAsync() == 0) return false;
+                await input.SetInputFilesAsync(payload, new() { Timeout = 5_000 });
+                var upload = page.Page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^\s*upload\s*$", RegexOptions.IgnoreCase) }).Last;
+                for (var i = 0; i < 8 && await upload.CountAsync() == 0; i++) await page.WaitForTimeoutAsync(250);
+                if (await upload.CountAsync() > 0 && await upload.IsVisibleAsync())
+                    await upload.ClickAsync(new() { Timeout = 5_000 });
+            }
             return await ResumeTookAsync(page, pdf.Name);
         }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
@@ -2555,14 +2941,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 await page.WaitForTimeoutAsync(500);
                 var verdict = await page.EvaluateAsync<string>("""
                     name => {
-                      const text = document.body.innerText || '';
-                      if (/cannot read propert|uploadfile|upload failed|failed to upload|error uploading/i.test(text))
+                      // The page's text and file inputs, shadow roots included: Manatal draws its
+                      // form in one, and a résumé that took there read as never attached (#436).
+                      const deep = __DEEP__;
+                      const text = [document.body.innerText || '', ...deep('*').filter(e => e.shadowRoot).map(h => [...h.shadowRoot.children].map(c => c.innerText || c.textContent || '').join('\n'))].join('\n');
+                      if (/cannot read propert|uploadfile|upload failed|failed to upload|error uploading|unable to upload/i.test(text))
                         return 'error';
-                      const inputs = [...document.querySelectorAll('input[type=file]')];
+                      const inputs = deep('input[type=file]');
                       if (inputs.some(i => i.files && i.files.length > 0)) return 'attached';
                       return text.includes(name) ? 'attached' : 'pending';
                     }
-                    """, fileName);
+                    """.Replace("__DEEP__", BrowserSession.DeepJs), fileName);
                 if (verdict == "error") return false;
                 if (verdict != "attached") continue;
                 if (attachedAt < 0) attachedAt = i;
@@ -2580,6 +2969,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// submission, so anything inside <c>.grecaptcha-badge</c> must NOT count — only a challenge
     /// a person has to touch (the v2 checkbox, hCaptcha, Turnstile).
     /// </summary>
+    /// <summary>
+    /// A captcha widget anywhere in the form, shown or not: hCaptcha's container or frames, a
+    /// reCAPTCHA (v2 box or the invisible kind), Turnstile. Not a reason to stop on its own —
+    /// most boards carry one and post regardless — only the explanation for a Submit that sent
+    /// nothing (#420).
+    /// </summary>
+    private static async Task<bool> HasCaptchaWidgetAsync(IFrame page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => !!document.querySelector('.h-captcha, [data-hcaptcha-widget-id], iframe[src*="hcaptcha.com"], '
+                  + '.g-recaptcha, .grecaptcha-badge, iframe[src*="recaptcha"], .cf-turnstile, iframe[src*="challenges.cloudflare.com"]')
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>The GraphQL operation a POST named in its query string — Ashby's
+    /// <c>/api/non-user-graphql?op=…</c> — as " (op)", or "" (#421).</summary>
+    private static string GraphQlOp(Uri u)
+    {
+        var op = Regex.Match(u.Query, @"[?&]op=([A-Za-z0-9_]{1,80})");
+        return op.Success ? $" ({op.Groups[1].Value})" : "";
+    }
+
     private static async Task<bool> HasCaptchaAsync(IFrame page)
     {
         try
@@ -2935,6 +3350,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return parts.Length == 0 ? ("", "") : (parts[0], parts.Length > 1 ? parts[^1] : "");
     }
 
+    /// <summary>An anchor, or anything drawn as a link, that a form's script submits it with (#424).</summary>
+    private const string FormAnchorSubmit = "a, [role=link]";
+
+    /// <summary>The whole text of an anchor that submits its form: Submit, Submit application,
+    /// Apply, Apply now, Send application.</summary>
+    [GeneratedRegex(@"^\s*(?:submit(?: (?:my |your |the )?application)?|apply(?: now)?|send (?:my |your |the )?application)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex AnchorSubmitWords();
+
     private static async Task<ILocator?> FindSubmitAsync(IFrame page)
     {
         // Nothing that reads as "later" is ever the button (#210): join.com's "Apply later"
@@ -2957,6 +3380,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             page.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Last,
             page.Locator("button[type=submit], input[type=submit]").Filter(notLater).Last,
             page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            // A Submit that is a script's anchor inside the form, not a button: Tential's job
+            // plugin ends its form with <a href="#" id="ce_apply_submit">APPLY NOW</a>, JazzHR
+            // with <a href="#">SUBMIT APPLICATION</a> — every field filled and "no Submit button
+            // found" (#424). Inside a <form> only, so the posting's own Apply links never count.
+            page.Locator("form").Locator(FormAnchorSubmit).Filter(new() { HasTextRegex = AnchorSubmitWords() }).Filter(notLater).Last,
             // Last of all, a lone "Apply" anywhere on a page that has a form: the accordion
             // boards put theirs in a footer bar outside any <form>.
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
@@ -3000,7 +3428,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 () => {
                   const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-                  return [...document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')]
+                  // A form's own anchors too: a Submit drawn as a link is a control the finder may have missed (#424).
+                  return [...document.querySelectorAll('button, input[type=submit], input[type=button], [role=button], form a')]
                     .map(b => {
                       const text = (b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 40);
                       if (!text) return '';
@@ -3042,9 +3471,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static partial Regex AlreadyApplied();
 
     /// <summary>Requests that are never the application: analytics beacons, the captcha's own
-    /// traffic, and the résumé uploader's trip to object storage.</summary>
+    /// traffic, the résumé uploader's trip to object storage, and Lever's résumé parser —
+    /// <c>POST /parseResume</c> stood in two "no confirmation" verdicts for an application that
+    /// was never posted (#420).</summary>
     private static bool IsChatter(string url) =>
-        Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog", RegexOptions.IgnoreCase);
+        Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog|/parseResume\b", RegexOptions.IgnoreCase);
 
     /// <summary>The page's visible text, or "" if it can't be read — never throws.</summary>
     private static async Task<string> BodyTextAsync(IFrame page)

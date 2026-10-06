@@ -37,13 +37,17 @@ public sealed partial class AnswerDrafter
     // deterministic branch at all — it fell through to the model, which answered it from
     // the brief's saved figure with no units check. Keep this list generous: a salary
     // question that is NOT recognised skips every guard below.
-    [GeneratedRegex(@"salary|compensation|remunerat|renumerat|pay (?:expectation|range|rate)|desired pay|rate expectation|expected (?:pay|rate)|day rate", RegexOptions.IgnoreCase)]
+    // "hourly rate" too: Wise Integration's "expected hourly rate for this role?" matched none
+    // of these, and fell to the website rule below (#422).
+    [GeneratedRegex(@"salary|compensation|remunerat|renumerat|pay (?:expectation|range|rate)|desired pay|rate expectation|expected (?:pay|rate)|day rate|hourly (?:rate|pay)|rate per hour", RegexOptions.IgnoreCase)]
     private static partial Regex Salary();
     [GeneratedRegex(@"linkedin", RegexOptions.IgnoreCase)]
     private static partial Regex LinkedIn();
     [GeneratedRegex(@"github", RegexOptions.IgnoreCase)]
     private static partial Regex GitHub();
-    [GeneratedRegex(@"portfolio|website|personal site|url", RegexOptions.IgnoreCase)]
+    // "URL" as a word: bare, it matched inside "hoURLy" and an hourly-rate question was
+    // answered with the LinkedIn link (#422).
+    [GeneratedRegex(@"portfolio|website|personal site|\burls?\b", RegexOptions.IgnoreCase)]
     private static partial Regex Website();
     [GeneratedRegex(@"facebook|twitter|instagram|mastodon|bluesky|threads", RegexOptions.IgnoreCase)]
     private static partial Regex Social();
@@ -403,6 +407,12 @@ public sealed partial class AnswerDrafter
     /// line implies. Public for tests.</summary>
     public static string Country(AnswerContext ctx) =>
         ctx.Settings.Country.Length > 0 ? ctx.Settings.Country : CountryFromLocation(ctx.Resume.Location);
+
+    /// <summary>The country an alias stands for ("USA", "United States of America" → "United
+    /// States"), or the text as given when it is no known alias — the form
+    /// <see cref="PickCountryOption"/> reads its aliases from (#432).</summary>
+    public static string CanonicalCountry(string text) =>
+        CountryNames.TryGetValue(text.Trim(), out var canonical) ? canonical : text.Trim();
 
     /// <summary>The option in a fixed country list that means <paramref name="country"/>: the
     /// same name, a known alias ("USA", "United States of America"), or a comma-joined option
