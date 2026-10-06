@@ -47,8 +47,12 @@ public sealed partial class FormDiscoverer
         IReadOnlyList<BoardAccount>? accounts = null, Func<PacketQuestion, string?>? preScreen = null,
         Action<string>? postingText = null)
     {
-        await using var session = await BrowserSession.OpenAsync(_options, link, ct, accounts);
-        if (session.PostingText.Length > 0) postingText?.Invoke(session.PostingText);
+        var opened = await BrowserSession.OpenAsync(_options, link, ct, accounts);
+        if (opened.PostingText.Length > 0) postingText?.Invoke(opened.PostingText);
+        // An employer page that names an Ashby job (?ashby_jid=) and shows no form for it:
+        // Ashby's own hosted copy is the form (Hercules, #434).
+        opened = await BrowserSession.AshbyHostedInsteadAsync(_options, opened, link, ct, accounts);
+        await using var session = opened;
         // The form is often not there yet (Ashby fetches it after the page is idle) and often
         // not in the page at all (Comeet loads it into a cross-origin iframe): wait for a
         // control to show anywhere, then read every frame, top document first.
@@ -71,7 +75,78 @@ public sealed partial class FormDiscoverer
         foreach (var q in gate.Concat(await ReadQuestionsAsync(session.Page, _log)))
             if (seenKeys.Add(q.Id))
                 questions.Add(q);
+        await ReadChoicesAsync(session.Page, questions, _log);
         return questions.Count == 0 ? null : questions;
+    }
+
+    /// <summary>The most options a menu may have and still be recorded as the question's fixed
+    /// set: past this it is a lookup (a country or school list), answered by typing into it.</summary>
+    private const int MaxMenuOptions = 60;
+
+    /// <summary>
+    /// Read the menu of every combobox the enumeration could only call text: open it, read its
+    /// options, close it. Greenhouse draws its custom questions as react-select widgets — an
+    /// &lt;input role=combobox&gt; with no options in the DOM until opened — so "Are you legally
+    /// authorized…?" (Yes / No) and "Which of these languages?" (Ruby on Rails / Rust / Both /
+    /// Neither) reached the drafter as free text, it wrote prose, and no prose is a choice on a
+    /// menu (Fieldwire, Stripe, #432). Read-only: a menu is opened and closed, nothing chosen.
+    /// A menu longer than <see cref="MaxMenuOptions"/>, or empty until typed into (a location
+    /// lookup), leaves the question as it was.
+    /// </summary>
+    public static async Task ReadChoicesAsync(IPage page, List<PacketQuestion> questions, ILogger? log = null)
+    {
+        for (var n = 0; n < questions.Count; n++)
+        {
+            var q = questions[n];
+            if (q.Options.Count > 0 || q.Type != PacketQuestion.Text || q.Kind == PacketQuestion.Eeo) continue;
+            foreach (var frame in page.Frames)
+            {
+                if (frame.IsDetached) continue;
+                try
+                {
+                    var box = frame.Locator($"input[id=\"{q.Id.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"][role=combobox]");
+                    if (await box.CountAsync() != 1 || !await box.IsVisibleAsync()) continue;
+                    // Once more when the menu came up empty: the first open on a freshly
+                    // rendered form can land before the widget is listening.
+                    var menu = await OpenMenuAsync(frame, box);
+                    if (menu.Options.Count == 0) menu = await OpenMenuAsync(frame, box);
+                    if (menu.Options.Count is > 0 and <= MaxMenuOptions)
+                        questions[n] = q with { Type = menu.Multi ? PacketQuestion.MultiSelect : PacketQuestion.Select, Options = menu.Options };
+                    break;
+                }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+                {
+                    log?.LogInformation("choices for {Id}: {Reason}", q.Id, ex.Message.Split('\n')[0]);
+                    try { await page.Keyboard.PressAsync("Escape"); } catch (PlaywrightException) { /* gone */ }
+                }
+            }
+        }
+    }
+
+    /// <summary>Open one combobox's menu and read it: the option texts, and whether it takes
+    /// several (react-select marks a multi widget's value container <c>--is-multi</c>).</summary>
+    private static async Task<(List<string> Options, bool Multi)> OpenMenuAsync(IFrame frame, ILocator box)
+    {
+        await box.ClickAsync(new() { Timeout = 3_000 });
+        var owned = await box.GetAttributeAsync("aria-controls");
+        var options = string.IsNullOrWhiteSpace(owned)
+            ? frame.Locator("[role=option]:visible")
+            : frame.Locator($"[id=\"{owned}\"] [role=option]");
+        var texts = new List<string>();
+        for (var i = 0; i < 12 && texts.Count == 0; i++)
+        {
+            await frame.WaitForTimeoutAsync(250);
+            texts = [.. (await options.AllInnerTextsAsync()).Select(t => t.Replace('\n', ' ').Trim()).Where(t => t.Length > 0)];
+        }
+        var multi = await box.EvaluateAsync<bool>("""
+            el => { for (let a = el.parentElement, i = 0; a && i < 4; a = a.parentElement, i++)
+                      if (a.matches('[class*="is-multi"]')) return true;
+                    const owned = el.getAttribute('aria-controls');
+                    return !!owned && document.getElementById(owned)?.getAttribute('aria-multiselectable') === 'true'; }
+            """);
+        await frame.Page.Keyboard.PressAsync("Escape");
+        await box.EvaluateAsync("el => el.blur()");
+        return ([.. texts.Distinct()], multi);
     }
 
     /// <summary>Every fillable control on a page already open, top document first, mapped to
@@ -130,7 +205,8 @@ public sealed partial class FormDiscoverer
                 ("select", "select-multiple") => PacketQuestion.MultiSelect,
                 ("select", _) => PacketQuestion.Select,
                 (_, "file") => PacketQuestion.File,
-                (_, "checkbox") => PacketQuestion.Select,
+                // Boxes that share a name are one "select all that apply" (#431).
+                (_, "checkbox") => c.Options.Count > 1 ? PacketQuestion.MultiSelect : PacketQuestion.Select,
                 (_, "radio") => PacketQuestion.Select,
                 _ => PacketQuestion.Text,
             };
@@ -150,13 +226,23 @@ public sealed partial class FormDiscoverer
     private static readonly string EnumerateScript = """
         () => {
           const widget = __WIDGET__;
+          // Every control, in the document and in any open shadow root (Manatal, #436); a
+          // control's label is looked up in its own root, where its <label for> lives.
+          const deep = __DEEP__;
+          const rootOf = el => { const r = el.getRootNode(); return r && r !== document && r.querySelector ? r : document; };
+          const byId = (el, i) => (rootOf(el).getElementById ? rootOf(el).getElementById(i) : null) || document.getElementById(i);
           const out = [];
           const seenRadio = new Map();
+          const seenBox = new Map();
+          // A placeholder that only says what to do ("Enter", "Select…") names nothing: Fullstack's
+          // talent portal puts "Enter" in every box and titles each with the text above it, and
+          // every question came back "Enter", optional, and unanswered (#439).
+          const generic = p => /^\s*(?:enter|type|select|choose|pick|write|input|add)(?:\s+(?:here|a value|value|text|an? option|one|answer|your answer))?\s*(?:\.{3}|…)?\s*$/i.test(p || '');
           const labelFor = (el) => {
             if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
             const by = el.getAttribute('aria-labelledby');
-            if (by) { const t = by.split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
-            if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
+            if (by) { const t = by.split(/\s+/).map(i => byId(el, i)?.innerText || '').join(' ').trim(); if (t) return t; }
+            if (el.id) { const l = rootOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
             // A dropzone's own label is its instructions, not the field: Ethos wraps its hidden
             // résumé input in <label>Click or drag & drop PDF</label> under a sibling
             // <label>CV / Resume *</label>, and the résumé went unrecognised (#417). The row's
@@ -188,7 +274,8 @@ public sealed partial class FormDiscoverer
               const l = [...a.querySelectorAll('label')].find(x => !x.contains(el) && /[A-Za-z]/.test(x.innerText || ''));
               if (l) return l.innerText.trim();
             }
-            return el.getAttribute('placeholder') || precedingTitle(el) || el.getAttribute('name') || '';
+            const ph = el.getAttribute('placeholder') || '';
+            return (generic(ph) ? '' : ph) || precedingTitle(el) || el.getAttribute('name') || ph;
           };
           // A field titled by plain text above it and nothing else: no aria, no <label for>,
           // no wrapping <label>, no <legend>. Workable renders a screening question as a
@@ -261,7 +348,7 @@ public sealed partial class FormDiscoverer
             }
             return '';
           };
-          for (const el of document.querySelectorAll('input, select, textarea')) {
+          for (const el of deep('input, select, textarea')) {
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? (el.multiple ? 'select-multiple' : 'select-one') : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type)) continue;
             if (el.disabled || el.readOnly) continue;
@@ -269,7 +356,7 @@ public sealed partial class FormDiscoverer
             // Oracle Recruiting, whose 0×0 radio is pressed through the <label for> drawn beside it —
             // read as invisible, every yes/no question on DTCC's form went undiscovered (#318).
             const drawn = (type === 'radio' || type === 'checkbox')
-              && (!!ashbyTitle(el) || (!!el.id && [...document.querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)].some(visible)));
+              && (!!ashbyTitle(el) || (!!el.id && [...rootOf(el).querySelectorAll(`label[for="${CSS.escape(el.id)}"]`)].some(visible)));
             if (type !== 'file' && !drawn && !visible(el)) continue;
             // The careers site's own job search and job-alert boxes are not questions (#214).
             if (widget(el)) continue;
@@ -280,7 +367,7 @@ public sealed partial class FormDiscoverer
             if (type === 'radio') {
               const name = el.getAttribute('name') || '';
               const grp = seenRadio.get(name);
-              const opt = (document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText || el.closest('label')?.innerText || el.value || '').trim();
+              const opt = ((el.id && rootOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) || el.closest('label')?.innerText || el.value || '').trim();
               if (grp) { grp.options.push(opt); grp.required = grp.required || required; continue; }
               // Ashby's group name is "<form instance>_<field>" with the first half new on every
               // load; its title's `for` is the field's own id, the same every time. The question is
@@ -292,6 +379,25 @@ public sealed partial class FormDiscoverer
               const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true', options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
+            // Boxes sharing a name are one "select all that apply" — Greenhouse's
+            // <fieldset><legend>Cloud tools?</legend> over question_N[] boxes. Read box by box,
+            // each became its own Yes/No question, the first keyed by the group and labelled by
+            // its first option ("AWS"), and none of them could be answered as the form asks (#431).
+            // One question, titled by the group, its boxes' labels the options, as a radio group is.
+            if (type === 'checkbox') {
+              const name = el.getAttribute('name') || '';
+              const members = name ? rootOf(el).querySelectorAll(`input[type=checkbox][name="${CSS.escape(name)}"]`).length : 0;
+              if (members > 1) {
+                const opt = ((el.id && rootOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText) || el.closest('label')?.innerText || el.value || '').trim();
+                const grp = seenBox.get(name);
+                if (grp) { grp.options.push(opt); grp.required = grp.required || required; continue; }
+                const stable = ashbyTitle(el)?.getAttribute('for') || '';
+                const title = (el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText || groupTitle(el) || name).trim();
+                const entry = { id: '', name: stable || name, label: title, tag: 'input', type: 'checkbox',
+                  required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('fieldset')?.getAttribute('aria-required') === 'true', options: [opt] };
+                seenBox.set(name, entry); out.push(entry); continue;
+              }
+            }
             // A blank-valued option is the placeholder ("Select…"), not a choice — and so is a first
             // option that reads as one whatever its value: HubSpot's "-- Select" is value="-- Select" (#425).
             const options = el.tagName === 'SELECT' ? [...el.options].filter((o, i) => o.value !== ''
@@ -302,7 +408,7 @@ public sealed partial class FormDiscoverer
           // <ul role=radiogroup aria-label="How did you hear about this position?"> of
           // <button role=radio> — for its sponsorship, education and referral questions (#318).
           // Keyed by the question itself: the group has neither name nor id.
-          for (const g of document.querySelectorAll('[role=radiogroup]')) {
+          for (const g of deep('[role=radiogroup]')) {
             if (g.querySelector('input') || !visible(g) || widget(g)) continue;
             const pills = [...g.querySelectorAll('[role=radio]')];
             if (pills.length === 0) continue;
@@ -315,5 +421,5 @@ public sealed partial class FormDiscoverer
           }
           return out;
         }
-        """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DROPZONE__", BrowserSession.DropzoneJs);
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DROPZONE__", BrowserSession.DropzoneJs).Replace("__DEEP__", BrowserSession.DeepJs);
 }
