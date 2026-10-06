@@ -81,6 +81,20 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
             """<button type="button" class="ckymnz ckymny" componentkey="ae6dd0bf" aria-label="Easy Apply to this job" id="entry">Easy Apply</button>""",
             """<a href="/li/jobs/view/sdui-draft/?trackingId=x" id="entry" class="ckymnz"><span><span>Continue</span></span></a>""")
             .Replace("document.getElementById('entry').onclick = () => {", "document.getElementById('entry').onclick = e => { e.preventDefault();"), "text/html"));
+        // LinkedIn's "Job search safety reminder" in front of the dialog (KRON Development, 2026-10-05, #430).
+        _fixture.MapGet("/li/jobs/view/sdui-safety", () => Results.Content(EasyApplySduiHtml
+            .Replace("<script>", SafetyTipsDialog + "<script>")
+            .Replace("document.getElementById('entry').onclick = () => { at = 0; render(); };",
+                "document.getElementById('entry').onclick = () => document.getElementById('safety').show();"), "text/html"));
+        // A dialog of fifteen pages, one question each (Trility's is fourteen, #409).
+        _fixture.MapGet("/li/jobs/view/sdui-long", () => Results.Content(EasyApplySduiHtml
+            .Replace("const dlg = document.getElementById('dlg')", LongDialogSteps + "const dlg = document.getElementById('dlg')"), "text/html"));
+        // A work-history step whose blank rows open for editing one Next at a time (SMX via JobDiva, #408).
+        _fixture.MapGet("/li/jobs/view/sdui-history", () => Results.Content(EasyApplySduiHtml
+            .Replace("const dlg = document.getElementById('dlg')", WorkHistoryStep + "const dlg = document.getElementById('dlg')")
+            .Replace("col.innerHTML = steps[at];", "col.innerHTML = steps[at] === 'HISTORY' ? historyHtml() : steps[at];")
+            .Replace("function go() { if (!valid()) return;", "function go() { if (steps[at] === 'HISTORY' && !historyNext()) return; if (!valid()) return;")
+            .Replace("function capture() {", "function capture() { answers.history = rows.map(r => r.company + '|' + r.city + '|' + r.desc).join(';');"), "text/html"));
         // A "Follow" box that will not stay unticked.
         _fixture.MapGet("/li/jobs/view/sticky-follow", () => Results.Content(EasyApplyHtml.Replace(
             """id="follow-company-checkbox" checked>""", """id="follow-company-checkbox" checked onchange="this.checked=true">"""), "text/html"));
@@ -2021,6 +2035,94 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    // Copied from the live one (KRON Development, 2026-10-05): a native <dialog> around the
+    // PreApplySafetyTipsModal screen whose "Continue applying" is a link back to the posting.
+    private const string SafetyTipsDialog = """
+        <dialog id="safety" data-testid="dialog" aria-labelledby="safety-header">
+          <button type="button" aria-label="Dismiss" onclick="this.parentElement.close()"><span></span></button>
+          <div><header id="safety-header"><h2>Job search safety reminder</h2></header>
+          <div data-testid="dialog-content"><div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.PreApplySafetyTipsModal">
+            <p>Research the company</p><p>Report suspicious jobs</p>
+            <footer><a href="/li/jobs/view/sdui-safety?trackingId=x" componentkey="k">Review job post</a>
+              <a href="/li/jobs/view/sdui-safety?trackingId=x" componentkey="k" onclick="event.preventDefault(); document.getElementById('safety').close(); at = 0; render();"><span><span>Continue applying</span></span></a></footer>
+          </div></div></div>
+        </dialog>
+        """;
+
+    private const string LongDialogSteps = """
+        steps.splice(3, 0, ...Array.from({ length: 10 }, (_, i) => `<div><p>Additional Questions</p>
+          <div><p>Question number ${i}?*</p><div componentkey="easyApplyFieldFocus_x${i}">
+            <div><input required id="x${i}" aria-label="Question number ${i}?" type="text" value=""></div>
+            <div data-testid="text-input-helper-text"></div></div></div></div>`));
+
+        """;
+
+    // The work-history step as SMX's JobDiva form has it (live, 2026-10-06): the profile's roles as
+    // cards, "N/A" where the profile holds nothing, and a Next that opens the first short row for
+    // editing — City* and Description* already flagged, a "Save" of the row's own — instead of
+    // moving on. The textarea carries the focus key itself, its helper beside it.
+    private const string WorkHistoryStep = """
+        const rows = [
+          { title: 'Principal Architect', company: 'Ronin 48', city: 'Omaha, NE', desc: 'Built things.' },
+          { title: 'Senior Technical Support Engineer', company: 'CrowdStrike', city: '', desc: '' },
+          { title: 'Cloud Operations Supervisor', company: 'CloudHesive', city: '', desc: '' },
+        ];
+        let editing = -1;
+        steps.splice(3, 0, 'HISTORY');
+        const card = r => `<div><div><div><div><div><p>Your title</p><p>${r.title}</p></div><div><p>Company</p><p>${r.company}</p></div>
+          <div><p>Dates of employment</p><div><p>8</p><p>/</p><p>2022</p><p> - </p><div><p>7</p><p>/</p><p>2023</p></div></div></div>
+          <div><p>City</p><p>${r.city || 'N/A'}</p></div><div><p>Description</p><p>${r.desc || 'N/A'}</p></div></div></div>
+          <button type="button" aria-label="Edit, Work Experience"><span></span></button></div></div>`;
+        const box = (label, id, value, n) => `<div><p>${label}*</p><div componentkey="easyApplyFieldFocus_ea_validation_p3_9_${n}">
+          <div><input required id="${id}" aria-describedby="${id}-info" aria-label="${label}" type="text" value="${value}"></div>
+          <div data-testid="text-input-helper-text" id="${id}-info">${value ? '' : '<p>This field is required</p>'}</div></div></div>`;
+        const editor = r => `<div data-display-contents="true"><div><div><p>Edit experience</p><button type="button"><span><span>Save</span></span></button></div><div>
+          ${box('Your title', 'e-title', r.title, 1)}${box('Company', 'e-company', r.company, 2)}
+          <div><p>Dates of employment</p><div><p>From</p><div><label for="e-from"><div></div></label><select id="e-from"><option value="">Month</option><option value="8" selected>August</option></select></div></div></div>
+          ${box('City', 'e-city', '', 3)}
+          <div><p>Description*</p><div><textarea id="e-desc" aria-describedby="e-desc-info" aria-label="Description" required rows="4" componentkey="easyApplyFieldFocus_ea_validation_p3_9_4"></textarea>
+            <div data-testid="text-input-helper-text" id="e-desc-info"><p>This field is required</p></div></div></div>
+          </div><button type="button"><span><span>Delete experience</span></span></button></div></div>`;
+        function historyHtml() { return `<div><p>Work experience</p>${rows.map((r, i) => i === editing ? editor(r) : card(r)).join('')}<div><p>You have reached the limit of 10 responses</p></div></div>`; }
+        function historyNext() {
+          if (editing >= 0) {
+            const city = col.querySelector('#e-city').value.trim(), desc = col.querySelector('#e-desc').value.trim();
+            if (!city || !desc) return false;
+            rows[editing].city = city; rows[editing].desc = desc;
+          }
+          editing = rows.findIndex(r => !r.city || !r.desc);
+          if (editing < 0) return true;
+          col.innerHTML = historyHtml();
+          return false;
+        }
+
+        """;
+
+    private static AgentPacket EasyApplyHistoryPacket(bool citiesKnown)
+    {
+        var packet = EasyApplyPacket(answered: true);
+        packet.Resume = new Resume
+        {
+            Location = "Minden, Nebraska (Remote)",
+            Experience =
+            [
+                new("CrowdStrike", "Senior Technical Support Engineer", "Aug 2022 - Mar 2024", ["SME for LogScale.", "Wrote tooling in Python."]),
+                new("CloudHesive", "Cloud Operations Supervisor / Cloud Support Engineer II", "Aug 2021 - May 2022", ["Led the Cloud Operations team."]),
+            ],
+        };
+        if (!citiesKnown) return packet;
+        foreach (var label in new[]
+                 {
+                     "Work experience — Senior Technical Support Engineer — CrowdStrike — City",
+                     "Work experience — Cloud Operations Supervisor — CloudHesive — City",
+                 })
+        {
+            packet.Questions.Add(new(label, label, true, PacketQuestion.Text, [], PacketQuestion.Custom));
+            packet.Answers[label] = "Remote";
+        }
+        return packet;
+    }
+
     private static AgentPacket EasyApplyPacket(bool answered)
     {
         var packet = new AgentPacket { ApplicationName = "acme-senior-.net-engineer.md", Provider = ApplyTrack.Api.Agent.AtsProvider.LinkedInEasy };
@@ -3151,6 +3253,74 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("4025550100", sent.GetProperty("_r_t_").GetString());
         Assert.False(sent.GetProperty("follow").GetBoolean());
         lock (_posts) Assert.Single(_posts, p => p.ContainsKey("sdui_submit"));
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_continues_past_linkedins_safety_reminder()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Live 2026-10-05: both KRON postings failed on "Timeout 15000ms exceeded." with the
+        // "Job search safety reminder" sitting where the dialog should have been (#430).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-safety", EasyApplyPacket(answered: true), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal("discard", Assert.Single(EasyApplyEvents()).GetProperty("left").GetString());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_walks_a_dialog_longer_than_twelve_pages()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Trility's dialog is fourteen pages, one question each; every run ended on page 13 with
+        // "did not reach its Submit step within 12 steps" (#409).
+        var packet = EasyApplyPacket(answered: true);
+        for (var i = 0; i < 10; i++)
+        {
+            var label = $"Question number {i}?";
+            packet.Questions.Add(new(label, label, true, PacketQuestion.Text, [], PacketQuestion.Custom));
+            packet.Answers[label] = $"answer {i}";
+        }
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-long", packet, (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.True(outcome.ReachedSubmit, outcome.Error);
+        Assert.Empty(outcome.Unmapped);
+        Assert.Equal(14, outcome.Mapped.Count);   // the phone, three questions, and ten more
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_hands_back_every_short_work_history_row_and_saves_the_draft()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // SMX (#408): the "City" every run stopped on was not the person's — it was a past job's,
+        // in the work-history editor Next opened. Each blank row is that row's question; the
+        // résumé has each role's lines for its Description but no city for a job gone by.
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-history", EasyApplyHistoryPacket(citiesKnown: false), (Pdf, "resume.pdf"), dryRun: true);
+
+        Assert.False(outcome.Submitted);
+        Assert.Equal(["Work experience — Senior Technical Support Engineer — CrowdStrike — City"], outcome.Unmapped);
+        var found = Assert.IsType<List<PacketQuestion>>(outcome.Discovered).Select(q => q.Label).ToList();
+        Assert.Equal(
+            ["Work experience — Senior Technical Support Engineer — CrowdStrike — City", "Work experience — Cloud Operations Supervisor — CloudHesive — City"],
+            found);
+        Assert.Contains("Work experience — Senior Technical Support Engineer — CrowdStrike — Description", outcome.Mapped);
+        // Saved through the question's own "Save", not the open row's.
+        var left = Assert.Single(EasyApplyEvents());
+        Assert.Equal("save", left.GetProperty("left").GetString());
+        Assert.Equal(3, left.GetProperty("step").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task Easy_apply_fills_each_work_history_row_as_it_opens_and_submits()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/li/jobs/view/sdui-history", EasyApplyHistoryPacket(citiesKnown: true), (Pdf, "resume.pdf"), dryRun: false);
+
+        Assert.True(outcome.Submitted, outcome.Error);
+        var sent = Assert.Single(EasyApplyEvents()).GetProperty("answers");
+        Assert.Equal(
+            "Ronin 48|Omaha, NE|Built things.;CrowdStrike|Remote|SME for LogScale. Wrote tooling in Python.;CloudHesive|Remote|Led the Cloud Operations team.",
+            sent.GetProperty("history").GetString());
     }
 
     [SkippableFact]
