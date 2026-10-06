@@ -187,6 +187,22 @@ public class AnswerDrafterTests
     }
 
     [Fact]
+    public void An_hourly_rate_question_is_a_salary_question_not_a_website_box()
+    {
+        // Wise Integration's Lever card: "url" matched inside "hourly", and the rate went out
+        // as the LinkedIn link (#422).
+        var rate = new PacketQuestion("cards[af82][field0]", "Could you please share your expected hourly rate for this role? ✱", true, PacketQuestion.Textarea, [], PacketQuestion.Custom);
+        var (answer, _) = AnswerDrafter.Deterministic(rate, Ctx());
+        Assert.DoesNotContain("http", answer ?? "");
+        // A saved yearly figure is converted to an hourly one.
+        var yearly = Ctx() with { Settings = new AgentSettings { SalaryExpectation = "150000", SalaryPeriod = "annual", SalaryCurrency = "USD" } };
+        var (hourly, why) = AnswerDrafter.Deterministic(rate, yearly);
+        Assert.True(hourly is not null && System.Text.RegularExpressions.Regex.IsMatch(hourly, @"^\d"), $"{hourly} / {why}");
+        var other = new PacketQuestion("urls[Other]", "Other URL", false, PacketQuestion.Text, [], PacketQuestion.Custom);
+        Assert.NotNull(AnswerDrafter.Deterministic(other, Ctx() with { Resume = new Resume { Links = [new("GitHub", "https://github.com/x")] } }).Answer);
+    }
+
+    [Fact]
     public void Country_and_city_are_deterministic_and_the_standing_country_wins()
     {
         // Greenhouse's synthetic country question, and a discovered form's "Country*" combobox.

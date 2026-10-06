@@ -157,7 +157,12 @@ public sealed partial class FormDiscoverer
             const by = el.getAttribute('aria-labelledby');
             if (by) { const t = by.split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
             if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
-            const wrap = el.closest('label'); if (wrap) return wrap.innerText;
+            // A dropzone's own label is its instructions, not the field: Ethos wraps its hidden
+            // résumé input in <label>Click or drag & drop PDF</label> under a sibling
+            // <label>CV / Resume *</label>, and the résumé went unrecognised (#417). The row's
+            // title, found below, names it.
+            const wrap = el.closest('label');
+            if (wrap && !(el.type === 'file' && (__DROPZONE__)(wrap.innerText || ''))) return wrap.innerText;
             const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
             // A label the page never associated with its control. Zoho Recruit's form is
             // web components: the input has no id, no <label for>, no aria — but the
@@ -308,5 +313,5 @@ public sealed partial class FormDiscoverer
           }
           return out;
         }
-        """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DROPZONE__", BrowserSession.DropzoneJs);
 }
