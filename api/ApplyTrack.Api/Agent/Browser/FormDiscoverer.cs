@@ -287,8 +287,10 @@ public sealed partial class FormDiscoverer
               const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true', options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
-            // A blank-valued option is the placeholder ("Select…"), not a choice.
-            const options = el.tagName === 'SELECT' ? [...el.options].filter(o => o.value !== '').map(o => o.text.trim()) : [];
+            // A blank-valued option is the placeholder ("Select…"), not a choice — and so is a first
+            // option that reads as one whatever its value: HubSpot's "-- Select" is value="-- Select" (#425).
+            const options = el.tagName === 'SELECT' ? [...el.options].filter((o, i) => o.value !== ''
+              && !(i === 0 && /^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(o.text || ''))).map(o => o.text.trim()) : [];
             out.push({ id: el.id || '', name: el.getAttribute('name') || '', label: labelFor(el).trim(), tag: el.tagName.toLowerCase(), type, required, options });
           }
           // A choice drawn as buttons with no input at all: Oracle Recruiting's "pills" — a

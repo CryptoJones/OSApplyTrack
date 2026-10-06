@@ -79,8 +79,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     // prose ("no longer supported", etc.) never trips it.
     // "Page not found" is what Greenhouse serves for a posting that has been taken down
     // outright (Cresteo and Varicent on 2026-09-13): no gone-notice, no form, a 404 page.
-    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting applications)|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening|opportunity) is (?:no longer available|closed|not available anymore|currently not available)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
+    // And three that read as "no Apply button" until they were taught (#427): SmartRecruiters'
+    // "Sorry, this job has expired", Ceipal's "We are no longer accepting new profiles for this
+    // position", MeeBoss's "The employer has taken the job offline".
+    [GeneratedRegex(@"job you are looking for is no longer open|no longer (?:open|accepting (?:new )?(?:applications|applicants|candidates|profiles|resumes))|this (?:job|posting|position|role) has expired|(?:taken|took) (?:the|this) (?:job|posting|position|role) offline|(?:position|posting|job|role|opening) (?:has been|was|is now) (?:filled|closed)|this (?:position|posting|job|role|opening|opportunity) is (?:no longer available|closed|not available anymore|currently not available)|\bpage not found\b|\bjob (?:posting )?not found\b|this job (?:posting )?(?:is )?no longer exists", RegexOptions.IgnoreCase)]
     private static partial Regex ClosedPosting();
+
+    /// <summary>A bot-protection service's refusal page: Cloudflare, Akamai, Imperva, DataDome (#428).</summary>
+    [GeneratedRegex(@"you have been blocked|attention required!? \| cloudflare|access denied|request (?:was |has been )?blocked|pardon our interruption|verify you are (?:a )?human", RegexOptions.IgnoreCase)]
+    private static partial Regex BotBlock();
 
     [GeneratedRegex(@"/(?:home|careers?|jobs?|openings|positions|opportunities|search|job-?board)/?$", RegexOptions.IgnoreCase)]
     private static partial Regex JobListPath();
@@ -205,7 +212,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // The site will not talk to this server at all — McGraw Hill's careers site answers
             // pluto with a bare "403 Forbidden". That is not a page with no Apply button on it,
             // which is what the run used to report, and no retry will change it (#280).
-            if (session.Status is 401 or 403 or 429 or 451 && body.Length < 600)
+            // Cloudflare's own block page is longer than that, and remotehunter.com's read as "no
+            // Apply button or link on the page" (#428): a bot-protection block is the same verdict
+            // at any length.
+            if (session.Status is 401 or 403 or 429 or 451 && (body.Length < 600 || BotBlock().IsMatch(body)))
             {
                 screenshot = await session.ScreenshotAsync();
                 return new SubmitOutcome(false, false, page.Url, "", screenshot, unmapped, mapped,
@@ -1115,7 +1125,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
-            if (!(el.required || el.getAttribute('aria-required') === 'true')) continue;
+            // Required by the star in its label alone, the way discovery reads it: HubSpot's own
+            // rendering of its Greenhouse form marks a dozen selects "… *" and nothing else, the
+            // sweep let them all through blank, and Submit stayed disabled — "no Submit button
+            // found" (#425). Boxes, selects and textareas only, on screen: a choice group's star
+            // is on its title, which discovery and the radio rule below already read.
+            const starred = !['radio', 'checkbox', 'file'].includes(type) && visible(el) && !el.readOnly
+              && /^\s*\*|\*\s*$/.test((labelFor(el) || '').trim());
+            if (!(el.required || el.getAttribute('aria-required') === 'true' || starred)) continue;
             if (sideForm(el)) continue;
             if (type === 'file') {
               // Not gated on the input being visible: uploaders keep theirs off screen behind
@@ -1162,6 +1179,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 continue;
               }
             }
+            // A select still on its placeholder is empty even when the placeholder carries a value:
+            // HubSpot's are <option value="-- Select">-- Select</option> (#425).
+            else if (el.tagName === 'SELECT')
+              empty = (el.value || '').trim().length === 0
+                || (el.selectedIndex === 0 && /^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''));
             else empty = (el.value || '').trim().length === 0;
             if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
           }
@@ -1308,7 +1330,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (email.Length == 0)
             return Stop(SignInError + ", and the packet has no email address to sign in with");
 
-        var box = form.Locator("input[type=email]:visible").First;
+        var box = form.Locator(EmailBox).First;
         var textBefore = await BodyTextAsync(form);
         var urlBefore = page.Url;
         try
@@ -1394,10 +1416,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         }
     }
 
+    /// <summary>A sign-in's email box: type=email, or a text box that names itself one (#429).</summary>
+    private const string EmailBox =
+        "input[type=email]:visible, input[type=text][autocomplete=email]:visible, input[type=text][name*=email i]:visible, "
+        + "input[type=text][id*=email i]:visible, input[type=text][placeholder*=email i]:visible, input:not([type])[placeholder*=email i]:visible";
+
     /// <summary>Is the sign-in's own email box still on screen? False mid-navigation too.</summary>
     private static async Task<bool> EmailBoxShownAsync(IPage page)
     {
-        try { return await page.MainFrame.Locator("input[type=email]:visible").First.IsVisibleAsync(); }
+        try { return await page.MainFrame.Locator(EmailBox).First.IsVisibleAsync(); }
         catch (PlaywrightException) { return false; }
     }
 
@@ -1508,6 +1535,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                      page.Locator("#submit_app, [id$='_submitBtn']").Filter(notLater).First,
                      page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^submit\b|submit (?:my |your |the )?application", RegexOptions.IgnoreCase) }).Filter(notLater).First,
                      page.Locator("button[type=submit], input[type=submit]").Filter(new() { HasTextRegex = new Regex(@"^\s*(?:submit|apply)\b", RegexOptions.IgnoreCase) }).Filter(notLater).First,
+                     // A script's anchor that submits the form (#424).
+                     page.Locator("form").Locator(FormAnchorSubmit).Filter(new() { HasTextRegex = AnchorSubmitWords() }).Filter(notLater).First,
                  })
         {
             try { if (await c.CountAsync() > 0 && await c.IsVisibleAsync()) return true; }
@@ -1539,6 +1568,16 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (next is null)
             {
                 await HandBackIfNextDisabledAsync();
+                return form;
+            }
+            // A page that is only an email box and a Next is the board's sign-in, not a page of the
+            // form: ClearCompany asks a returning applicant "Enter the email you used to apply"
+            // mid-wizard. Read as a form page, its box was taken for the Email already filled two
+            // pages back, NEXT was pressed on it empty, and the run ended "no Submit button found"
+            // (#429). Stop on it; the caller names the sign-in.
+            if (await OnlyEmailFieldsAsync(form))
+            {
+                _log.LogInformation("pages: page {Page} is an email sign-in, not a form page — not turning it", turned + 1);
                 return form;
             }
             // A required field this page still wants that nobody can fill: stop here, on it.
@@ -1820,7 +1859,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                   // ...unless the page offers to submit the application itself: then it is the form.
                   if (boxes.length !== live.length && [...document.querySelectorAll('button, input[type=submit], [role=button]')]
                         .some(b => shown(b) && /submit\s+(?:my |your |the )?application/i.test(b.innerText || b.value || ''))) return false;
-                  return boxes.length > 0 && boxes.every(el => (el.getAttribute('type') || '').toLowerCase() === 'email');
+                  // An email box need not say type=email: ClearCompany's returning-applicant step is
+                  // a plain text box, "Enter the email you used to apply", and a NEXT (#429).
+                  const emailish = el => {
+                    const type = (el.getAttribute('type') || 'text').toLowerCase();
+                    if (type === 'email') return true;
+                    if (type !== 'text' || el.tagName !== 'INPUT') return false;
+                    const own = [el.getAttribute('autocomplete'), el.name, el.id, el.getAttribute('placeholder'), el.getAttribute('aria-label'),
+                      ...[...(el.labels || [])].map(l => l.innerText)].join(' ');
+                    return /e-?mail/i.test(own);
+                  };
+                  return boxes.length > 0 && boxes.every(emailish);
                 }
                 """.Replace("__WIDGET__", BrowserSession.WidgetJs);
 
@@ -2310,7 +2359,12 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (control is null || await IsEmptyAsync(control)) return false;
             var tag = (await control.EvaluateAsync<string>("el => el.tagName")).ToLowerInvariant();
             if (tag == "select")
-                return await control.EvaluateAsync<bool>("el => el.selectedIndex > 0 || (el.value || '').trim().length > 0");
+                // Still on a placeholder that carries a value — HubSpot's "-- Select" — is not
+                // prefilled: taken for the account's own choice, it was never filled (#425).
+                return await control.EvaluateAsync<bool>("""
+                    el => el.selectedIndex > 0 || ((el.value || '').trim().length > 0
+                      && !/^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''))
+                    """);
             return await IsComboboxAsync(control);
         }
         catch (PlaywrightException) { return false; }
@@ -2935,6 +2989,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         return parts.Length == 0 ? ("", "") : (parts[0], parts.Length > 1 ? parts[^1] : "");
     }
 
+    /// <summary>An anchor, or anything drawn as a link, that a form's script submits it with (#424).</summary>
+    private const string FormAnchorSubmit = "a, [role=link]";
+
+    /// <summary>The whole text of an anchor that submits its form: Submit, Submit application,
+    /// Apply, Apply now, Send application.</summary>
+    [GeneratedRegex(@"^\s*(?:submit(?: (?:my |your |the )?application)?|apply(?: now)?|send (?:my |your |the )?application)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex AnchorSubmitWords();
+
     private static async Task<ILocator?> FindSubmitAsync(IFrame page)
     {
         // Nothing that reads as "later" is ever the button (#210): join.com's "Apply later"
@@ -2957,6 +3019,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             page.Locator("form button[type=submit], form input[type=submit]").Filter(notLater).Last,
             page.Locator("button[type=submit], input[type=submit]").Filter(notLater).Last,
             page.Locator("form").GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply(?: now)?$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
+            // A Submit that is a script's anchor inside the form, not a button: Tential's job
+            // plugin ends its form with <a href="#" id="ce_apply_submit">APPLY NOW</a>, JazzHR
+            // with <a href="#">SUBMIT APPLICATION</a> — every field filled and "no Submit button
+            // found" (#424). Inside a <form> only, so the posting's own Apply links never count.
+            page.Locator("form").Locator(FormAnchorSubmit).Filter(new() { HasTextRegex = AnchorSubmitWords() }).Filter(notLater).Last,
             // Last of all, a lone "Apply" anywhere on a page that has a form: the accordion
             // boards put theirs in a footer bar outside any <form>.
             page.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^apply$", RegexOptions.IgnoreCase) }).Filter(notLater).Last,
@@ -3000,7 +3067,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 () => {
                   const shown = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
                     return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-                  return [...document.querySelectorAll('button, input[type=submit], input[type=button], [role=button]')]
+                  // A form's own anchors too: a Submit drawn as a link is a control the finder may have missed (#424).
+                  return [...document.querySelectorAll('button, input[type=submit], input[type=button], [role=button], form a')]
                     .map(b => {
                       const text = (b.innerText || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 40);
                       if (!text) return '';

@@ -754,6 +754,86 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
+        // Tential / JazzHR: the form's Submit is a script's anchor, not a button (#424).
+        _fixture.MapGet("/jobs/anchor-submit", () => Results.Content(
+            """
+            <html><body><h1>.NET Developer</h1>
+            <a href="#" onclick="return false">APPLY NOW</a>
+            <form id="ce_apply_form" method="post" action="/apply">
+              <label for="first_name">First Name<span>*</span></label><input id="first_name" name="job_application[first_name]" required>
+              <p><a href="/privacy">Privacy Policy</a></p>
+              <div class="ce_apply_submit_wrapper"><a href="#" id="ce_apply_submit" onclick="document.getElementById('ce_apply_form').submit();return false"><span>APPLY NOW</span></a></div>
+            </form>
+            </body></html>
+            """, "text/html"));
+        // HubSpot's rendering of its Greenhouse form: required only by the star in the label, a
+        // placeholder option that carries a value, and Submit disabled until all are answered (#425).
+        _fixture.MapGet("/jobs/starred-selects", () => Results.Content(
+            """
+            <html><body><h1>Principal Engineer</h1>
+            <form method="post" action="/apply">
+              <label for="first_name">First Name<span>*</span></label><input id="first_name" name="job_application[first_name]">
+              <label for="question_45">Do you currently have legal US work authorization? <span>*</span></label>
+              <select id="question_45" name="question_45"><option value="-- Select">-- Select</option><option>Yes</option><option>No</option></select>
+              <label for="question_54">Which time zone would you be working from in this role? <span>*</span></label>
+              <select id="question_54" name="question_54"><option value="-- Select">-- Select</option><option>Eastern</option><option>Central</option></select>
+              <label for="question_53">Have you worked here before?</label>
+              <select id="question_53" name="question_53"><option value="-- Select">-- Select</option><option>Yes</option><option>No</option></select>
+              <button type="submit" disabled>Submit Your Application</button>
+            </form>
+            <script>
+              const starred = ['question_45', 'question_54'].map(id => document.getElementById(id));
+              const settle = () => document.querySelector('button[type=submit]').disabled =
+                !document.getElementById('first_name').value || starred.some(s => s.value === '-- Select');
+              document.addEventListener('input', settle); document.addEventListener('change', settle);
+            </script>
+            </body></html>
+            """, "text/html"));
+        // Voleon: the posting (and its Apply) is an embedded ATS page in an iframe (#426).
+        _fixture.MapGet("/jobs/embedded-posting", () => Results.Content(
+            """<html><body><h1>Voleon - Job Listings</h1><iframe src="/jobs/embedded-posting-inner" style="width:900px;height:1200px"></iframe></body></html>""", "text/html"));
+        _fixture.MapGet("/jobs/embedded-posting-inner", () => Results.Content(
+            """<html><body><h2>Senior Software Engineer</h2><p>About the role.</p><a href="/jobs/1">Apply for this Job</a></body></html>""", "text/html"));
+        // 7seventy: an aggregator whose Apply opens the employer's posting in a new tab (target=_blank,
+        // rel=noopener), and that posting has its own Apply (#426).
+        _fixture.MapGet("/jobs/aggregator", () => Results.Content(
+            """<html><body><h1>Staff Backend Engineer</h1><p>Remote.</p><a href="/jobs/ats-posting" target="_blank" rel="nofollow noopener noreferrer" class="apply-btn">Apply for This Job</a></body></html>""", "text/html"));
+        _fixture.MapGet("/jobs/ats-posting", () => Results.Content(
+            """<html><body><h1>Staff Backend Engineer @ Astra</h1><p>Overview.</p><button onclick="location.href='/jobs/1'">Apply for this Job</button></body></html>""", "text/html"));
+        // Ford: a "Candidate FEEDBACK" tab before the real Apply Now; pressing it opens a survey (#423).
+        _fixture.MapGet("/jobs/candidate-tab", () => Results.Content(
+            """
+            <html><body>
+              <button style="position:fixed;right:0;top:300px" onclick="document.getElementById('survey').style.display='block'">Candidate FEEDBACK</button>
+              <div id="survey" role="dialog" style="display:none;position:fixed;inset:0;background:#fff"><h2>Candidate Experience Survey</h2><button>Start Survey</button><button>Not Now</button></div>
+              <h1>Enterprise AI Administrator</h1>
+              <a href="/jobs/1" class="job-apply">Apply Now</a>
+            </body></html>
+            """, "text/html"));
+        // Cloudflare's block page: HTTP 403 and more than 600 characters of explanation (#428).
+        _fixture.MapGet("/jobs/cloudflare-block", () => Results.Content(
+            "<html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1><h2>You are unable to access example.com</h2>"
+            + "<p>" + string.Join(" ", Enumerable.Repeat("This website is using a security service to protect itself from online attacks.", 10)) + "</p></body></html>",
+            "text/html", statusCode: 403));
+        // ClearCompany's returning applicant: page one of the wizard, Continue, and then an email
+        // sign-in — a plain text box and NEXT — in place of page two (#429).
+        _fixture.MapGet("/jobs/returning-applicant", () => Results.Content(
+            """
+            <html><body><h1>.NET Software Engineer Application</h1><div id="page">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <label for="email">Email</label><input id="email" name="email" type="email">
+              <button type="button" onclick="signIn()">Continue</button>
+            </div>
+            <script>
+              function signIn() {
+                document.getElementById('page').innerHTML =
+                  '<label>Email</label><input type="text" placeholder="Enter the email you used to apply">'
+                  + '<button type="button" onclick="document.getElementById(\'err\').textContent=\'Please enter your email address\'">NEXT</button>'
+                  + '<p id="err"></p><a href="#">Sign in with username and password instead</a>';
+              }
+            </script>
+            </body></html>
+            """, "text/html"));
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -4497,6 +4577,144 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.True(outcome.Closed);
         Assert.Contains("HTTP 410", outcome.Error);
         Assert.False(outcome.Filled);
+        Assert.Empty(_posts);
+    }
+
+    private static AgentPacket OnePacket(params (string Id, string Label, string Answer)[] fields) => new()
+    {
+        ApplicationName = "acme-engineer.md", Provider = "unknown",
+        Questions = [.. fields.Select(f => new PacketQuestion(f.Id, f.Label, true, PacketQuestion.Text, [], PacketQuestion.Standard))],
+        Answers = fields.ToDictionary(f => f.Id, f => f.Answer),
+    };
+
+    [SkippableFact]
+    public async Task A_submit_that_is_a_scripts_anchor_inside_the_form_is_clicked()
+    {
+        // Tential: <a href="#" id="ce_apply_submit">APPLY NOW</a> ends the form, and every run
+        // filled it and said "no Submit button found" (#424). The posting's own APPLY NOW, outside
+        // the form, is never the one clicked.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/anchor-submit",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Equal("Ada", Assert.Single(_posts)["job_application[first_name]"]);
+    }
+
+    [SkippableFact]
+    public async Task A_select_required_only_by_the_star_in_its_label_and_left_on_its_placeholder_is_handed_to_the_drafter()
+    {
+        // HubSpot: a dozen selects marked "… *" and nothing else, each on "-- Select" (a placeholder
+        // with a value). The sweep let them through, Submit stayed disabled, "no Submit button
+        // found" (#425). Now they are unmapped and go to the drafter, placeholder not an option.
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var dry = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: true);
+        Assert.Contains("question_45", dry.Unmapped);
+        Assert.Contains("question_54", dry.Unmapped);
+        Assert.DoesNotContain("question_53", dry.Unmapped);   // no star: not required
+        Assert.NotNull(dry.Discovered);
+        var auth = Assert.Single(dry.Discovered!, q => q.Id == "question_45");
+        Assert.True(auth.Required);
+        Assert.Equal(["Yes", "No"], auth.Options);
+
+        var real = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects",
+            OnePacket(("first_name", "First Name", "Ada")), null, dryRun: false);
+        Assert.False(real.Submitted);
+        Assert.StartsWith("refused to submit: required fields could not be mapped", real.Error);
+        Assert.Empty(_posts);
+
+        // Drafted, the next run fills them — a "-- Select" with a value is not taken for an
+        // answer the board already holds — and Submit, enabled by then, goes.
+        var drafted = OnePacket(("first_name", "First Name", "Ada"));
+        drafted.Questions.AddRange(dry.Discovered!);
+        drafted.Answers["question_45"] = "Yes";
+        drafted.Answers["question_54"] = "Central";
+        var done = await Submitter().RunAsync($"{_fixtureUrl}/jobs/starred-selects", drafted, null, dryRun: false);
+        Assert.True(done.Submitted, done.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Yes", post["question_45"]);
+        Assert.Equal("Central", post["question_54"]);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_inside_an_embedded_posting_frame_is_found_and_pressed()
+    {
+        // Voleon embeds its Ashby posting in an iframe; the Apply in it was never looked for, and
+        // the run said "no Apply button or link on the page" (#426).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/embedded-posting", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task An_apply_that_opens_another_posting_in_a_noopener_tab_is_followed_through_its_own_apply()
+    {
+        // 7seventy: Apply opens the employer's posting in a new tab (rel=noopener). The new tab's
+        // first request had no frame yet, asking for one threw in the route handler, and the tab
+        // hung; and once it loads, that posting's own Apply has to be pressed too (#426).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/aggregator", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+        Assert.EndsWith("/jobs/1", outcome.Url);
+        Assert.Empty(_posts);
+    }
+
+    [Theory]
+    [InlineData("Apply Now", true)]
+    [InlineData("Postuler maintenant", true)]
+    [InlineData("Postular", true)]
+    [InlineData("Candidater", true)]
+    [InlineData("Candidatar-se", true)]
+    [InlineData("Candidate FEEDBACK", false)]
+    [InlineData("Candidate Experience", false)]
+    [InlineData("Candidates", false)]
+    [InlineData("Apply later", false)]
+    public void The_apply_trigger_is_a_word_for_applying_not_the_english_word_candidate(string name, bool trigger) =>
+        // Ford's "Candidate FEEDBACK" tab was pressed as Apply and opened a survey (#423).
+        Assert.Equal(trigger, BrowserSession.IsApplyTrigger(name));
+
+    [SkippableFact]
+    public async Task A_candidate_feedback_tab_is_never_pressed_for_apply()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/candidate-tab", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.Contains("first_name", outcome.Mapped);
+    }
+
+    [Theory]
+    [InlineData("Principal AI Engineer This job has expired Sorry, this job has expired SHARE THIS JOB")]   // SmartRecruiters
+    [InlineData("C# Developer | $65/hr Remote We are no longer accepting new profiles for this position.")]   // Ceipal
+    [InlineData("The employer has taken the job offline. The operation failed. Try again")]   // MeeBoss
+    public void Expired_and_offline_postings_read_as_closed(string text) =>
+        // Each read as "no Apply button or link on the page" (#427).
+        Assert.True(BrowserSubmitter.IsClosedPosting(text));
+
+    [SkippableFact]
+    public async Task A_bot_protection_block_page_is_the_site_refusing_this_server_at_any_length()
+    {
+        // remotehunter.com: Cloudflare's 403 page is over 600 characters, and read as "no Apply
+        // button or link on the page" (#428).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/cloudflare-block", Packet(), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.Contains("refused this server (HTTP 403)", outcome.Error);
+        Assert.False(outcome.Closed);
+    }
+
+    [SkippableFact]
+    public async Task An_email_sign_in_met_mid_wizard_is_named_and_its_next_never_pressed()
+    {
+        // ClearCompany: after page one, a returning applicant gets "Enter the email you used to
+        // apply" (a plain text box) and NEXT. The walker took it for a form page, pressed NEXT on it
+        // empty, and the run ended "no Submit button found — NEXT, close" (#429).
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/returning-applicant",
+            OnePacket(("first_name", "First Name", "Ada"), ("email", "Email", "ada@example.com")), null, dryRun: false);
+        Assert.False(outcome.Submitted);
+        Assert.StartsWith("this page is an email sign-in", outcome.Error);
         Assert.Empty(_posts);
     }
 
