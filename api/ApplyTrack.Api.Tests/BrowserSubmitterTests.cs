@@ -754,6 +754,77 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         // A page with no form on it at all.
         _fixture.MapGet("/jobs/blank", () => Results.Content(
             "<html><body><h1>Senior Engineer</h1><p>We are hiring. Email us your CV.</p></body></html>", "text/html"));
+        // Ethos' résumé (#417): the field's title is a sibling <label>, and the hidden input sits in
+        // a second <label> that says only "Click or drag & drop PDF". No id, no name.
+        _fixture.MapGet("/jobs/dropzone", () => Results.Content(
+            """
+            <html><body><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="firstName">First name *</label><input id="firstName" name="first_name">
+              <label for="email">Email *</label><input id="email" name="email" type="email">
+              <div><label>CV / Resume <span>*</span></label>
+                <label class="dropzone"><span>Click or drag &amp; drop PDF</span><input accept=".pdf" type="file" style="display:none"></label>
+                <p id="picked"></p></div>
+              <input type="hidden" name="resume_name" id="resume_name">
+              <button type="submit">Submit application</button>
+            </form>
+            <script>
+              document.querySelector('input[type=file]').onchange = e => { const f = e.target.files[0];
+                document.getElementById('picked').textContent = f.name; document.getElementById('resume_name').value = f.name; };
+            </script></body></html>
+            """, "text/html"));
+        // N-iX (#418): the whole form folded in a sidebar until "Easy Apply" is pressed — its file
+        // input in the page, hidden, from the start.
+        _fixture.MapGet("/jobs/easy-apply-fold", () => Results.Content(
+            """
+            <html><body><h1>Lead .Net Engineer</h1><p>About the role.</p>
+            <div id="side" style="display:none"><form method="post" action="/apply" enctype="multipart/form-data">
+              <label for="fn">First name</label><input id="fn" name="first_name">
+              <label for="ln">Last name</label><input id="ln" name="last_name">
+              <label for="em">Email</label><input id="em" name="email" type="email">
+              <label for="cv">Click to attach CV</label><input id="cv" name="resume" type="file">
+              <input type="submit" value="Apply now">
+            </form></div>
+            <button class="form-toggler" onclick="document.getElementById('side').style.display='block';this.remove()"><span>Easy Apply</span></button>
+            </body></html>
+            """, "text/html"));
+        // Tecbrains (#419): the application form, and a Mailchimp for WordPress signup in the footer.
+        _fixture.MapGet("/jobs/newsletter-footer", () => Results.Content(FormHtml.Replace("</body>",
+            """
+            <footer><form class="mc4wp-form mc4wp-form-589" method="post"><div class="mc4wp-form-fields">
+              <input type="email" name="email" placeholder="Your email address" required><input type="submit" value="Subscribe">
+              <label style="display:none !important;">Leave this field empty if you're human: <input type="text" name="_mc4wp_honeypot" value="" tabindex="-1" autocomplete="off"></label>
+            </div></form></footer></body>
+            """), "text/html"));
+        // Lever (#420): Submit only asks an invisible hCaptcha for a token, which never comes, so
+        // nothing is ever posted.
+        _fixture.MapGet("/jobs/hcaptcha-held", () => Results.Content(
+            """
+            <html><body><form id="application-form" method="post" action="/apply" enctype="multipart/form-data">
+              <label for="first_name">First Name</label><input id="first_name" name="first_name">
+              <div id="h-captcha" class="h-captcha" data-sitekey="e33f87f8"></div>
+              <button id="btn-submit" type="button" onclick="window.executed = true">Submit application</button>
+              <button id="hcaptchaSubmitBtn" type="submit" style="display:none"></button>
+            </form></body></html>
+            """, "text/html"));
+        // Ashby (#421): the application goes up as a GraphQL mutation answered 200 either way, and
+        // the page here says nothing — the body is the verdict.
+        foreach (var path in new[] { "graphql-accepted", "graphql-refused" })
+        {
+            _fixture.MapGet($"/jobs/{path}", () => Results.Content(
+                $$"""
+                <html><body>
+                  <label for="first_name">First Name</label><input id="first_name" name="first_name">
+                  <button type="button" onclick="fetch('/api/non-user-graphql?op=ApiSubmitSingleApplicationFormAction&r={{path}}',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})">Submit Application</button>
+                </body></html>
+                """, "text/html"));
+        }
+        _fixture.MapPost("/api/non-user-graphql", (HttpRequest req) =>
+        {
+            lock (_posts) _posts.Add(new() { ["graphql"] = req.Query["op"].ToString() });
+            return Results.Content(req.Query["r"] == "graphql-accepted"
+                ? """{"data":{"submitSingleApplicationFormAction":{"applicationFormResult":{"__typename":"FormSubmitSuccess","_":null},"__typename":"SubmitSingleApplicationFormActionResult"}}}"""
+                : """{"errors":[{"message":"Missing required field: Location","extensions":{}}],"data":null}""", "application/json");
+        });
         _fixture.MapPost("/apply", async (HttpRequest req) =>
         {
             var form = await req.ReadFormAsync();
@@ -4498,6 +4569,102 @@ public sealed class BrowserSubmitterTests : IAsyncLifetime
         Assert.Contains("HTTP 410", outcome.Error);
         Assert.False(outcome.Filled);
         Assert.Empty(_posts);
+    }
+
+    private FormDiscoverer Discoverer() =>
+        new(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+
+    [SkippableFact]
+    public async Task A_resume_dropzone_is_named_by_its_field_and_takes_the_resume()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Ethos: discovered as "Click or drag & drop PDF", never attached, unmapped on every run (#417).
+        var questions = await Discoverer().DiscoverAsync($"{_fixtureUrl}/jobs/dropzone");
+        var file = Assert.Single(questions!, q => q.Type == PacketQuestion.File);
+        Assert.Equal("CV / Resume", file.Label);
+        Assert.True(file.Required);
+
+        // A packet built before the fix still carries the dropzone's words; the one file input is
+        // the résumé all the same.
+        var stale = new AgentPacket
+        {
+            ApplicationName = "ethos-ai-engineer.md", Provider = "unknown",
+            Questions =
+            [
+                new("firstName", "First name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("email", "Email", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+                new("Click or drag & drop PDF", "Click or drag & drop PDF", true, PacketQuestion.File, [], PacketQuestion.Custom),
+            ],
+            Answers = new() { ["firstName"] = "Ada", ["email"] = "ada@example.com" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/dropzone", stale, (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        Assert.Contains("Click or drag & drop PDF", outcome.Mapped);
+        Assert.Equal("resume.pdf", Assert.Single(_posts)["resume_name"]);
+    }
+
+    [SkippableFact]
+    public async Task A_form_folded_behind_easy_apply_is_opened_and_filled()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // N-iX: "Easy Apply" did not begin with "apply", so only the hidden file input was ever
+        // seen and first name, last name and email were unmapped (#418).
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/easy-apply-fold", StandardPacket(), (Pdf, "resume.pdf"), dryRun: false);
+        Assert.True(outcome.Submitted, outcome.Error);
+        var post = Assert.Single(_posts);
+        Assert.Equal("Ada", post["first_name"]);
+        Assert.Equal("ada@example.com", post["email"]);
+    }
+
+    [SkippableFact]
+    public async Task A_newsletter_signup_in_the_footer_is_not_a_question()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Tecbrains: the mc4wp box became the question "email", unmapped on every dry run (#419).
+        var questions = await Discoverer().DiscoverAsync($"{_fixtureUrl}/jobs/newsletter-footer");
+        Assert.NotNull(questions);
+        Assert.Contains(questions!, q => q.Id == "job_application[email]");
+        Assert.DoesNotContain(questions!, q => q.Id is "email" or "_mc4wp_honeypot");
+    }
+
+    [SkippableFact]
+    public async Task A_submit_held_by_an_invisible_captcha_is_a_captcha_handoff()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Lever: the click asks hCaptcha for a token that never comes; nothing is posted (#420).
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-engineer.md", Provider = "lever",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var outcome = await Submitter().RunAsync($"{_fixtureUrl}/jobs/hcaptcha-held", packet, null, dryRun: false);
+        Assert.False(outcome.Submitted);
+        Assert.True(outcome.Captcha, outcome.Error);
+        Assert.Contains("captcha held it", outcome.Error);
+        Assert.Empty(_posts);
+    }
+
+    [SkippableFact]
+    public async Task Ashby_graphql_submit_answer_is_the_verdict_when_the_page_says_nothing()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        // Nuclear Promise X: "no confirmation" with two 200s from non-user-graphql and nothing to
+        // tell sent from refused (#421).
+        var packet = new AgentPacket
+        {
+            ApplicationName = "acme-engineer.md", Provider = "ashby",
+            Questions = [new("first_name", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard)],
+            Answers = new() { ["first_name"] = "Ada" },
+        };
+        var accepted = await Submitter().RunAsync($"{_fixtureUrl}/jobs/graphql-accepted", packet, null, dryRun: false);
+        Assert.True(accepted.Submitted, accepted.Error);
+        Assert.Contains("FormSubmitSuccess", accepted.Confirmation);
+
+        var refused = await Submitter().RunAsync($"{_fixtureUrl}/jobs/graphql-refused", packet, null, dryRun: false);
+        Assert.False(refused.Submitted);
+        Assert.Contains("(ApiSubmitSingleApplicationFormAction) → 200", refused.Error);
+        Assert.Contains("the board said \"Missing required field: Location\"", refused.Error);
     }
 
     private static string FindRepoRoot()

@@ -28,7 +28,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
 
     // Localised too: join.com renders its posting in the employer's language, so the
     // real Apply on a French posting is "Postuler maintenant" (#210).
-    [GeneratedRegex(@"^\s*(?:apply\b|i['’]?m interested|postuler\b|(?:jetzt )?bewerben|aplicar\b|solicitar\b|candidat)", RegexOptions.IgnoreCase)]
+    // "Easy Apply" and its kin as well: N-iX folds its whole form behind an "Easy Apply"
+    // button, which "begins with apply" never matched, so the form stayed hidden and only its
+    // file input was filled (#418).
+    [GeneratedRegex(@"^\s*(?:(?:easy|quick|one[- ]click)\s+apply\b|apply\b|i['’]?m interested|postuler\b|(?:jetzt )?bewerben|aplicar\b|solicitar\b|candidat)", RegexOptions.IgnoreCase)]
     private static partial Regex ApplyTrigger();
 
     /// <summary>
@@ -61,9 +64,31 @@ public sealed partial class BrowserSession : IAsyncDisposable
           if (/(?:^|[^a-z])(?:search(?!select)|keyword)|(?:location|job|keyword)search|createnewalert|(?:^|[^a-z])frequency(?:$|[^a-z])|job.?alert|subscribe/.test(own)) return true;
           return !!el.closest('[role=search], form[action*="search" i], form[class*="search" i], form[id*="search" i], form[name*="search" i], '
             + 'form[action*="subscribe" i], form[class*="subscribe" i], form[id*="subscribe" i], form[name*="subscribe" i], '
-            + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i]');
+            + 'form[action*="alert" i], form[class*="alert" i], form[id*="alert" i], [class*="job-alert" i], [class*="jobalert" i], [id*="jobalert" i], [class*="emailsubscribe" i], '
+            // A newsletter signup in the footer: Tecbrains' Mailchimp for WordPress box
+            // (<form class="mc4wp-form"><input type=email name=email>) was discovered as the
+            // application's "email" and left unmapped on every dry run (#419). Mailchimp's own
+            // embed too, and any form that calls itself a newsletter.
+            + 'form.mc4wp-form, #mc_embed_signup, form[action*="list-manage.com" i], '
+            + 'form[class*="newsletter" i], form[id*="newsletter" i], form[action*="newsletter" i], [class*="newsletter-form" i], [class*="newsletter_form" i]');
         }
         """;
+
+    /// <summary>
+    /// A JavaScript predicate, <c>(text) => bool</c>: is this text a file dropzone's instructions
+    /// — "Click or drag &amp; drop PDF", "Drop files here", "Browse files" — and nothing that names
+    /// the document? Ethos wraps its résumé input in such a label, beside the field's real title
+    /// "CV / Resume", and the question was discovered as "Click or drag &amp; drop PDF" (#417).
+    /// </summary>
+    public const string DropzoneJs = """
+        (t) => /\b(?:drag\s*(?:&|and|'?n'?|or)?\s*drop|drop\s+(?:your\s+|a\s+|the\s+)?files?\s+here|click\s+(?:here\s+)?to\s+(?:upload|browse|attach|select)|browse\s+(?:for\s+)?(?:a\s+)?files?)/i.test(t)
+          && !/resume|résumé|\bcv\b|cover|letter|portfolio|transcript|photo|certificat/i.test(t)
+        """;
+
+    /// <summary>The same test as <see cref="DropzoneJs"/>, for a packet question's label (#417).</summary>
+    public static bool IsDropzoneText(string text) =>
+        Regex.IsMatch(text, @"\b(?:drag\s*(?:&|and|'?n'?|or)?\s*drop|drop\s+(?:your\s+|a\s+|the\s+)?files?\s+here|click\s+(?:here\s+)?to\s+(?:upload|browse|attach|select)|browse\s+(?:for\s+)?(?:a\s+)?files?)", RegexOptions.IgnoreCase)
+        && !Regex.IsMatch(text, @"resume|résumé|\bcv\b|cover|letter|portfolio|transcript|photo|certificat", RegexOptions.IgnoreCase);
 
     /// <summary>
     /// The name of an applicant-tracking system that only takes applications from a

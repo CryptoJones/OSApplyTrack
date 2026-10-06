@@ -37,13 +37,17 @@ public sealed partial class AnswerDrafter
     // deterministic branch at all — it fell through to the model, which answered it from
     // the brief's saved figure with no units check. Keep this list generous: a salary
     // question that is NOT recognised skips every guard below.
-    [GeneratedRegex(@"salary|compensation|remunerat|renumerat|pay (?:expectation|range|rate)|desired pay|rate expectation|expected (?:pay|rate)|day rate", RegexOptions.IgnoreCase)]
+    // "hourly rate" too: Wise Integration's "expected hourly rate for this role?" matched none
+    // of these, and fell to the website rule below (#422).
+    [GeneratedRegex(@"salary|compensation|remunerat|renumerat|pay (?:expectation|range|rate)|desired pay|rate expectation|expected (?:pay|rate)|day rate|hourly (?:rate|pay)|rate per hour", RegexOptions.IgnoreCase)]
     private static partial Regex Salary();
     [GeneratedRegex(@"linkedin", RegexOptions.IgnoreCase)]
     private static partial Regex LinkedIn();
     [GeneratedRegex(@"github", RegexOptions.IgnoreCase)]
     private static partial Regex GitHub();
-    [GeneratedRegex(@"portfolio|website|personal site|url", RegexOptions.IgnoreCase)]
+    // "URL" as a word: bare, it matched inside "hoURLy" and an hourly-rate question was
+    // answered with the LinkedIn link (#422).
+    [GeneratedRegex(@"portfolio|website|personal site|\burls?\b", RegexOptions.IgnoreCase)]
     private static partial Regex Website();
     [GeneratedRegex(@"facebook|twitter|instagram|mastodon|bluesky|threads", RegexOptions.IgnoreCase)]
     private static partial Regex Social();

@@ -322,14 +322,19 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 }
                 if (q.Type == PacketQuestion.File)
                 {
-                    if (IsResume(q) && await ResumeOnFileAsync(form))
+                    // A packet discovered before #417 named Ethos' résumé by its dropzone's
+                    // instructions ("Click or drag & drop PDF"). On a form with one file input,
+                    // a file field named by nothing but those instructions is that input: the résumé.
+                    var isResume = IsResume(q) || (!IsCoverLetter(q) && BrowserSession.IsDropzoneText(q.Label)
+                        && await OnlyFileInputAsync(form) is not null);
+                    if (isResume && await ResumeOnFileAsync(form))
                     {
                         // The candidate's account already holds a résumé and the form shows it
                         // (SuccessFactors: "Upload Resume · resume.pdf · Edit document", #216).
                         // Nothing to attach; the field is satisfied as it stands.
                         mapped.Add(q.Id);
                     }
-                    else if (IsResume(q) && resumePdf is { } pdf)
+                    else if (isResume && resumePdf is { } pdf)
                     {
                         // With a PDF on hand the résumé is required for the click whatever the
                         // API said: Greenhouse's Job Board API lists GitLab's résumé as optional
@@ -507,12 +512,30 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var posts = new List<string>();
             var captchaRefused = false;
             var boardSaid = "";
+            var boardAccepted = false;
             page.Response += (_, r) =>
             {
                 var req = r.Request;
                 if (req.Method is "GET" or "HEAD" || IsChatter(r.Url)) return;
                 if (Uri.TryCreate(r.Url, UriKind.Absolute, out var u))
-                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath} → {r.Status}");
+                    lock (posts) posts.Add($"{req.Method} {u.Host}{u.AbsolutePath}{GraphQlOp(u)} → {r.Status}");
+                // Ashby answers every GraphQL call 200 and says in the body whether the
+                // application was taken: applicationFormResult is FormSubmitSuccess, or the form
+                // again (FormRender) with errors. Two runs ended "no confirmation" with nothing
+                // to say which (#421). Read the body: success is the confirmation, an error
+                // message is the board's own words.
+                if (r.Status is >= 200 and < 300 && u is not null && u.AbsolutePath.Contains("graphql", StringComparison.OrdinalIgnoreCase))
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var body = await r.TextAsync();
+                            if (body.Contains("\"FormSubmitSuccess\"", StringComparison.Ordinal)) boardAccepted = true;
+                            var err = Regex.Match(body, "\"errors\"\\s*:\\s*\\[\\s*\\{[^\\]]*?\"message\"\\s*:\\s*\"([^\"]{1,200})\"");
+                            if (err.Success) boardSaid = err.Groups[1].Value;
+                        }
+                        catch (PlaywrightException) { /* body gone with the page */ }
+                    });
                 // The board's own verdict on the application. Greenhouse answers a submission
                 // its invisible reCAPTCHA Enterprise scored as a bot's with
                 // 428 {"code":"captcha-failed", "security_code_recipient": "<email>"} and asks
@@ -555,7 +578,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     await page.WaitForTimeoutAsync(1000);
                     text = await BodyTextAsync(form);
                     m = Confirmation().Match(text);
-                    if (m.Success) break;
+                    if (m.Success || boardAccepted) break;
                     // "Are you sure you want to apply?" — a board that asks once more before it
                     // sends. Answered once, and only inside a dialog the click opened (#216).
                     if (!confirmedDialog && i >= 1 && await ConfirmDialogAsync(page))
@@ -603,6 +626,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             {
                 lock (posts) return posts.Count == 0 ? " (no application request was sent)" : $" ({string.Join("; ", posts)})";
             }
+            // The page never said so, but the board's own answer did (#421).
+            if (!m.Success && boardAccepted)
+                return new SubmitOutcome(true, true, page.Url, "the board answered FormSubmitSuccess" + PostNote(), screenshot, unmapped, mapped, "");
             if (!m.Success)
             {
                 // A challenge thrown up BY the click is the common case, not the rare one: the
@@ -639,8 +665,21 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 if (await FormResetAsync(form, packet, mapped))
                     return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
                         "Submit was clicked and the form reset itself with no confirmation" + PostNote() + " — check the screenshot");
+                // The click sent nothing at all, and the form carries a captcha — the invisible
+                // kind included. Lever's Submit only asks hCaptcha for a token and posts the form
+                // from its callback; from this browser hCaptcha never answers, so the click is
+                // swallowed and nothing leaves. Both Lever runs read "no confirmation" for an
+                // application that was never posted (#420). That is a captcha holding the form,
+                // the person's to finish, not a mystery to retry.
+                bool noneSent;
+                lock (posts) noneSent = posts.Count == 0;
+                if (noneSent && page.Url == urlBefore && (await HasCaptchaWidgetAsync(form) || await HasCaptchaWidgetAsync(page.MainFrame)))
+                    return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
+                        "Submit sent nothing — the form's captcha held it (no application request was sent); finish it with Copy answers and open",
+                        Captcha: true);
                 return new SubmitOutcome(true, false, page.Url, "", screenshot, unmapped, mapped,
-                    "Submit was clicked but no confirmation text was recognised" + PostNote() + " — check the screenshot");
+                    "Submit was clicked but no confirmation text was recognised" + PostNote()
+                    + (boardSaid.Length > 0 ? $" — the board said \"{boardSaid}\"" : "") + " — check the screenshot");
             }
             var start = Math.Max(0, m.Index - 80);
             var snippet = text.Substring(start, Math.Min(text.Length - start, 240)).Trim();
@@ -1017,7 +1056,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             const by = el.getAttribute('aria-labelledby');
             if (by) { const t = by.split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim(); if (t) return t; }
             if (el.id) { const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`); if (l) return l.innerText; }
-            const wrap = el.closest('label'); if (wrap) return wrap.innerText;
+            // A dropzone's instructions are not the field's name; the row's title is (#417).
+            const wrap = el.closest('label');
+            if (wrap && !(el.type === 'file' && (__DROPZONE__)(wrap.innerText || ''))) return wrap.innerText;
             const legend = el.closest('fieldset')?.querySelector('legend'); if (legend) return legend.innerText;
             // The row's own label when the page never tied it to the control — the same rule
             // discovery names the field by, so the sweep and the packet agree on it. SuccessFactors'
@@ -1188,7 +1229,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           }
           return out;
         }
-        """.Replace("__WIDGET__", BrowserSession.WidgetJs);
+        """.Replace("__WIDGET__", BrowserSession.WidgetJs).Replace("__DROPZONE__", BrowserSession.DropzoneJs);
 
     /// <summary>Greenhouse's security-code prompt: one box per character, ids <c>security-input-N</c>,
     /// under "A verification code was sent to …".</summary>
@@ -2580,6 +2621,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// submission, so anything inside <c>.grecaptcha-badge</c> must NOT count — only a challenge
     /// a person has to touch (the v2 checkbox, hCaptcha, Turnstile).
     /// </summary>
+    /// <summary>
+    /// A captcha widget anywhere in the form, shown or not: hCaptcha's container or frames, a
+    /// reCAPTCHA (v2 box or the invisible kind), Turnstile. Not a reason to stop on its own —
+    /// most boards carry one and post regardless — only the explanation for a Submit that sent
+    /// nothing (#420).
+    /// </summary>
+    private static async Task<bool> HasCaptchaWidgetAsync(IFrame page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<bool>("""
+                () => !!document.querySelector('.h-captcha, [data-hcaptcha-widget-id], iframe[src*="hcaptcha.com"], '
+                  + '.g-recaptcha, .grecaptcha-badge, iframe[src*="recaptcha"], .cf-turnstile, iframe[src*="challenges.cloudflare.com"]')
+                """);
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>The GraphQL operation a POST named in its query string — Ashby's
+    /// <c>/api/non-user-graphql?op=…</c> — as " (op)", or "" (#421).</summary>
+    private static string GraphQlOp(Uri u)
+    {
+        var op = Regex.Match(u.Query, @"[?&]op=([A-Za-z0-9_]{1,80})");
+        return op.Success ? $" ({op.Groups[1].Value})" : "";
+    }
+
     private static async Task<bool> HasCaptchaAsync(IFrame page)
     {
         try
@@ -3042,9 +3109,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     private static partial Regex AlreadyApplied();
 
     /// <summary>Requests that are never the application: analytics beacons, the captcha's own
-    /// traffic, and the résumé uploader's trip to object storage.</summary>
+    /// traffic, the résumé uploader's trip to object storage, and Lever's résumé parser —
+    /// <c>POST /parseResume</c> stood in two "no confirmation" verdicts for an application that
+    /// was never posted (#420).</summary>
     private static bool IsChatter(string url) =>
-        Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog", RegexOptions.IgnoreCase);
+        Regex.IsMatch(url, @"snowplow|analytics|recaptcha|hcaptcha|gstatic|googleapis|amazonaws\.com|sentry|segment\.io|mixpanel|datadog|/parseResume\b", RegexOptions.IgnoreCase);
 
     /// <summary>The page's visible text, or "" if it can't be read — never throws.</summary>
     private static async Task<string> BodyTextAsync(IFrame page)
