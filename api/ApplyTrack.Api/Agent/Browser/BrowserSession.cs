@@ -172,6 +172,11 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 await Auto(Page, "SignInWithEmailButton").First.ClickAsync(new() { Timeout = 5_000 });
                 await WaitVisibleAsync(Page.Locator("input[type='password']"), 8_000);
             }
+            // Step 1 of the flow is fetched after the flow page is drawn — blank for ~7 s on
+            // finastra.wd3 — so whatever it shows is waited for, not glanced at (#450).
+            await WaitVisibleAsync(Page.Locator("[data-automation-id='signInSubmitButton'], [data-automation-id='verifyPassword'], "
+                + "[data-automation-id='SignInWithEmailButton'], [data-automation-id='pageFooterNextButton']"), 30_000);
+            await FlipWorkdayCreateAccountToSignInAsync(Page);
             // The form is drawn before its script is listening: filled the instant the password
             // box appears, Sign In sent nothing and the page stayed as it was, with no complaint
             // (checked against nvidia.wd5 — a 2.5 s settle, or typing key by key, and it signs in).
@@ -179,6 +184,27 @@ public sealed partial class BrowserSession : IAsyncDisposable
             await DismissConsentAsync(Page);
         }
         catch (PlaywrightException) { /* judged by what the reveal finds */ }
+        catch (TimeoutException) { /* ditto */ }
+    }
+
+    /// <summary>
+    /// A tenant that opens step 1 on Create Account (finastra.wd3, 2026-10-13) draws the same
+    /// email and password boxes as its Sign In, plus "Verify New Password" and a "Sign In" link
+    /// that turns the form over. Typed into as it stood, the saved password went into Create
+    /// Account and the link was pressed as the sign-in button, so the form flipped empty and
+    /// the sign-in was judged refused (#450). The link is pressed first, and the sign-in waited for.
+    /// </summary>
+    internal static async Task FlipWorkdayCreateAccountToSignInAsync(IPage page)
+    {
+        try
+        {
+            var verify = page.Locator("[data-automation-id='verifyPassword']");
+            var link = page.Locator("[data-automation-id='signInLink']");
+            if (await verify.CountAsync() == 0 || !await verify.First.IsVisibleAsync() || await link.CountAsync() == 0) return;
+            await link.First.ClickAsync(new() { Timeout = 5_000 });
+            await WaitVisibleAsync(page.Locator("[data-automation-id='signInSubmitButton']"), 8_000);
+        }
+        catch (PlaywrightException) { /* judged by what the sign-in finds */ }
         catch (TimeoutException) { /* ditto */ }
     }
 
@@ -1189,6 +1215,10 @@ public sealed partial class BrowserSession : IAsyncDisposable
             // The username box, best name first — a CSS list is matched in DOM order, and the
             // careers site's search box comes before the sign-in on the page. Never a widget's.
             const string notWidget = ":not([type='search']):not([name*='search' i]):not([id*='search' i]):not([placeholder*='search' i]):not([class*='search' i])";
+            // Workday's Create Account carries the same boxes as its Sign In: turned over first,
+            // so the visible boxes found below are the sign-in's (#450).
+            var typed = IsWorkday(host) || await LooksLikeWorkdayAsync(Page);
+            if (typed) await FlipWorkdayCreateAccountToSignInAsync(Page);
             ILocator? userBox = null;
             foreach (var sel in new[]
                      {
@@ -1212,7 +1242,6 @@ public sealed partial class BrowserSession : IAsyncDisposable
             }
             // Workday's form takes what is typed, key by key, every time; a fill — the value set
             // in one go — it sometimes never hears, and Sign In then sends nothing (#443).
-            var typed = IsWorkday(host) || await LooksLikeWorkdayAsync(Page);
             if (typed)
             {
                 await userBox.ClickAsync(new() { Timeout = 5_000 });
