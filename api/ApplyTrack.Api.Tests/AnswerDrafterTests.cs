@@ -348,7 +348,8 @@ public class AnswerDrafterTests
     {
         var ctx = new AnswerContext(new Resume(), new AgentSettings(), "", "", "");
         var (a1, r1) = AnswerDrafter.Deterministic(
-            new("q", "How did you hear about us?", true, PacketQuestion.Text, [], PacketQuestion.Custom), ctx);
+            // "How did you hear about us?" is answered since #453; a start date is still the person's.
+            new("q", "What is your earliest start date?", true, PacketQuestion.Text, [], PacketQuestion.Custom), ctx);
         Assert.Null(a1);
         Assert.Contains("only you", r1);
 
@@ -580,4 +581,24 @@ public class AnswerDrafterTests
     public void A_plain_phone_label_still_takes_the_number(string label) =>
         Assert.Equal(("555-0100", null), AnswerDrafter.Deterministic(
             new("question_2", label, true, PacketQuestion.Text, [], PacketQuestion.Custom), Ctx()));
+
+    /// <summary>Workday's My Information as finastra.wd3 asks it (#453): the kind of phone, where
+    /// the posting was seen, and the city and state of the résumé's location as their own boxes.</summary>
+    [Fact]
+    public void Workday_my_information_boxes_get_the_phone_kind_the_source_and_the_city_and_state()
+    {
+        var ctx = Ctx();   // Location = "Lincoln, NE"
+        static PacketQuestion Q(string id, string label, params string[] options) => new(id, label, true, options.Length > 0 ? PacketQuestion.Select : PacketQuestion.Text, [.. options], PacketQuestion.Custom);
+        Assert.Equal(("Mobile", null), AnswerDrafter.Deterministic(Q("phoneType", "Phone Device Type"), ctx));
+        Assert.Equal(("Mobile", null), AnswerDrafter.Deterministic(Q("phoneType", "Phone Device Type", "Fax", "Landline", "Mobile"), ctx));
+        Assert.Equal(("Home Cellular", null), AnswerDrafter.Deterministic(Q("phoneType", "Phone Device Type", "Home", "Home Cellular", "Work"), ctx));
+        Assert.Equal(("LinkedIn", null), AnswerDrafter.Deterministic(Q("source--source", "How Did You Hear About Us?"), ctx));
+        Assert.Equal(("Job Board", null), AnswerDrafter.Deterministic(Q("source", "How did you hear about us?", "Event", "Job Board", "Social Media"), ctx));
+        Assert.Equal(("Lincoln", null), AnswerDrafter.Deterministic(Q("city", "City"), ctx));
+        Assert.Equal(("NE", null), AnswerDrafter.Deterministic(Q("countryRegion", "State"), ctx));
+        Assert.Equal(("Nebraska", null), AnswerDrafter.Deterministic(Q("countryRegion", "State", "Kansas", "Nebraska", "Iowa"), ctx));
+        // The phone number is still the number, and a location box still takes the whole place.
+        Assert.Equal(("5551234567", null), AnswerDrafter.Deterministic(Q("phoneNumber", "Phone Number"), ctx with { Settings = new AgentSettings { Phone = "5551234567" } }));
+        Assert.Equal(("Lincoln, NE", null), AnswerDrafter.Deterministic(Q("location", "Current location"), ctx));
+    }
 }

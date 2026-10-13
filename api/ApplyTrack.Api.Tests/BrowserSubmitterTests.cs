@@ -581,6 +581,8 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         // The same wizard as finastra.wd3 serves it (#450): step 1 opens on Create Account, drawn a
         // while after the page, with a "Sign In" link that turns the form over to the sign-in.
         _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R2/apply/applyManually", () => Results.Content(WorkdayWizardCreateFirstHtml, "text/html"));
+        // Workday's search box beside a real site search (#453): the box is a question, the search is not.
+        _fixture.MapGet("/jobs/workday-search-box", () => Results.Content(WorkdaySearchBoxHtml, "text/html"));
         _fixture.MapPost("/wd/step", async (HttpRequest req) =>
         {
             using var reader = new StreamReader(req.Body);
@@ -1510,6 +1512,21 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
                  onclick="if(document.getElementById('p').value===document.getElementById('v').value) document.getElementById('create').submit()"></div>
           </div>
         </form>
+        </body></html>
+        """;
+
+    private const string WorkdaySearchBoxHtml = """
+        <html><body>
+        <form role="search" action="/search"><input type="text" placeholder="Search for Jobs" name="q" /><button>Search</button></form>
+        <div data-automation-id="applyFlowPage">
+          <label for="source--source">How Did You Hear About Us?*</label>
+          <div data-uxi-multiselect-id="m9">
+            <ul role="listbox" aria-label="items selected" data-automation-id="selectedItemList" data-uxi-multiselect-id="m9"></ul>
+            <input id="source--source" data-uxi-widget-type="selectinput" data-uxi-multiselect-id="m9" aria-required="true" placeholder="Search" enterkeyhint="search" autocomplete="off" />
+          </div>
+          <label for="address--city">City*</label><input type="text" id="address--city" name="city" />
+          <button type="button" data-automation-id="pageFooterNextButton">Save and Continue</button>
+        </div>
         </body></html>
         """;
 
@@ -3161,6 +3178,21 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         string[] steps;
         lock (_wdSteps) steps = [.. _wdSteps];
         Assert.Contains(steps, s => s.StartsWith("step4 "));
+    }
+
+    /// <summary>Workday's search box says "Search" in its placeholder and was read as a site search
+    /// and dropped (#453); the site's own search box still is.</summary>
+    [SkippableFact]
+    public async Task A_workday_search_box_is_discovered_as_a_question_and_the_site_search_is_not()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var discoverer = new FormDiscoverer(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<FormDiscoverer>.Instance);
+        var questions = await discoverer.DiscoverAsync($"{_fixtureUrl}/jobs/workday-search-box");
+        Assert.NotNull(questions);
+        var source = Assert.Single(questions!, q => q.Id == "source--source");
+        Assert.Equal(("How Did You Hear About Us?", true), (source.Label, source.Required));
+        Assert.Contains(questions!, q => q.Id == "city");   // keyed by name, as the sweep keys it
+        Assert.DoesNotContain(questions!, q => q.Id == "q" || q.Label.Contains("Search for Jobs"));
     }
 
     [SkippableFact]
