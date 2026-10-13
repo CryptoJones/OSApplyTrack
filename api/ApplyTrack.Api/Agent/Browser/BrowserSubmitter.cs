@@ -1028,7 +1028,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var pick = real.FirstOrDefault(x => x.t.Equals(want, StringComparison.OrdinalIgnoreCase), (t: "", n: -1));
                 if (pick.n < 0) pick = real.Where(x => x.t.StartsWith(want, StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.t.Length).FirstOrDefault((t: "", n: -1));
                 if (pick.n < 0) pick = real.FirstOrDefault(x => x.t.Contains(want, StringComparison.OrdinalIgnoreCase), (t: "", n: -1));
-                if (pick.n < 0) pick = real[0];
+                // Nothing reads as the answer: a box that must have one takes the first, any other
+                // is left empty — Field of Study took "Accounting" for "Applied Artificial
+                // Intelligence" (#455).
+                if (pick.n < 0)
+                {
+                    if (await box.GetAttributeAsync("aria-required") != "true") { await page.Page.Keyboard.PressAsync("Escape"); return false; }
+                    pick = real[0];
+                }
                 await options.Nth(pick.n).ClickAsync(new() { Timeout = 5_000 });
                 await page.WaitForTimeoutAsync(500);
                 return (await SelectInputChipsAsync(box)).Length > 0;
@@ -3677,6 +3684,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if (await work.CountAsync() > 0)
             {
                 var jobs = resume.Experience.Where(e => e.Company.Length > 0 && e.Title.Length > 0).Take(3).ToList();
+                // A saved draft's rows arrive after the block and its Add button are drawn (half a
+                // second on finastra.wd3, more over a proxy): counted at once, there were none, and
+                // a blank row was added for every job the draft already held (#455).
+                await WaitRowsSettledAsync(page, rows);
                 var held = await rows.CountAsync();
                 // Rows already there (a draft resumed) are completed, not added to: each is matched
                 // to the résumé's job by title, else taken in order, and only its blanks are filled.
@@ -3708,21 +3719,27 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
 
             var school = page.GetByRole(AriaRole.Group, new() { Name = "Education", Exact = true });
             var schools = page.GetByRole(AriaRole.Group, new() { NameRegex = new Regex(@"^Education \d+$") });
-            if (await school.CountAsync() > 0 && await schools.CountAsync() == 0)
+            if (await school.CountAsync() > 0)
             {
-                foreach (var (e, n) in resume.Education.Where(e => e.School.Length > 0).Select((e, n) => (e, n)))
+                await WaitRowsSettledAsync(page, schools);
+                var wanted = resume.Education.Where(e => e.School.Length > 0).ToList();
+                var held = await schools.CountAsync();
+                // Rows already there are completed, never added to, the way the jobs are (#455).
+                for (var i = 0; i < held; i++)
+                {
+                    var row = schools.Nth(i);
+                    var nameBox = row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" });
+                    if (await nameBox.CountAsync() == 0) continue;
+                    var name = (await nameBox.First.InputValueAsync()).Trim();
+                    var e = wanted.FirstOrDefault(w => w.School.Equals(name, StringComparison.OrdinalIgnoreCase)) ?? wanted.ElementAtOrDefault(i);
+                    if (e is null) continue;
+                    await FillWorkdaySchoolAsync(page, row, e, i, filled);
+                }
+                foreach (var (e, n) in wanted.Select((e, n) => (e, n)).Skip(held))
                 {
                     if (!await AddWorkdayRowAsync(page, school)) break;
                     var row = schools.Last;
-                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" }), e.School, $"education-{n}--school", filled);
-                    var degree = row.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Degree\b") }).First;
-                    if (WorkdayDegree(e.Degree) is { } term && await degree.CountAsync() > 0
-                        && await ChooseListboxAsync(page.MainFrame, degree, new($"education-{n}--degree", "Degree", false, PacketQuestion.Select, [], PacketQuestion.Custom), term))
-                        filled.Add($"education-{n}--degree");
-                    var field = row.GetByRole(AriaRole.Textbox, new() { Name = "Field of Study" }).First;
-                    if (e.Field.Length > 0 && await field.CountAsync() > 0 && await FillSelectInputAsync(page.MainFrame, field, e.Field))
-                        filled.Add($"education-{n}--fieldOfStudy");
-                    await FillWorkdayDatesAsync(row, e.Dates, $"education-{n}", filled, months: false);
+                    await FillWorkdaySchoolAsync(page, row, e, n, filled);
                 }
             }
         }
@@ -3732,6 +3749,35 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         }
         if (filled.Count > 0) log?.LogInformation("workday sections: filled {Fields}", string.Join(", ", filled));
         return filled;
+    }
+
+    /// <summary>One Education row's blanks from the résumé: the school, the Degree menu, the Field of Study search box, the years.</summary>
+    private static async Task FillWorkdaySchoolAsync(IPage page, ILocator row, ResumeEducation e, int n, List<string> filled)
+    {
+        await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" }), e.School, $"education-{n}--school", filled);
+        var degree = row.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Degree\b") }).First;
+        if (WorkdayDegree(e.Degree) is { } term && await degree.CountAsync() > 0 && Placeholder().IsMatch((await degree.InnerTextAsync()).Trim())
+            && await ChooseListboxAsync(page.MainFrame, degree, new($"education-{n}--degree", "Degree", false, PacketQuestion.Select, [], PacketQuestion.Custom), term))
+            filled.Add($"education-{n}--degree");
+        var field = row.GetByRole(AriaRole.Textbox, new() { Name = "Field of Study" }).First;
+        if (e.Field.Length > 0 && await field.CountAsync() > 0 && await FillSelectInputAsync(page.MainFrame, field, e.Field))
+            filled.Add($"education-{n}--fieldOfStudy");
+        await FillWorkdayDatesAsync(row, e.Dates, $"education-{n}", filled, months: false);
+    }
+
+    /// <summary>Wait for a block's rows to finish arriving: the count has held still for 3 s, or 15 s have passed (#455).</summary>
+    private static async Task WaitRowsSettledAsync(IPage page, ILocator rows)
+    {
+        var last = -1;
+        var stillSince = DateTime.UtcNow;
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline)
+        {
+            var now = await rows.CountAsync();
+            if (now != last) { last = now; stillSince = DateTime.UtcNow; }
+            else if (DateTime.UtcNow - stillSince >= TimeSpan.FromSeconds(3)) return;
+            await page.WaitForTimeoutAsync(500);
+        }
     }
 
     /// <summary>The block's Add — "Add Another" once a row exists — pressed; false when there is none.</summary>
@@ -3780,6 +3826,11 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* typed below */ }
         if ((await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0')) return true;
         await box.ClickAsync(new() { Timeout = 3_000 });
+        await box.PressSequentiallyAsync(value, new() { Delay = 40 });
+        if ((await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0')) return true;
+        // Once more over whatever it holds: a month typed into a box that already had one read as
+        // the two run together (#455).
+        await box.PressAsync("ControlOrMeta+a");
         await box.PressSequentiallyAsync(value, new() { Delay = 40 });
         return (await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0');
     }
