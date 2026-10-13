@@ -138,6 +138,10 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         await ClickIfVisibleAsync(Auto(page, "legalNoticeAcceptButton"));
         await ClickIfVisibleAsync(Auto(page, "adventureButton"));
         await ClickIfVisibleAsync(Auto(page, "applyManually"));
+        // A tenant that offers Google and LinkedIn puts the email sign-in behind a choice
+        // (NVIDIA, 2026-10-12): "Sign in with email" first, then the form (#443).
+        if (await WaitVisibleAsync(Auto(page, "SignInWithEmailButton"), 4_000))
+            await ClickIfVisibleAsync(Auto(page, "SignInWithEmailButton"));
         // Sign In is shown first on some tenants; its "Create Account" link turns the form over.
         if (!await WaitVisibleAsync(Auto(page, "verifyPassword"), 5_000))
             await ClickIfVisibleAsync(Auto(page, "createAccountLink"));
@@ -145,6 +149,8 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
             return new(null, "Workday showed no Create Account form after Apply — check the posting");
         if (await HasCaptchaAsync(page))
             return new(null, "Workday's Create Account is behind a captcha — that one is yours to create");
+        // Drawn before its script listens: filled at once, the form sends nothing (#443).
+        await page.WaitForTimeoutAsync(2_500);
         await Auto(page, "email").FillAsync(email);
         await Auto(page, "password").FillAsync(password);
         await Auto(page, "verifyPassword").FillAsync(password);
@@ -324,7 +330,11 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         await ClickIfVisibleAsync(page.Locator("[data-automation-id='legalNoticeAcceptButton']"));
         if (!await BrowserSession.SignInFormVisibleAsync(page))
             await ClickIfVisibleAsync(page.Locator("[data-automation-id='signInLink'], [data-automation-id='utilityButtonSignIn']").First);
-        await WaitVisibleAsync(page.Locator("input[type='password']"), 8_000);
+        // The same choice stands before the tenant's own /login (#443).
+        if (await WaitVisibleAsync(page.Locator("[data-automation-id='SignInWithEmailButton']"), 4_000))
+            await ClickIfVisibleAsync(page.Locator("[data-automation-id='SignInWithEmailButton']"));
+        if (await WaitVisibleAsync(page.Locator("input[type='password']"), 8_000))
+            await page.WaitForTimeoutAsync(2_500); // the same settle the way in gives it (#443)
     }
 
     /// <summary>24 characters from every class a password policy asks for, from the OS's CSPRNG.</summary>

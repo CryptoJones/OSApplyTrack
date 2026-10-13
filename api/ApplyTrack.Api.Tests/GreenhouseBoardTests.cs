@@ -271,9 +271,10 @@ public class AtsRoutingTests
     [InlineData("greenhouse", false, true)]
     [InlineData("lever", false, true)]
     [InlineData("ashby", false, true)]
-    [InlineData("workday", true, false)]
+    [InlineData("workday", false, true)]
+    [InlineData("successfactors", true, false)]
     [InlineData("unknown", false, false)]
     [InlineData("unknown", true, true)]
-    public void The_browser_drives_known_ats_the_long_tail_only_opted_in_and_workday_never(string provider, bool optIn, bool expected) =>
+    public void The_browser_drives_known_ats_and_workday_the_long_tail_only_opted_in_and_successfactors_never(string provider, bool optIn, bool expected) =>
         Assert.Equal(expected, ApplyTrack.Api.Agent.AtsProvider.BrowserCanSubmit(provider, optIn));
 }

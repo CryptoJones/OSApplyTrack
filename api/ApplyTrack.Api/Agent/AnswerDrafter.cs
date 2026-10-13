@@ -223,7 +223,9 @@ public sealed partial class AnswerDrafter
         var consent = Consent().IsMatch(label);
         if (id is "email" || (EmailRe().IsMatch(label) && !consent))
             return ctx.Email.Length > 0 ? (ctx.Email, null) : (null, "no email on the account");
-        if (id is "phone" || (Phone().IsMatch(label) && !consent))
+        // A menu that names a phone — Workday's "Phone Device Type" (Home / Home Cellular) — is
+        // not the number (#443): its choice is picked below like any other fixed set.
+        if (id is "phone" || (Phone().IsMatch(label) && !consent && q.Options.Count == 0))
             return ctx.Settings.Phone.Length > 0 ? (ctx.Settings.Phone, null) : (null, "add a phone number in Settings · Agent");
         if (id is "cover_letter")
             return ctx.CoverLetter.Length > 0 ? (ctx.CoverLetter, null) : (null, "no cover letter drafted");

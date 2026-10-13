@@ -212,7 +212,7 @@ public class SubmitEndpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task An_unknown_ats_is_not_auto_queued_and_submit_is_refused_until_the_long_tail_is_on_and_workday_never()
+    public async Task An_unknown_ats_is_not_auto_queued_and_submit_is_refused_until_the_long_tail_is_on_and_workday_is_driven()
     {
         var (client, _) = await ClientAsync();
         var res = await client.PostAsync("/api/apps",
@@ -232,9 +232,11 @@ public class SubmitEndpointTests : IAsyncLifetime
             Json("""{"company":"Wayne","role":"Engineer","score":"80","link":"https://wayne.wd5.myworkdayjobs.com/en-US/careers/job/1"}"""));
         var workday = (await ReadJson(res)).GetProperty("filename").GetString()!;
         await client.PostAsync($"/api/apps/{workday}/packet/prepare", null);
-        var never = await client.PostAsync($"/api/apps/{workday}/submit", Json("{}"));
-        Assert.Equal(HttpStatusCode.BadRequest, never.StatusCode);
-        Assert.Contains("Workday", (await ReadJson(never)).GetProperty("detail").GetString());
+        // Workday is driven since #443: the click is queued (or already pending from the
+        // prepare), never refused as an ATS the browser cannot drive.
+        var driven = await client.PostAsync($"/api/apps/{workday}/submit", Json("{}"));
+        Assert.Contains(driven.StatusCode, new[] { HttpStatusCode.Accepted, HttpStatusCode.OK });
+        Assert.True((await ReadJson(driven)).GetProperty("pending").GetBoolean());
     }
 
     [Fact]

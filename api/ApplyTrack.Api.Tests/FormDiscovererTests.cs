@@ -284,6 +284,21 @@ public sealed class FormDiscovererTests : IAsyncLifetime
     }
 
     [Fact]
+    public void A_workday_drop_down_button_is_a_select_keyed_by_its_name()
+    {
+        // <button aria-haspopup=listbox id="country--country" name="country"> under <label for>Country*</label> (#443).
+        var qs = FormDiscoverer.Map(
+        [
+            ("country--country", "country", "Country*", "button", "listbox", true, []),
+            ("eth", "ethnicity", "What is your ethnicity?", "button", "listbox", true, []),
+        ]);
+        Assert.Equal(2, qs.Count);
+        Assert.Equal(("country", "Country", PacketQuestion.Select, true, PacketQuestion.Custom), (qs[0].Id, qs[0].Label, qs[0].Type, qs[0].Required, qs[0].Kind));
+        // A demographic question is never required of the packet: it is the person's, or declined (#224).
+        Assert.Equal((PacketQuestion.Eeo, false), (qs[1].Kind, qs[1].Required));
+    }
+
+    [Fact]
     public void Mapping_collapses_duplicates_and_flags_eeo()
     {
         var qs = FormDiscoverer.Map(

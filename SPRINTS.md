@@ -176,8 +176,9 @@ All four shipped; **v1 is feature-complete** (every `plan.md` build step is done
   `/application`) get real questions this way; the same `PacketQuestion` shape
   Greenhouse's API gives, so the drafter and the submitter need no per-ATS code.
   The generic adapter (fill by label, refuse to click on an unmapped required
-  field) is behind the per-tenant `long_tail` opt-in (0023). Workday stays
-  manual, permanently: detected, packet prepared, routed to copy-and-open.
+  field) is behind the per-tenant `long_tail` opt-in (0023). Workday was routed
+  to copy-and-open until #443 (v1.68.0): its wizard is now walked signed in as
+  the candidate, with the account made on the way under #277's opt-in.
 - ✅ **Step 6 — Encryption at rest, operator allowlist & captcha code fallback** (#117, #156, #165, #166; v1.26–v1.27):
   Sensitive columns sealed with AES-256-GCM at rest (résumés, cover letters, packet
   answers, evidence screenshots, tenant API keys, bot tokens). Production audit closed

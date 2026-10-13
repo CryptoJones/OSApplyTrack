@@ -848,9 +848,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         // both to us as Select, so this has to come before the combobox path below.
         if (await SetChoiceAsync(page, q, answer) is { } choice)
             return choice;
+        // Workday's drop-down is a button that opens a listbox, not a control that is typed
+        // into or an <input role=combobox> (#443).
+        if (await WorkdayListboxAsync(page, q) is { } listbox)
+            return await ChooseListboxAsync(page, listbox, q, answer);
 
         var control = await LocateAsync(page, q);
         if (control is null) return false;
+        // Workday's search box ("How Did You Hear About Us?", Field of Study): typed into and
+        // committed with Enter, and only a chip beside it counts as an answer (#443).
+        if (await IsSelectInputAsync(control))
+            return await FillSelectInputAsync(page, control, answer);
         var tag = (await control.EvaluateAsync<string>("el => el.tagName")).ToLowerInvariant();
         if (tag == "select")
         {
@@ -876,6 +884,216 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         try { await control.FillAsync(answer); }
         catch (PlaywrightException) { return false; }
         return true;
+    }
+
+    /// <summary>
+    /// The Workday drop-down for a question, or null (#443): a <c>&lt;button aria-haspopup=listbox&gt;</c>
+    /// with the question's name or id, else the one its label names — the packet keys the question
+    /// by the button's name ("country"), and the sweep names it the same way.
+    /// </summary>
+    private static async Task<ILocator?> WorkdayListboxAsync(IFrame page, PacketQuestion q)
+    {
+        var id = Unprefixed(q.Id);
+        var label = PacketQuestion.CleanLabel(q.Label);
+        var candidates = new List<ILocator>
+        {
+            page.Locator($"button[aria-haspopup=listbox][name={Quote(id)}], button[aria-haspopup=listbox][id={Quote(id)}]"),
+        };
+        if (label.Length > 0)
+            candidates.Add(page.GetByLabel(new Regex(@"^\s*\*?\s*" + Regex.Escape(label).Replace(@"\ ", @"\s+") + @"\s*\*?\s*$", RegexOptions.IgnoreCase))
+                .And(page.Locator("button[aria-haspopup=listbox]")));
+        foreach (var c in candidates)
+        {
+            try { if (await c.CountAsync() > 0 && await c.First.IsVisibleAsync()) return c.First; }
+            catch (PlaywrightException) { /* next */ }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Open a Workday drop-down and choose: the option the answer is or means (<see cref="MenuChoices"/>),
+    /// else the one it opens with or contains — or, with <paramref name="prefer"/>, the first option
+    /// that reads that way. True only when the button then shows the choice (#443).
+    /// </summary>
+    private static async Task<bool> ChooseListboxAsync(IFrame page, ILocator button, PacketQuestion q, string answer, Regex? prefer = null)
+    {
+        try
+        {
+            // What the button shows already is the answer when it means the same thing — a draft
+            // resumed, the account's Country — and the menu is left shut.
+            var showing = (await button.InnerTextAsync()).Replace('\n', ' ').Trim();
+            if (prefer is null && answer.Trim().Length > 0 && showing.Length > 0 && !Placeholder().IsMatch(showing)
+                && MenuChoices([showing], answer, multi: false, q.Label).Count > 0)
+                return true;
+            await button.ClickAsync(new() { Timeout = 5_000 });
+            // The open menu's options — never a chip already chosen in a search box, which is an option too.
+            var options = page.Locator("[role=listbox]:visible [role=option]:not([data-automation-id='selectedItem'])");
+            IReadOnlyList<string> texts = [];
+            for (var i = 0; i < 12 && texts.Count == 0; i++)
+            {
+                await page.WaitForTimeoutAsync(250);
+                texts = await options.AllInnerTextsAsync();
+            }
+            var norm = texts.Select(t => t.Replace('\n', ' ').Trim()).ToList();
+            var real = norm.Where(t => t.Length > 0 && !Placeholder().IsMatch(t)).ToList();
+            string? Pick(List<string> all, List<string> choices)
+            {
+                if (prefer is not null) return choices.FirstOrDefault(prefer.IsMatch);
+                if (answer.Trim().Length == 0) return null;
+                var meant = MenuChoices(all, answer, multi: false, q.Label);
+                return meant.Count > 0 ? meant[0]
+                    : choices.Where(t => t.StartsWith(answer.Trim(), StringComparison.OrdinalIgnoreCase)).OrderBy(t => t.Length).FirstOrDefault()
+                      ?? choices.FirstOrDefault(t => t.Contains(answer.Trim(), StringComparison.OrdinalIgnoreCase));
+            }
+            var want = Pick(norm, real);
+            // A long menu (Country) is drawn a screenful at a time: typed at, Workday's listbox
+            // jumps to the entry the letters name, and the match is read from what it then shows.
+            if (want is null && prefer is null && answer.Trim().Length > 0)
+            {
+                var canonical = AnswerDrafter.CanonicalCountry(answer.Trim());
+                await page.Page.Keyboard.TypeAsync(canonical.Length > 0 ? canonical : answer.Trim(), new() { Delay = 30 });
+                await page.WaitForTimeoutAsync(600);
+                texts = await options.AllInnerTextsAsync();
+                norm = texts.Select(t => t.Replace('\n', ' ').Trim()).ToList();
+                real = norm.Where(t => t.Length > 0 && !Placeholder().IsMatch(t)).ToList();
+                want = Pick(norm, real);
+            }
+            if (want is null)
+            {
+                await page.Page.Keyboard.PressAsync("Escape");
+                return false;
+            }
+            await options.Nth(norm.IndexOf(want)).ClickAsync(new() { Timeout = 5_000 });
+            await page.WaitForTimeoutAsync(300);
+            var shown = (await button.InnerTextAsync()).Replace('\n', ' ').Trim();
+            return shown.Equals(want, StringComparison.OrdinalIgnoreCase) || shown.Contains(want, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            try { await page.Page.Keyboard.PressAsync("Escape"); } catch (PlaywrightException) { /* gone */ }
+            return false;
+        }
+    }
+
+    /// <summary>Workday's search box: an input the widget marks <c>data-uxi-widget-type=selectinput</c> (#443).</summary>
+    private static async Task<bool> IsSelectInputAsync(ILocator control)
+    {
+        try { return await control.EvaluateAsync<bool>("el => el.getAttribute('data-uxi-widget-type') === 'selectinput'"); }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>The chips a Workday search box holds — what it has been answered with.</summary>
+    private static async Task<string[]> SelectInputChipsAsync(ILocator box)
+    {
+        try
+        {
+            return await box.EvaluateAsync<string[]>("""
+                el => { const id = el.getAttribute('data-uxi-multiselect-id'); if (!id) return [];
+                        return [...document.querySelectorAll(`[data-uxi-multiselect-id="${CSS.escape(id)}"] [data-automation-id="selectedItem"]`)]
+                          .map(c => (c.innerText || '').trim()).filter(Boolean); }
+                """);
+        }
+        catch (PlaywrightException) { return []; }
+    }
+
+    /// <summary>
+    /// Answer a Workday search box (#443): type, press Enter, and take the chip Workday makes
+    /// of the one match — or, offered several, the one that is the answer, opens with it, or
+    /// contains it, else the first. A box already holding a chip (the phone's "+1", a draft
+    /// resumed) is left as it stands. True only when a chip is there afterwards.
+    /// </summary>
+    private static async Task<bool> FillSelectInputAsync(IFrame page, ILocator box, string answer)
+    {
+        try
+        {
+            if ((await SelectInputChipsAsync(box)).Length > 0) return true;
+            var want = answer.Trim();
+            if (want.Length == 0) return false;
+            await box.FillAsync(want, new() { Timeout = 5_000 });
+            await box.PressAsync("Enter");
+            for (var i = 0; i < 16; i++)
+            {
+                await page.WaitForTimeoutAsync(250);
+                if ((await SelectInputChipsAsync(box)).Length > 0) return true;
+                var options = page.Locator("[data-automation-id='promptOption']:visible, [role=listbox]:visible [role=option]:not([data-automation-id='selectedItem'])");
+                var texts = (await options.AllInnerTextsAsync()).Select(t => t.Replace('\n', ' ').Trim()).ToList();
+                var real = texts.Select((t, n) => (t, n)).Where(x => x.t.Length > 0 && !Placeholder().IsMatch(x.t)).ToList();
+                if (real.Count == 0) continue;
+                var pick = real.FirstOrDefault(x => x.t.Equals(want, StringComparison.OrdinalIgnoreCase), (t: "", n: -1));
+                if (pick.n < 0) pick = real.Where(x => x.t.StartsWith(want, StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.t.Length).FirstOrDefault((t: "", n: -1));
+                if (pick.n < 0) pick = real.FirstOrDefault(x => x.t.Contains(want, StringComparison.OrdinalIgnoreCase), (t: "", n: -1));
+                if (pick.n < 0) pick = real[0];
+                await options.Nth(pick.n).ClickAsync(new() { Timeout = 5_000 });
+                await page.WaitForTimeoutAsync(500);
+                return (await SelectInputChipsAsync(box)).Length > 0;
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    /// <summary>An option that declines to answer a demographic question, in the boards' words.</summary>
+    [GeneratedRegex(@"decline|do not wish|don['’]t wish|prefer not|choose not|not to (?:answer|say|disclose|self[- ]identify)|rather not|i do not want", RegexOptions.IgnoreCase)]
+    private static partial Regex DeclineWords();
+
+    /// <summary>
+    /// Answer a demographic question the person has no saved answer for with its own decline
+    /// option — never a guess (#224) — where the form requires one (Workday's Voluntary
+    /// Disclosures mark ethnicity, gender and veteran status required and offer "Decline to
+    /// State" and "I do not wish to self-identify", #443). True when it is answered, already or now.
+    /// </summary>
+    private static async Task<bool> DeclineAsync(IFrame page, PacketQuestion q)
+    {
+        try
+        {
+            if (await WorkdayListboxAsync(page, q) is { } button)
+            {
+                if (!Placeholder().IsMatch((await button.InnerTextAsync()).Trim())) return true;
+                return await ChooseListboxAsync(page, button, q, "", DeclineWords());
+            }
+            var option = q.Options.FirstOrDefault(o => DeclineWords().IsMatch(o));
+            return option is not null && await FillAsync(page, q, option);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    /// <summary>Is the checkbox a question stands for ticked?</summary>
+    private static async Task<bool> BoxTickedAsync(IFrame page, PacketQuestion q)
+    {
+        var id = Unprefixed(q.Id);
+        try
+        {
+            var box = page.Locator($"input[type=checkbox][id={Quote(id)}], input[type=checkbox][name={Quote(id)}]").First;
+            return await box.CountAsync() > 0 && await box.IsCheckedAsync();
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>Does the page already hold an answer to this question: a drop-down past "Select One", a
+    /// search box with a chip, a radio pressed, a box with text in it?</summary>
+    private static async Task<bool> AlreadyAnsweredAsync(IFrame page, PacketQuestion q)
+    {
+        try
+        {
+            if (await WorkdayListboxAsync(page, q) is { } button)
+                return !Placeholder().IsMatch((await button.InnerTextAsync()).Trim());
+            var id = Unprefixed(q.Id);
+            var radios = page.Locator($"input[type=radio][name={Quote(id)}]");
+            if (await radios.CountAsync() > 0)
+                return await radios.EvaluateAllAsync<bool>("els => els.some(r => r.checked)");
+            var control = await LocateAsync(page, q);
+            if (control is null) return false;
+            if (await IsSelectInputAsync(control)) return (await SelectInputChipsAsync(control)).Length > 0;
+            return !await IsEmptyAsync(control);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
+    }
+
+    /// <summary>A step of Workday's application wizard: its footer carries the Save and Continue / Submit button.</summary>
+    private static async Task<bool> IsWorkdayPageAsync(IFrame page)
+    {
+        try { return await page.Locator("[data-automation-id='pageFooterNextButton']").CountAsync() > 0; }
+        catch (PlaywrightException) { return false; }
     }
 
     [GeneratedRegex(@"\bphone\b|\bmobile\b|\bcell\b|\btelephone\b", RegexOptions.IgnoreCase)]
@@ -1369,6 +1587,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           }
           for (const el of deep('input, select, textarea')) {
             if (widget(el)) continue;   // a search or job-alert box is never a required field (#214)
+            // Workday's search box keeps its value in a chip beside it, never in the input: judged below (#443).
+            if (el.getAttribute('data-uxi-widget-type') === 'selectinput') continue;
             const type = (el.getAttribute('type') || (el.tagName === 'SELECT' ? 'select' : 'text')).toLowerCase();
             if (['hidden', 'submit', 'button', 'reset', 'image'].includes(type) || el.disabled) continue;
             // Required by the star in its label alone, the way discovery reads it: HubSpot's own
@@ -1379,7 +1599,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             // discovery and the radio rule below already read.
             const starred = !['radio', 'checkbox', 'file'].includes(type) && visible(el) && !el.readOnly
               && (el.id || el.getAttribute('name')) && /^\s*\*|\*\s*$/.test((labelFor(el) || '').trim());
-            if (!(el.required || el.getAttribute('aria-required') === 'true' || starred)) continue;
+            // Workday marks a radio group required on the <div> around it, not on the radios (#443).
+            const wrapped = type === 'radio' && !!el.closest('[aria-required="true"]');
+            if (!(el.required || el.getAttribute('aria-required') === 'true' || starred || wrapped)) continue;
             if (sideForm(el)) continue;
             if (type === 'file') {
               // Not gated on the input being visible: uploaders keep theirs off screen behind
@@ -1433,6 +1655,25 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 || (el.selectedIndex === 0 && /^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''));
             else empty = (el.value || '').trim().length === 0;
             if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
+          }
+          // Workday (#443): a required drop-down still on "Select One" — keyed by its name, as
+          // discovery keys it — and a required search box with no chip chosen.
+          for (const b of deep('button[aria-haspopup="listbox"]')) {
+            if (!visible(b)) continue;
+            const l = b.id ? rootOf(b).querySelector(`label[for="${CSS.escape(b.id)}"]`) : null;
+            const g = b.closest('[role=group], fieldset');
+            const gby = (g?.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => document.getElementById(i)?.innerText || '').join(' ').trim();
+            const gname = g ? (g.getAttribute('aria-label') || gby || g.querySelector('legend')?.innerText || '') : '';
+            const label = (l?.innerText || gname || '').replace(/\s+/g, ' ').trim();
+            if (!label) continue;
+            const required = b.getAttribute('aria-required') === 'true' || /^\s*\*|\*\s*$/.test(label) || /\brequired\s*$/i.test(b.getAttribute('aria-label') || '');
+            if (required && /^\s*select one\s*$/i.test((b.innerText || '').trim())) add(b.getAttribute('name') || b.id, label);
+          }
+          for (const s of deep('input[data-uxi-widget-type="selectinput"]')) {
+            if (!visible(s) || s.getAttribute('aria-required') !== 'true') continue;
+            const id = s.getAttribute('data-uxi-multiselect-id') || '';
+            const chips = id ? document.querySelectorAll(`[data-uxi-multiselect-id="${CSS.escape(id)}"] [data-automation-id="selectedItem"]`).length : 0;
+            if (chips === 0) add(s.getAttribute('name') || s.id, labelFor(s));
           }
           // Oracle's pills: a required question drawn as buttons with nothing pressed (#318).
           for (const g of document.querySelectorAll('[role=radiogroup]')) {
@@ -1811,7 +2052,22 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         {
             ct.ThrowIfCancellationRequested();
             if (await SubmitOnPageAsync(form)) return form;
+            // Workday judges a box when it loses focus, and keeps Save and Continue disabled until
+            // the last box typed into has: a fill leaves the caret where it was (#443).
+            if (await IsWorkdayPageAsync(form))
+            {
+                try { await form.EvaluateAsync("() => { const a = document.activeElement; if (a && a !== document.body) a.blur(); }"); }
+                catch (PlaywrightException) { /* nothing focused */ }
+                await page.WaitForTimeoutAsync(800);
+            }
             var next = await FindNextAsync(form);
+            // Workday disables Save and Continue for a moment after every change while it saves
+            // the draft; a Next disabled right after the fill is that, not a question unanswered (#443).
+            for (var wait = 0; next is null && wait < 60 && await IsWorkdayPageAsync(form) && await DisabledNextAsync(form); wait++)
+            {
+                await page.WaitForTimeoutAsync(500);
+                next = await FindNextAsync(form);
+            }
             if (next is null)
             {
                 await HandBackIfNextDisabledAsync();
@@ -1869,6 +2125,17 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 return form;
             }
             _log.LogInformation("pages: turned to page {Page} at {Url}", turned + 2, page.Url);
+            // A step of Workday's wizard (#443): the terms box on its last step is ticked before
+            // the page is read, so it reads as answered; its drop-downs' menus are read, so a
+            // question handed back carries its choices and the drafter can pick one.
+            var workday = await IsWorkdayPageAsync(form);
+            if (workday)
+            {
+                await BrowserSession.SettleWorkdayAsync(page);
+                await TickTermsAsync(form);
+                questions = await FormDiscoverer.ReadQuestionsAsync(page, _log);
+                await FormDiscoverer.ReadChoicesAsync(page, questions, _log);
+            }
 
             foreach (var live in questions)
             {
@@ -1876,7 +2143,36 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 var q = FindQuestion(packet, live.Id, live.Label);
                 if (q is null)
                 {
-                    if (live.Kind == PacketQuestion.Eeo || !live.Required) continue;
+                    // A file field the packet never saw that is the résumé's — Workday's Resume/CV
+                    // is an input with no name under a "Select files" button (#443) — takes the
+                    // résumé here; a demographic drop-down Workday requires an answer to is answered
+                    // with its own decline option, never a guess (#224); and the terms box just
+                    // ticked is answered, not a question for the drafter.
+                    if (live.Type == PacketQuestion.File && resumePdf is { } unseenPdf
+                        && (IsResume(live) || await OnlyFileInputAsync(form) is not null)
+                        && (await ResumeOnFileAsync(form) || await AttachResumeAsync(form, live, unseenPdf, resumeText)))
+                    {
+                        if (!mapped.Contains(live.Id)) mapped.Add(live.Id);
+                        continue;
+                    }
+                    if (live.Kind == PacketQuestion.Eeo)
+                    {
+                        if (workday && await DeclineAsync(form, live) && !mapped.Contains(live.Id)) mapped.Add(live.Id);
+                        continue;
+                    }
+                    if (!live.Required) continue;
+                    if (TermsWords().IsMatch(live.Label) && !OptionalConsent().IsMatch(live.Label) && await BoxTickedAsync(form, live))
+                    {
+                        if (!mapped.Contains(live.Id)) mapped.Add(live.Id);
+                        continue;
+                    }
+                    // A question the page already answers — a draft resumed, a row the résumé filled,
+                    // the account's own profile — is not a question for the drafter (#443).
+                    if (workday && await AlreadyAnsweredAsync(form, live))
+                    {
+                        if (!mapped.Contains(live.Id)) mapped.Add(live.Id);
+                        continue;
+                    }
                     // Unmapped by its id, as the sweep would name it, so the two agree.
                     if (discovered.All(d => d.Id != live.Id) && !unmapped.Contains(live.Id))
                     {
@@ -1910,6 +2206,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 && !packet.Questions.Any(q => IsResume(q) && mapped.Contains(q.Id))
                 && await UploadResumeByButtonAsync(form, buttonPdf))
                 mapped.Add("resume");
+            // Workday's My Experience: work history and education as rows, from the résumé (#443).
+            if (workday)
+                foreach (var id in await FillWorkdaySectionsAsync(page, packet.Resume, _log))
+                    if (!mapped.Contains(id)) mapped.Add(id);
         }
         return form;
 
@@ -1922,9 +2222,13 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         async Task HandBackIfNextDisabledAsync()
         {
             if (!await DisabledNextAsync(form)) return;
+            // Workday stars every field it requires: a Next it keeps disabled is about those, never
+            // about an unstarred GPA or an empty date box (#443).
+            var starredOnly = await IsWorkdayPageAsync(form);
             foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
             {
                 if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
+                    || (starredOnly && !live.Required)
                     || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
                     continue;
                 // A question the packet knows but holds no answer for is the person's, as unmapped.
@@ -3341,6 +3645,158 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (current.Length > 0) return;
         try { await select.SelectOptionAsync(new SelectOptionValue { Label = label }, new() { Timeout = 3_000 }); }
         catch (PlaywrightException) { /* the board words its months otherwise; the sweep names it */ }
+    }
+
+    /// <summary>
+    /// Workday's My Experience step (#443): Work Experience and Education are blocks of rows
+    /// behind an Add button, each row a group of its own ("Work Experience 1") — Job Title and
+    /// Company required once a row exists, Location, "I currently work here", From and To as
+    /// month and year spinbuttons, a Role Description; a school, a Degree drop-down, a Field of
+    /// Study search box, From and To years. Filled from the structured résumé, the three most
+    /// recent jobs and every school, only with what it states. A block that already holds rows
+    /// (a draft resumed) is left as it stands. Returns what it filled, as mapped ids.
+    /// </summary>
+    public static async Task<List<string>> FillWorkdaySectionsAsync(IPage page, Resume? resume, ILogger? log = null)
+    {
+        var filled = new List<string>();
+        if (resume is null) return filled;
+        try
+        {
+            // Only the step that takes rows: Review shows the same headings over text, with no Add.
+            if (await page.Locator("[data-automation-id='add-button']").CountAsync() == 0) return filled;
+            var work = page.GetByRole(AriaRole.Group, new() { Name = "Work Experience", Exact = true });
+            var rows = page.GetByRole(AriaRole.Group, new() { NameRegex = new Regex(@"^Work Experience \d+$") });
+            if (await work.CountAsync() > 0)
+            {
+                var jobs = resume.Experience.Where(e => e.Company.Length > 0 && e.Title.Length > 0).Take(3).ToList();
+                var held = await rows.CountAsync();
+                // Rows already there (a draft resumed) are completed, not added to: each is matched
+                // to the résumé's job by title, else taken in order, and only its blanks are filled.
+                for (var i = 0; i < held; i++)
+                {
+                    var row = rows.Nth(i);
+                    var titleBox = row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" });
+                    if (await titleBox.CountAsync() == 0) continue;
+                    var title = (await titleBox.First.InputValueAsync()).Trim();
+                    var job = jobs.FirstOrDefault(j => j.Title.Equals(title, StringComparison.OrdinalIgnoreCase)) ?? jobs.ElementAtOrDefault(i);
+                    if (job is null) continue;
+                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" }), job.Title, $"workExperience-{i}--jobTitle", filled);
+                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Company" }), job.Company, $"workExperience-{i}--companyName", filled);
+                    await FillWorkdayDatesAsync(row, job.Dates, $"workExperience-{i}", filled, months: true);
+                    if (job.Highlights.Count > 0)
+                        await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Role Description" }), string.Join("\n", job.Highlights.Take(3)), $"workExperience-{i}--roleDescription", filled);
+                }
+                foreach (var (job, n) in jobs.Select((j, n) => (j, n)).Skip(held))
+                {
+                    if (!await AddWorkdayRowAsync(page, work)) break;
+                    var row = rows.Last;
+                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" }), job.Title, $"workExperience-{n}--jobTitle", filled);
+                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Company" }), job.Company, $"workExperience-{n}--companyName", filled);
+                    await FillWorkdayDatesAsync(row, job.Dates, $"workExperience-{n}", filled, months: true);
+                    if (job.Highlights.Count > 0)
+                        await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Role Description" }), string.Join("\n", job.Highlights.Take(3)), $"workExperience-{n}--roleDescription", filled);
+                }
+            }
+
+            var school = page.GetByRole(AriaRole.Group, new() { Name = "Education", Exact = true });
+            var schools = page.GetByRole(AriaRole.Group, new() { NameRegex = new Regex(@"^Education \d+$") });
+            if (await school.CountAsync() > 0 && await schools.CountAsync() == 0)
+            {
+                foreach (var (e, n) in resume.Education.Where(e => e.School.Length > 0).Select((e, n) => (e, n)))
+                {
+                    if (!await AddWorkdayRowAsync(page, school)) break;
+                    var row = schools.Last;
+                    await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" }), e.School, $"education-{n}--school", filled);
+                    var degree = row.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Degree\b") }).First;
+                    if (WorkdayDegree(e.Degree) is { } term && await degree.CountAsync() > 0
+                        && await ChooseListboxAsync(page.MainFrame, degree, new($"education-{n}--degree", "Degree", false, PacketQuestion.Select, [], PacketQuestion.Custom), term))
+                        filled.Add($"education-{n}--degree");
+                    var field = row.GetByRole(AriaRole.Textbox, new() { Name = "Field of Study" }).First;
+                    if (e.Field.Length > 0 && await field.CountAsync() > 0 && await FillSelectInputAsync(page.MainFrame, field, e.Field))
+                        filled.Add($"education-{n}--fieldOfStudy");
+                    await FillWorkdayDatesAsync(row, e.Dates, $"education-{n}", filled, months: false);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            log?.LogInformation("workday sections: stopped — {Reason}", ex.Message.Split('\n')[0]);
+        }
+        if (filled.Count > 0) log?.LogInformation("workday sections: filled {Fields}", string.Join(", ", filled));
+        return filled;
+    }
+
+    /// <summary>The block's Add — "Add Another" once a row exists — pressed; false when there is none.</summary>
+    private static async Task<bool> AddWorkdayRowAsync(IPage page, ILocator block)
+    {
+        var add = block.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Add(?: Another)?$", RegexOptions.IgnoreCase) }).Last;
+        if (await add.CountAsync() == 0 || !await add.IsVisibleAsync()) return false;
+        await add.ClickAsync(new() { Timeout = 5_000 });
+        await page.WaitForTimeoutAsync(900);
+        return true;
+    }
+
+    /// <summary>"Mar 2026 - Present", "Dec 2015 - Feb 2021", "2014 - 2015" into a Workday row's From and
+    /// To spinbuttons (month and year, or year alone for a school); a present role ticks "I currently
+    /// work here" instead of a To.</summary>
+    private static async Task FillWorkdayDatesAsync(ILocator row, string dates, string id, List<string> filled, bool months)
+    {
+        var parts = Regex.Split(dates, @"\s*[–—-]\s*");
+        var (fromMonth, fromYear) = MonthYear(parts.ElementAtOrDefault(0) ?? "");
+        var (toMonth, toYear) = MonthYear(parts.ElementAtOrDefault(1) ?? "");
+        var from = row.GetByRole(AriaRole.Group, new() { Name = "From", Exact = true });
+        var to = row.GetByRole(AriaRole.Group, new() { NameRegex = new Regex(@"^To\b") });
+        if (months && fromMonth.Length > 0) await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(fromMonth));
+        if (fromYear.Length > 0 && await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), fromYear)) filled.Add($"{id}--startDate");
+        if (Regex.IsMatch(parts.ElementAtOrDefault(1) ?? "", @"present|current|now", RegexOptions.IgnoreCase))
+        {
+            var here = row.GetByRole(AriaRole.Checkbox, new() { Name = "I currently work here" });
+            if (await here.CountAsync() > 0 && !await here.IsCheckedAsync())
+            {
+                try { await here.CheckAsync(new() { Timeout = 3_000 }); }
+                catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { await here.EvaluateAsync("el => el.click()"); }
+            }
+            return;
+        }
+        if (months && toMonth.Length > 0) await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(toMonth));
+        if (toYear.Length > 0 && await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), toYear)) filled.Add($"{id}--endDate");
+    }
+
+    /// <summary>Type a number into a date spinbutton — as a person does, one key at a time, when a fill does not take.</summary>
+    private static async Task<bool> FillSpinAsync(ILocator spin, string value)
+    {
+        if (value.Length == 0 || await spin.CountAsync() == 0) return false;
+        var box = spin.First;
+        if ((await box.InputValueAsync()).Trim().Length > 0) return false; // held already: left as it stands
+        try { await box.FillAsync(value, new() { Timeout = 3_000 }); }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* typed below */ }
+        if ((await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0')) return true;
+        await box.ClickAsync(new() { Timeout = 3_000 });
+        await box.PressSequentiallyAsync(value, new() { Delay = 40 });
+        return (await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0');
+    }
+
+    private static string MonthNumber(string mon) => mon.ToLowerInvariant() switch
+    {
+        "jan" => "1", "feb" => "2", "mar" => "3", "apr" => "4", "may" => "5", "jun" => "6",
+        "jul" => "7", "aug" => "8", "sep" => "9", "oct" => "10", "nov" => "11", "dec" => "12", _ => "",
+    };
+
+    /// <summary>Workday's word for a degree the résumé names: its Degree menu offers Masters, Bachelors,
+    /// Associates, PhD, Doctorate, MBA, High School, Some college, Post-diploma studies and the like.</summary>
+    public static string? WorkdayDegree(string degree)
+    {
+        var d = degree.Trim().ToLowerInvariant().Replace(".", "").Replace("'", "");
+        if (d.Length == 0) return null;
+        if (d.Contains("mba") || (d.Contains("business administration") && d.Contains("master"))) return "MBA";
+        if (d.Contains("phd") || d.Contains("doctor of philosophy")) return "PhD";
+        if (d.Contains("doctor") || d.Contains("juris")) return "Doctorate";
+        if (d.Contains("micromaster") || d.Contains("certificate") || d.Contains("cert ") || d.StartsWith("grad cert") || d.StartsWith("cert")) return "Post-diploma studies";
+        if (d.StartsWith("master") || d is "ms" or "ma" or "msc" or "meng" || d.StartsWith("ms ") || d.StartsWith("ma ")) return "Masters";
+        if (d.StartsWith("bachelor") || d is "bs" or "ba" or "bsc" or "beng" || d.StartsWith("bs ") || d.StartsWith("ba ")) return "Bachelors";
+        if (d.StartsWith("associate") || d is "aa" or "as" or "aas") return "Associates";
+        if (d.Contains("high school") || d.Contains("ged")) return "High School";
+        return null;
     }
 
     private static (string First, string Last) SplitName(string full, string first, string last)
