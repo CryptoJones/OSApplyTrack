@@ -58,11 +58,12 @@ public class AtsProviderTests
         Assert.Equal(expected, AtsProvider.ApplyUrl(link, AtsProvider.Detect(link, "")));
 
     [Fact]
-    public void The_browser_drives_the_discovered_boards_and_never_an_aggregator_or_workday()
+    public void The_browser_drives_the_discovered_boards_and_workday_and_never_an_aggregator()
     {
         foreach (var p in new[] { AtsProvider.Greenhouse, AtsProvider.Lever, AtsProvider.Ashby, AtsProvider.Workable, AtsProvider.Breezy, AtsProvider.SmartRecruiters, AtsProvider.Join })
             Assert.True(AtsProvider.BrowserCanSubmit(p, longTailOptIn: false), p);
-        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Workday, longTailOptIn: true));
+        // Workday's wizard is walked signed in as the candidate (#443).
+        Assert.True(AtsProvider.BrowserCanSubmit(AtsProvider.Workday, longTailOptIn: false));
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.SuccessFactors, longTailOptIn: true));
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Aggregator, longTailOptIn: true));
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Unknown, longTailOptIn: false));
@@ -174,7 +175,7 @@ public class AtsProviderTests
         Assert.True(AtsProvider.BrowserCanSubmit(AtsProvider.LinkedInEasy, longTailOptIn: false, linkedInEasyOptIn: true));
         // And it switches nothing else on.
         Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Aggregator, longTailOptIn: true, linkedInEasyOptIn: true));
-        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.Workday, longTailOptIn: true, linkedInEasyOptIn: true));
+        Assert.False(AtsProvider.BrowserCanSubmit(AtsProvider.SuccessFactors, longTailOptIn: true, linkedInEasyOptIn: true));
     }
 
     [Fact]
@@ -205,4 +206,26 @@ public class AtsProviderTests
     [InlineData("https://jobs.lever.co/acme/1", null)]
     public void A_workday_posting_has_a_json_address_that_says_whether_it_still_exists(string link, string? expected) =>
         Assert.Equal(expected, AtsProvider.WorkdayJobApi(link));
+
+    [Theory]
+    [InlineData("https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Senior-Solutions-Architect--Inference-Service-Providers_JR2023533/apply?source=Eightfold",
+        "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Senior-Solutions-Architect--Inference-Service-Providers_JR2023533/apply/applyManually")]
+    [InlineData("https://allstate.wd5.myworkdayjobs.com/en-US/allstate_careers/job/USA---IL-Remote/Lead-Net-Software-Engineer_R34186/?src=x",
+        "https://allstate.wd5.myworkdayjobs.com/en-US/allstate_careers/job/USA---IL-Remote/Lead-Net-Software-Engineer_R34186/apply/applyManually")]
+    [InlineData("https://strongtie.wd1.myworkdayjobs.com/en-US/External/job/Plano-TX/Senior-Software-Engineer---Cloud-Services_R1",
+        "https://strongtie.wd1.myworkdayjobs.com/en-US/External/job/Plano-TX/Senior-Software-Engineer---Cloud-Services_R1/apply/applyManually")]
+    public void A_workday_application_starts_at_the_manual_flow_with_the_query_dropped(string link, string expected)
+    {
+        // The manual flow (#443): the sign-in choices, then step one — not the résumé autofill.
+        Assert.Equal(expected, AtsProvider.WorkdayApplyUrl(link));
+        Assert.Equal(expected, AtsProvider.ApplyUrl(link, AtsProvider.Workday));
+    }
+
+    [Fact]
+    public void A_link_that_is_not_a_workday_posting_has_no_manual_flow()
+    {
+        Assert.Null(AtsProvider.WorkdayApplyUrl("https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite"));
+        Assert.Null(AtsProvider.WorkdayApplyUrl("https://boards.greenhouse.io/acme/jobs/1"));
+        Assert.Equal("https://boards.greenhouse.io/acme/jobs/1", AtsProvider.ApplyUrl("https://boards.greenhouse.io/acme/jobs/1", AtsProvider.Workday));
+    }
 }

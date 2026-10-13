@@ -140,6 +140,98 @@ public sealed partial class BrowserSession : IAsyncDisposable
         return null;
     }
 
+    /// <summary>A Workday career site: <c>&lt;tenant&gt;.wdN.myworkdayjobs.com</c> or myworkdaysite.com.</summary>
+    public static bool IsWorkday(string host)
+    {
+        host = (host ?? "").ToLowerInvariant();
+        return host.EndsWith(".myworkdayjobs.com", StringComparison.Ordinal) || host.EndsWith(".myworkdaysite.com", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// From a Workday posting, or its <c>/apply</c> page, to the email sign-in of the manual
+    /// flow (#443): Apply (<c>adventureButton</c>) when the posting is on screen, "Apply
+    /// Manually", then "Sign in with email" — each pressed only when it is there, so a page
+    /// already past it (a candidate signed in and shown the first step) is left as it is.
+    /// Every id is a <c>data-automation-id</c>, the same on every tenant.
+    /// </summary>
+    public async Task EnterWorkdayAsync()
+    {
+        static ILocator Auto(IPage p, string id) => p.Locator($"[data-automation-id='{id}']");
+        try
+        {
+            if (!await WaitVisibleAsync(Auto(Page, "applyManually"), 4_000) && !await SignInFormVisibleAsync(Page)
+                && await Auto(Page, "SignInWithEmailButton").CountAsync() == 0 && await Auto(Page, "pageFooterNextButton").CountAsync() == 0)
+                await ClickIfVisibleAsync(Auto(Page, "adventureButton"));
+            if (await WaitVisibleAsync(Auto(Page, "applyManually"), 4_000))
+            {
+                await Auto(Page, "applyManually").First.ClickAsync(new() { Timeout = 5_000 });
+                await Page.WaitForTimeoutAsync(1_500);
+            }
+            if (await WaitVisibleAsync(Auto(Page, "SignInWithEmailButton"), 6_000))
+            {
+                await Auto(Page, "SignInWithEmailButton").First.ClickAsync(new() { Timeout = 5_000 });
+                await WaitVisibleAsync(Page.Locator("input[type='password']"), 8_000);
+            }
+            // The form is drawn before its script is listening: filled the instant the password
+            // box appears, Sign In sent nothing and the page stayed as it was, with no complaint
+            // (checked against nvidia.wd5 — a 2.5 s settle, or typing key by key, and it signs in).
+            if (await SignInFormVisibleAsync(Page)) await Page.WaitForTimeoutAsync(2_500);
+            await DismissConsentAsync(Page);
+        }
+        catch (PlaywrightException) { /* judged by what the reveal finds */ }
+        catch (TimeoutException) { /* ditto */ }
+    }
+
+    /// <summary>A page drawn by Workday's career site, wherever it is served from: its way in and
+    /// its wizard footer carry the same data-automation-ids on every tenant.</summary>
+    private static async Task<bool> LooksLikeWorkdayAsync(IPage page)
+    {
+        try
+        {
+            return await page.Locator("[data-automation-id='SignInWithEmailButton'], [data-automation-id='applyManually'], "
+                + "[data-automation-id='adventureButton'], [data-automation-id='pageFooterNextButton']").CountAsync() > 0;
+        }
+        catch (PlaywrightException) { return false; }
+    }
+
+    /// <summary>
+    /// Wait for a Workday page to finish drawing (#443): its steps arrive in pieces — the name
+    /// boxes first, the address and phone a second or two later — and a page read at the first
+    /// field found four of twelve questions. Done when the count of controls has held still for
+    /// two looks a second apart, or after ten seconds. Nothing on a page that is not Workday's.
+    /// </summary>
+    public static async Task SettleWorkdayAsync(IPage page)
+    {
+        try
+        {
+            if (!await LooksLikeWorkdayAsync(page)) return;
+            var last = -1;
+            var still = 0;
+            for (var i = 0; i < 10 && still < 2; i++)
+            {
+                await page.WaitForTimeoutAsync(1_000);
+                var count = await page.Locator("input, select, textarea, button[aria-haspopup=listbox]").CountAsync();
+                still = count == last ? still + 1 : 0;
+                last = count;
+            }
+        }
+        catch (PlaywrightException) { /* judged by what renders */ }
+    }
+
+    internal static async Task ClickIfVisibleAsync(ILocator locator)
+    {
+        try { if (await locator.CountAsync() > 0 && await locator.First.IsVisibleAsync()) await locator.First.ClickAsync(new() { Timeout = 5_000 }); }
+        catch (PlaywrightException) { /* not on this page */ }
+        catch (TimeoutException) { /* not on this page */ }
+    }
+
+    internal static async Task<bool> WaitVisibleAsync(ILocator locator, int ms)
+    {
+        try { await locator.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = ms }); return true; }
+        catch (TimeoutException) { return false; }
+        catch (PlaywrightException) { return false; }
+    }
+
     // Cookie-consent banners (#202): the well-known managers by their own ids first, then
     // any visible button that reads as "accept" inside a box that calls itself a cookie,
     // consent or privacy notice. Zoho Recruit and Workable's job finder both put an
@@ -300,10 +392,15 @@ public sealed partial class BrowserSession : IAsyncDisposable
         await DismissConsentAsync(page);
         // A driver that knows its own way in (LinkedIn's Easy Apply dialog, #278) opens it itself.
         if (!reveal) return session;
+        // Workday's way in: the manual flow's "Apply Manually", then "Sign in with email" — the
+        // sign-in proper (a password box) is behind that choice, so the reveal below would see
+        // no sign-in and nothing to fill (#443).
+        if (IsWorkday(target.Host) || await LooksLikeWorkdayAsync(page)) await session.EnterWorkdayAsync();
         await session.RevealFormAsync();
         // A form that arrives folded — SuccessFactors' application is an accordion of
         // sections, every one but the first collapsed — is opened before anyone reads it.
         await ExpandSectionsAsync(session.Page);
+        await SettleWorkdayAsync(session.Page);
         return session;
     }
 
@@ -1095,6 +1192,8 @@ public sealed partial class BrowserSession : IAsyncDisposable
             ILocator? userBox = null;
             foreach (var sel in new[]
                      {
+                         // Workday's is a plain text box named only by its data-automation-id (#443).
+                         "input[data-automation-id='email']",
                          "#username", "input[name='username']", "input[autocomplete='username']", "input[type='email']",
                          "input[name*='user' i]", "input[name*='email' i]", "input[id*='email' i]", "input[type='text']",
                      })
@@ -1111,12 +1210,31 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 RevealNote = $"the sign-in at {host} has no username or password box the browser can find";
                 return false;
             }
-            await userBox.FillAsync(account.Username, new() { Timeout = 5_000 });
-            await pass.FillAsync(account.Password, new() { Timeout = 5_000 });
+            // Workday's form takes what is typed, key by key, every time; a fill — the value set
+            // in one go — it sometimes never hears, and Sign In then sends nothing (#443).
+            var typed = IsWorkday(host) || await LooksLikeWorkdayAsync(Page);
+            if (typed)
+            {
+                await userBox.ClickAsync(new() { Timeout = 5_000 });
+                await userBox.PressSequentiallyAsync(account.Username, new() { Delay = 15 });
+                await pass.ClickAsync(new() { Timeout = 5_000 });
+                await pass.PressSequentiallyAsync(account.Password, new() { Delay = 15 });
+            }
+            else
+            {
+                await userBox.FillAsync(account.Username, new() { Timeout = 5_000 });
+                await pass.FillAsync(account.Password, new() { Timeout = 5_000 });
+            }
             var notIdp = new LocatorFilterOptions { HasNotTextRegex = new Regex(@"google|linkedin|apple|microsoft|facebook|forgot|create|register", RegexOptions.IgnoreCase) };
             ILocator? go = null;
             foreach (var c in new[]
                      {
+                         // Workday lays a click_filter <div> (aria-label "Submit") over its Sign In
+                         // button, which is itself aria-hidden: the overlay beside the button is what
+                         // takes the click — the page header's own "Sign In" would only reopen the
+                         // sign-in choices (#443).
+                         Page.Locator("xpath=//*[@data-automation-id='click_filter'][../*[@data-automation-id='signInSubmitButton']]").First,
+                         Page.Locator("[data-automation-id='click_filter'][aria-label='Submit' i], [data-automation-id='click_filter'][aria-label*='sign in' i]").First,
                          Page.GetByRole(AriaRole.Button, new() { NameRegex = SignInWords() }).Filter(notIdp).First,
                          Page.Locator("form button[type=submit], form input[type=submit], button[type=submit], input[type=submit]").Filter(notIdp).First,
                      })
@@ -1129,11 +1247,19 @@ public sealed partial class BrowserSession : IAsyncDisposable
             try { textBefore = await Page.InnerTextAsync("body"); } catch (PlaywrightException) { textBefore = ""; }
             if (go is not null) await go.ClickAsync(new() { Timeout = 5_000 });
             else await pass.PressAsync("Enter");
+            // Pressed once more when the board neither moved on nor complained within ten seconds:
+            // Workday has swallowed a first press without a word (#443).
+            var pressedAgain = false;
             // What the board answered: the sign-in gone (signed in), or still there on a page
             // that changed (refused, with its complaint), or unchanged until the deadline. A
             // page that cannot be read mid-navigation answers nothing and is asked again.
             var deadline = DateTime.UtcNow.AddSeconds(20);
             var signedIn = false;
+            var complaint = "";
+            const string Complaint = """
+                () => [...document.querySelectorAll('[role=alert], .error, .errorMessage, [class*="error" i], [class*="invalid" i]')]
+                  .map(e => (e.innerText || '').trim()).filter(t => t && t.length < 240).join('; ').slice(0, 240)
+                """;
             await Page.WaitForTimeoutAsync(800);
             while (DateTime.UtcNow < deadline)
             {
@@ -1141,18 +1267,27 @@ public sealed partial class BrowserSession : IAsyncDisposable
                 if (state == false) { signedIn = true; break; }
                 if (state == true)
                 {
+                    // Refused only when the board says so: a page whose text changed while the form
+                    // stayed — Workday draws a spinner over its Sign In for a few seconds — is still
+                    // working, and was read as a refusal 13 s in (#443).
+                    try { complaint = await Page.EvaluateAsync<string>(Complaint); } catch (PlaywrightException) { complaint = ""; }
+                    if (complaint.Length > 0) break;
                     string text;
                     try { text = await Page.InnerTextAsync("body"); } catch (PlaywrightException) { text = textBefore; }
-                    if (Page.Url != urlBefore || text != textBefore) break;
+                    if (Page.Url != urlBefore && text != textBefore) break;
+                    if (typed && !pressedAgain && DateTime.UtcNow > deadline.AddSeconds(-10))
+                    {
+                        pressedAgain = true;
+                        try { if (go is not null) await go.ClickAsync(new() { Timeout = 5_000 }); else await pass.PressAsync("Enter"); }
+                        catch (PlaywrightException) { /* judged by what follows */ }
+                        catch (TimeoutException) { /* ditto */ }
+                    }
                 }
                 await Page.WaitForTimeoutAsync(500);
             }
             if (!signedIn)
             {
-                var complaint = await Page.EvaluateAsync<string>("""
-                    () => [...document.querySelectorAll('[role=alert], .error, .errorMessage, [class*="error" i], [class*="invalid" i]')]
-                      .map(e => (e.innerText || '').trim()).filter(t => t && t.length < 240).join('; ').slice(0, 240)
-                    """);
+                try { complaint = await Page.EvaluateAsync<string>(Complaint); } catch (PlaywrightException) { /* as read above */ }
                 RevealNote = $"the sign-in at {host} as {account.Username} was refused" + (complaint.Length > 0 ? $": {complaint}" : "") + " — check the saved password under Settings · Agent · Board accounts";
                 return false;
             }
@@ -1160,6 +1295,26 @@ public sealed partial class BrowserSession : IAsyncDisposable
             try { await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 10_000 }); }
             catch (TimeoutException) { /* judged by what renders */ }
             catch (PlaywrightException) { /* ditto */ }
+            // Workday, signed in from inside its application flow, draws "Something went wrong —
+            // please refresh the page" (its script asks for a draft it has no id for yet). Loaded
+            // afresh, the same address opens on the wizard's first step with the draft (#443).
+            if (IsWorkday(host) || await LooksLikeWorkdayAsync(Page))
+            {
+                for (var attempt = 0; attempt < 3; attempt++)
+                {
+                    try
+                    {
+                        await Page.WaitForTimeoutAsync(attempt == 0 ? 1_500 : 3_000);
+                        await Page.GotoAsync(Unfragmented(Page.Url), new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+                        await WaitForFieldAsync(Page, 10_000);
+                        string body;
+                        try { body = await Page.InnerTextAsync("body", new() { Timeout = 3_000 }); } catch (PlaywrightException) { body = ""; }
+                        if (!Regex.IsMatch(body, @"something went wrong|please refresh the page", RegexOptions.IgnoreCase)) break;
+                    }
+                    catch (PlaywrightException) { break; }
+                    catch (TimeoutException) { break; }
+                }
+            }
             await DismissConsentAsync(Page);
             await WaitForFieldAsync(Page, 10_000);
             return true;

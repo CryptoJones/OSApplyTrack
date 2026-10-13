@@ -121,13 +121,14 @@ public class ErrorsEndpointTests(PostgresFixture pg) : IAsyncLifetime
         Assert.True(rows[captcha].GetProperty("captcha").GetBoolean());
         Assert.Equal("you", rows[clicked].GetProperty("next").GetString());
         Assert.Contains("may have gone through", rows[clicked].GetProperty("why").GetString());
-        Assert.Equal("you", rows[workday].GetProperty("next").GetString());
-        Assert.Contains("Workday", rows[workday].GetProperty("why").GetString());
+        // Workday is driven since #443: a transient failure there is retried like any other board's.
+        Assert.Equal("retry", rows[workday].GetProperty("next").GetString());
+        Assert.Contains("attempt", rows[workday].GetProperty("why").GetString());
         Assert.Equal("you", rows[givenUp].GetProperty("next").GetString());
         Assert.Contains("gave up after 3 failed runs", rows[givenUp].GetProperty("why").GetString());
 
-        Assert.Equal(1, body.GetProperty("retrying").GetInt32());
-        Assert.Equal(4, body.GetProperty("needs_you").GetInt32());
+        Assert.Equal(2, body.GetProperty("retrying").GetInt32());
+        Assert.Equal(3, body.GetProperty("needs_you").GetInt32());
     }
 
     /// <summary>The view with the client holding <paramref name="tag"/>.</summary>

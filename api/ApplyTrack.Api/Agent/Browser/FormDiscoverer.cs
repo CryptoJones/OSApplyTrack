@@ -24,6 +24,9 @@ public sealed partial class FormDiscoverer
     [GeneratedRegex(@"\b(first|last|full)?\s*name\b|e-?mail|\bphone\b|resume|résumé|\bcv\b|cover letter|linkedin|github|portfolio|website|location|city", RegexOptions.IgnoreCase)]
     private static partial Regex StandardLabel();
 
+    [GeneratedRegex(@"^\s*(?:no selection|none selected|select(?:\s+one|\s+an option|\.{3}|…)?|-+\s*select\s*-+|please (?:select|choose)(?:\s+one)?|choose(?:\s+one)?)\s*[.…:]?\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex MenuPlaceholder();
+
     private readonly BrowserOptions _options;
     private readonly ILogger<FormDiscoverer> _log;
 
@@ -76,6 +79,13 @@ public sealed partial class FormDiscoverer
             if (seenKeys.Add(q.Id))
                 questions.Add(q);
         await ReadChoicesAsync(session.Page, questions, _log);
+        if (questions.Count == 0)
+        {
+            string body;
+            try { body = (await session.Page.InnerTextAsync("body", new() { Timeout = 3_000 })).Replace('\n', ' '); } catch (PlaywrightException) { body = ""; }
+            _log.LogInformation("discovery at {Link}: no fillable control on {Url} ({Note}) — the page reads: {Body}",
+                link, session.Page.Url, session.RevealNote.Length > 0 ? session.RevealNote : "no note", body.Length > 200 ? body[..200] : body);
+        }
         return questions.Count == 0 ? null : questions;
     }
 
@@ -98,14 +108,21 @@ public sealed partial class FormDiscoverer
         for (var n = 0; n < questions.Count; n++)
         {
             var q = questions[n];
-            if (q.Options.Count > 0 || q.Type != PacketQuestion.Text || q.Kind == PacketQuestion.Eeo) continue;
+            if (q.Options.Count > 0 || q.Type is not (PacketQuestion.Text or PacketQuestion.Select) || q.Kind == PacketQuestion.Eeo) continue;
             foreach (var frame in page.Frames)
             {
                 if (frame.IsDetached) continue;
                 try
                 {
-                    var box = frame.Locator($"input[id=\"{q.Id.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"][role=combobox]");
-                    if (await box.CountAsync() != 1 || !await box.IsVisibleAsync()) continue;
+                    var key = q.Id.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                    // Workday's drop-down is a button keyed by its name (#443); react-select's is an input keyed by id.
+                    var box = q.Type == PacketQuestion.Select
+                        ? frame.Locator($"button[aria-haspopup=listbox][name=\"{key}\"], button[aria-haspopup=listbox][id=\"{key}\"]")
+                        : frame.Locator($"input[id=\"{key}\"][role=combobox]");
+                    // A Workday row's drop-down shares its name with every row's (degree): the first on screen.
+                    if (await box.CountAsync() == 0 || (q.Type != PacketQuestion.Select && await box.CountAsync() != 1)) continue;
+                    box = box.First;
+                    if (!await box.IsVisibleAsync()) continue;
                     // Once more when the menu came up empty: the first open on a freshly
                     // rendered form can land before the widget is listening.
                     var menu = await OpenMenuAsync(frame, box);
@@ -129,8 +146,9 @@ public sealed partial class FormDiscoverer
     {
         await box.ClickAsync(new() { Timeout = 3_000 });
         var owned = await box.GetAttributeAsync("aria-controls");
+        // Never a chip already chosen in a Workday search box, which is an option too (#443).
         var options = string.IsNullOrWhiteSpace(owned)
-            ? frame.Locator("[role=option]:visible")
+            ? frame.Locator("[role=option]:visible:not([data-automation-id='selectedItem'])")
             : frame.Locator($"[id=\"{owned}\"] [role=option]");
         var texts = new List<string>();
         for (var i = 0; i < 12 && texts.Count == 0; i++)
@@ -146,7 +164,8 @@ public sealed partial class FormDiscoverer
             """);
         await frame.Page.Keyboard.PressAsync("Escape");
         await box.EvaluateAsync("el => el.blur()");
-        return ([.. texts.Distinct()], multi);
+        // The menu's own "Select One" row is a placeholder, not a choice (#443).
+        return ([.. texts.Distinct().Where(t => !MenuPlaceholder().IsMatch(t))], multi);
     }
 
     /// <summary>Every fillable control on a page already open, top document first, mapped to
@@ -204,6 +223,8 @@ public sealed partial class FormDiscoverer
                 ("textarea", _) => PacketQuestion.Textarea,
                 ("select", "select-multiple") => PacketQuestion.MultiSelect,
                 ("select", _) => PacketQuestion.Select,
+                // Workday's drop-down button (#443): a select whose menu is read when it is opened.
+                ("button", "listbox") => PacketQuestion.Select,
                 (_, "file") => PacketQuestion.File,
                 // Boxes that share a name are one "select all that apply" (#431).
                 (_, "checkbox") => c.Options.Count > 1 ? PacketQuestion.MultiSelect : PacketQuestion.Select,
@@ -376,7 +397,7 @@ public sealed partial class FormDiscoverer
               const title = el.closest('fieldset')?.querySelector('legend')?.innerText || ashbyTitle(el)?.innerText?.trim() || groupTitle(el)
                 || el.closest('[role=radiogroup]')?.getAttribute('aria-label') || name;
               // The star on the group's title is the group's: its options' own labels ("Yes") carry none.
-              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true', options: [opt] };
+              const entry = { id: stable ? '' : (el.id || ''), name: stable || name, label: title, tag: 'input', type: 'radio', required: required || /^\s*\*|\*\s*$/.test(title) || el.closest('[role=radiogroup]')?.getAttribute('aria-required') === 'true' || !!el.closest('[aria-required="true"]'), options: [opt] };
               seenRadio.set(name, entry); out.push(entry); continue;
             }
             // Boxes sharing a name are one "select all that apply" — Greenhouse's
@@ -418,6 +439,29 @@ public sealed partial class FormDiscoverer
             const row = g.closest('.input-row');
             const required = g.getAttribute('aria-required') === 'true' || !!row?.querySelector('.input-row__label--required') || /\*\s*$/.test(label);
             out.push({ id: '', name: '', label, tag: 'input', type: 'radio', required, options: pills.map(b => (b.innerText || '').trim()) });
+          }
+          // Workday's drop-downs are buttons — <button aria-haspopup=listbox id="country--country"
+          // name="country"> under a <label for>, reading "Select One" until chosen — so Country,
+          // State, Phone Device Type and every Application Question went unseen (#443). Named by
+          // the label, required by the label's star, the button's aria-required, or the
+          // "… Required" its aria-label ends with; the menu is read when the choices are read.
+          // A button with neither label nor name (the page header's Settings menu) is not a question.
+          for (const b of deep('button[aria-haspopup="listbox"]')) {
+            if (!visible(b) || widget(b)) continue;
+            // The page header's own menus (Settings, the account) open listboxes too (#443).
+            if (b.closest('header, nav, [role=banner], [role=navigation]') || /utilityMenu/i.test(b.getAttribute('data-automation-id') || '')) continue;
+            const l = b.id ? rootOf(b).querySelector(`label[for="${CSS.escape(b.id)}"]`) : null;
+            const lby = (b.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => byId(b, i)?.innerText || '').join(' ').trim();
+            // An Application Question's button carries only "Select One Required": the question is
+            // the group's name, or the text drawn above the button (NVIDIA's work-authorization pair).
+            const g = b.closest('[role=group], fieldset');
+            const gby = (g?.getAttribute('aria-labelledby') || '').split(/\s+/).map(i => byId(b, i)?.innerText || '').join(' ').trim();
+            const gname = g ? (g.getAttribute('aria-label') || gby || g.querySelector('legend')?.innerText || '') : '';
+            // The text above the button names it only for a button the form named (a name attribute).
+            const label = (l?.innerText || lby || gname || (b.getAttribute('name') ? precedingTitle(b) : '') || '').replace(/\s+/g, ' ').trim();
+            if (!label || (!b.id && !b.getAttribute('name'))) continue;
+            const required = b.getAttribute('aria-required') === 'true' || /^\s*\*|\*\s*$/.test(label) || /\brequired\s*$/i.test(b.getAttribute('aria-label') || '');
+            out.push({ id: b.id || '', name: b.getAttribute('name') || '', label, tag: 'button', type: 'listbox', required, options: [] });
           }
           return out;
         }

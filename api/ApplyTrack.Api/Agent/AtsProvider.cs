@@ -207,26 +207,51 @@ public static partial class AtsProvider
             case Breezy when uri.Host.EndsWith("breezy.hr", StringComparison.OrdinalIgnoreCase)
                              && BreezyPosting().IsMatch(uri.AbsolutePath):
                 return $"{uri.Scheme}://{uri.Host}{path}/apply";
+            case Workday when WorkdayApplyUrl(link) is { } manual:
+                return manual;
             default:
                 return link;
         }
     }
 
     /// <summary>
-    /// Whether the browser may drive this provider's form. Workday and SuccessFactors never:
-    /// applying needs a candidate account with the employer's tenant (a password, email
-    /// verification, a multi-step wizard) — the honest outcome is copy-and-open. An
-    /// aggregator's listing never: there is no form on it. The unknown long tail only with
-    /// the tenant's explicit opt-in.
+    /// Whether the browser may drive this provider's form. Workday since #443: its wizard is
+    /// walked signed in as the candidate, with the account made on the way when the tenant
+    /// allows it (#277) and the run otherwise saying which host needs one. SuccessFactors never:
+    /// applying needs a candidate account with the employer's tenant and a form nothing here
+    /// drives — the honest outcome is copy-and-open. An aggregator's listing never: there is no
+    /// form on it. The unknown long tail only with the tenant's explicit opt-in.
     /// </summary>
     public static bool BrowserCanSubmit(string provider, bool longTailOptIn, bool linkedInEasyOptIn = false) => provider switch
     {
         // Easy Apply is the tenant's own LinkedIn account being driven: only ever by its own switch (#278).
         LinkedInEasy => linkedInEasyOptIn,
-        Greenhouse or Lever or Ashby or Workable or Breezy or SmartRecruiters or Join => true,
-        Workday or SuccessFactors or Aggregator => false,
+        Greenhouse or Lever or Ashby or Workable or Breezy or SmartRecruiters or Join or Workday => true,
+        SuccessFactors or Aggregator => false,
         _ => longTailOptIn,
     };
+
+    /// <summary>
+    /// Where a Workday posting's application starts, or null when <paramref name="link"/> is not
+    /// one: <c>…/job/&lt;location&gt;/&lt;slug&gt;/apply/applyManually</c> — the tenant's site and
+    /// locale kept, the query (<c>?source=…</c>) dropped. Opened directly it shows the sign-in
+    /// choices (Google, LinkedIn, email) and, signed in, the first step of the wizard; a draft
+    /// already begun there resumes at its first step with what was saved (#443). The manual
+    /// flow, not "Autofill with Resume": Workday's parse of a résumé explodes its earlier-roles
+    /// list into rows with no company, and the rows are filled from the structured résumé instead.
+    /// </summary>
+    public static string? WorkdayApplyUrl(string link)
+    {
+        if (!Uri.TryCreate(link, UriKind.Absolute, out var u)) return null;
+        var host = u.Host.ToLowerInvariant();
+        if (!host.EndsWith(".myworkdayjobs.com", StringComparison.Ordinal) && !host.EndsWith(".myworkdaysite.com", StringComparison.Ordinal)) return null;
+        var path = u.AbsolutePath;
+        var at = path.IndexOf("/job/", StringComparison.OrdinalIgnoreCase);
+        if (at < 0) return null;
+        var rest = path[(at + 5)..].Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (rest.Length < 2) return null;
+        return $"{u.GetLeftPart(UriPartial.Authority)}{path[..at]}/job/{rest[0]}/{rest[1]}/apply/applyManually";
+    }
 
     [GeneratedRegex(@"^https?://([a-z0-9-]+)\.(wd\d+)\.(myworkdayjobs|myworkdaysite)\.com/(?:[a-z]{2}-[A-Z]{2}/)?([^/?#]+)/(job/[^?#]+)", RegexOptions.IgnoreCase)]
     private static partial Regex WorkdayPosting();

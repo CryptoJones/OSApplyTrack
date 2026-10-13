@@ -40,6 +40,9 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
     private WebApplication? _fixture;
     private string _fixtureUrl = "";
     private readonly Dictionary<string, (string Password, bool Verified)> _wdAccounts = [];
+    /// <summary>What the Workday wizard fixture reported as the run moved through it (#443): each step
+    /// reached with the answers held so far, and the submission.</summary>
+    private readonly List<string> _wdSteps = [];
     private string _wdHoneypot = "";
     private readonly List<Dictionary<string, string>> _posts = [];
     private readonly List<Dictionary<string, string>> _laterPosts = [];
@@ -569,6 +572,18 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
             return ok
                 ? Results.Content("<html><body><h1>Candidate Home</h1><p>My Applications</p></body></html>", "text/html")
                 : Results.Content(WorkdaySignInHtml.Replace("<!--ERR-->", "<div role=\"alert\">Wrong email or password</div>"), "text/html");
+        });
+        // Workday's application wizard as nvidia.wd5 serves it (#443): the manual flow's sign-in
+        // choices, the email sign-in under a click_filter overlay, then My Information (a search
+        // box, a drop-down button, a required radio group), Application Questions (a drop-down),
+        // Voluntary Disclosures (a demographic drop-down, the terms box) and Review with Submit.
+        _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R1/apply/applyManually", () => Results.Content(WorkdayWizardHtml, "text/html"));
+        _fixture.MapPost("/wd/step", async (HttpRequest req) =>
+        {
+            using var reader = new StreamReader(req.Body);
+            var body = await reader.ReadToEndAsync();
+            lock (_wdSteps) _wdSteps.Add(body);
+            return Results.Ok();
         });
         // Oracle Taleo's IAM pages as upmcjobs.taleo.net serves them (#277): Candidate Login with
         // New User, then New User Registration; the user name is the email.
@@ -1490,6 +1505,93 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
                  onclick="if(document.getElementById('p').value===document.getElementById('v').value) document.getElementById('create').submit()"></div>
           </div>
         </form>
+        </body></html>
+        """;
+
+    private const string WorkdayWizardHtml = """
+        <html><body>
+        <div id="choices">
+          <h2>Sign In</h2>
+          <button type="button" data-automation-id="GoogleSignInButton">Sign in with Google</button>
+          <button type="submit" data-automation-id="SignInWithEmailButton" onclick="show('signin');return false">Sign in with email</button>
+        </div>
+        <div id="signin" style="display:none">
+          <label for="e">Email Address</label><input id="e" data-automation-id="email" type="text" />
+          <label for="p">Password</label><input id="p" data-automation-id="password" type="password" />
+          <div style="position:relative">
+            <button type="submit" aria-hidden="true" tabindex="-2" data-automation-id="signInSubmitButton">Sign In</button>
+            <div role="button" tabindex="0" aria-label="Sign In" data-automation-id="click_filter" style="position:absolute;inset:0"
+                 onclick="if(document.getElementById('e').value==='ada@example.com'&&document.getElementById('p').value==='pw'){sessionStorage.setItem('wd','1');show('step1');report('step1')}else{document.getElementById('err').textContent='Wrong email or password'}"></div>
+          </div>
+          <div id="err" role="alert"></div>
+          <input data-automation-id="beecatcher" style="position:absolute;left:-9999px" tabindex="-1" />
+        </div>
+        <div id="step1" class="step" style="display:none">
+          <ol><li>current step 1 of 4 My Information</li></ol>
+          <h3>My Information</h3>
+          <label for="source--source">How Did You Hear About Us?*</label>
+          <div data-uxi-multiselect-id="m1">
+            <ul role="listbox" aria-label="items selected" data-automation-id="selectedItemList" data-uxi-multiselect-id="m1" id="chips"></ul>
+            <input id="source--source" data-uxi-widget-type="selectinput" data-uxi-multiselect-id="m1" aria-required="true" placeholder="Search" autocomplete="off"
+                   onkeydown="if(event.key==='Enter'){chip(this.value);this.value='';event.preventDefault()}" />
+          </div>
+          <div name="candidateIsPreviousWorker" aria-required="true" aria-labelledby="pw-title">
+            <p id="pw-title">Have you previously worked for Acme?</p>
+            <input type="radio" id="r1" name="candidateIsPreviousWorker" value="true" /><label for="r1">Yes</label>
+            <input type="radio" id="r2" name="candidateIsPreviousWorker" value="false" /><label for="r2">No</label>
+          </div>
+          <label for="country--country">Country*</label>
+          <button type="button" id="country--country" name="country" aria-haspopup="listbox" aria-label="Country Select One Required"
+                  onclick="menu(this, ['Select One','Canada','United States of America'])">Select One</button>
+          <label for="name--legalName--firstName">First Name*</label><input type="text" id="name--legalName--firstName" name="legalName--firstName" aria-required="true" />
+          <label for="name--legalName--lastName">Last Name*</label><input type="text" id="name--legalName--lastName" name="legalName--lastName" aria-required="true" />
+          <div class="alerts"></div>
+          <button type="button" data-automation-id="pageFooterNextButton" onclick="next1()">Save and Continue</button>
+        </div>
+        <div id="step2" class="step" style="display:none">
+          <ol><li>current step 2 of 4 Application Questions</li></ol>
+          <h3>Application Questions</h3>
+          <label for="q1">Are you legally authorized to work in the country where this position is located?*</label>
+          <button type="button" id="q1" name="legallyAuthorized" aria-haspopup="listbox" aria-label="Are you legally authorized to work in the country where this position is located? Select One Required"
+                  onclick="menu(this, ['Select One','Yes','No'])">Select One</button>
+          <div class="alerts"></div>
+          <button type="button" data-automation-id="pageFooterBackButton">Back</button>
+          <button type="button" data-automation-id="pageFooterNextButton" onclick="next2()">Save and Continue</button>
+        </div>
+        <div id="step3" class="step" style="display:none">
+          <ol><li>current step 3 of 4 Voluntary Disclosures</li></ol>
+          <h3>Voluntary Disclosures</h3>
+          <label for="eth">What is your ethnicity?</label>
+          <button type="button" id="eth" name="ethnicity" aria-haspopup="listbox" aria-label="What is your ethnicity? Select One Required"
+                  onclick="menu(this, ['Select One','Asian','Decline to State (United States of America)'])">Select One</button>
+          <input type="checkbox" id="terms" name="terms" /><label for="terms">By selecting the checkbox, you agree to our Terms and Conditions and Applicant Privacy Policy.</label>
+          <div class="alerts"></div>
+          <button type="button" data-automation-id="pageFooterNextButton" onclick="next3()">Save and Continue</button>
+        </div>
+        <div id="step4" class="step" style="display:none">
+          <ol><li>current step 4 of 4 Review</li></ol>
+          <h3>Review</h3>
+          <p>Everything you entered, for review.</p>
+          <button type="button" data-automation-id="pageFooterNextButton" onclick="submit()">Submit</button>
+        </div>
+        <div id="done" style="display:none"><h2>Application Submitted</h2><p>Your application has been successfully submitted.</p></div>
+        <ul role="listbox" id="menu" style="display:none"></ul>
+        <script>
+          const show = id => { for (const el of document.querySelectorAll('.step, #choices, #signin, #done')) el.style.display = 'none'; document.getElementById(id).style.display = 'block'; };
+          const state = () => JSON.stringify({ source: [...document.querySelectorAll('#chips li')].map(c => c.textContent), previous: document.querySelector('input[name=candidateIsPreviousWorker]:checked')?.value || '', country: document.getElementById('country--country').textContent, first: document.getElementById('name--legalName--firstName').value, last: document.getElementById('name--legalName--lastName').value, authorized: document.getElementById('q1').textContent, ethnicity: document.getElementById('eth').textContent, terms: document.getElementById('terms').checked });
+          const report = step => fetch('/wd/step', { method: 'POST', body: step + ' ' + state() });
+          const chip = text => { if (!text) return; const li = document.createElement('li'); li.setAttribute('role', 'option'); li.setAttribute('data-automation-id', 'selectedItem'); li.textContent = /linkedin/i.test(text) ? 'Linkedin Jobs' : text; document.getElementById('chips').appendChild(li); };
+          let opened = null;
+          const menu = (btn, options) => { opened = btn; const m = document.getElementById('menu'); m.innerHTML = ''; for (const o of options) { const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = o; li.onclick = () => { opened.textContent = o; m.style.display = 'none'; }; m.appendChild(li); } m.style.display = 'block'; };
+          document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('menu').style.display = 'none'; });
+          const complain = (step, text) => { document.querySelector('#' + step + ' .alerts').innerHTML = '<div role="alert">' + text + '</div>'; };
+          const next1 = () => { const s = JSON.parse(state()); if (!s.source.length) return complain('step1', 'How Did You Hear About Us? is required'); if (!s.previous) return complain('step1', 'Have you previously worked for Acme? is required'); if (s.country === 'Select One') return complain('step1', 'Country is required'); if (!s.first || !s.last) return complain('step1', 'Legal Name is required'); show('step2'); report('step2'); };
+          const next2 = () => { const s = JSON.parse(state()); if (s.authorized === 'Select One') return complain('step2', 'Are you legally authorized… is required'); show('step3'); report('step3'); };
+          const next3 = () => { const s = JSON.parse(state()); if (s.ethnicity === 'Select One') return complain('step3', 'What is your ethnicity? is required'); if (!s.terms) return complain('step3', 'You must agree to the terms'); show('step4'); report('step4'); };
+          const submit = () => { fetch('/wd/step', { method: 'POST', body: 'submitted ' + state() }).then(() => show('done')); };
+          // Signed in, the address loaded again opens on the first step, as Workday's does after a sign-in from inside the flow.
+          if (sessionStorage.getItem('wd')) show('step1');
+        </script>
         </body></html>
         """;
 
@@ -2846,6 +2948,176 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
 
     private AccountCreator Creator() =>
         new(new BrowserOptions { Endpoint = _ws, AllowPrivateTargets = true, TimeoutSeconds = 60 }, NullLogger<AccountCreator>.Instance);
+
+    private static AgentPacket WorkdayPacket(bool authorized) => new()
+    {
+        ApplicationName = "acme-engineer-wd.md", Provider = "workday",
+        Questions =
+        [
+            new("legalName--firstName", "First Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("legalName--lastName", "Last Name", true, PacketQuestion.Text, [], PacketQuestion.Standard),
+            new("source--source", "How Did You Hear About Us?", true, PacketQuestion.Text, [], PacketQuestion.Custom),
+            new("country", "Country", true, PacketQuestion.Select, ["Canada", "United States of America"], PacketQuestion.Custom),
+            new("candidateIsPreviousWorker", "Have you previously worked for Acme?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom),
+            .. authorized ? new PacketQuestion[] { new("legallyAuthorized", "Are you legally authorized to work in the country where this position is located?", true, PacketQuestion.Select, ["Yes", "No"], PacketQuestion.Custom) } : [],
+        ],
+        Answers = new()
+        {
+            ["legalName--firstName"] = "Ada", ["legalName--lastName"] = "Byte", ["source--source"] = "LinkedIn",
+            ["country"] = "United States", ["candidateIsPreviousWorker"] = "No", ["legallyAuthorized"] = "Yes",
+        },
+    };
+
+    /// <summary>
+    /// Workday's wizard (#443), walked signed in with the saved account: the email sign-in behind
+    /// "Sign in with email" and its click_filter overlay; a search box committed with Enter; a
+    /// drop-down button chosen from its menu; a radio group required on its wrapper. A step
+    /// whose question the packet never saw is handed back with its choices, so the drafter can
+    /// answer it; the next run answers it and goes on — the demographic drop-down declined, the
+    /// terms box ticked — to Review, where a real run presses Submit.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_workday_wizard_is_walked_signed_in_and_hands_back_what_it_meets()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = $"{_fixtureUrl}/wd/en-US/Careers/job/Omaha/Engineer_R1/apply/applyManually";
+        var account = new BoardAccount(new Uri(_fixtureUrl).Host, "ada@example.com", "pw");
+        lock (_wdSteps) _wdSteps.Clear();
+
+        // Run 1: Application Questions asks something the packet has never seen.
+        var first = await Submitter().RunAsync(url, WorkdayPacket(authorized: false), (Pdf, "resume.pdf"), dryRun: true, accounts: [account]);
+        Assert.True(first.Filled, first.Error);
+        Assert.False(first.Submitted);
+        Assert.Contains("legallyAuthorized", first.Unmapped);
+        var met = Assert.Single(first.Discovered ?? []);
+        Assert.Equal("legallyAuthorized", met.Id);
+        Assert.Equal(PacketQuestion.Select, met.Type);
+        Assert.Equal(["Yes", "No"], met.Options);
+        string[] steps;
+        lock (_wdSteps) steps = [.. _wdSteps];
+        var step2 = Assert.Single(steps, s => s.StartsWith("step2 "));
+        Assert.Contains("\"source\":[\"Linkedin Jobs\"]", step2);
+        Assert.Contains("\"previous\":\"false\"", step2);
+        Assert.Contains("\"country\":\"United States of America\"", step2);
+        Assert.Contains("\"first\":\"Ada\"", step2);
+        Assert.DoesNotContain(steps, s => s.StartsWith("step3 "));
+
+        // Run 2: answered, the walk reaches Review — ethnicity declined, the terms ticked — and a dry run stops there.
+        lock (_wdSteps) _wdSteps.Clear();
+        var second = await Submitter().RunAsync(url, WorkdayPacket(authorized: true), (Pdf, "resume.pdf"), dryRun: true, accounts: [account]);
+        Assert.True(second.Filled, second.Error);
+        Assert.False(second.Submitted);
+        Assert.Empty(second.Unmapped);
+        Assert.Null(second.Discovered);
+        lock (_wdSteps) steps = [.. _wdSteps];
+        var review = Assert.Single(steps, s => s.StartsWith("step4 "));
+        Assert.Contains("\"authorized\":\"Yes\"", review);
+        Assert.Contains("\"ethnicity\":\"Decline to State (United States of America)\"", review);
+        Assert.Contains("\"terms\":true", review);
+        Assert.DoesNotContain(steps, s => s.StartsWith("submitted "));
+
+        // Run 3: for real — Submit is pressed on Review and Workday's confirmation read.
+        lock (_wdSteps) _wdSteps.Clear();
+        var real = await Submitter().RunAsync(url, WorkdayPacket(authorized: true), (Pdf, "resume.pdf"), dryRun: false, accounts: [account]);
+        Assert.True(real.Submitted, real.Error);
+        Assert.Contains("successfully submitted", real.Confirmation, StringComparison.OrdinalIgnoreCase);
+        lock (_wdSteps) steps = [.. _wdSteps];
+        Assert.Contains(steps, s => s.StartsWith("submitted "));
+    }
+
+    /// <summary>
+    /// The live check for Workday (#443): set <c>APPLYTRACK_LIVE_WORKDAY_URL</c> to a posting and
+    /// <c>APPLYTRACK_LIVE_WORKDAY_USER</c> / <c>_PASSWORD</c> to a candidate account on that tenant,
+    /// and the wizard is discovered and dry-run exactly as the worker does it — signed in, step
+    /// by step, never past Submit. Workday saves each step as a draft under the account, which
+    /// is why this cannot run with POSTs blocked and why it only ever dry-runs. What it stopped
+    /// on, and what it handed back, is printed. Never runs in CI.
+    /// </summary>
+    [SkippableFact]
+    public async Task Live_workday_wizard_is_walked_to_review_as_a_dry_run()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_WORKDAY_URL") ?? "";
+        var user = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_WORKDAY_USER") ?? "";
+        var password = Environment.GetEnvironmentVariable("APPLYTRACK_LIVE_WORKDAY_PASSWORD") ?? "";
+        Skip.If(url.Length == 0 || user.Length == 0 || password.Length == 0, "set APPLYTRACK_LIVE_WORKDAY_URL/USER/PASSWORD to run this");
+        var options = new BrowserOptions { Endpoint = _ws, Proxy = LiveProxy, TimeoutSeconds = 180 };
+        var accounts = new[] { new BoardAccount(new Uri(url).Host, user, password) };
+        var apply = ApplyTrack.Api.Agent.AtsProvider.ApplyUrl(url, ApplyTrack.Api.Agent.AtsProvider.Workday);
+        var questions = await new FormDiscoverer(options, new LiveLogger<FormDiscoverer>()).DiscoverAsync(apply, accounts: accounts);
+        Assert.NotNull(questions);
+        Console.WriteLine($"LIVE QUESTIONS: {string.Join(" | ", questions!.Select(q => $"{q.Id}={q.Label}[{q.Type}{(q.Required ? "*" : "")}{(q.Options.Count > 0 ? ":" + string.Join("/", q.Options) : "")}]"))}");
+        var resume = new Resume
+        {
+            FullName = "Aaron K. Clark", Location = "Minden, Nebraska",
+            Experience = [new ResumeExperience("Ronin 48", "Principal Software Architect & ML Engineer", "Mar 2026 - Present", ["Designing overall system architecture for an AI startup."])],
+            Education = [new ResumeEducation("Eastern University", "MS", "Applied Artificial Intelligence", "2026 - Present")],
+        };
+        var packet = new AgentPacket { ApplicationName = "live-wd.md", Provider = ApplyTrack.Api.Agent.AtsProvider.Workday, Questions = questions, Resume = resume };
+        var ctx = new ApplyTrack.Api.Agent.AnswerContext(resume,
+            new AgentSettings { Phone = "5712975406", WorkAuthorization = "US citizen", Country = "United States", SalaryExpectation = "125000" },
+            user, "", "");
+        foreach (var q in packet.Questions.Where(q => q.Kind != PacketQuestion.Eeo && q.Type != PacketQuestion.File))
+        {
+            var (answer, _) = ApplyTrack.Api.Agent.AnswerDrafter.Deterministic(q, ctx);
+            packet.Answers[q.Id] = answer ?? q.Id switch
+            {
+                "source--source" => "LinkedIn",
+                "legalName--firstName" => "Aaron", "legalName--lastName" => "Clark",
+                "addressLine1" => "PO Box 28", "city" => "Minden", "countryRegion" => "Nebraska", "postalCode" => "68959",
+                "phoneType" => "Home Cellular", "phoneNumber" => "5712975406", "candidateIsPreviousWorker" => "No",
+                _ => q.Options.Count > 0 ? q.Options[0] : q.Type == PacketQuestion.Textarea ? "Stand-in text." : "n/a",
+            };
+        }
+        // The questions later steps hand back get the standing answers a drafter would give.
+        var submitter = new BrowserSubmitter(options, new LiveLogger<BrowserSubmitter>());
+        for (var round = 1; round <= 3; round++)
+        {
+            var dry = await submitter.RunAsync(url, packet, (Pdf, "resume.pdf"), dryRun: true, resumeText: "Aaron K. Clark.", accounts: accounts);
+            Console.WriteLine($"LIVE DRY {round}: filled={dry.Filled} url={dry.Url} mapped=[{string.Join(", ", dry.Mapped)}] unmapped=[{string.Join(", ", dry.Unmapped)}] error={dry.Error}");
+            if (dry.Screenshot is { } png) await File.WriteAllBytesAsync(Path.Combine(Path.GetTempPath(), $"live-workday-dry{round}.png"), png);
+            if (dry.Discovered is not { Count: > 0 } met) break;
+            Console.WriteLine($"LIVE MET {round}: {string.Join(" | ", met.Select(q => $"{q.Id}={q.Label}[{q.Type}{(q.Required ? "*" : "")}{(q.Options.Count > 0 ? ":" + string.Join("/", q.Options) : "")}]"))}");
+            foreach (var q in met)
+            {
+                if (packet.Questions.Any(p => p.Id == q.Id)) continue;
+                packet.Questions.Add(q);
+                var (answer, _) = ApplyTrack.Api.Agent.AnswerDrafter.Deterministic(q, ctx);
+                if (q.Kind == PacketQuestion.Eeo || q.Type == PacketQuestion.File) continue;
+                var standIn = q.Id switch
+                {
+                    "linkedInAccount" => "https://www.linkedin.com/in/aaronkclark",
+                    "jobTitle" => "Principal Software Architect & ML Engineer", "companyName" => "Ronin 48", "location" => "Remote",
+                    "currentlyWorkHere" => "Yes", "schoolName" => "Eastern University", "degree" => "Masters",
+                    _ when q.Options.Count > 0 => q.Options[0],
+                    _ when System.Text.RegularExpressions.Regex.IsMatch(q.Id + " " + q.Label, @"date|year|month|gpa|grade", System.Text.RegularExpressions.RegexOptions.IgnoreCase) => "",
+                    _ => "n/a",
+                };
+                var chosen = answer ?? standIn;
+                if (chosen.Length > 0) packet.Answers[q.Id] = chosen;
+            }
+        }
+    }
+
+    /// <summary>What a live run says as it goes, on the console, prefixed so it can be grepped.</summary>
+    private sealed class LiveLogger<T> : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Console.WriteLine($"LIVE LOG [{logLevel}] {formatter(state, exception)}");
+    }
+
+    [SkippableFact]
+    public async Task A_workday_posting_with_no_saved_account_names_the_host_that_needs_one()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = $"{_fixtureUrl}/wd/en-US/Careers/job/Omaha/Engineer_R1/apply/applyManually";
+        var outcome = await Submitter().RunAsync(url, WorkdayPacket(authorized: true), (Pdf, "resume.pdf"), dryRun: true);
+        Assert.False(outcome.Filled);
+        Assert.Equal(new Uri(_fixtureUrl).Host, outcome.NeedsAccountAt);
+        Assert.Contains("no account is saved", outcome.Error);
+    }
 
     [SkippableFact]
     public async Task A_workday_account_is_created_verified_from_the_mailbox_and_proved_by_signing_in_before_it_is_kept()
