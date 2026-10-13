@@ -62,6 +62,9 @@ public sealed partial class BrowserSession : IAsyncDisposable
     public const string WidgetJs = """
         (el) => {
           const a = (e, n) => (e.getAttribute(n) || '').toLowerCase();
+          // Workday's search box — "How Did You Hear About Us?", Country Phone Code — says
+          // "Search" in its placeholder and is a question, never a site search (#453).
+          if (a(el, 'data-uxi-widget-type') === 'selectinput') return false;
           if (a(el, 'type') === 'search') return true;
           const own = [a(el, 'name'), a(el, 'id'), a(el, 'placeholder'), a(el, 'aria-label'), a(el, 'class')].join(' ');
           // "search" as its own word or suffix (keywordsearch, locationsearch, columnized-search),

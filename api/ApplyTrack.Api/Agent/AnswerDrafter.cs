@@ -70,12 +70,51 @@ public sealed partial class AnswerDrafter
     private static partial Regex LastName();
     [GeneratedRegex(@"^full name$|^name$|your name", RegexOptions.IgnoreCase)]
     private static partial Regex FullName();
-    [GeneratedRegex(@"how did you hear|\breferr|\bstart date|available to start|notice period|\bearliest|captcha", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\breferr|\bstart date|available to start|notice period|\bearliest|captcha", RegexOptions.IgnoreCase)]
     private static partial Regex HumanOnly();
     // Anchored, and checked AFTER the eligibility rules: "…to remain in your current
     // location?" is a sponsorship question that once got a city typed into it.
     [GeneratedRegex(@"^(?:current )?location\b|\(city\)|^city\b|^(?:what is )?your (?:current )?location\b|where (?:are you|do you) (?:based|located|live)", RegexOptions.IgnoreCase)]
     private static partial Regex LocationRe();
+
+    /// <summary>"Minden, Nebraska (Remote)" → "Minden": the city of the résumé's location (#453).</summary>
+    public static string LocationCity(string location)
+    {
+        var parts = StripLocationSuffix(location).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 0 || parts[0].Equals("remote", StringComparison.OrdinalIgnoreCase) ? "" : parts[0];
+    }
+
+    /// <summary>"Lincoln, NE 68508" → "NE": the state of the résumé's location, postal code dropped (#453).</summary>
+    public static string LocationState(string location)
+    {
+        var parts = StripLocationSuffix(location).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2) return "";
+        var state = Regex.Replace(parts[1].Trim().TrimEnd('.'), @"\s+\d[\d-]*$", "").Trim();
+        return UsStates.Contains(state) || parts.Length == 2 ? state : "";
+    }
+
+    private static readonly Dictionary<string, string> UsStateNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["AL"] = "Alabama", ["AK"] = "Alaska", ["AZ"] = "Arizona", ["AR"] = "Arkansas", ["CA"] = "California", ["CO"] = "Colorado",
+        ["CT"] = "Connecticut", ["DE"] = "Delaware", ["DC"] = "District of Columbia", ["FL"] = "Florida", ["GA"] = "Georgia", ["HI"] = "Hawaii",
+        ["ID"] = "Idaho", ["IL"] = "Illinois", ["IN"] = "Indiana", ["IA"] = "Iowa", ["KS"] = "Kansas", ["KY"] = "Kentucky", ["LA"] = "Louisiana",
+        ["ME"] = "Maine", ["MD"] = "Maryland", ["MA"] = "Massachusetts", ["MI"] = "Michigan", ["MN"] = "Minnesota", ["MS"] = "Mississippi",
+        ["MO"] = "Missouri", ["MT"] = "Montana", ["NE"] = "Nebraska", ["NV"] = "Nevada", ["NH"] = "New Hampshire", ["NJ"] = "New Jersey",
+        ["NM"] = "New Mexico", ["NY"] = "New York", ["NC"] = "North Carolina", ["ND"] = "North Dakota", ["OH"] = "Ohio", ["OK"] = "Oklahoma",
+        ["OR"] = "Oregon", ["PA"] = "Pennsylvania", ["RI"] = "Rhode Island", ["SC"] = "South Carolina", ["SD"] = "South Dakota", ["TN"] = "Tennessee",
+        ["TX"] = "Texas", ["UT"] = "Utah", ["VT"] = "Vermont", ["VA"] = "Virginia", ["WA"] = "Washington", ["WV"] = "West Virginia",
+        ["WI"] = "Wisconsin", ["WY"] = "Wyoming",
+    };
+    // Workday's My Information asks these as their own boxes (#453): the city and state of
+    // the résumé's location, the kind of phone, and where the posting was seen.
+    [GeneratedRegex(@"^city\b|^town\b", RegexOptions.IgnoreCase)]
+    private static partial Regex CityRe();
+    [GeneratedRegex(@"^state\b|^province\b|state ?/ ?province|state or province|^region\b", RegexOptions.IgnoreCase)]
+    private static partial Regex StateRe();
+    [GeneratedRegex(@"(?:phone|device|number) type|type of (?:phone|number)", RegexOptions.IgnoreCase)]
+    private static partial Regex PhoneTypeRe();
+    [GeneratedRegex(@"how did you hear|how you heard|hear about (?:us|this|the)|source of (?:this )?application|referral source", RegexOptions.IgnoreCase)]
+    private static partial Regex HeardAboutRe();
     [GeneratedRegex(@"^country\b|country of residence|(?:which|what) country|(?:choose|select|enter) (?:your )?(?:current )?(?:location |residence |home )?country\b", RegexOptions.IgnoreCase)]
     private static partial Regex CountryRe();
 
@@ -223,6 +262,11 @@ public sealed partial class AnswerDrafter
         var consent = Consent().IsMatch(label);
         if (id is "email" || (EmailRe().IsMatch(label) && !consent))
             return ctx.Email.Length > 0 ? (ctx.Email, null) : (null, "no email on the account");
+        if (PhoneTypeRe().IsMatch(label))
+            return q.Options.Count == 0 ? ("Mobile", null)
+                : q.Options.FirstOrDefault(o => Regex.IsMatch(o, @"mobile|cell", RegexOptions.IgnoreCase)) is { } mobile ? (mobile, null)
+                : q.Options.FirstOrDefault(o => Regex.IsMatch(o, @"\bhome\b", RegexOptions.IgnoreCase)) is { } home ? (home, null)
+                : (null, "pick the kind of phone yourself");
         // A menu that names a phone — Workday's "Phone Device Type" (Home / Home Cellular) — is
         // not the number (#443): its choice is picked below like any other fixed set.
         if (id is "phone" || (Phone().IsMatch(label) && !consent && q.Options.Count == 0))
@@ -253,6 +297,22 @@ public sealed partial class AnswerDrafter
             return YesNo(q, ctx.Settings.ClearanceOk, "Settings · Agent says whether you hold a clearance");
         // "Minden, Nebraska (Remote)" is how a résumé says it; "Minden, Nebraska" is what a
         // form's city autocomplete can geocode. The suffix is for the reader, not the form.
+        if (HeardAboutRe().IsMatch(label))
+            return q.Options.Count == 0 ? ("LinkedIn", null)
+                : q.Options.FirstOrDefault(o => o.Contains("linkedin", StringComparison.OrdinalIgnoreCase)) is { } li ? (li, null)
+                : q.Options.FirstOrDefault(o => Regex.IsMatch(o, @"job board|job site|online|internet|social", RegexOptions.IgnoreCase)) is { } board ? (board, null)
+                : (null, "say where you heard about this one");
+        if (CityRe().IsMatch(q.Label))
+            return LocationCity(ctx.Resume.Location) is { Length: > 0 } city ? (city, null) : (null, "add a location in Résumé settings");
+        if (StateRe().IsMatch(q.Label) && !CountryRe().IsMatch(q.Label))
+        {
+            var state = LocationState(ctx.Resume.Location);
+            if (state.Length == 0) return (null, "add a location with its state in Résumé settings");
+            if (q.Options.Count == 0) return (state, null);
+            var full = UsStateNames.TryGetValue(state, out var name) ? name : state;
+            return q.Options.FirstOrDefault(o => o.Equals(full, StringComparison.OrdinalIgnoreCase) || o.Equals(state, StringComparison.OrdinalIgnoreCase)) is { } opt ? (opt, null)
+                : (null, "pick the state option yourself — none reads as " + full);
+        }
         if (id is "location" || LocationRe().IsMatch(q.Label))
             return StripLocationSuffix(ctx.Resume.Location) is { Length: > 0 } loc ? (loc, null) : (null, "add a location in Résumé settings");
         if (id is "country" || CountryRe().IsMatch(q.Label))

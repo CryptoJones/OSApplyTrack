@@ -397,6 +397,9 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 // Flexhire's location notice opens once Location is typed (#437). Acknowledged,
                 // the field gets one more go.
                 else if (await BrowserSession.AcknowledgeNoticeAsync(page) && await FillAsync(form, q, answer)) mapped.Add(q.Id);
+                // Workday's My Information shows the account's email as text, with no box: an
+                // address already on the page is answered (#453).
+                else if (q.Id == "std:email" && (await BodyTextAsync(form)).Contains(answer, StringComparison.OrdinalIgnoreCase)) mapped.Add(q.Id);
                 else if (q.Required) unmapped.Add(q.Id);
             }
 
@@ -1009,7 +1012,10 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             if ((await SelectInputChipsAsync(box)).Length > 0) return true;
             var want = answer.Trim();
             if (want.Length == 0) return false;
-            await box.FillAsync(want, new() { Timeout = 5_000 });
+            // Typed key by key: a value set in one go is one Workday's widget does not hear, and
+            // Enter then makes no chip of it (#453).
+            await box.ClickAsync(new() { Timeout = 5_000 });
+            await box.PressSequentiallyAsync(want, new() { Delay = 15 });
             await box.PressAsync("Enter");
             for (var i = 0; i < 16; i++)
             {
@@ -1506,6 +1512,8 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             return el.getAttribute('placeholder') || '';
           };
           const out = []; const seen = new Set();
+          // Keyed the way discovery keys a control — name, then id — so the packet and this sweep
+          // name one box alike: Workday's City is id address--city and name city (#453).
           const add = (key, label) => {
             // A required star at either end is decoration: "* Country" is Country (#222).
             label = (label || '').replace(/^\s*\*\s*/, '').replace(/\*\s*$/, '').replace(/\s+/g, ' ').trim();
@@ -1546,7 +1554,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
           };
           const addFile = (root, input, label) => {
             if (!visible(root) || fileFilled(root)) return;
-            add(input.id || input.getAttribute('name'), label);
+            add(input.getAttribute('name') || input.id, label);
           };
           // Greenhouse's shape: the required flag sits on the upload group, never on the
           // file input inside it — which is why the résumé's own "required" never reached
@@ -1611,7 +1619,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             const combo = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-autocomplete') === 'list';
             if (combo) {
               if (!visible(el) || comboFilled(el)) continue;
-              add(el.id || el.getAttribute('name'), labelFor(el)); continue;
+              add(el.getAttribute('name') || el.id, labelFor(el)); continue;
             }
             if (!el.id && !el.getAttribute('name')) {
               // react-select's hidden required input: the combobox beside it is the one to name.
@@ -1654,7 +1662,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
               empty = (el.value || '').trim().length === 0
                 || (el.selectedIndex === 0 && /^\s*-*\s*(?:select|choose|please (?:select|choose)|pick)\b/i.test(el.options[0]?.text || ''));
             else empty = (el.value || '').trim().length === 0;
-            if (empty) add(el.id || el.getAttribute('name'), labelFor(el));
+            if (empty) add(el.getAttribute('name') || el.id, labelFor(el));
           }
           // Workday (#443): a required drop-down still on "Select One" — keyed by its name, as
           // discovery keys it — and a required search box with no chip chosen.
