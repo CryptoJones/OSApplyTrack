@@ -127,6 +127,33 @@ public class DbRoleTests(PostgresFixture pg)
         await AssertDeniedAsync(agent, "SELECT * FROM app_notes");
     }
 
+    /// <summary>
+    /// The agent writes board_accounts in three places — taking a Sign in now, keeping the
+    /// session it renewed, saving an account it just created (#277) — and the grant missed
+    /// all three, so every pass on pluto died in RenewSessionsAsync for three days (#446).
+    /// </summary>
+    [Fact]
+    public async Task The_agent_role_writes_board_accounts_but_never_deletes_one()
+    {
+        UpgradeWith("agent-pw", "poller-pw");
+        await using var owner = new NpgsqlConnection(pg.ConnectionString);
+        await owner.OpenAsync();
+        long t = await TestAuth.EnsureUserAsync(owner, TestAuth.UniqueEmail());
+        await owner.ExecuteAsync(
+            "INSERT INTO board_accounts (tenant_id, host, username, password_ciphertext, renew_requested_at) VALUES (@t, 'greenhouse.io', 'ada', 'sealed-pw', now())",
+            new { t });
+
+        await using var agent = await OpenAsAsync(Migrator.AgentRole, "agent-pw");
+        Assert.Equal(1, await agent.ExecuteAsync(
+            "UPDATE board_accounts SET renew_requested_at = NULL WHERE tenant_id = @t AND host = 'greenhouse.io' AND renew_requested_at IS NOT NULL", new { t }));
+        Assert.Equal(1, await agent.ExecuteAsync(
+            "UPDATE board_accounts SET session_ciphertext = 's', session_expires_at = now(), updated_at = now() WHERE tenant_id = @t AND host = 'greenhouse.io'", new { t }));
+        Assert.Equal(1, await agent.ExecuteAsync(
+            "INSERT INTO board_accounts (tenant_id, host, username, password_ciphertext, updated_at) VALUES (@t, 'acme.wd5.myworkdayjobs.com', 'ada', 'sealed-pw', now()) "
+            + "ON CONFLICT (tenant_id, host) DO UPDATE SET username = EXCLUDED.username, password_ciphertext = EXCLUDED.password_ciphertext, updated_at = now()", new { t }));
+        await AssertDeniedAsync(agent, "DELETE FROM board_accounts WHERE tenant_id = @t", new { t });
+    }
+
     [Fact]
     public async Task A_changed_password_is_applied_on_the_next_boot_and_a_blank_one_is_skipped()
     {
