@@ -22,6 +22,10 @@ BEGIN
         REVOKE ALL ON contacts, application_contacts, app_notes FROM applytrack_agent;
         GRANT INSERT, UPDATE ON agent_events, agent_packets, agent_evidence,
             cover_letters, submit_requests, agent_workers, answer_bank TO applytrack_agent;
+        -- The agent takes a Sign in now (renew_requested_at), keeps the session it renews
+        -- and saves an account it has just created (#277) — no DELETE: an account is
+        -- removed only by the person, from Settings (#446).
+        GRANT INSERT, UPDATE ON board_accounts TO applytrack_agent;
         -- Status flips (ready / applied) go through ApplicationRepo's structured update,
         -- which writes exactly these columns — never tenant_id or name, so a compromised
         -- agent cannot move a row into another tenant (#345). The REVOKE drops the
