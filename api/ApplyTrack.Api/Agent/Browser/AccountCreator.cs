@@ -136,14 +136,24 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
     {
         static ILocator Auto(IPage p, string id) => p.Locator($"[data-automation-id='{id}']");
         await ClickIfVisibleAsync(Auto(page, "legalNoticeAcceptButton"));
-        await ClickIfVisibleAsync(Auto(page, "adventureButton"));
-        await ClickIfVisibleAsync(Auto(page, "applyManually"));
+        // The posting page draws Apply once its script has run — a glance the instant the HTML
+        // landed saw nothing on finastra.wd3 (2026-10-13), so no click, no form, "check the
+        // posting" — and step 1 of the flow, "Create Account/Sign In", is fetched after the flow
+        // page is drawn: blank for ~7 s on that tenant. Each step is waited for, not glanced at (#448).
+        if (await WaitAnyVisibleAsync(page, 10_000, "adventureButton", "applyManually", "SignInWithEmailButton", "createAccountLink", "verifyPassword") == "adventureButton")
+            await ClickIfVisibleAsync(Auto(page, "adventureButton"));
+        if (await WaitVisibleAsync(Auto(page, "applyManually"), 8_000))
+            await ClickIfVisibleAsync(Auto(page, "applyManually"));
+        var seen = await WaitAnyVisibleAsync(page, 30_000, "verifyPassword", "createAccountLink", "SignInWithEmailButton");
         // A tenant that offers Google and LinkedIn puts the email sign-in behind a choice
         // (NVIDIA, 2026-10-12): "Sign in with email" first, then the form (#443).
-        if (await WaitVisibleAsync(Auto(page, "SignInWithEmailButton"), 4_000))
+        if (seen == "SignInWithEmailButton")
+        {
             await ClickIfVisibleAsync(Auto(page, "SignInWithEmailButton"));
+            seen = await WaitAnyVisibleAsync(page, 10_000, "verifyPassword", "createAccountLink");
+        }
         // Sign In is shown first on some tenants; its "Create Account" link turns the form over.
-        if (!await WaitVisibleAsync(Auto(page, "verifyPassword"), 5_000))
+        if (seen == "createAccountLink")
             await ClickIfVisibleAsync(Auto(page, "createAccountLink"));
         if (!await WaitVisibleAsync(Auto(page, "verifyPassword"), 10_000))
             return new(null, "Workday showed no Create Account form after Apply — check the posting");
@@ -362,6 +372,24 @@ public sealed partial class AccountCreator(BrowserOptions options, ILogger<Accou
         try { if (await locator.CountAsync() > 0 && await locator.First.IsVisibleAsync()) await locator.First.ClickAsync(new() { Timeout = 5_000 }); }
         catch (PlaywrightException) { /* not on this tenant */ }
         catch (TimeoutException) { /* not on this tenant */ }
+    }
+
+    /// <summary>The first of <paramref name="ids"/> (data-automation-id) to be drawn visible within
+    /// <paramref name="ms"/>, or null — for a page that shows one of several things next.</summary>
+    private static async Task<string?> WaitAnyVisibleAsync(IPage page, int ms, params string[] ids)
+    {
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        do
+        {
+            foreach (var id in ids)
+            {
+                try { if (await page.Locator($"[data-automation-id='{id}']").First.IsVisibleAsync()) return id; }
+                catch (PlaywrightException) { /* mid-navigation */ }
+            }
+            await page.WaitForTimeoutAsync(250);
+        }
+        while (DateTime.UtcNow < until);
+        return null;
     }
 
     private static async Task<bool> WaitVisibleAsync(ILocator locator, int ms)

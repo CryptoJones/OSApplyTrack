@@ -1490,8 +1490,10 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         <html><body>
         <div id="notice"><button data-automation-id="legalNoticeAcceptButton" onclick="document.getElementById('notice').remove()">Accept Cookies</button></div>
         <h1>Engineer</h1>
-        <a href="#" data-automation-id="adventureButton" onclick="document.getElementById('how').style.display='block';return false">Apply</a>
-        <div id="how" style="display:none"><a href="#" data-automation-id="applyManually" onclick="document.getElementById('create').style.display='block';return false">Apply Manually</a></div>
+        <!-- Drawn late, as a tenant draws them: Apply once the script has run, step 1 of the flow a while after Apply Manually (finastra.wd3, #448). -->
+        <a href="#" id="apply" data-automation-id="adventureButton" style="display:none" onclick="document.getElementById('how').style.display='block';return false">Apply</a>
+        <script>setTimeout(() => document.getElementById('apply').style.display = 'inline', 800)</script>
+        <div id="how" style="display:none"><a href="#" data-automation-id="applyManually" onclick="setTimeout(() => document.getElementById('create').style.display='block', 1500);return false">Apply Manually</a></div>
         <form id="create" method="post" action="/wd/register" style="display:none">
           <h2>Create Account</h2>
           <label for="e">Email Address</label><input id="e" name="email" data-automation-id="email" type="text" />
