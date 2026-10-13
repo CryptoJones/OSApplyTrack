@@ -578,6 +578,9 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         // box, a drop-down button, a required radio group), Application Questions (a drop-down),
         // Voluntary Disclosures (a demographic drop-down, the terms box) and Review with Submit.
         _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R1/apply/applyManually", () => Results.Content(WorkdayWizardHtml, "text/html"));
+        // The same wizard as finastra.wd3 serves it (#450): step 1 opens on Create Account, drawn a
+        // while after the page, with a "Sign In" link that turns the form over to the sign-in.
+        _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R2/apply/applyManually", () => Results.Content(WorkdayWizardCreateFirstHtml, "text/html"));
         _fixture.MapPost("/wd/step", async (HttpRequest req) =>
         {
             using var reader = new StreamReader(req.Body);
@@ -1510,6 +1513,35 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         </body></html>
         """;
 
+    private const string WorkdayWizardChoicesHtml = """
+        <div id="choices">
+          <h2>Sign In</h2>
+          <button type="button" data-automation-id="GoogleSignInButton">Sign in with Google</button>
+          <button type="submit" data-automation-id="SignInWithEmailButton" onclick="show('signin');return false">Sign in with email</button>
+        </div>
+        """;
+
+    private const string WorkdayWizardCreateFirstHtml_Entry = """
+        <div id="create" style="display:none">
+          <h2>Create Account</h2>
+          <label for="ce">Email Address</label><input id="ce" data-automation-id="email" type="text" />
+          <label for="cp">Password</label><input id="cp" data-automation-id="password" type="password" />
+          <label for="cv">Verify New Password</label><input id="cv" data-automation-id="verifyPassword" type="password" />
+          <input type="checkbox" data-automation-id="createAccountCheckbox" />
+          <div style="position:relative">
+            <button type="button" data-automation-id="createAccountSubmitButton">Create Account</button>
+            <div role="button" tabindex="0" aria-label="Create Account" data-automation-id="click_filter" style="position:absolute;inset:0"
+                 onclick="document.getElementById('cerr').textContent='An account with this email address already exists'"></div>
+          </div>
+          <div id="cerr" role="alert"></div>
+          <button type="button" data-automation-id="signInLink" onclick="show('signin')">Sign In</button>
+          <button type="button" data-automation-id="forgotPasswordLink">Forgot your password?</button>
+        </div>
+        <script>setTimeout(() => { if (!sessionStorage.getItem('wd')) show('create'); }, 1200)</script>
+        """;
+
+    private static readonly string WorkdayWizardCreateFirstHtml = WorkdayWizardHtml.Replace(WorkdayWizardChoicesHtml, WorkdayWizardCreateFirstHtml_Entry);
+
     private const string WorkdayWizardHtml = """
         <html><body>
         <div id="choices">
@@ -1579,7 +1611,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         <div id="done" style="display:none"><h2>Application Submitted</h2><p>Your application has been successfully submitted.</p></div>
         <ul role="listbox" id="menu" style="display:none"></ul>
         <script>
-          const show = id => { for (const el of document.querySelectorAll('.step, #choices, #signin, #done')) el.style.display = 'none'; document.getElementById(id).style.display = 'block'; };
+          const show = id => { for (const el of document.querySelectorAll('.step, #choices, #create, #signin, #done')) el.style.display = 'none'; document.getElementById(id).style.display = 'block'; };
           const state = () => JSON.stringify({ source: [...document.querySelectorAll('#chips li')].map(c => c.textContent), previous: document.querySelector('input[name=candidateIsPreviousWorker]:checked')?.value || '', country: document.getElementById('country--country').textContent, first: document.getElementById('name--legalName--firstName').value, last: document.getElementById('name--legalName--lastName').value, authorized: document.getElementById('q1').textContent, ethnicity: document.getElementById('eth').textContent, terms: document.getElementById('terms').checked });
           const report = step => fetch('/wd/step', { method: 'POST', body: step + ' ' + state() });
           const chip = text => { if (!text) return; const li = document.createElement('li'); li.setAttribute('role', 'option'); li.setAttribute('data-automation-id', 'selectedItem'); li.textContent = /linkedin/i.test(text) ? 'Linkedin Jobs' : text; document.getElementById('chips').appendChild(li); };
@@ -3108,6 +3140,27 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
             Console.WriteLine($"LIVE LOG [{logLevel}] {formatter(state, exception)}");
+    }
+
+    /// <summary>
+    /// finastra.wd3 (2026-10-13): step 1 opens on Create Account, drawn late, and its "Sign In"
+    /// link turns the form over. The saved account signs in through that link, and the walk
+    /// goes on to Review (#450).
+    /// </summary>
+    [SkippableFact]
+    public async Task A_workday_wizard_that_opens_on_create_account_is_turned_over_to_sign_in()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var url = $"{_fixtureUrl}/wd/en-US/Careers/job/Omaha/Engineer_R2/apply/applyManually";
+        var account = new BoardAccount(new Uri(_fixtureUrl).Host, "ada@example.com", "pw");
+        lock (_wdSteps) _wdSteps.Clear();
+        var outcome = await Submitter().RunAsync(url, WorkdayPacket(authorized: true), (Pdf, "resume.pdf"), dryRun: true, accounts: [account]);
+        Assert.True(outcome.Filled, outcome.Error);
+        Assert.False(outcome.Submitted);
+        Assert.Empty(outcome.Unmapped);
+        string[] steps;
+        lock (_wdSteps) steps = [.. _wdSteps];
+        Assert.Contains(steps, s => s.StartsWith("step4 "));
     }
 
     [SkippableFact]
