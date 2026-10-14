@@ -2,4 +2,4 @@
 # Copyright 2026 Aaron K. Clark
 """applytrack — a local, markdown-backed job-application tracker."""
 
-__version__ = "1.68.4"
+__version__ = "1.68.5"

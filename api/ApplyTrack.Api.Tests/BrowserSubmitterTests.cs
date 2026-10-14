@@ -583,6 +583,8 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         _fixture.MapGet("/wd/en-US/Careers/job/Omaha/Engineer_R2/apply/applyManually", () => Results.Content(WorkdayWizardCreateFirstHtml, "text/html"));
         // Workday's search box beside a real site search (#453): the box is a question, the search is not.
         _fixture.MapGet("/jobs/workday-search-box", () => Results.Content(WorkdaySearchBoxHtml, "text/html"));
+        // Workday's My Experience as a saved draft draws it (#455): the blocks and their Add buttons first, the held rows 1.5 s on.
+        _fixture.MapGet("/wd/experience", () => Results.Content(WorkdayExperienceHtml, "text/html"));
         _fixture.MapPost("/wd/step", async (HttpRequest req) =>
         {
             using var reader = new StreamReader(req.Body);
@@ -1513,6 +1515,38 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           </div>
         </form>
         </body></html>
+        """;
+
+    private const string WorkdayExperienceHtml = """
+        <html><body><div data-automation-id="applyFlowPage">
+        <div role="group" aria-label="Work Experience"><h4>Work Experience</h4><div id="jobs"></div>
+          <button type="button" data-automation-id="add-button" onclick="addJob('', '', '', '')">Add</button></div>
+        <div role="group" aria-label="Education"><h4>Education</h4><div id="schools"></div>
+          <button type="button" data-automation-id="add-button" onclick="addSchool('')">Add</button></div>
+        <button type="button" data-automation-id="pageFooterNextButton">Save and Continue</button>
+        <ul role="listbox" id="menu" style="display:none"></ul>
+        </div>
+        <script>
+          let j = 0, s = 0;
+          const addJob = (title, company, m, y) => { const n = ++j; document.getElementById('jobs').insertAdjacentHTML('beforeend',
+            `<div role="group" aria-label="Work Experience ${n}"><label for="we${n}t">Job Title</label><input id="we${n}t" value="${title}" />` +
+            `<label for="we${n}c">Company</label><input id="we${n}c" value="${company}" />` +
+            `<div role="group" aria-label="From"><input role="spinbutton" aria-label="Month" id="we${n}m" value="${m}" /><input role="spinbutton" aria-label="Year" id="we${n}y" value="${y}" /></div>` +
+            `<div role="group" aria-label="To"><input role="spinbutton" aria-label="Month" id="we${n}tm" /><input role="spinbutton" aria-label="Year" id="we${n}ty" /></div>` +
+            `<label><input type="checkbox" id="we${n}h" /> I currently work here</label><label for="we${n}d">Role Description</label><textarea id="we${n}d"></textarea></div>`);
+            document.querySelectorAll('[data-automation-id=add-button]')[0].textContent = 'Add Another'; };
+          const addSchool = (school) => { const n = ++s; document.getElementById('schools').insertAdjacentHTML('beforeend',
+            `<div role="group" aria-label="Education ${n}"><label for="ed${n}s">School or University</label><input id="ed${n}s" value="${school}" />` +
+            `<button type="button" aria-haspopup="listbox" aria-label="Degree Select One Required" id="ed${n}g" onclick="menu(this, ['Select One','Bachelors','Masters'])">Select One</button>` +
+            `<label for="ed${n}f">Field of Study</label><div data-uxi-multiselect-id="ed${n}"><ul role="listbox" data-automation-id="selectedItemList" id="ed${n}chips"></ul>` +
+            `<input id="ed${n}f" data-uxi-widget-type="selectinput" data-uxi-multiselect-id="ed${n}" placeholder="Search" onkeydown="if(event.key==='Enter'){chip('ed${n}chips',this.value);this.value='';event.preventDefault()}" /></div></div>`);
+            document.querySelectorAll('[data-automation-id=add-button]')[1].textContent = 'Add Another'; };
+          const chip = (id, text) => { if (!text) return; const li = document.createElement('li'); li.setAttribute('role', 'option'); li.setAttribute('data-automation-id', 'selectedItem'); li.textContent = text; document.getElementById(id).appendChild(li); };
+          let opened = null;
+          const menu = (btn, options) => { opened = btn; const m = document.getElementById('menu'); m.innerHTML = ''; for (const o of options) { const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = o; li.onclick = () => { opened.textContent = o; m.style.display = 'none'; }; m.appendChild(li); } m.style.display = 'block'; };
+          // The draft's own rows, drawn after the blocks: a job with its dates, a school with no degree chosen.
+          setTimeout(() => { addJob('Principal Software Architect', 'Ronin 48', '3', '2026'); addSchool('Eastern University'); }, 1500);
+        </script></body></html>
         """;
 
     private const string WorkdaySearchBoxHtml = """
@@ -3193,6 +3227,45 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal(("How Did You Hear About Us?", true), (source.Label, source.Required));
         Assert.Contains(questions!, q => q.Id == "city");   // keyed by name, as the sweep keys it
         Assert.DoesNotContain(questions!, q => q.Id == "q" || q.Label.Contains("Search for Jobs"));
+    }
+
+    /// <summary>A saved draft's rows arrive after the block and its Add button (#455): counted at
+    /// once, the filler added a blank row per job on finastra.wd3. Held rows are waited for and
+    /// completed; only the jobs and schools the draft lacks are added.</summary>
+    [SkippableFact]
+    public async Task Workday_experience_rows_drawn_late_are_completed_not_duplicated()
+    {
+        Skip.IfNot(Available, "Node Playwright is not installed (npm ci)");
+        var resume = new Resume
+        {
+            Experience =
+            [
+                new("Ronin 48", "Principal Software Architect", "Mar 2026 - Present", ["Designing the platform."]),
+                new("CrowdStrike", "Senior Technical Support Engineer", "Aug 2022 - Mar 2024", []),
+            ],
+            Education = [new("Eastern University", "MS", "Applied AI", "2026 – Present"), new("University of Maryland University College", "Bachelor of Science", "CIS", "")],
+        };
+        var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.ConnectAsync(_ws);
+        var page = await browser.NewPageAsync();
+        await page.GotoAsync($"{_fixtureUrl}/wd/experience");
+
+        var filled = await BrowserSubmitter.FillWorkdaySectionsAsync(page, resume);
+
+        Assert.Equal(2, await page.GetByRole(Microsoft.Playwright.AriaRole.Group, new() { NameRegex = new System.Text.RegularExpressions.Regex(@"^Work Experience \d+$") }).CountAsync());
+        Assert.Equal("Principal Software Architect", await page.Locator("#we1t").InputValueAsync());   // held, untouched
+        Assert.Equal("3", await page.Locator("#we1m").InputValueAsync());
+        Assert.True(await page.Locator("#we1h").IsCheckedAsync());
+        Assert.Equal("CrowdStrike", await page.Locator("#we2c").InputValueAsync());
+        Assert.Equal("8", await page.Locator("#we2m").InputValueAsync());
+        Assert.Equal(2, await page.GetByRole(Microsoft.Playwright.AriaRole.Group, new() { NameRegex = new System.Text.RegularExpressions.Regex(@"^Education \d+$") }).CountAsync());
+        Assert.Equal("Masters", await page.Locator("#ed1g").InnerTextAsync());   // the held school's blank degree
+        Assert.Equal("University of Maryland University College", await page.Locator("#ed2s").InputValueAsync());
+        Assert.Equal("Bachelors", await page.Locator("#ed2g").InnerTextAsync());
+        Assert.Contains("workExperience-1--companyName", filled);
+        Assert.Contains("education-0--degree", filled);
+        Assert.DoesNotContain("workExperience-0--jobTitle", filled);
+        playwright.Dispose();
     }
 
     [SkippableFact]
