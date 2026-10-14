@@ -1529,14 +1529,14 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         <script>
           let j = 0, s = 0;
           const addJob = (title, company, m, y) => { const n = ++j; document.getElementById('jobs').insertAdjacentHTML('beforeend',
-            `<div role="group" aria-label="Work Experience ${n}"><label for="we${n}t">Job Title</label><input id="we${n}t" value="${title}" />` +
+            `<div role="group" aria-label="Work Experience ${n}"><button type="button" aria-label="Delete Work Experience ${n}" onclick="this.parentElement.remove()">Delete</button><label for="we${n}t">Job Title</label><input id="we${n}t" value="${title}" />` +
             `<label for="we${n}c">Company</label><input id="we${n}c" value="${company}" />` +
             `<div role="group" aria-label="From"><input role="spinbutton" aria-label="Month" id="we${n}m" value="${m}" /><input role="spinbutton" aria-label="Year" id="we${n}y" value="${y}" /></div>` +
             `<div role="group" aria-label="To"><input role="spinbutton" aria-label="Month" id="we${n}tm" /><input role="spinbutton" aria-label="Year" id="we${n}ty" /></div>` +
             `<label><input type="checkbox" id="we${n}h" /> I currently work here</label><label for="we${n}d">Role Description</label><textarea id="we${n}d"></textarea></div>`);
             document.querySelectorAll('[data-automation-id=add-button]')[0].textContent = 'Add Another'; };
           const addSchool = (school) => { const n = ++s; document.getElementById('schools').insertAdjacentHTML('beforeend',
-            `<div role="group" aria-label="Education ${n}"><label for="ed${n}s">School or University</label><input id="ed${n}s" value="${school}" />` +
+            `<div role="group" aria-label="Education ${n}"><button type="button" aria-label="Delete Education ${n}" onclick="this.parentElement.remove()">Delete</button><label for="ed${n}s">School or University</label><input id="ed${n}s" value="${school}" />` +
             `<button type="button" aria-haspopup="listbox" aria-label="Degree Select One Required" id="ed${n}g" onclick="menu(this, ['Select One','Bachelors','Masters'])">Select One</button>` +
             `<label for="ed${n}f">Field of Study</label><div data-uxi-multiselect-id="ed${n}"><ul role="listbox" data-automation-id="selectedItemList" id="ed${n}chips"></ul>` +
             `<input id="ed${n}f" data-uxi-widget-type="selectinput" data-uxi-multiselect-id="ed${n}" placeholder="Search" onkeydown="if(event.key==='Enter'){chip('ed${n}chips',this.value);this.value='';event.preventDefault()}" /></div></div>`);
@@ -1545,7 +1545,8 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           let opened = null;
           const menu = (btn, options) => { opened = btn; const m = document.getElementById('menu'); m.innerHTML = ''; for (const o of options) { const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = o; li.onclick = () => { opened.textContent = o; m.style.display = 'none'; }; m.appendChild(li); } m.style.display = 'block'; };
           // The draft's own rows, drawn after the blocks: a job with its dates, a school with no degree chosen.
-          setTimeout(() => { addJob('Principal Software Architect', 'Ronin 48', '3', '2026'); addSchool('Eastern University'); }, 1500);
+          // The held job's month is wrong (12 for Mar, #457); the held school is right.
+          setTimeout(() => { addJob('Principal Software Architect', 'Ronin 48', '12', '2026'); addSchool('Eastern University'); }, 1500);
         </script></body></html>
         """;
 
@@ -1612,7 +1613,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           <input data-automation-id="beecatcher" style="position:absolute;left:-9999px" tabindex="-1" />
         </div>
         <div id="step1" class="step" style="display:none">
-          <ol><li>current step 1 of 4 My Information</li></ol>
+          <ol><li data-automation-id="progressBarActiveStep">current step 1 of 4 My Information</li></ol>
           <h3>My Information</h3>
           <label for="source--source">How Did You Hear About Us?*</label>
           <div data-uxi-multiselect-id="m1">
@@ -1634,7 +1635,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" data-automation-id="pageFooterNextButton" onclick="next1()">Save and Continue</button>
         </div>
         <div id="step2" class="step" style="display:none">
-          <ol><li>current step 2 of 4 Application Questions</li></ol>
+          <ol><li data-automation-id="progressBarActiveStep">current step 2 of 4 Application Questions</li></ol>
           <h3>Application Questions</h3>
           <label for="q1">Are you legally authorized to work in the country where this position is located?*</label>
           <button type="button" id="q1" name="legallyAuthorized" aria-haspopup="listbox" aria-label="Are you legally authorized to work in the country where this position is located? Select One Required"
@@ -1644,7 +1645,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" data-automation-id="pageFooterNextButton" onclick="next2()">Save and Continue</button>
         </div>
         <div id="step3" class="step" style="display:none">
-          <ol><li>current step 3 of 4 Voluntary Disclosures</li></ol>
+          <ol><li data-automation-id="progressBarActiveStep">current step 3 of 4 Voluntary Disclosures</li></ol>
           <h3>Voluntary Disclosures</h3>
           <label for="eth">What is your ethnicity?</label>
           <button type="button" id="eth" name="ethnicity" aria-haspopup="listbox" aria-label="What is your ethnicity? Select One Required"
@@ -1654,7 +1655,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
           <button type="button" data-automation-id="pageFooterNextButton" onclick="next3()">Save and Continue</button>
         </div>
         <div id="step4" class="step" style="display:none">
-          <ol><li>current step 4 of 4 Review</li></ol>
+          <ol><li data-automation-id="progressBarActiveStep">current step 4 of 4 Review</li></ol>
           <h3>Review</h3>
           <p>Everything you entered, for review.</p>
           <button type="button" data-automation-id="pageFooterNextButton" onclick="submit()">Submit</button>
@@ -3243,7 +3244,8 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
                 new("Ronin 48", "Principal Software Architect", "Mar 2026 - Present", ["Designing the platform."]),
                 new("CrowdStrike", "Senior Technical Support Engineer", "Aug 2022 - Mar 2024", []),
             ],
-            Education = [new("Eastern University", "MS", "Applied AI", "2026 – Present"), new("University of Maryland University College", "Bachelor of Science", "CIS", "")],
+            // The menu offers no Certificate: the micro-credential's row is added and removed again (#457).
+            Education = [new("Eastern University", "MS", "Applied AI", "2026 – Present"), new("University of Maryland University College", "Bachelor of Science", "CIS", ""), new("Rochester Institute of Technology", "MicroMaster's", "Cybersecurity", "")],
         };
         var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.ConnectAsync(_ws);
@@ -3254,7 +3256,7 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
 
         Assert.Equal(2, await page.GetByRole(Microsoft.Playwright.AriaRole.Group, new() { NameRegex = new System.Text.RegularExpressions.Regex(@"^Work Experience \d+$") }).CountAsync());
         Assert.Equal("Principal Software Architect", await page.Locator("#we1t").InputValueAsync());   // held, untouched
-        Assert.Equal("3", await page.Locator("#we1m").InputValueAsync());
+        Assert.Equal("3", await page.Locator("#we1m").InputValueAsync());   // the held 12 put right: the row is this job by its title
         Assert.True(await page.Locator("#we1h").IsCheckedAsync());
         Assert.Equal("CrowdStrike", await page.Locator("#we2c").InputValueAsync());
         Assert.Equal("8", await page.Locator("#we2m").InputValueAsync());
@@ -3262,6 +3264,9 @@ public sealed partial class BrowserSubmitterTests : IAsyncLifetime
         Assert.Equal("Masters", await page.Locator("#ed1g").InnerTextAsync());   // the held school's blank degree
         Assert.Equal("University of Maryland University College", await page.Locator("#ed2s").InputValueAsync());
         Assert.Equal("Bachelors", await page.Locator("#ed2g").InnerTextAsync());
+        Assert.Equal(0, await page.Locator("#ed3s").CountAsync());   // the certificate row went
+        Assert.Equal("Certificate", BrowserSubmitter.WorkdayDegree("Graduate Certificate"));
+        Assert.Equal("Certificate", BrowserSubmitter.WorkdayDegree("MicroMaster’s"));
         Assert.Contains("workExperience-1--companyName", filled);
         Assert.Contains("education-0--degree", filled);
         Assert.DoesNotContain("workExperience-0--jobTitle", filled);
