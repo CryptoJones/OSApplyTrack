@@ -1102,6 +1102,22 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { return false; }
     }
 
+    /// <summary>The step Workday's progress bar says the wizard is on ("current step 2 of 5 My Experience"), or "" off Workday.</summary>
+    private static async Task<string> WorkdayStepAsync(IPage page)
+    {
+        try
+        {
+            // The one on screen: a step not yet reached may keep its marker in the page unseen.
+            var step = page.Locator("[data-automation-id='progressBarActiveStep']:visible");
+            return await step.CountAsync() == 0 ? "" : Regex.Replace(await step.First.InnerTextAsync(), @"\s+", " ").Trim();
+        }
+        catch (PlaywrightException) { return ""; }
+    }
+
+    /// <summary>A box in one of My Experience's rows — Work Experience, Education — by Workday's ids and names (#457).</summary>
+    [GeneratedRegex(@"^(?:workExperience|education)-\d+--|^(?:jobTitle|companyName|schoolName|degree|fieldOfStudy|gradeAverage|roleDescription|currentlyWorkHere|extension)$")]
+    private static partial Regex WorkdayRowBox();
+
     /// <summary>A step of Workday's application wizard: its footer carries the Save and Continue / Submit button.</summary>
     private static async Task<bool> IsWorkdayPageAsync(IFrame page)
     {
@@ -2111,19 +2127,32 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             var textBefore = await BodyTextAsync(page.MainFrame);
             var urlBefore = page.Url;
             var before = (await FormDiscoverer.ReadQuestionsAsync(page, _log)).Select(q => q.Id).ToHashSet(StringComparer.Ordinal);
+            // Workday names the step it is on; Save and Continue on a step with errors draws the
+            // same step again with its complaints (and drops /applyManually from the address the
+            // first time), which read as a page turned, four times over (#457).
+            var stepBefore = await WorkdayStepAsync(page);
             try { await next.ClickAsync(new() { Timeout = 5_000 }); }
             catch (TimeoutException) { return form; }
             catch (PlaywrightException) { return form; }
             var turnedOver = false;
-            var deadline = DateTime.UtcNow.AddSeconds(12);
+            var deadline = DateTime.UtcNow.AddSeconds(stepBefore.Length > 0 ? 30 : 12);
             while (DateTime.UtcNow < deadline)
             {
                 await page.WaitForTimeoutAsync(500);
+                if (stepBefore.Length > 0)
+                {
+                    var stepNow = await WorkdayStepAsync(page);
+                    if (stepNow.Length > 0 && stepNow != stepBefore) { turnedOver = true; break; }
+                    // Workday has drawn its complaints: the step held, and no longer autosaves.
+                    if (await page.Locator("[data-automation-id='errorMessage'], [role=alert]").CountAsync() > 0 && !await DisabledNextAsync(form)) break;
+                    continue;
+                }
                 if (page.Url != urlBefore || await BodyTextAsync(page.MainFrame) != textBefore) { turnedOver = true; break; }
             }
             if (!turnedOver)
             {
                 // The page held: its validation, which the sweep reads — and a Next it has now disabled.
+                if (stepBefore.Length > 0) _log.LogInformation("pages: Workday held on \"{Step}\" — its complaints are read", stepBefore);
                 await HandBackIfNextDisabledAsync();
                 return form;
             }
@@ -2150,11 +2179,18 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 await TickTermsAsync(form);
                 questions = await FormDiscoverer.ReadQuestionsAsync(page, _log);
                 await FormDiscoverer.ReadChoicesAsync(page, questions, _log);
+                // A draft resumed already shows the résumé on file: answered, not wanted (#457).
+                foreach (var r in packet.Questions.Where(q => q.Type == PacketQuestion.File && IsResume(q) && unmapped.Contains(q.Id)).ToList())
+                    if (await ResumeOnFileAsync(form)) { unmapped.Remove(r.Id); if (!mapped.Contains(r.Id)) mapped.Add(r.Id); }
+                // The rows of My Experience are the section filler's: a packet question that names
+                // one of their boxes (met while a row stood blank, #455) is nobody's to answer (#457).
+                foreach (var stale in unmapped.Where(id => WorkdayRowBox().IsMatch(id)).ToList()) unmapped.Remove(stale);
             }
 
             foreach (var live in questions)
             {
                 ct.ThrowIfCancellationRequested();
+                if (workday && WorkdayRowBox().IsMatch(live.Id)) continue;
                 var q = FindQuestion(packet, live.Id, live.Label);
                 if (q is null)
                 {
@@ -2243,7 +2279,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             foreach (var live in await FormDiscoverer.ReadQuestionsAsync(page, _log))
             {
                 if (live.Kind == PacketQuestion.Eeo || live.Type == PacketQuestion.File || OptionalLabel().IsMatch(live.Label)
-                    || (starredOnly && !live.Required)
+                    || (starredOnly && (!live.Required || WorkdayRowBox().IsMatch(live.Id)))
                     || discovered.Any(d => d.Id == live.Id) || unmapped.Contains(live.Id))
                     continue;
                 // A question the packet knows but holds no answer for is the person's, as unmapped.
@@ -3697,11 +3733,14 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                     var titleBox = row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" });
                     if (await titleBox.CountAsync() == 0) continue;
                     var title = (await titleBox.First.InputValueAsync()).Trim();
-                    var job = jobs.FirstOrDefault(j => j.Title.Equals(title, StringComparison.OrdinalIgnoreCase)) ?? jobs.ElementAtOrDefault(i);
+                    var byTitle = jobs.FirstOrDefault(j => j.Title.Equals(title, StringComparison.OrdinalIgnoreCase));
+                    var job = byTitle ?? jobs.ElementAtOrDefault(i);
                     if (job is null) continue;
                     await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" }), job.Title, $"workExperience-{i}--jobTitle", filled);
                     await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Company" }), job.Company, $"workExperience-{i}--companyName", filled);
-                    await FillWorkdayDatesAsync(row, job.Dates, $"workExperience-{i}", filled, months: true);
+                    // A row that is this job by its title has this job's dates: one filled while the row
+                    // was still drawing read 12/2026 for Mar 2026, and a held value was left alone (#457).
+                    await FillWorkdayDatesAsync(row, job.Dates, $"workExperience-{i}", filled, months: true, correct: byTitle is not null);
                     if (job.Highlights.Count > 0)
                         await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Role Description" }), string.Join("\n", job.Highlights.Take(3)), $"workExperience-{i}--roleDescription", filled);
                 }
@@ -3709,6 +3748,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 {
                     if (!await AddWorkdayRowAsync(page, work)) break;
                     var row = rows.Last;
+                    await BrowserSession.WaitVisibleAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" }), 5_000);
                     await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Job Title" }), job.Title, $"workExperience-{n}--jobTitle", filled);
                     await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "Company" }), job.Company, $"workExperience-{n}--companyName", filled);
                     await FillWorkdayDatesAsync(row, job.Dates, $"workExperience-{n}", filled, months: true);
@@ -3739,6 +3779,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
                 {
                     if (!await AddWorkdayRowAsync(page, school)) break;
                     var row = schools.Last;
+                    await BrowserSession.WaitVisibleAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" }), 5_000);
                     await FillWorkdaySchoolAsync(page, row, e, n, filled);
                 }
             }
@@ -3756,9 +3797,20 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     {
         await FillBlankAsync(row.GetByRole(AriaRole.Textbox, new() { Name = "School or University" }), e.School, $"education-{n}--school", filled);
         var degree = row.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Degree\b") }).First;
-        if (WorkdayDegree(e.Degree) is { } term && await degree.CountAsync() > 0 && Placeholder().IsMatch((await degree.InnerTextAsync()).Trim())
-            && await ChooseListboxAsync(page.MainFrame, degree, new($"education-{n}--degree", "Degree", false, PacketQuestion.Select, [], PacketQuestion.Custom), term))
-            filled.Add($"education-{n}--degree");
+        if (await degree.CountAsync() > 0 && Placeholder().IsMatch((await degree.InnerTextAsync()).Trim()))
+        {
+            var term = WorkdayDegree(e.Degree);
+            if (term is not null && await ChooseListboxAsync(page.MainFrame, degree, new($"education-{n}--degree", "Degree", false, PacketQuestion.Select, [], PacketQuestion.Custom), term))
+                filled.Add($"education-{n}--degree");
+            else
+            {
+                // Degree is required and the menu has no word for this one: the row would hold the
+                // step forever (three certificate rows on finastra.wd3), so it goes (#457).
+                var delete = row.GetByRole(AriaRole.Button, new() { NameRegex = new Regex(@"^Delete") }).First;
+                if (await delete.CountAsync() > 0) { await delete.ClickAsync(new() { Timeout = 5_000 }); await page.WaitForTimeoutAsync(900); }
+                return;
+            }
+        }
         var field = row.GetByRole(AriaRole.Textbox, new() { Name = "Field of Study" }).First;
         if (e.Field.Length > 0 && await field.CountAsync() > 0 && await FillSelectInputAsync(page.MainFrame, field, e.Field))
             filled.Add($"education-{n}--fieldOfStudy");
@@ -3793,15 +3845,15 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
     /// <summary>"Mar 2026 - Present", "Dec 2015 - Feb 2021", "2014 - 2015" into a Workday row's From and
     /// To spinbuttons (month and year, or year alone for a school); a present role ticks "I currently
     /// work here" instead of a To.</summary>
-    private static async Task FillWorkdayDatesAsync(ILocator row, string dates, string id, List<string> filled, bool months)
+    private static async Task FillWorkdayDatesAsync(ILocator row, string dates, string id, List<string> filled, bool months, bool correct = false)
     {
         var parts = Regex.Split(dates, @"\s*[–—-]\s*");
         var (fromMonth, fromYear) = MonthYear(parts.ElementAtOrDefault(0) ?? "");
         var (toMonth, toYear) = MonthYear(parts.ElementAtOrDefault(1) ?? "");
         var from = row.GetByRole(AriaRole.Group, new() { Name = "From", Exact = true });
         var to = row.GetByRole(AriaRole.Group, new() { NameRegex = new Regex(@"^To\b") });
-        if (months && fromMonth.Length > 0) await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(fromMonth));
-        if (fromYear.Length > 0 && await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), fromYear)) filled.Add($"{id}--startDate");
+        if (months && fromMonth.Length > 0) await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(fromMonth), correct);
+        if (fromYear.Length > 0 && await FillSpinAsync(from.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), fromYear, correct)) filled.Add($"{id}--startDate");
         if (Regex.IsMatch(parts.ElementAtOrDefault(1) ?? "", @"present|current|now", RegexOptions.IgnoreCase))
         {
             var here = row.GetByRole(AriaRole.Checkbox, new() { Name = "I currently work here" });
@@ -3812,16 +3864,26 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
             }
             return;
         }
-        if (months && toMonth.Length > 0) await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(toMonth));
-        if (toYear.Length > 0 && await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), toYear)) filled.Add($"{id}--endDate");
+        if (months && toMonth.Length > 0) await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Month" }), MonthNumber(toMonth), correct);
+        if (toYear.Length > 0 && await FillSpinAsync(to.GetByRole(AriaRole.Spinbutton, new() { Name = "Year" }), toYear, correct)) filled.Add($"{id}--endDate");
     }
 
     /// <summary>Type a number into a date spinbutton — as a person does, one key at a time, when a fill does not take.</summary>
-    private static async Task<bool> FillSpinAsync(ILocator spin, string value)
+    private static async Task<bool> FillSpinAsync(ILocator spin, string value, bool correct = false)
     {
         if (value.Length == 0 || await spin.CountAsync() == 0) return false;
         var box = spin.First;
-        if ((await box.InputValueAsync()).Trim().Length > 0) return false; // held already: left as it stands
+        var held = (await box.InputValueAsync()).Trim();
+        if (held.Length > 0)
+        {
+            // Held already: left as it stands — unless the row is known to be this job and the
+            // value is not this job's, when it is put right (#457).
+            if (!correct || held.TrimStart('0') == value.TrimStart('0')) return false;
+            await box.ClickAsync(new() { Timeout = 3_000 });
+            await box.PressAsync("ControlOrMeta+a");
+            await box.PressSequentiallyAsync(value, new() { Delay = 40 });
+            return (await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0');
+        }
         try { await box.FillAsync(value, new() { Timeout = 3_000 }); }
         catch (Exception ex) when (ex is PlaywrightException or TimeoutException) { /* typed below */ }
         if ((await box.InputValueAsync()).Trim().TrimStart('0') == value.TrimStart('0')) return true;
@@ -3850,7 +3912,7 @@ public sealed partial class BrowserSubmitter : IBrowserSubmitter
         if (d.Contains("mba") || (d.Contains("business administration") && d.Contains("master"))) return "MBA";
         if (d.Contains("phd") || d.Contains("doctor of philosophy")) return "PhD";
         if (d.Contains("doctor") || d.Contains("juris")) return "Doctorate";
-        if (d.Contains("micromaster") || d.Contains("certificate") || d.Contains("cert ") || d.StartsWith("grad cert") || d.StartsWith("cert")) return "Post-diploma studies";
+        if (d.Contains("micromaster") || d.Contains("certificate") || d.Contains("cert ") || d.StartsWith("grad cert") || d.StartsWith("cert")) return "Certificate";
         if (d.StartsWith("master") || d is "ms" or "ma" or "msc" or "meng" || d.StartsWith("ms ") || d.StartsWith("ma ")) return "Masters";
         if (d.StartsWith("bachelor") || d is "bs" or "ba" or "bsc" or "beng" || d.StartsWith("bs ") || d.StartsWith("ba ")) return "Bachelors";
         if (d.StartsWith("associate") || d is "aa" or "as" or "aas") return "Associates";
