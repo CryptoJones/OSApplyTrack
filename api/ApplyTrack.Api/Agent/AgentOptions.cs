@@ -35,4 +35,13 @@ public sealed class AgentOptions
     /// at peak a pass, a submit run parked up to eight minutes on a security code, the code
     /// poll and the heartbeat held all four at once.</summary>
     public int MaxPoolSize { get; set; } = 8;
+
+    /// <summary>
+    /// The worker's own deadline for one model completion, in seconds (#410). The api's
+    /// <c>Llm__TimeoutSeconds</c> (120) guards an HTTP request a person is waiting on; the
+    /// worker is a background job, and a packet's drafting call was dying at exactly that
+    /// deadline. 0 inherits <c>Llm__TimeoutSeconds</c>. Each chunk of a draft (see
+    /// <see cref="AnswerDrafter.DefaultQuestionsPerCall"/>) gets this budget on its own.
+    /// </summary>
+    public int LlmTimeoutSeconds { get; set; } = 300;
 }

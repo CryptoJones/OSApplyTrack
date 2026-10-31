@@ -103,6 +103,7 @@ services:
       ASPNETCORE_URLS: "http://+:8080"
       Agent__Enabled: "true"
       Agent__IntervalSeconds: ${AGENT_INTERVAL:-300}
+      Agent__LlmTimeoutSeconds: ${AGENT_LLM_TIMEOUT:-300}
       Llm__BaseUrl: ${Llm__BaseUrl:-}
       Llm__Model: ${Llm__Model:-}
       Llm__ApiKey: ${Llm__ApiKey:-}

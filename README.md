@@ -258,6 +258,7 @@ All configuration is environment variables (see [`.env.example`](./.env.example)
 | `APPLYTRACK_SECRETS_KEY_FILE` | `/var/lib/applytrack/secrets.key` in a container, else `~/.local/share/applytrack/secrets.key` | Where the generated key is kept when `APPLYTRACK_SECRETS_KEY` is unset. The compose files and quadlets mount a `secrets` volume there, shared by the api and agent containers and mounted read-only into the poller, which reads the key but never generates one. |
 | `APPLYTRACK_SECRETS_KEY_PREVIOUS` | _(empty)_ | The old key(s), `;`-separated, during a [key rotation](#encryption-at-rest): decrypt-only; the startup sweep re-keys every row to the current key. Remove once the sweep has run. |
 | `Agent__Enabled` / `Agent__IntervalSeconds` | `false` / `300` | Turns a container from this image into the **agent worker** (see [The agent](#the-agent)). The compose files run one as the `agent` service; the API container itself leaves it off. Per tenant the agent is still off until enabled in **Settings · Agent**. |
+| `Agent__LlmTimeoutSeconds` | `300` | The worker's own deadline for one model completion. `Llm__TimeoutSeconds` (120) guards a request a person is waiting on; the worker is a background job, and a packet's drafting call used to die at exactly that deadline. Screening questions are drafted in chunks of 8, each under this budget, so one stalled completion voids one chunk, not the packet. `0` inherits `Llm__TimeoutSeconds`. Set on the `agent` service. |
 | `Browser__Endpoint` / `Browser__Proxy` | _(empty)_ | The Playwright server the agent drives (`ws://browser:3000/`) and the forward proxy it must use (`http://proxy:3128`). Unset = no browser: packets are still prepared and you apply via copy-and-open. Set on the `agent` service only: the worker stamps a heartbeat row (`agent_workers`) saying it has a browser, and the api lets Submit and packet/prepare queue a run while that heartbeat is fresh (3 min). See [The agent](#the-agent), step 4. |
 | `AGENT_DB_PASSWORD` | _(required in production)_ | Set on the **api** (the migrating container): it creates the least-privilege `applytrack_agent` Postgres role on boot, or resets its password to this, and re-applies its grants. The `agent` container connects as it with `Migrations__Mode=wait` (it cannot migrate, so it waits for the api to). |
 | `POLLER_DB_PASSWORD` | _(required in production)_ | The same for the poller's `applytrack_poller` role, which the `poller` container's `DATABASE_URL` connects as: it reads profiles, blacklists and the dedup ledger, stages leads, and keeps board sessions, with no access to sessions, sign-in tokens, résumés, board passwords or DDL. Unset, the role is not created and the poller keeps whatever `DATABASE_URL` says (the quickstart uses the owner). |
@@ -991,6 +992,12 @@ published port — the compose files start it as the `agent` service, and
 database connection across multi-minute model calls, which is why it is a
 separate container with its own small pool rather than a thread in the API. Two
 containers now migrate on boot; the migrator serializes on an advisory lock.
+Its model calls run under their own deadline, `Agent__LlmTimeoutSeconds` (300),
+not the api's request-sized `Llm__TimeoutSeconds`; a form's screening questions
+are drafted eight per completion, so a completion that stalls costs that chunk
+and the rest of the packet is still drafted. Two stalls in a row stop the draft
+and hand the remaining questions to you rather than wait out another deadline
+per chunk.
 
 ## Security & hardening
 

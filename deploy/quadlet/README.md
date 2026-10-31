@@ -61,6 +61,8 @@ App__PublicBaseUrl=<same as applytrack.env>
 #Llm__BaseUrl=
 #Llm__Model=
 #Llm__ApiKey=
+# The agent's own deadline per model completion (#410); the api keeps its 120 s.
+#Agent__LlmTimeoutSeconds=300
 # The agent sends email notifications (#355), so it needs the Email__* lines too.
 #Email__Host=
 #Email__Port=

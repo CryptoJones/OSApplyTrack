@@ -146,6 +146,26 @@ public sealed class AgentWorker : BackgroundService
     // This container's name: the quadlet/compose service name, or the pod's hostname.
     private readonly string _workerId = Environment.MachineName;
 
+    /// <summary>
+    /// The instance LLM settings as the worker uses them: the same endpoint, model, key and
+    /// cap, under the worker's own deadline (<see cref="AgentOptions.LlmTimeoutSeconds"/>)
+    /// instead of the api's request-sized one (#410). The api's singleton is left as it is —
+    /// a request still gets its 120 s. Public for tests.
+    /// </summary>
+    public static LlmOptions WorkerLlmOptions(LlmOptions api, AgentOptions options)
+    {
+        if (options.LlmTimeoutSeconds <= 0 || options.LlmTimeoutSeconds == api.TimeoutSeconds)
+            return api;
+        return new LlmOptions
+        {
+            BaseUrl = api.BaseUrl,
+            Model = api.Model,
+            ApiKey = api.ApiKey,
+            TimeoutSeconds = options.LlmTimeoutSeconds,
+            DailyCapPerTenant = api.DailyCapPerTenant,
+        };
+    }
+
     public AgentWorker(
         string connectionString, AgentOptions options, LlmOptions llmOptions,
         SecretProtector protector, LeadEvaluator evaluator, PacketBuilder packets,
@@ -167,7 +187,7 @@ public sealed class AgentWorker : BackgroundService
         };
         _db = NpgsqlDataSource.Create(csb.ConnectionString);
         _options = options;
-        _llmOptions = llmOptions;
+        _llmOptions = WorkerLlmOptions(llmOptions, options);
         _protector = protector;
         _evaluator = evaluator;
         _packets = packets;

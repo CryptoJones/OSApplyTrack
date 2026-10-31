@@ -325,6 +325,82 @@ public class AnswerDrafterTests
         Assert.Contains("link in your résumé", why);
     }
 
+    private static List<PacketQuestion> ScreeningQuestions(int count) =>
+        Enumerable.Range(1, count)
+            .Select(i => new PacketQuestion($"q{i}", $"Screening question {i}: describe your experience with topic {i}",
+                true, PacketQuestion.Textarea, [], PacketQuestion.Custom))
+            .ToList();
+
+    /// <summary>The ids the stub was asked for, in the order the prompt listed them.</summary>
+    private static List<string> AskedIds(string userPrompt) =>
+        System.Text.RegularExpressions.Regex.Matches(userPrompt, @"^- id: (\S+) \|", System.Text.RegularExpressions.RegexOptions.Multiline)
+            .Select(m => m.Groups[1].Value).ToList();
+
+    private static string AnswerAll(string userPrompt) =>
+        "{\"answers\":[" + string.Join(",", AskedIds(userPrompt).Select(id => $"{{\"id\":\"{id}\",\"answer\":\"Did {id}.\"}}")) + "]}";
+
+    [Fact]
+    public async Task Screening_questions_go_to_the_model_in_chunks_and_every_chunk_is_kept()
+    {
+        // #410: Orbis's 22 questions rode one completion, which stalled at the endpoint for
+        // the full timeout, twice. Chunked, each prompt carries a few questions and all of
+        // them still get drafted.
+        var questions = ScreeningQuestions(20);
+        var prompts = new List<List<string>>();
+        var stub = new StubLlmClient((_, user, _) => { prompts.Add(AskedIds(user)); return AnswerAll(user); });
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub), questionsPerCall: 8)
+            .DraftAsync(questions, Ctx(), Cfg);
+
+        Assert.Equal(3, stub.Calls);
+        Assert.Equal([8, 8, 4], prompts.Select(p => p.Count));
+        Assert.Equal(questions.Select(q => q.Id), prompts.SelectMany(p => p));   // each question asked once, in order
+        Assert.Equal(20, answers.Count);
+        Assert.Equal("Did q13.", answers["q13"]);
+        Assert.Empty(review);
+    }
+
+    [Fact]
+    public async Task One_stalled_chunk_voids_only_its_own_answers_and_the_rest_of_the_packet_is_drafted()
+    {
+        var questions = ScreeningQuestions(12);
+        var stub = new StubLlmClient((_, user, _) =>
+            AskedIds(user).Contains("q5")
+                ? throw new LlmUnavailableException("could not reach the LLM endpoint (The operation was canceled.)")
+                : AnswerAll(user));
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub), questionsPerCall: 4)
+            .DraftAsync(questions, Ctx(), Cfg);
+
+        Assert.Equal(3, stub.Calls);                                   // the third chunk was still attempted
+        Assert.Equal(8, answers.Count);
+        Assert.All(new[] { "q1", "q4", "q9", "q12" }, id => Assert.Equal($"Did {id}.", answers[id]));
+        Assert.Equal(["q5", "q6", "q7", "q8"], review.Select(r => r.Id).Order());
+        Assert.All(review, r => Assert.StartsWith("no draft: could not reach the LLM endpoint", r.Reason));
+    }
+
+    [Fact]
+    public async Task Two_failed_chunks_in_a_row_stop_the_draft_without_spending_another_timeout_per_chunk()
+    {
+        // One stall is intermittent (the same Orbis prompt answered in 7 s on the next run);
+        // two in a row is the endpoint being down, and each further chunk would only wait out
+        // another full deadline. The rest is flagged for the person, not attempted.
+        var questions = ScreeningQuestions(16);
+        var stub = new StubLlmClient((_, user, _) =>
+            AskedIds(user).Contains("q1")
+                ? AnswerAll(user)
+                : throw new LlmUnavailableException("the LLM endpoint returned HTTP 503"));
+
+        var (answers, review) = await new AnswerDrafter(new StructuredCompleter(stub), questionsPerCall: 4)
+            .DraftAsync(questions, Ctx(), Cfg);
+
+        Assert.Equal(3, stub.Calls);                                   // chunks 1 (ok), 2 and 3 (failed); 4 never sent
+        Assert.Equal(4, answers.Count);                                // the first chunk's work is kept
+        Assert.Equal(12, review.Count);
+        Assert.All(review.Where(r => int.Parse(r.Id[1..]) <= 12), r => Assert.Equal("no draft: the LLM endpoint returned HTTP 503", r.Reason));
+        Assert.All(review.Where(r => int.Parse(r.Id[1..]) > 12), r => Assert.StartsWith("no draft: not attempted after 2 failed completions in a row", r.Reason));
+    }
+
     [Fact]
     public async Task A_dead_model_still_yields_a_packet_with_everything_owed_flagged()
     {

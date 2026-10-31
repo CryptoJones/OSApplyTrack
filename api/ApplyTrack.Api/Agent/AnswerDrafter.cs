@@ -121,9 +121,32 @@ public sealed partial class AnswerDrafter
     private sealed record ModelAnswer(string? Id, string? Answer);
     private sealed record ModelReply(List<ModelAnswer>? Answers);
 
-    private readonly StructuredCompleter _completer;
+    /// <summary>
+    /// Screening questions per model call (#410). A packet's whole draft used to ride one
+    /// completion: Orbis's 22 questions stalled at the endpoint twice, each time for the
+    /// full 120 s, and every answer was voided. In chunks, one stalled completion costs
+    /// one chunk — the others are kept — and each prompt is short enough to answer in
+    /// seconds. Eight is small enough to bound a stall and large enough that a typical
+    /// form (5–12 model questions) still takes one or two calls.
+    /// </summary>
+    public const int DefaultQuestionsPerCall = 8;
 
-    public AnswerDrafter(StructuredCompleter completer) => _completer = completer;
+    /// <summary>
+    /// Consecutive chunk failures after which the rest of the packet is not attempted. The
+    /// first failure may be an intermittent stall (the #410 case: the same prompt answered
+    /// in 7 s on the next run); a second in a row reads as the endpoint being down, and
+    /// every further chunk would only burn another full timeout.
+    /// </summary>
+    public const int GiveUpAfterConsecutiveFailures = 2;
+
+    private readonly StructuredCompleter _completer;
+    private readonly int _questionsPerCall;
+
+    public AnswerDrafter(StructuredCompleter completer, int questionsPerCall = DefaultQuestionsPerCall)
+    {
+        _completer = completer;
+        _questionsPerCall = Math.Max(1, questionsPerCall);
+    }
 
     public async Task<(Dictionary<string, string> Answers, List<ReviewItem> NeedsReview)> DraftAsync(
         IReadOnlyList<PacketQuestion> questions, AnswerContext ctx, EffectiveLlmConfig cfg,
@@ -188,23 +211,43 @@ public sealed partial class AnswerDrafter
             }
             else
             {
-                try
+                // In chunks (#410): a completion that stalls or errors voids only its own
+                // chunk's answers, and the chunks already drafted are kept. Past the cap the
+                // remaining questions are the human's, as they always were.
+                var asked = forModel.Take(MaxModelQuestions).ToList();
+                var consecutiveFailures = 0;
+                string? gaveUp = null;
+                foreach (var chunk in asked.Chunk(_questionsPerCall))
                 {
-                    var drafted = await AskModelAsync(forModel.Take(MaxModelQuestions).ToList(), ctx, cfg, ct, pinned);
-                    foreach (var q in forModel)
+                    if (gaveUp is not null)
                     {
-                        if (drafted.TryGetValue(q.Id, out var a) && !string.IsNullOrWhiteSpace(a))
-                            answers[q.Id] = a;
-                        else
-                            review.Add(new ReviewItem(q.Id, "the model could not answer this from your résumé"));
+                        foreach (var q in chunk)
+                            review.Add(new ReviewItem(q.Id, "no draft: " + gaveUp));
+                        continue;
+                    }
+                    try
+                    {
+                        var drafted = await AskModelAsync(chunk.ToList(), ctx, cfg, ct, pinned);
+                        consecutiveFailures = 0;
+                        foreach (var q in chunk)
+                        {
+                            if (drafted.TryGetValue(q.Id, out var a) && !string.IsNullOrWhiteSpace(a))
+                                answers[q.Id] = a;
+                            else
+                                review.Add(new ReviewItem(q.Id, "the model could not answer this from your résumé"));
+                        }
+                    }
+                    catch (LlmUnavailableException ex)
+                    {
+                        // The packet is still built; this chunk's model-owed answers become the human's.
+                        foreach (var q in chunk)
+                            review.Add(new ReviewItem(q.Id, "no draft: " + ex.Message));
+                        if (++consecutiveFailures >= GiveUpAfterConsecutiveFailures)
+                            gaveUp = $"not attempted after {consecutiveFailures} failed completions in a row ({ex.Message})";
                     }
                 }
-                catch (LlmUnavailableException ex)
-                {
-                    // The packet is still built; every model-owed answer becomes the human's.
-                    foreach (var q in forModel)
-                        review.Add(new ReviewItem(q.Id, "no draft: " + ex.Message));
-                }
+                foreach (var q in forModel.Skip(asked.Count))
+                    review.Add(new ReviewItem(q.Id, "the model could not answer this from your résumé"));
             }
         }
 
